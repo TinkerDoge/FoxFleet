@@ -34,3 +34,36 @@ The hub serves `web/dist` (override with `FOXFLEET_WEB_DIR`): hashed assets unde
 ## Where to look
 
 `server/index.js` (routes, auth, static), `server/accounts.js`, `server/config.js` (kinds, validation), `server/connector.js` and `connector/foxfleet-connector.mjs`, `server/screen.js`, `android/app/src/main/java/dev/foxfleet/app/`, `web/src/`.
+
+## Remote images in Markdown: the media proxy
+
+Agent replies can contain `![](https://…)`. The browser never loads those directly: the web client rewrites them to
+`/api/media-proxy?url=…` and the hub fetches the image. Reasons: the page CSP stays `img-src 'self' data: blob:` (no `https:`
+wildcard that would let injected markup beacon to any server), and readers' IPs, cookies and referrers never reach third parties.
+
+Hub-side protections (`server/media-proxy.js`, covered by `server/test/media-proxy.test.js`): `https` only, port 443 only, no
+credentials in the URL; the host is resolved by the hub and refused unless **every** address is globally routable (loopback,
+RFC 1918, CGNAT, link-local incl. cloud metadata, multicast, ULA, mapped/NAT64/6to4/documentation ranges are blocked); the socket is
+pinned to the validated address (no DNS rebinding) with SNI and `Host` of the original name; redirects are followed at most twice and
+every hop is re-validated; only PNG/JPEG/GIF/WebP/AVIF (never SVG or HTML); 8 MB cap; 10 s total timeout; no cookies are forwarded;
+the response is re-served with `nosniff`, a sandboxing CSP and `Cache-Control: private`. A session is required (the route sits behind the login gate).
+
+## Screen takeover in the browser
+
+`Screen` (agents with `capabilities.screen`) lazy-loads noVNC (a separate ~180 kB chunk, only fetched on this view), asks the hub for a
+single-use 30-second ticket (`POST …/screen/observe`) and connects to `wss://<hub>/api/agents/<id>/screen/ws?ticket=…`. The view is
+view-only until **Take over**; control shows a red border and a countdown to the automatic hand-back, and ends on **Hand back**, at the
+deadline, when the view is left, and on `pagehide` (a `keepalive` request). A keys row (Esc, Tab, Enter, arrows, Ctrl+Alt+Del, soft keyboard on touch) is shown while in control.
+
+## Contract
+
+`contract/openapi.json` (OpenAPI 3.1) is the API contract shared by the hub, the web app and the Android app. `contract/run.mjs` is one
+scenario that drives any base URL and validates every response against the spec; it runs against the real hub (`server/test/contract.test.js`)
+and against the web mock hub (`web/tests/contract.test.ts`), so the mock cannot drift from the server. Operations that need a live agent
+(sessions, chat stream, files, screen) are documented in the spec but not yet exercised by the scenario.
+
+## PWA
+
+`web/public/sw.js` caches the app shell only. It never touches `/api`, `/health`, `/mcp`, `/connector.mjs`, pairing pages, non-GET, cross-origin or
+range requests. Each build stamps a content-derived version; a new worker waits and the app shows "A new version is ready · Reload"
+(no silent swap, so a half-typed message is never lost). Offline, navigations fall back to the cached shell.

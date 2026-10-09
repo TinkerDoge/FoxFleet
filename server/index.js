@@ -18,6 +18,7 @@ import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js'
 import { connectorHub } from './connector.js';
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
+import { fetchImage } from './media-proxy.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
 
@@ -281,6 +282,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'users' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { users: accounts.users() });
         if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
+      }
+      if (req.method === 'GET' && url.pathname === '/api/media-proxy') {
+        const img = await fetchImage(url.searchParams.get('url'));
+        res.writeHead(200, { 'Content-Type': img.type, 'Content-Length': img.body.length, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cross-Origin-Resource-Policy': 'same-origin' });
+        return res.end(img.body);
       }
       if (req.method === 'GET' && url.pathname === '/api/avatars') {
         // Rendered avatar packs are discovered at request time; a missing or empty directory is not an error.

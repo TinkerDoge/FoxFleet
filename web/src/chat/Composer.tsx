@@ -24,7 +24,6 @@ export function Composer(props: {
   const [pending, setPending] = useState<Pending[]>([]);
   const [menu, setMenu] = useState(false), [sel, setSel] = useState(0), [note, setNote] = useState<string | null>(null), [drag, setDrag] = useState(false), [listening, setListening] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null), recog = useRef<any>(null), photo = useRef<HTMLInputElement>(null), cam = useRef<HTMLInputElement>(null), file = useRef<HTMLInputElement>(null);
-  useEffect(() => { setText(''); setPending([]); setNote(null); }, [props.draftKey]);
   useEffect(() => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 168) + 'px'; } }, [text]);
   const suggestions = useMemo(() => commandSuggestions(text, skills, 8, agent.kind === 'hermes'), [text, skills, agent.kind]);
   useEffect(() => setSel(0), [text]);

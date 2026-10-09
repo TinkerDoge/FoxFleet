@@ -19,7 +19,7 @@ describe('markdown sanitizer', () => {
     expect(d.querySelector('script,iframe,object,embed,form,style,svg,math')).toBeNull();
     expect(html).not.toMatch(/onerror|onload|javascript:|style=/i);
     d.querySelectorAll('a').forEach((a) => expect(a.getAttribute('href') ?? 'https://ok').toMatch(/^(https?:|mailto:|#)/i));
-    d.querySelectorAll('img').forEach((i) => expect(i.getAttribute('src')).toMatch(/^(https:\/\/|data:image\/|\/api\/)/));
+    d.querySelectorAll('img').forEach((i) => expect(i.getAttribute('src')).toMatch(/^(data:image\/|\/api\/)/));
   });
   it('opens links safely', () => {
     const a = dom(renderMarkdown('[site](https://example.com/x)')).querySelector('a')!;
@@ -28,7 +28,9 @@ describe('markdown sanitizer', () => {
   });
   it('only allows https, data-image or hub-media images', () => {
     expect(dom(renderMarkdown('![a](http://insecure.example/a.png)')).querySelector('img')).toBeNull();
-    expect(dom(renderMarkdown('![a](https://example.com/a.png)')).querySelector('img')?.hasAttribute('data-viewable')).toBe(true);
+    const img = dom(renderMarkdown('![a](https://example.com/a.png?x=1&y=2)')).querySelector('img')!;
+    expect(img.hasAttribute('data-viewable')).toBe(true);
+    expect(img.getAttribute('src')).toBe('/api/media-proxy?url=' + encodeURIComponent('https://example.com/a.png?x=1&y=2')); // never loaded directly by the browser
     expect(dom(renderMarkdown('![a](/api/agents/atlas/media?path=a.png)')).querySelector('img')).not.toBeNull();
   });
   it('wraps code blocks with a copy button and tables for scrolling, idempotently', () => {

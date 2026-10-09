@@ -12,7 +12,7 @@
   --idle: #C08A1E;
   --offline: #C4BFB8;
   --danger: #C0392B;
-  --accent: #D9653B;
+  --accent: #BE4A21;
   --on-accent: #FFFFFF;
   --user-bubble: color-mix(in srgb, var(--accent) 12%, transparent);
   --radius-card: 16px;
@@ -46,15 +46,15 @@
   --motion-slow: 320ms;
 }
 :root[data-accent="ember"] {
-  --accent: #D9653B;
+  --accent: #BE4A21;
   --on-accent: #FFFFFF;
 }
 :root[data-accent="ocean"] {
-  --accent: #2F6FDB;
+  --accent: #2A64C6;
   --on-accent: #FFFFFF;
 }
 :root[data-accent="moss"] {
-  --accent: #3C8C5A;
+  --accent: #2F7A4B;
   --on-accent: #FFFFFF;
 }
 :root[data-accent="iris"] {

@@ -1,5 +1,5 @@
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AgentSummary, AuthInfo, Registration, SessionInfo } from './types';
+import type { AdminUser, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
 import type { UiMessage } from '../lib/chat';
 import { chatMessages } from '../lib/chat';
@@ -48,6 +48,34 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     register: (username: string, password: string, invite: string) => request<unknown>('/api/auth/register', { body: { username, password, invite, client: 'web' }, plain401: true }),
     logout: () => request<unknown>('/api/auth/logout', { method: 'POST', body: {}, plain401: true }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
+
+    // ---- devices and security ----
+    devices: async (): Promise<Device[]> => ((await request<any>('/api/auth/devices')).devices ?? []).map((d: any): Device => ({ id: String(d.id), name: String(d.name ?? 'Device'), kind: String(d.kind ?? 'web'), created: Number(d.created) || 0, lastSeen: Number(d.lastSeen) || 0, current: d.current === true })),
+    revokeDevice: async (id: string): Promise<boolean> => (await request<any>('/api/auth/devices/' + enc(id), { method: 'DELETE' })).signedOut === true,
+    logoutAll: () => request<unknown>('/api/auth/logout-all', { body: {} }),
+    changePassword: (current: string, next: string) => request<unknown>('/api/auth/password', { body: { current, next }, plain401: true }),
+
+    // ---- admin (owner) ----
+    registrationMode: async (): Promise<Registration> => (await request<any>('/api/admin/settings')).registration ?? 'closed',
+    setRegistration: (registration: Registration) => request<unknown>('/api/admin/settings', { method: 'PUT', body: { registration } }),
+    pairing: async (): Promise<Shareable> => shareable(await request('/api/admin/pairing')),
+    invites: async (): Promise<Invite[]> => ((await request<any>('/api/admin/invites')).invites ?? []).map((i: any): Invite => ({ id: String(i.id), created: Number(i.created) || undefined, expires: Number(i.expires) || 0, used: i.used === true })),
+    createInvite: async (): Promise<Shareable> => shareable(await request('/api/admin/invites', { body: {} })),
+    revokeInvite: (id: string) => request<unknown>('/api/admin/invites/' + enc(id), { method: 'DELETE' }),
+    adminUsers: async (): Promise<AdminUser[]> => ((await request<any>('/api/admin/users')).users ?? []).map((u: any): AdminUser => ({ id: String(u.id), username: String(u.username ?? '?'), role: u.role === 'owner' ? 'owner' : 'user', disabled: u.disabled === true })),
+    setUserDisabled: (id: string, disabled: boolean) => request<unknown>('/api/admin/users/' + enc(id), { method: 'PATCH', body: { disabled } }),
+
+    // ---- screen takeover ----
+    screen: async <T = ScreenStatus>(agent: string, action: 'status' | 'start' | 'observe' | 'takeover' | 'handback', opts: { keepalive?: boolean } = {}): Promise<T> => {
+      if (opts.keepalive) { // used while the page is closing: must not wait for a response
+        void f(`${base}/api/agents/${enc(agent)}/screen/${action}`, { method: 'POST', credentials: 'same-origin', keepalive: true, headers: { 'Content-Type': 'application/json' }, body: '{}' }).catch(() => {});
+        return {} as T;
+      }
+      return action === 'status' ? request<T>(`/api/agents/${enc(agent)}/screen/status`) : request<T>(`/api/agents/${enc(agent)}/screen/${action}`, { body: {} });
+    },
+    screenTicket: async (agent: string): Promise<ScreenTicket> => { const o = await request<any>(`/api/agents/${enc(agent)}/screen/observe`, { body: {} }); return { ticket: String(o.ticket), expiresInMs: Number(o.expiresInMs) || 30000 }; },
+    /** ws(s):// URL of the screen relay for a single-use ticket; follows the hub address (or the page origin). */
+    screenUrl: (agent: string, ticket: string): string => { const origin = base || location.origin; return `${origin.replace(/^http/, 'ws')}/api/agents/${enc(agent)}/screen/ws?ticket=${enc(ticket)}`; },
 
     // ---- agent registry (owner) ----
     agentKinds: async (): Promise<AgentKind[]> => parseKinds(await request('/api/agent-kinds')),
@@ -117,5 +145,6 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
   };
 }
 const enc = encodeURIComponent;
+const shareable = (o: any): Shareable => ({ link: String(o?.link ?? ''), hub: o?.hub, id: o?.id, expires: Number(o?.expires) || undefined, rows: Array.isArray(o?.rows) ? o.rows.map(String) : null });
 function contentText(c: unknown): string { if (typeof c === 'string') return c; if (Array.isArray(c)) return c.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join(''); return ''; }
 export type Client = ReturnType<typeof createClient>;

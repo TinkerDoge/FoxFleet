@@ -6,9 +6,9 @@ import androidx.compose.ui.graphics.Color
 object Tokens {
     /** Accent presets: name to (light, dark) tone. Index is what SettingsStore persists. */
     val accents: List<Triple<String, Color, Color>> = listOf(
-        Triple("Ember", Color(0xFFD9653B), Color(0xFFF08A5D)),
-        Triple("Ocean", Color(0xFF2F6FDB), Color(0xFF6EA2FF)),
-        Triple("Moss", Color(0xFF3C8C5A), Color(0xFF6CC58E)),
+        Triple("Ember", Color(0xFFBE4A21), Color(0xFFF08A5D)),
+        Triple("Ocean", Color(0xFF2A64C6), Color(0xFF6EA2FF)),
+        Triple("Moss", Color(0xFF2F7A4B), Color(0xFF6CC58E)),
         Triple("Iris", Color(0xFF7457D8), Color(0xFFA48DFF)),
         Triple("Graphite", Color(0xFF3A3A3A), Color(0xFFE6E6E6)),
     )

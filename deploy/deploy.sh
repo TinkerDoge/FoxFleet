@@ -8,6 +8,7 @@
 #   NODE / NPM        binaries                                       (default: node / npm)
 #   FOXFLEET_SKIP_WEB=1  skip the web build (when dist/ is shipped prebuilt)
 # Usage:  deploy/deploy.sh [git-ref]            deploy (default origin/main)
+#         deploy/deploy.sh --dry-run [git-ref] check prerequisites, print the plan, run the server tests on the current checkout; changes nothing
 #         deploy/deploy.sh --rollback <ref>     restore the latest pre-deploy backup and that code
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -27,6 +28,19 @@ backup_data() { # config.json (+ .bak files), accounts/, users/, inbox.json -> o
 }
 healthy() { for _ in 1 2 3 4 5 6; do sleep 2; curl -fsS "$HEALTH" >/dev/null 2>&1 && return 0; done; return 1; }
 build_web() { [ "${FOXFLEET_SKIP_WEB:-}" = 1 ] && return 0; (cd web && "$NPM" ci --no-audit --no-fund && "$NPM" run build); }
+
+if [ "${1:-}" = "--dry-run" ]; then
+  REF="${2:-origin/main}"; bad=0
+  need() { command -v "$1" >/dev/null 2>&1 && echo "ok       $1" || { echo "MISSING  $1"; bad=1; }; }
+  echo "== prerequisites"; for c in git curl tar "$NODE" "$NPM" systemctl; do need "$c"; done
+  "$NODE" -e 'process.exit(Number(process.versions.node.split(".")[0]) >= 22 ? 0 : 1)' && echo "ok       node >= 22" || { echo "WARN     node < 22 (CI and the Docker image use 22)"; }
+  [ -d "$SRC/.git" ] && echo "ok       checkout $SRC" || { echo "MISSING  git checkout at \$FOXFLEET_SRC"; bad=1; }
+  [ -d "$DATA" ] && [ -w "$DATA" ] && echo "ok       data dir is writable" || { echo "MISSING  writable data dir (\$FOXFLEET_DATA)"; bad=1; }
+  echo "== plan for $REF"; printf '  %s\n' "git fetch origin" "backup config.json* accounts/ users/ inbox.json -> $BACKUPS (0600)" "git checkout --detach $REF" "node --test server/test/*.test.js   (abort + restore on failure)" "web: npm ci && npm run build   (abort + restore on failure)" "systemctl --user restart $UNIT" "poll $HEALTH   (automatic rollback on failure)"
+  echo "== server tests on the current checkout (read-only)"; "$NODE" --test server/test/*.test.js >/tmp/foxfleet-dryrun.log 2>&1 && echo "ok       tests pass (log: /tmp/foxfleet-dryrun.log)" || { echo "FAIL     tests (see /tmp/foxfleet-dryrun.log)"; bad=1; }
+  [ "$bad" = 0 ] && echo "Dry run OK: nothing was changed." || { echo "Dry run found problems: nothing was changed."; exit 1; }
+  exit 0
+fi
 
 if [ "${1:-}" = "--rollback" ]; then
   PREV="${2:?previous git ref}"

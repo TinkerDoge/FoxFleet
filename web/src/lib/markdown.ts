@@ -6,6 +6,7 @@ const ALLOWED_LINK = /^(https?:|mailto:|#)/i;
 // Images may come from https, an inline data URL of an image, or the hub's own media routes (same origin, absolute path).
 const ALLOWED_IMG = /^(https:\/\/|data:image\/(png|jpe?g|gif|webp);base64,|\/api\/)/i;
 
+export const PROXY = '/api/media-proxy?url=';
 let hooked = false;
 function hook() {
   if (hooked) return; hooked = true;
@@ -17,7 +18,9 @@ function hook() {
     }
     if (node.tagName === 'IMG') {
       const src = node.getAttribute('src') ?? '';
-      if (!ALLOWED_IMG.test(src.trim())) node.remove?.(); else { node.setAttribute('loading', 'lazy'); node.setAttribute('referrerpolicy', 'no-referrer'); node.setAttribute('data-viewable', ''); }
+      if (!ALLOWED_IMG.test(src.trim())) node.remove?.(); else {
+        // Remote images are fetched by the hub (SSRF-checked), so the page CSP never needs img-src https: and readers' IPs stay private.
+        if (/^https:\/\//i.test(src.trim())) node.setAttribute('src', PROXY + encodeURIComponent(src.trim())); node.setAttribute('loading', 'lazy'); node.setAttribute('referrerpolicy', 'no-referrer'); node.setAttribute('data-viewable', ''); }
     }
   });
 }

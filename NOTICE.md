@@ -4,7 +4,7 @@ Foxfleet is MIT licensed. It bundles or builds against:
 
 | Component | Licence | Where |
 | --- | --- | --- |
-| noVNC | MPL-2.0 (file-level copyleft; unmodified files keep their headers) | `android/app/src/main/assets/novnc/` |
+| noVNC | MPL-2.0 (file-level copyleft; unmodified files keep their headers) | `android/app/src/main/assets/novnc/`, `web/src/vendor/novnc/` (unmodified copy, lazy-loaded by the web screen view) |
 | Preact | MIT | `web/` |
 | Vite, Vitest, TypeScript | MIT / MIT / Apache-2.0 | `web/` (build time only) |
 | Jetpack Compose, AndroidX, Media3, Coil | Apache-2.0 | `android/` |
