@@ -8,7 +8,8 @@ Unit tests and screenshot tests (Roborazzi) pass in development and the APK asse
 
 ## Get the APK
 
-- **Releases:** <https://github.com/TinkerDoge/FoxFleet/releases/latest> (file `foxfleet-<version>.apk`, with `SHA256SUMS`).
+<!-- Switch these links back to /releases/latest once a stable (non-pre-release) release exists: /latest skips pre-releases. -->
+- **Releases:** <https://github.com/TinkerDoge/FoxFleet/releases> (file `foxfleet-<version>.apk`, with `SHA256SUMS`).
 - **Build it yourself:** see [Development](/project/development). In short, with JDK 17 and the Android SDK: `cd android && ./gradlew assembleDebug`, then install `app/build/outputs/apk/debug/app-debug.apk`.
 
 Android will ask you to allow *Install unknown apps* for the app you opened the file with (browser or file manager).
