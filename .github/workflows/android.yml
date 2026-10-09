@@ -22,5 +22,7 @@ jobs:
           "$SDKMANAGER" "platforms;android-36"
       - uses: gradle/actions/setup-gradle@v4   # caches ~/.gradle between runs
       - run: ./gradlew testDebugUnitTest assembleDebug --stacktrace
+      # The screen-takeover assets (screen.html, screen.js, noVNC) must be inside the built APK.
+      - run: node ../scripts/check-android-assets.mjs --apk app/build/outputs/apk/debug/app-debug.apk
       - uses: actions/upload-artifact@v4
         with: { name: foxfleet-debug-apk, path: android/app/build/outputs/apk/debug/app-debug.apk }

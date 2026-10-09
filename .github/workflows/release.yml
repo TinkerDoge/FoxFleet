@@ -86,6 +86,8 @@ jobs:
           "$SDKMANAGER" "platforms;android-36"
           ./gradlew assembleRelease --stacktrace
           mkdir -p ../out && cp app/build/outputs/apk/release/app-release.apk "../out/foxfleet-${GITHUB_REF_NAME#v}.apk"
+          # Fail the release if the screen-takeover assets (screen.html, screen.js, noVNC) did not make it into the APK.
+          node ../scripts/check-android-assets.mjs --apk "../out/foxfleet-${GITHUB_REF_NAME#v}.apk"
           rm -f "$RUNNER_TEMP/release.jks"
       - name: Checksums (exactly the files that will be attached)
         if: steps.guard.outputs.exists == 'false'
