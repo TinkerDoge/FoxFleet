@@ -41,9 +41,13 @@ test('busy messages: Hermes acknowledgement shown as-is, Hermes drains its own q
   const queue = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; assert.equal(queue.active_run, run1); assert.ok(queue.items.some((i) => i.text === 'then bye' && i.state === 'queued' && i.ack === 'queued')); assert.equal(queue.can_cancel, false);
   assert.equal((await x.api(`${x.A}/queue/${q.body.message.id}?session_id=${sid}`, undefined, 'DELETE')).status, 409, 'cancel is disabled with a reason, not faked');
   await first.done; assert.equal(first.events.find((e) => e.event === 'foxfleet.upstream').data.state, 'completed');
-  const next = await waitFor(async () => { const r = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; return r.active_run && r.active_run !== run1 ? r : null; }, { tries: 80, ms: 100 }); assert.ok(next, 'Hermes started the queued turn itself and the hub exposes it as a run');
-  const second = x.sse(`${x.A}/runs/${next.active_run}/events`); await second.done; assert.ok(second.text.includes('w0'));
-  const after = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; assert.deepEqual(after.items.filter((i) => i.text === 'then bye'), [], 'delivered items leave the queue');
+  if (REAL) { // a real model answers "ok" at once: the queued turn can be over before we look, so check that Hermes ran it as its own turn (a second run) and the queue emptied
+    const two = await waitFor(async () => { const r = (await x.api(`${x.A}/runs?session_id=${sid}`)).body.runs; return r.length >= 2 ? r : null; }, { tries: 80, ms: 100 }); assert.ok(two, 'Hermes started the queued turn itself and the hub exposed it as a run');
+  } else {
+    const next = await waitFor(async () => { const r = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; return r.active_run && r.active_run !== run1 ? r : null; }, { tries: 80, ms: 100 }); assert.ok(next, 'Hermes started the queued turn itself and the hub exposes it as a run');
+    const second = x.sse(`${x.A}/runs/${next.active_run}/events`); await second.done; assert.ok(second.text.includes('w0'));
+  }
+  const after = await waitFor(async () => { const r = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; return r.items.some((i) => i.text === 'then bye') ? null : r; }, { tries: 60, ms: 100 }); assert.ok(after, 'delivered items leave the queue');
 });
 
 test('Stop through the usual /runs/{id}/stop ends the native turn truthfully; a second viewer keeps its own stream', async (t) => {
