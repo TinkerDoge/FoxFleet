@@ -2,7 +2,7 @@
  "openapi": "3.1.0",
  "info": {
   "title": "Foxfleet hub API",
-  "version": "0.1.0",
+  "version": "0.2.0-alpha",
   "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
   "license": {
    "name": "MIT",

@@ -2,9 +2,9 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.1.1-alpha)
+## 0.2.0-alpha: easy connect
 
-Android `versionName 0.1.1-alpha`, `versionCode 4`.
+Android `versionName 0.2.0-alpha`, `versionCode 5`.
 
 ### Added
 
@@ -12,6 +12,11 @@ Android `versionName 0.1.1-alpha`, `versionCode 4`.
 - **One connector per computer.** `foxfleet-connector` pairs once, discovers Hermes profiles (`~/.hermes`, `profiles/<id>`), lets you choose them (checklist, `--all`, `--profiles a,b`), registers each as an agent and multiplexes them over one outbound WebSocket. `--install-service` for systemd (user), launchd and a Windows scheduled task, with `uninstall-service`.
 - **Machines.** `GET/POST /api/machines…` (pairing create/status, redeem, list, rename, revoke, rotate); the hub keeps only a token hash; revoke removes the machine's agents. Manage › Machines lists status, profiles and last seen.
 - Dashboard passwords and chat API keys of machine agents are read locally by the connector and never sent to the hub.
+
+### Documentation and legal
+
+- README, docs home and pages use real screenshots of the web and Android apps (rebuild with `design/tools/make-readme-images.py`); the old drawn placeholders and the placeholder funding links are gone.
+- Terms of Use, User Agreement and Privacy Policy templates ship with the release (still pending legal review).
 
 ### Changed
 
