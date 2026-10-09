@@ -14,9 +14,9 @@ with sync_playwright() as p:
     for tag, (w, h, mobile, scheme) in {'desktop': (1280, 800, False, 'light'), 'phone': (390, 844, True, 'dark')}.items():
         c = b.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme, device_scale_factor=2 if mobile else 1, is_mobile=mobile, has_touch=mobile); pg = c.new_page(); login(pg)
         pg.goto(U + '#/chat?agent=atlas'); pg.wait_for_selector('.chat'); time.sleep(.4)
-        pg.click('button:has-text("History")'); pg.wait_for_selector('.session-list li'); time.sleep(.3); shot(pg, f'01-history-{tag}')
-        pg.click('.session-open >> nth=2'); pg.wait_for_selector('.md img, .md pre', timeout=10000); time.sleep(.8); shot(pg, f'02-old-conversation-{tag}')
-        pg.fill('textarea', '/'); pg.wait_for_selector('[role=listbox], .suggestions'); time.sleep(.3); shot(pg, f'03-commands-{tag}')
+        pg.click('button:has-text("History")'); pg.wait_for_selector('.session-row'); time.sleep(.3); shot(pg, f'01-history-{tag}')
+        pg.keyboard.press('ArrowDown'); pg.keyboard.press('ArrowDown'); time.sleep(.2); shot(pg, f'01b-history-keyboard-focus-{tag}'); pg.click('.session-open >> nth=2'); pg.wait_for_selector('.md img, .md pre', timeout=10000); time.sleep(.8); shot(pg, f'02-old-conversation-{tag}')
+        pg.fill('textarea', 'half-written follow-up'); time.sleep(.2); shot(pg, f'02b-draft-kept-{tag}'); pg.fill('textarea', '/'); pg.wait_for_selector('[role=listbox], .suggestions'); time.sleep(.3); shot(pg, f'03-commands-{tag}')
         pg.fill('textarea', '/mo'); time.sleep(.3); shot(pg, f'04-commands-filtered-{tag}')
         c.close()
     b.close()
