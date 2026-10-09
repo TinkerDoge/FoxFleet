@@ -3,15 +3,34 @@
 Researched 9 October 2026. Scope: research and a build plan; application code is unchanged.
 FoxFleet inspected at commit `f6be528b8dd2cce321e90ca31f46aeba0a0892d3`.
 Upstream sources below refer to the current Hermes documentation and `main`, which can change.
-This is source-level research, without a live Hermes or Telegram integration test.
+This is source-level research, without a live Hermes, Telegram, or Discord integration test.
 
 FoxFleet can provide both requested experiences: clickable slash-command choices and a composer
-that accepts messages while an agent works. Reuse its generated command catalog and resumable
-run infrastructure. Add command argument menus, a server-owned message coordinator, and an
-adapter for Hermes's native run controls.
+that accepts messages while an agent works. For the fuller Telegram/Discord experience, prefer
+Hermes's native UI gateway JSON-RPC protocol. Reuse FoxFleet's connector, authentication, and
+event replay; add native session controls and interactive cards. The HTTP run API described
+below remains a fallback for installations that expose only the API server.
 
 “Grokbot” is ambiguous. The provider comparison below covers FoxFleet's existing `grok`/xAI
 connection. A separate bot or agent harness needs its own capability check.
+
+## Why Telegram and Discord feel integrated
+
+Hermes runs a persistent messaging gateway. Platform adapters translate incoming updates into
+shared messages, then the gateway handles authorization, session routing, command dispatch,
+and the agent lifecycle. Replies return through the adapter. SQLite retains conversation
+history, and routing distinguishes profiles, chats, users, and threads.
+[Source: gateway internals](https://hermes-agent.nousresearch.com/docs/developer-guide/gateway-internals/).
+
+The platform adapters also implement the platform's interaction widgets. Telegram uses its
+command menu and callback buttons. Discord registers native application commands, including
+skills, and its model picker uses provider and model dropdowns. Discord supports attachments
+and configurable tool progress messages, making agent work visible in the conversation.
+[Source: Discord integration](https://hermes-agent.nousresearch.com/docs/user-guide/messaging/discord/).
+
+These are three cooperating layers: a native platform UI, a session and interaction dispatcher,
+and the full agent runtime. FoxFleet currently exposes less of that runtime through its chat
+transport. Matching the experience requires connecting controls and feedback as well as text.
 
 ## How Hermes builds the menus
 
@@ -85,7 +104,92 @@ between Telegram and the API.
 [Source: busy-session coordinator](https://github.com/NousResearch/hermes-agent/blob/main/gateway/run_busy.py),
 [source: HTTP run handlers](https://github.com/NousResearch/hermes-agent/blob/main/gateway/platforms/api_server_runs.py).
 
-## The integration FoxFleet can use
+## Preferred integration for the full experience: native UI gateway
+
+Hermes explicitly recommends its TUI gateway JSON-RPC protocol for custom web and desktop
+hosts needing sessions, slash commands, approvals, and fine-grained streaming. It works over
+stdio or WebSocket and drives the same agent core as the other integration protocols.
+
+| FoxFleet feature | Native operation |
+| --- | --- |
+| Discover executable commands | `commands.catalog`, `command.resolve` |
+| Execute a slash command | `command.dispatch` |
+| Submit a conversation message | `prompt.submit` |
+| Guide or stop active work | `session.steer`, `session.interrupt` |
+| Discover model choices | `model.options` |
+| Reattach and restore state | `session.resume`, `session.activate`, `session.events.since` |
+
+[Source: programmatic integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration).
+
+The native busy-submit path already handles queue, steer, and interrupt modes. A correction
+can redirect the active turn; payloads that cannot be steered may queue. FoxFleet should
+report the actual acknowledgement rather than predicting which path ran. Let Hermes schedule
+accepted turns; do not also drain a duplicate hub queue for those same messages.
+[Source: native busy-submit coordinator](https://github.com/NousResearch/hermes-agent/blob/main/tui_gateway/session_auto_continue.py).
+
+Approvals and clarification questions are server-to-client JSON-RPC **requests**, carrying an
+ID. Render them as cards and send a response with the same ID. After readiness, advertise
+`client.capabilities` with `server_requests: true` once the bridge handles this path. Unsupported
+request kinds must receive an error instead of waiting indefinitely. A `request.cancel`
+notification removes the matching card; unanswered requests return in reconnect snapshots.
+[Source: server request protocol](https://github.com/NousResearch/hermes-agent/blob/main/tui_gateway/server_requests.py).
+
+Restore history together with `inflight`, `queued`, and `open_requests` from native snapshots.
+The partial answer, pending question, and run status are essential reconnect state, beyond
+simply replaying tokens. Keep their upstream identities when normalizing the hub stream.
+[Source: native session snapshots](https://github.com/NousResearch/hermes-agent/blob/main/tui_gateway/server.py).
+
+### Proposed FoxFleet bridge
+
+```mermaid
+flowchart LR
+    W[FoxFleet Web / Android] <-->|Actions and events| H[Hub: ownership, journal, replay]
+    H <-->|Existing reverse tunnel| C[Machine connector: Hermes bridge]
+    C <-->|JSON-RPC| G[Hermes UI gateway for selected profile]
+    G --> A[Agent: tools, memory, native turn scheduling]
+```
+
+Use a hub adapter to validate actions, map session IDs, persist submission status, translate
+events, and fan updates out to devices. The machine connector owns the local transport and
+keeps credentials on the machine. The clients render command menus, tool cards, approval
+questions, and conversation state from that common contract.
+
+There are two deployment candidates to validate on the installed Hermes version:
+
+- Attach to an existing authenticated dashboard gateway over WebSocket when its profile and
+  identity match. The upstream dashboard uses `/api/ws`; its handshake has a separate auth
+  path, and profile-scoped chats may spawn a different gateway. A working dashboard HTTP
+  proxy alone does not prove this attach will work for every profile.
+  [Source: dashboard gateway attachment](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/web_server_chat.py).
+- Have the connector own a long-lived stdio gateway in the selected Hermes environment and
+  profile. This needs connector lifecycle support; the present connector does not already
+  implement a Hermes subprocess bridge.
+
+Keep one runtime owner per active session. Reattaching a browser or phone must subscribe to
+that owner rather than start another agent. Native transport membership adds subscribers
+without replacing the existing viewer. FoxFleet must enforce account ownership before attach;
+upstream transport membership itself only logs a foreign-login attachment.
+[Source: shared-session transports](https://github.com/NousResearch/hermes-agent/blob/main/tui_gateway/session_transports.py).
+
+Independent gateway processes cannot jointly own one live session. Durable transcripts do
+not guarantee prompt admission survives owner restart.
+[Source: programmatic integration](https://hermes-agent.nousresearch.com/docs/developer-guide/programmatic-integration).
+
+Consequently, persist a FoxFleet admission journal with the hub message ID, profile, durable
+session key, live runtime ID, upstream acknowledgement, and observed transcript/event IDs.
+After a lost acknowledgement or owner restart, reconcile before resubmitting; never promise
+exactly-once execution from a local journal alone. Keep uncertain messages visible.
+
+Exposing the protocol also exposes administrative operations. The hub must allow only the
+methods and commands authorized for that account/profile. It should not relay arbitrary
+RPC frames such as `cli.exec` from a browser. Initially support chat, session lifecycle,
+command dispatch under an allowlist, model choices, approvals, and clarification.
+
+This bridge provides comparable controls inside FoxFleet. It does not automatically merge
+FoxFleet's live sessions with sessions owned by Hermes's separate Telegram/Discord gateway.
+Cross-channel sharing needs an explicit ownership, routing, and handoff design.
+
+## HTTP run API fallback
 
 Current Hermes advertises these native features through `GET /v1/capabilities`:
 `run_submission`, `run_status`, `run_events_sse`, `run_steer`, and `run_stop`.
@@ -128,13 +232,13 @@ that the same command executes through FoxFleet's HTTP chat transport.
 | Android completion | [Commands.kt](../android/app/src/main/java/dev/foxfleet/app/ui/chat/Commands.kt) flattens definitions into suggestions and ignores `subcommands` | Keep definitions and add the same argument menu behavior |
 | Busy composer | Web `canSend` requires `!streaming`; [ChatScreen.kt](../android/app/src/main/java/dev/foxfleet/app/ui/screens/ChatScreen.kt) has the same restriction | Keep Send available during a run, alongside Stop |
 | Web sending | [store.ts](../web/src/chat/store.ts) returns immediately when already streaming | Dispatch busy input through a coordinator and guard callbacks by run/session |
-| Upstream chat | [index.js](../server/index.js) uses Hermes `/v1/chat/completions`; `/commands` returns the bundled list | Add a native Hermes run adapter and an explicit command dispatcher |
+| Upstream chat | [index.js](../server/index.js) uses Hermes `/v1/chat/completions`; `/commands` returns the bundled list | Add the native Hermes UI bridge, live catalog, and explicit command dispatch |
 | Run lifecycle | [runs.js](../server/runs.js) buffers SSE and detaches disconnected clients; Stop aborts upstream HTTP | Track native upstream IDs and acknowledgements; add session coordination |
 
 The catalog currently marks `/steer` and `/queue` as `chat`, while `/busy` is unavailable because
 it needs a terminal. These labels describe the generated catalog, not proven command execution
-over the connected API. FoxFleet should implement its own busy controls and map supported
-commands to verified operations.
+over the connected transport. Use the live catalog and verified native operations where
+available; keep local FoxFleet controls explicit.
 
 ## Proposed behavior
 
@@ -145,13 +249,14 @@ required text keeps focus in the composer.
 
 While an agent runs, keep the text field, Send, and Stop available. Show a small Send mode
 selector: **Steer**, **Queue**, or **Interrupt & send**, restricted to supported actions.
-Save the choice per conversation. For the Telegram-style default requested here, choose
-Interrupt & send; offer Steer for corrections that should preserve ongoing tool work.
+For the Telegram-style default requested here, choose Interrupt & send; offer Steer for
+corrections that should preserve ongoing tool work. Verify the native mode-setting scope before
+offering a per-conversation setting: do not silently change another session's profile default.
 
 For Hermes's HTTP adapter, Interrupt & send means an explicit stop request followed by a new
 run after termination. This is stronger than Telegram's newer active-turn redirect. Label the
-behavior clearly; native same-turn redirect parity would require another verified transport
-or an upstream API extension. Do not silently substitute Stop for Steer.
+behavior clearly. The preferred native UI protocol can route a busy prompt to active-turn
+redirect instead. Do not silently substitute Stop for Steer.
 
 Persist incoming messages before acknowledging them. Display whether each is queued, accepted
 as guidance, or awaiting cancellation. “Guidance accepted” must not become “Guidance consumed”
@@ -162,11 +267,13 @@ flowchart LR
     C[Web / Android / optional Telegram] --> A[Authenticate and deduplicate input]
     A --> D[Command and message dispatcher]
     D --> S[Coordinator for user + agent + session]
-    S --> Q[Persist next-turn queue]
-    S --> G[Steer active run]
-    S --> I[Stop, await termination, then start]
+    S --> R[Native UI dispatch: Hermes schedules turns]
+    S --> Q[HTTP fallback: persist next-turn queue]
+    S --> G[HTTP fallback: steer active run]
+    S --> I[HTTP fallback: stop, await, then start]
     S --> N[Start idle conversation turn]
     G --> H[Provider adapter]
+    R --> H
     I --> H
     N --> H
     Q --> N
@@ -174,23 +281,31 @@ flowchart LR
     E --> C
 ```
 
-The coordinator lives on the hub so two browser tabs, a phone, and a future Telegram adapter
-share one ordering policy. Control requests must remain responsive while the worker runs;
-do not hold a session lock across the entire agent execution.
+Admission, ownership, and the journal live on the hub so two browser tabs and a phone share
+one policy. Native turn scheduling stays in Hermes; HTTP fallback scheduling stays in the
+hub. Control requests must remain responsive while the worker runs; do not hold a session
+lock across the entire agent execution.
 
 ## Build order
 
 ### 1. Establish a truthful capability and command contract
 
-Extend agent capabilities with supported busy modes and native run controls. Probe Hermes
-through [hermes.js](../server/hermes.js), using the saved profile and the existing connector.
+First prove one end-to-end native UI connection through the connector: create/resume a
+session, submit a message, send a correction during work, answer a clarification/approval,
+and reconnect without launching a duplicate turn. Validate authentication, profile selection,
+and the installed protocol version before expanding the UI.
+
+Extend agent capabilities with supported busy modes, interactive request types, command
+dispatch, and reconnect support. Probe Hermes through [hermes.js](../server/hermes.js), using
+the saved profile and the existing connector; negotiate the native gateway capabilities.
 Retain the generated catalog as an offline fallback, but filter executable commands by adapter
 support. Add an explicit handler/action field and busy policy to the hub catalog.
 
-Route `/stop`, `/queue`, `/steer`, and `/busy` through hub operations. Keep free-text skill
+Route `/stop`, `/queue`, `/steer`, and `/busy` through verified adapter operations. Keep free-text skill
 invocations distinct from administrative commands. Commands without a verified execution
-route should be disabled with a useful reason. For `/model`, investigate the documented
-`/api/model/options` surface and confirm its session mutation route before offering a switch.
+route should be disabled with a useful reason. For the UI protocol, use `model.options` and
+native command dispatch for `/model`; check busy restrictions and successful mutation.
+For an HTTP-only connection, verify its model mutation route separately.
 
 ### 2. Add command submenus to both clients
 
@@ -202,9 +317,15 @@ accessible scrollable list. Feed the web composer the hub catalog already expose
 
 This stage can ship independently for commands that already execute locally.
 
-### 3. Bridge Hermes native runs
+### 3. Bridge native sessions, events, and interactive requests
 
-Use the native run API when capability detection permits it. Keep a hub run ID mapped to the
+Implement the UI protocol adapter with correlation IDs for client calls and server questions.
+Translate structured events and snapshots into a versioned FoxFleet contract. Keep session,
+turn, message, tool, and request identities distinct. Add approval and clarification cards
+to both clients; persist their current state and clear only the matching cancelled request.
+Do not advertise handlers that cannot return a valid response.
+
+For the HTTP fallback, use the native run API when capability detection permits it. Keep a hub run ID mapped to the
 upstream run ID, profile, session, and cursor. Normalize structured upstream events into a
 stable FoxFleet stream instead of passing them to the current OpenAI-chunk parser unchanged.
 Keep commentary distinct from final output and honor `already_streamed` to avoid duplicate text.
@@ -213,14 +334,17 @@ Make explicit Stop invoke upstream Stop and report `stopping` until termination 
 Closing a browser stream remains a detach operation. Preserve replay, errors, and session
 continuity. Add a bounded recovery path when the upstream event log has truncated.
 
-### 4. Add the hub message coordinator
+### 4. Add hub admission and recovery; schedule HTTP fallbacks
 
-Introduce a bounded FIFO queue and stable message IDs for each `(user, agent, session)`.
+Introduce stable message IDs and an admission journal for each `(user, agent, session)`.
 Persist submissions and run mappings before acknowledgement; use idempotent admission for
-retryable creates. A short admission lock orders requests, while a separate control path
-reaches the active run immediately.
+retryable creates where upstream supports it. A short admission lock orders requests, while
+a separate control path reaches the active session immediately. For UI-protocol sessions,
+delegate busy input to Hermes and mirror acknowledgements and queue state. Reconcile uncertain
+submissions after reconnect or owner restart instead of blindly repeating them.
 
-Steer calls the adapter's control operation. Queue schedules the next turn. Interrupt & send
+For HTTP-only adapters, maintain a bounded FIFO queue. Steer calls the adapter's control
+operation. Queue schedules the next turn. Interrupt & send
 requests Stop, waits for confirmed termination, then starts the replacement in the same
 conversation. A failed Stop leaves the replacement pending with a visible error. Additional
 messages arriving during cancellation stay ordered rather than launching parallel writers.
@@ -235,14 +359,15 @@ callbacks belonging to a different session or obsolete run.
 
 Preserve partial assistant output with an interrupted status, submitted messages, attachment
 references, and unsent drafts. Restore queue and mode state after navigation, reconnection,
-or a hub restart. If a run is waiting for approval, keep new input queued unless the user
-explicitly stops it; native steering is unavailable in that state.
+or a hub restart. If a run is waiting for a question, use the native adapter's supported busy
+behavior and keep the answer card available. The HTTP adapter cannot steer every waiting state.
 
 ### 6. Support other providers honestly
 
 | Connection | Initial supported behavior |
 | --- | --- |
-| Hermes with native run controls | Queue, native Steer, Stop, and stop-then-start interruption |
+| Hermes native UI protocol | Native command dispatch, queue/steer/redirect busy input, Stop, interactive questions, session restoration |
+| Hermes HTTP native run controls | Queue, native Steer, Stop, and stop-then-start interruption |
 | Older Hermes | Queue; transport-abort interruption only after validating that version's behavior |
 | FoxFleet Grok/OpenAI-compatible providers | Queue and abort/resubmit using updated history |
 | MCP inbox | Message delivery; no runtime interruption without an acknowledgement protocol |
@@ -253,7 +378,7 @@ that xAI accepts Hermes-style mid-request steering or guarantees remote computat
 when an HTTP stream closes.
 [Source: xAI streaming documentation](https://docs.x.ai/developers/model-capabilities/text/streaming).
 
-### 7. Add an actual Telegram adapter if desired
+### 7. Add actual Telegram and Discord channels if desired
 
 Reuse the hub dispatcher, permissions, queue, and adapters. Register the command list; build
 reply-button submenus only where they help. Acknowledge inbound updates promptly, deduplicate
@@ -261,13 +386,25 @@ update IDs, and bind callback actions to the user and conversation that opened t
 Keep long-running work separate from receiving updates. This is a later channel integration,
 not a prerequisite for the web/Android UX.
 
+For Discord, register application commands and use buttons/dropdowns for action cards.
+Receive message and interaction events independently of agent execution, acknowledge
+interactions promptly, and preserve channel/thread/user scope. Route both channels through
+the same hub ownership and native bridge so they operate on the intended live session.
+Hermes's existing messaging gateway remains a separate deployment unless an explicit
+cross-channel handoff or adapter integration is built.
+
 ## Validation required before release
 
 Extend the existing command, composer, run, and contract tests with observable behaviors:
 
 - `/busy ` opens choices; `/busy st` filters correctly; aliases and free-text skill arguments work.
 - A message sent while busy reaches the hub and remains visible while the existing reply streams.
-- Ten queued messages retain order across reconnects, two devices, and a hub restart.
+- Native busy input reports whether it was steered, redirected, or queued; tool execution and
+  non-steerable attachments follow the native result rather than a frontend prediction.
+- Queued messages retain order across reconnects and two devices; owner/hub restart reconciles
+  the journal without silently losing input or blindly launching duplicate turns.
+- Approval and clarification requests render, respond once, cancel by ID, and return after reconnect.
+- A second device attaches to the same live owner; its disconnect does not cancel another viewer's run.
 - A late accepted steer returned as `pending_steer` survives and is replayed once; 409 responses
   preserve the submitted text.
 - Interrupt & send waits for termination; failed cancellation never launches a second writer.
@@ -276,6 +413,6 @@ Extend the existing command, composer, run, and contract tests with observable b
 - Wrong-user/profile controls fail; unsupported commands and Steer remain unavailable.
 - Detaching a client keeps work alive, with cursor replay and truncation recovery intact.
 
-Follow with a live Hermes check through both direct and connector connections, a Telegram
-menu/callback smoke test if that adapter is built, and a Grok stream cancellation/resubmit
+Follow with a live Hermes UI-protocol check through the connector and an HTTP fallback check,
+Telegram/Discord menu and callback smoke tests if those adapters are built, and a Grok stream cancellation/resubmit
 check. Documentation and source inspection alone do not establish those runtime guarantees.
