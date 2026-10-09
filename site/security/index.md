@@ -39,6 +39,5 @@ Foxfleet holds API keys and can drive agents (and desktops) on your machines. It
 - Android builds are debug-signed; no release keystore; no store listing.
 - No audit log of admin actions.
 - Secrets at rest are protected by file permissions, not encrypted.
-- AI-generated brand art: copyright protection may be limited ([credits](/support#credits)).
 
 Details: [Authentication](./auth) · [Secrets and privacy](./secrets) · [Media proxy](./media-proxy) · [Takeover safeguards](./takeover) · [Reporting](./reporting).

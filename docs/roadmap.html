@@ -17,31 +17,31 @@
   ],
   "timeline": [
     {
-      "v": "pre-rename 0.1",
+      "v": "0.1",
       "what": "Web Mission Control: hub relays chat, sessions, skills, cron, files and logs for Hermes agents; owner password; zero dependencies."
     },
     {
-      "v": "pre-rename 0.2",
+      "v": "0.2",
       "what": "Android app: calm light/dark look, agents list, streaming chat, drawer with sessions, settings, shared-element and predictive-back motion."
     },
     {
-      "v": "pre-rename 0.3",
+      "v": "0.3",
       "what": "Markdown replies, send images, media viewer, slash commands and skills, voice input, custom avatars."
     },
     {
-      "v": "pre-rename 0.4",
+      "v": "0.4",
       "what": "File attach (90 MB streamed), agent desktop screen with takeover and hand-back, Scribe inbox over MCP, OpenAI-compatible bridge, brand set."
     },
     {
-      "v": "pre-rename 0.5",
+      "v": "0.5",
       "what": "Data-driven agent registry and in-app agent management, write-only secrets, privacy contract (no hosts, IPs or URLs to clients), wooden-fox brand."
     },
     {
-      "v": "pre-rename 1.0-alpha1",
+      "v": "1.0-alpha1",
       "what": "Plugin core and config v3 (OpenRouter, Z.ai, OpenCode, Grok), multi-user accounts and login gate, first-launch hub address, multi-hub, reverse Hermes connector."
     },
     {
-      "v": "pre-rename 1.0-alpha2",
+      "v": "1.0-alpha2",
       "what": "Screen takeover through the connector, QR pairing, owner Admin screen (registration, invites, people), real hosts scrubbed from the repo, v1 deploy script, this page."
     },
     {
@@ -135,11 +135,6 @@
       "text": "PWA shell worker and accessibility checklist done; axe in CI and screen-reader pass remain"
     },
     {
-      "id": "n7",
-      "col": "Next",
-      "text": "Cut over the maintainer's own hub (see MIGRATING.md)"
-    },
-    {
       "id": "l1",
       "col": "Later",
       "text": "TOTP two-factor"
@@ -177,8 +172,7 @@
     "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",
     "Google code scanner needs Play services; without it the user types the address.",
     "Z.ai Coding Plan keys are for supported coding tools only; the app warns and defaults to the general endpoint.",
-    "Android builds are debug-signed; no release keystore yet.",
-    "AI-generated brand art: copyright protection may be limited."
+    "Android builds are debug-signed; no release keystore yet."
   ],
   "providers": [
     {
@@ -228,7 +222,6 @@
     }
   ],
   "deploy": [
-    "Read MIGRATING.md if you are moving an old AgentsHub install; otherwise start with INSTALL.md.",
     "Copy deploy/deploy.local.env.example to deploy/deploy.local.env (gitignored) and fill in this host's paths.",
     "Run deploy/deploy.sh: it backs up data, runs hub tests, builds the web app, restarts, checks health, and rolls back on failure.",
     "First run: create the owner with the setup code from the log (or FOXFLEET_PASSWORD once, then remove it).",
@@ -248,10 +241,6 @@
     {
       "title": "Connect an agent",
       "file": "CONNECT-AGENT.md"
-    },
-    {
-      "title": "Migrating from AgentsHub",
-      "file": "../MIGRATING.md"
     },
     {
       "title": "README",

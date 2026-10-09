@@ -11,7 +11,7 @@ Unit tests and screenshot tests (Roborazzi) pass in development and the APK asse
 - **Releases:** <https://github.com/TinkerDoge/FoxFleet/releases> (placeholder until the first release is published).
 - **Build it yourself:** see [Development](/project/development). In short, with JDK 17 and the Android SDK: `cd android && ./gradlew assembleDebug`, then install `app/build/outputs/apk/debug/app-debug.apk`.
 
-Android will ask you to allow *Install unknown apps* for the app you opened the file with (browser or file manager). An older AgentsHub app with the old id can stay installed next to it.
+Android will ask you to allow *Install unknown apps* for the app you opened the file with (browser or file manager).
 
 ## Connect to your hub
 

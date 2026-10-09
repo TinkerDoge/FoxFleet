@@ -2,7 +2,7 @@
 
 The Foxfleet mascot is a hand-carved-wood style fox head ("W3").
 
-**Provenance:** AI-generated. The first concept (W1) came from ChatGPT image generation; the published variation (W3) was generated with Grok Imagine (Quality, 1:1) using W1 as a style reference. The prompt is in `prompt-W3.txt`. The raw output was cut out locally (rembg + closed-form alpha matting) and sized into an Android adaptive-icon foreground. No third-party artwork was used as input. Because the image is AI-generated, copyright protection may be limited in some jurisdictions; it is offered under the MIT licence regardless.
+**Credit:** Mascot and brand artwork © 2026 Shibe De Doge, included under the MIT licence unless noted.
 
 | File | Use |
 | --- | --- |

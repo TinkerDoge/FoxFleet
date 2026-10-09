@@ -49,6 +49,7 @@ export default defineConfig({
         { text: 'Changelog', link: '/project/changelog' },
         { text: 'Contributing', link: '/project/contributing' },
         { text: 'FAQ and troubleshooting', link: '/faq' },
+        { text: 'Legal: terms and privacy', link: '/legal/' },
         { text: 'Support and credits', link: '/support' },
       ] },
     ],
@@ -76,7 +77,6 @@ export default defineConfig({
         { text: 'Backups and restore', link: '/hosting/backups' },
         { text: 'Upgrading and rollback', link: '/hosting/upgrading' },
         { text: 'Resource sizing', link: '/hosting/sizing' },
-        { text: 'Migrating from AgentsHub', link: '/hosting/migrating' },
       ] }],
       '/agents/': [{ text: 'Onboarding agents', items: [
         { text: 'Overview', link: '/agents/' },
@@ -116,6 +116,12 @@ export default defineConfig({
         { text: 'Error codes', link: '/reference/errors' },
         { text: 'Environment variables', link: '/hosting/environment' },
       ] }],
+      '/legal/': [{ text: 'Legal', items: [
+        { text: 'Overview', link: '/legal/' },
+        { text: 'Terms of Use', link: '/legal/terms' },
+        { text: 'User Agreement', link: '/legal/user-agreement' },
+        { text: 'Privacy Policy', link: '/legal/privacy' },
+      ] }],
       '/project/': [{ text: 'Project', items: [
         { text: 'Roadmap', link: '/project/roadmap' },
         { text: 'Changelog', link: '/project/changelog' },
@@ -126,7 +132,7 @@ export default defineConfig({
         { text: 'Release process', link: '/project/release' },
       ] }],
     },
-    footer: { message: 'MIT licensed. Free software with optional tips.', copyright: 'Foxfleet contributors' },
+    footer: { message: 'MIT licensed. <a href="/FoxFleet/legal/terms">Terms</a> · <a href="/FoxFleet/legal/privacy">Privacy</a> · <a href="/FoxFleet/legal/user-agreement">User Agreement</a>', copyright: 'Foxfleet contributors' },
     outline: { level: [2, 3] },
   },
 });

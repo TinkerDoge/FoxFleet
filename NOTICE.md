@@ -86,6 +86,6 @@ Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-
 
 Nunito (SIL OFL 1.1) is used only to render the wordmark PNGs at design time (`design/tools/make-wordmarks.py`); the font file is not included.
 
-## Brand images (AI-generated)
+## Brand artwork
 
-The wooden fox mascot in `design/brand/` and the Android drawables was **generated with AI image tools** (ChatGPT image generation for the first concept, Grok Imagine for the final variation) and post-processed locally. It is published under the same MIT licence as the code. See `design/brand/README.md`.
+Mascot and brand artwork © 2026 Shibe De Doge, included under the MIT licence unless noted.

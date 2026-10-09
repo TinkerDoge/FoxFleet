@@ -28,6 +28,6 @@ Foxfleet is released under the **MIT licence** ([`LICENSE`](https://github.com/T
 
 Built by the Foxfleet contributors. Thanks to the authors of the libraries above and to noVNC for the remote screen.
 
-### AI-art disclosure
+### Artwork
 
-The wooden-fox mascot and the app icon are **AI-generated**: the first concept came from ChatGPT image generation and the published variation (W3) from Grok Imagine, using the first image as a style reference. No third-party artwork was used as input; the prompt is in `design/brand/prompt-W3.txt`. Because the images are AI-generated, copyright protection may be limited in some jurisdictions; they are offered under the MIT licence regardless. The wordmark uses the Nunito typeface (SIL OFL), which is **not** bundled in the repository.
+Mascot and brand artwork © 2026 Shibe De Doge, included under the MIT licence unless noted. The wordmark uses the Nunito typeface (SIL OFL), which is **not** bundled in the repository.

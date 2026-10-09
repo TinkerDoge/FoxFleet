@@ -225,9 +225,9 @@ Foxfleet is free and MIT licensed. If it saves you time you can chip in; these l
 
 Stars, bug reports and pull requests help just as much.
 
-## About the artwork (AI-generated)
+## Artwork
 
-The wooden-fox mascot, app icon and wordmark are **AI-generated images** (ChatGPT image generation for the first concept, Grok Imagine for the final variation), post-processed locally, and published under the repository's MIT licence. Details: [design/brand/README.md](design/brand/README.md).
+Mascot and brand artwork © 2026 Shibe De Doge, included under the MIT licence unless noted.
 
 ## Licence
 
