@@ -5,7 +5,7 @@
 //   reference/errors.md         <- fault(status, 'message') calls in server/*.js
 //   project/roadmap.md          <- JSON block in docs/roadmap.html
 // All outputs are gitignored.
-import { readFileSync, writeFileSync, readdirSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -106,4 +106,7 @@ r += `## Status board\n\n`;
 for (const col of ['Done', 'In progress', 'Next', 'Later']) { const items = rm.board.filter((i) => i.col === col); r += `### ${col}\n\n${items.length ? items.map((i) => `- ${i.text}`).join('\n') : '- (nothing)'}\n\n`; }
 r += `## Known limitations\n\n${rm.limits.map((x) => `- ${x}`).join('\n')}\n\n## Provider matrix\n\n| Provider | Auth | Status |\n| --- | --- | --- |\n${rm.providers.map((p) => `| ${esc(p.name)} | ${esc(p.auth)} | ${esc(p.status)} |`).join('\n')}\n\n## Deploy checklist\n\n${rm.deploy.map((x) => `1. ${x}`).join('\n')}\n`;
 out('project/roadmap.md', r);
+// Licence text for the bundled Inter font, published with the site.
+mkdirSync(resolve(site, 'public/licenses'), { recursive: true });
+copyFileSync(resolve(root, 'LICENSES/Inter-OFL-1.1.txt'), resolve(site, 'public/licenses/Inter-OFL-1.1.txt'));
 console.log('docs: generated tokens css, api, environment, errors, roadmap');

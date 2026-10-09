@@ -7,9 +7,11 @@ import { join, dirname } from 'node:path'; import { fileURLToPath } from 'node:u
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const lic = (j) => (typeof j.license === 'string' ? j.license : j.license?.type ?? j.licenses?.map((l) => l.type).join(' OR ') ?? 'UNKNOWN');
 const pkg = JSON.parse(readFileSync(join(root, 'web/package.json'), 'utf8'));
-const npmRow = (n, where) => { const p = join(root, 'web/node_modules', n, 'package.json'); if (!existsSync(p)) throw new Error(`install web deps first (missing ${n})`); const j = JSON.parse(readFileSync(p, 'utf8')); return `| ${n} ${j.version} | ${lic(j)} | ${where} |`; };
+const npmRow = (n, where, dir = 'web') => { const p = join(root, dir, 'node_modules', n, 'package.json'); if (!existsSync(p)) throw new Error(`install ${dir} deps first (missing ${n})`); const j = JSON.parse(readFileSync(p, 'utf8')); return `| ${n} ${j.version} | ${lic(j)} | ${where} |`; };
 const runtime = Object.keys(pkg.dependencies).sort().map((n) => npmRow(n, '`web/` (bundled into the web app)'));
 const dev = Object.keys(pkg.devDependencies).sort().map((n) => npmRow(n, '`web/` (build/test time only, not shipped)'));
+// Documentation site (site/, VitePress): what its built output (site/.vitepress/dist) contains.
+const docsBundled = ['vitepress', 'vue', '@vueuse/core', '@vueuse/integrations', 'focus-trap', 'tabbable', 'minisearch', 'mark.js', '@docsearch/css'].map((n) => npmRow(n, '`site/` (bundled into the documentation site)', 'site'));
 const toml = readFileSync(join(root, 'android/gradle/libs.versions.toml'), 'utf8');
 const versions = Object.fromEntries([...toml.matchAll(/^(\w+) = "([^"]+)"/gm)].map((m) => [m[1], m[2]]));
 const libs = [...toml.matchAll(/^([\w-]+) = \{ group = "([^"]+)", name = "([^"]+)"(?:, version(?:\.ref)? = "([^"]+)")? \}/gm)].map((m) => ({ group: m[2], name: m[3], version: versions[m[4]] ?? m[4] ?? '(BOM)' }));
@@ -53,6 +55,17 @@ ${android.join('\n')}
 
 Notes: the ML Kit / Play services code scanner is **not** redistributed in this repo; Google Play services provides it at runtime under Google's
 terms (ML Kit Terms of Service / Android SDK Licence as reported by the artefact POMs).
+
+## Documentation site (\`site/\`, published to GitHub Pages)
+
+The site is built with VitePress. Its output bundles the packages below (all resolved from \`site/package-lock.json\`); the site makes **no third-party requests** at runtime (no CDN fonts, analytics or icon services).
+
+| Package | Licence | Where |
+| --- | --- | --- |
+${docsBundled.join('\n')}
+| Inter (14 \`.woff2\` files, shipped inside VitePress's default theme and copied to the site output) | SIL OFL 1.1, Copyright (c) 2016 The Inter Project Authors | \`site/.vitepress/dist/assets/inter-*.woff2\`; full licence text in \`LICENSES/Inter-OFL-1.1.txt\` (also published at \`/licenses/Inter-OFL-1.1.txt\` on the site) |
+
+Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-it and friends) are not shipped in the output.
 
 ## Fonts
 

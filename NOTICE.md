@@ -63,6 +63,25 @@ Vite bundles only the runtime packages above into `web/dist`; none of the build 
 Notes: the ML Kit / Play services code scanner is **not** redistributed in this repo; Google Play services provides it at runtime under Google's
 terms (ML Kit Terms of Service / Android SDK Licence as reported by the artefact POMs).
 
+## Documentation site (`site/`, published to GitHub Pages)
+
+The site is built with VitePress. Its output bundles the packages below (all resolved from `site/package-lock.json`); the site makes **no third-party requests** at runtime (no CDN fonts, analytics or icon services).
+
+| Package | Licence | Where |
+| --- | --- | --- |
+| vitepress 1.6.4 | MIT | `site/` (bundled into the documentation site) |
+| vue 3.5.43 | MIT | `site/` (bundled into the documentation site) |
+| @vueuse/core 12.8.2 | MIT | `site/` (bundled into the documentation site) |
+| @vueuse/integrations 12.8.2 | MIT | `site/` (bundled into the documentation site) |
+| focus-trap 7.8.0 | MIT | `site/` (bundled into the documentation site) |
+| tabbable 6.5.0 | MIT | `site/` (bundled into the documentation site) |
+| minisearch 7.2.0 | MIT | `site/` (bundled into the documentation site) |
+| mark.js 8.11.1 | MIT | `site/` (bundled into the documentation site) |
+| @docsearch/css 3.8.2 | MIT | `site/` (bundled into the documentation site) |
+| Inter (14 `.woff2` files, shipped inside VitePress's default theme and copied to the site output) | SIL OFL 1.1, Copyright (c) 2016 The Inter Project Authors | `site/.vitepress/dist/assets/inter-*.woff2`; full licence text in `LICENSES/Inter-OFL-1.1.txt` (also published at `/licenses/Inter-OFL-1.1.txt` on the site) |
+
+Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-it and friends) are not shipped in the output.
+
 ## Fonts
 
 Nunito (SIL OFL 1.1) is used only to render the wordmark PNGs at design time (`design/tools/make-wordmarks.py`); the font file is not included.

@@ -24,6 +24,9 @@ for (const file of files) {
     if (hash && f.endsWith('.html') && !idsOf(f).has(decodeURIComponent(hash))) bad.push(`${file.slice(dist.length)}: ${u} -> missing anchor #${hash}`);
   }
 }
+// No third-party requests: no external script/link/img/iframe/source or CSS url() in the output.
+for (const f of files) for (const m of readFileSync(f, 'utf8').matchAll(/<(script|link|img|iframe|source|video|audio)\b[^>]*\s(?:src|href)="(https?:\/\/[^"]+)"[^>]*>/g)) if (m[1] !== 'a') bad.push(`${f.slice(dist.length)}: external <${m[1]}> ${m[2]}`);
+(function css(d) { for (const e of readdirSync(d)) { const f = join(d, e); if (statSync(f).isDirectory()) css(f); else if (/\.(css|js)$/.test(e) && /url\((['"]?)https?:\/\//.test(readFileSync(f, 'utf8'))) bad.push(`${f.slice(dist.length)}: external url()`); } })(dist);
 console.log(`pages: ${files.length}, internal references checked: ${checked}, external (not fetched): ${ext.size}`);
 if (process.env.LIST_EXTERNAL) console.log([...ext].sort().join('\n'));
 if (bad.length) { console.log(bad.join('\n')); process.exit(1); }
