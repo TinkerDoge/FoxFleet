@@ -72,3 +72,19 @@ test('/busy is profile-wide: read freely, changed only with explicit confirmatio
   assert.equal((await x.api(`${x.A}/native/busy`, { mode: 'steer' })).status, 400, 'no confirm, no change'); assert.equal((await x.api(`${x.A}/native/busy`, { mode: 'rm', confirm: true })).status, 400);
   if (!REAL) { assert.equal((await x.api(`${x.A}/native/busy`, { mode: 'queue', confirm: true })).body.mode, 'queue'); assert.equal((await x.api(`${x.A}/native/busy`)).body.mode, 'queue'); }
 });
+
+test('queued messages keep their order for every device and survive the viewer going away', async (t) => {
+  const x = await boot(t), first = x.sse(`${x.A}/chat`, { body: chat('slow story') }); await first.wait((e) => e.data?.choices); const sid = first.headers.get('x-hermes-session-id');
+  for (const [i, w] of ['alpha', 'bravo', 'charlie'].entries()) assert.equal((await x.api(`${x.A}/messages`, { messages: [{ role: 'user', content: w }], session_id: sid, mode: 'queue', client_id: `order-${i}-xxxxxx` })).body.message.state, 'queued');
+  first.stop(); // the phone goes away; nothing is cancelled
+  const order = async () => (await x.api(`${x.A}/queue?session_id=${sid}`)).body.items.map((i) => i.text);
+  assert.deepEqual(await order(), ['alpha', 'bravo', 'charlie']); assert.deepEqual(await order(), ['alpha', 'bravo', 'charlie'], 'a second device reads the same order');
+  const run = (await x.api(`${x.A}/queue?session_id=${sid}`)).body.active_run; assert.ok(run, 'the turn kept running without any viewer');
+});
+
+test('Stop right after the turn was created ends truthfully and starts no second writer', async (t) => {
+  const x = await boot(t), a = x.sse(`${x.A}/chat`, { body: chat('slow story') }); await waitFor(async () => a.headers, { tries: 100, ms: 50 }); const run = a.headers.get('x-foxfleet-run'), sid = a.headers.get('x-hermes-session-id');
+  const stop = await x.api(`${x.A}/runs/${run}/stop`, {}); assert.equal(stop.body.confirmed, true); await a.done;
+  assert.ok(['stopped', 'completed'].includes(a.events.find((e) => e.event === 'foxfleet.upstream').data.state));
+  await new Promise((r) => setTimeout(r, 400)); const q = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; assert.equal(q.active_run, null, 'nothing restarted by itself');
+});

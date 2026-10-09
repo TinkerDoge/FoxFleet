@@ -67,3 +67,39 @@ and against the web mock hub (`web/tests/contract.test.ts`), so the mock cannot 
 `web/public/sw.js` caches the app shell only. It never touches `/api`, `/health`, `/mcp`, `/connector.mjs`, pairing pages, non-GET, cross-origin or
 range requests. Each build stamps a content-derived version; a new worker waits and the app shows "A new version is ready · Reload"
 (no silent swap, so a half-typed message is never lost). Offline, navigations fall back to the cached shell.
+
+## Native Hermes sessions and the facade
+
+```
+phone / browser ──► /chat /messages /queue /runs/*  (unchanged shapes)
+                         │ capabilities.nativeUi ?
+                         ├── no  → coordinator + HTTP runs / chat completions (Grok, OpenAI-compatible, MCP inbox: as before)
+                         └── yes → native-facade.js ──► hermes-ui.js (journal, ownership, foxfleet.native/1 events)
+                                                           │ ui-call / ui-ev over the existing connector tunnel
+                                                           ▼
+                                              connector: HermesGateway (one stdio tui_gateway per profile, allowlisted ops)
+```
+
+- **One owner.** Hermes owns the session, its queue and its turns; the hub keeps an admission journal (what was sent, what Hermes answered) and an event log with cursors. Any number of viewers (phone, browser, second device) follow the same owner; a viewer going away never cancels anything.
+- **The facade** (`server/native-facade.js`) maps the old client entry points onto that owner. A turn becomes a *run* in the usual registry so resume (`Last-Event-ID`), Stop (`/runs/{id}/stop`, which asks Hermes to interrupt and reports the real end) and detach all behave as for other agents. The hub never drains a queue on a native session; it would otherwise double-schedule what Hermes already queues.
+- **Extra SSE events:** `foxfleet.request` (card), `foxfleet.request_closed` (answered / cancelled / interrupted), `foxfleet.ack` (Hermes's answer to a message).
+- **Profile vs chat.** The model is per conversation (`setmodel`, never `--global`). Hermes's busy-input default is **profile-wide**: it is exposed only as an explicit, confirmed profile setting (`/native/busy`), never as a per-chat toggle.
+- **Fallback order** (probed per agent): native UI gateway → HTTP `/v1/runs` → chat completions.
+
+### Validation map (`docs/HERMES-CHAT-CONTROLS.md`, "Validation required")
+
+| Item | Where it is tested |
+| --- | --- |
+| `/busy ` choices, `/busy st`, aliases, free-text skills | `web/tests/chat-controls.test.tsx`, `android …/ChatControlsTest.kt` |
+| Busy message reaches the hub and stays visible while the reply streams | `web/tests/chat-controls.test.tsx`, `server/test/native-facade.test.js` (busy messages) |
+| Native busy input reports steered / redirected / queued as Hermes answered it | `native-facade.test.js`, `native-hub.test.js`, `NativeChatTest.kt` (ack labels), `web/tests/native-chat.test.tsx` |
+| Order across reconnects and two devices; restart reconciles without loss or duplicates | `native-facade.test.js` (order), `native-hub.test.js` (reconnect, restart, uncertain → reconciled) |
+| Approval / clarification: render, answer once, cancel by id, back after reconnect | `native-facade.test.js` (cards), `web/tests/native-chat.test.tsx`, `NativeChatTest.kt` |
+| Second device attaches to the same owner; disconnect does not cancel another viewer | `native-facade.test.js` (stop / viewers), `native-hub.test.js` (multi-viewer), `NativeChatTest.kt` |
+| Late steer as `pending_steer` replayed once; 409 keeps the text | HTTP fallback: `server/test/chat-controls.test.js`, `web/tests/chat-controls.test.tsx` |
+| Interrupt & send waits for termination; failed cancel never starts a second writer | `server/test/chat-controls.test.js`, `native-facade.test.js` (stop) |
+| Stop during creation / tool / approval wait is truthful | `native-facade.test.js` (stop right after creation, stop while a card is open) |
+| Old stream callbacks cannot overwrite the active session | `web/tests/native-chat.test.tsx` (stale streams), `web/tests/chat-controls.test.tsx` |
+| Wrong user/profile fails; unsupported commands and Steer stay unavailable | `native-hub.test.js` (ownership), `ui-gateway.test.js` (allowlist), `ChatControlsTest.kt` |
+| Detach keeps work alive, cursor replay and truncation recovery | `native-facade.test.js`, `server/test/runs.test.js` |
+| Live Hermes UI-protocol check; HTTP fallback check | `HERMES_REAL_GATEWAY_TEST=…` runs the same suites against a real gateway (see the file header); HTTP fallback in `server/test/chat-controls.test.js` |

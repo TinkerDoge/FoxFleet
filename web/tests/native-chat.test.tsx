@@ -58,6 +58,13 @@ describe('stream events', () => {
   });
 });
 
+describe('stale streams', () => {
+  it('a late request or ack from a chat the user already left changes nothing', async () => {
+    let opts: any; void send({ chat: vi.fn((_a: string, _h: unknown, o: any) => { opts = o; o.onSession('s1'); return new Promise<string>(() => {}); }), queue: vi.fn(async () => ({ items: [], recent: [], halted: false, activeRun: null, modes: [], openRequests: [], canCancel: true })), sessions: vi.fn(async () => ({ sessions: [], total: 0 })) } as unknown as Client, 'a', 'x', [], [], () => {}); await flush();
+    const { newChat } = await import('../src/chat/store'); newChat('a'); opts.onRequest(parseRequest(clarify)); opts.onTool('late'); expect(chatOf('a').requests).toEqual([]); expect(chatOf('a').toolLog).toEqual([]);
+  });
+});
+
 describe('cards', () => {
   const mount = (ui: any) => { const el = document.createElement('div'); document.body.append(el); act(() => render(ui, el)); return el; };
   it('a clarify card sends the picked answer once; typing overrides; a failure shows the reason and allows retry', async () => {

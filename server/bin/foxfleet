@@ -149,6 +149,11 @@ export async function doctorChecks() {
   // connector
   const connCfg = path.join(process.env.FOXFLEET_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'foxfleet'), 'connector.json');
   if (fs.existsSync(connCfg)) { const r = run(process.execPath, [path.join(APP, 'connector', 'foxfleet-connector.mjs'), 'status'], { timeout: 8000 }); add('connector', r.status === 0 ? 'ok' : 'warn', `connector on this computer: ${(r.stdout || r.stderr).trim().split('\n')[0] || 'no status'}`, r.status === 0 ? undefined : 'foxfleet connector status'); }
+  // native Hermes gateway on this computer (only when a connector is paired here): needs a Hermes checkout; HTTP chat works without it
+  if (fs.existsSync(connCfg)) {
+    const r = run(process.execPath, ['--experimental-websocket', path.join(APP, 'connector', 'foxfleet-connector.mjs'), 'doctor'], { timeout: 75000 });
+    for (const m of (r.stdout || '').matchAll(/^\[(ok|warn|FAIL)\s*\]\s+(gateway(?:-start)?): (.*)(?:\n\s+fix: (.*))?$/gm)) add(`native-${m[2]}`, m[1] === 'ok' ? 'ok' : m[1] === 'warn' ? 'warn' : 'fail', m[3], m[4]);
+  }
   // backups + version
   try { const b = fs.readdirSync(BACKUPS).filter((f) => f.endsWith('.tar.gz')).map((f) => fs.statSync(path.join(BACKUPS, f)).mtimeMs).sort((a, b2) => b2 - a); b.length ? (Date.now() - b[0] > 14 * 864e5 ? add('backup', 'warn', `last backup is ${ago(b[0])} old`, 'foxfleet backup') : add('backup', 'ok', `last backup ${ago(b[0])} ago`)) : add('backup', 'warn', 'no backups yet', 'foxfleet backup'); } catch { add('backup', 'warn', 'no backups yet', 'foxfleet backup'); }
   if (!flags.offline) {
@@ -325,9 +330,9 @@ async function cmdConfig() {
 
 // ---------- connector ----------
 async function cmdConnector() {
-  const map = { pair: 'pair', 'install-service': 'install-service', status: 'status', rescan: 'run', uninstall: 'uninstall-service', unpair: 'unpair', profiles: 'profiles' };
+  const map = { pair: 'pair', 'install-service': 'install-service', status: 'status', rescan: 'run', uninstall: 'uninstall-service', unpair: 'unpair', profiles: 'profiles', doctor: 'doctor' };
   const sub = pos[1]; const conn = path.join(APP, 'connector', 'foxfleet-connector.mjs');
-  if (!sub || !map[sub]) throw new Fail('Usage: foxfleet connector pair --hub URL --code CODE | install-service | status | rescan | uninstall | unpair | profiles', 2);
+  if (!sub || !map[sub]) throw new Fail('Usage: foxfleet connector pair --hub URL --code CODE | install-service | status | rescan | uninstall | unpair | profiles | doctor', 2);
   if (!fs.existsSync(conn)) throw new Fail('The connector is not part of this install', 3);
   const raw = argv.slice(argv.indexOf(sub) + 1).filter((a) => a !== '--json');
   if (sub === 'rescan') { // a running connector re-reads profiles on its interval; `profiles` shows what it finds right now
@@ -358,7 +363,7 @@ const HELP = `${bold('foxfleet')} ${VERSION}: admin for your Foxfleet hub
   invite create [--ttl HOURS] [--url https://your-hub]
   backup [--to FILE]     restore [FILE] [--yes]
   config get [KEY] | set KEY VALUE | path     (the env file read by the systemd unit)
-  connector pair|install-service|status|rescan|uninstall   (this computer's Hermes connector)
+  connector pair|install-service|status|rescan|uninstall|doctor   (this computer's Hermes connector; doctor checks the native gateway)
   version                completion bash|zsh
 
 Flags: --json (machine-readable), --yes, --no-color via NO_COLOR. Passwords never go on the command line: use the prompt, --password-stdin or FOXFLEET_PASSWORD.

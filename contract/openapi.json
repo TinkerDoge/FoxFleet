@@ -1870,7 +1870,8 @@
             },
             "description": ""
           }
-        ]
+        ],
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
       }
     },
     "/api/agents/{name}/files": {
@@ -2033,7 +2034,7 @@
     "/api/agents/{name}/screen/observe": {
       "post": {
         "operationId": "screenObserve",
-        "summary": "Mint a single-use (30 s) ticket for the screen WebSocket: wss://hub/api/agents/{name}/screen/ws?ticket=\u2026",
+        "summary": "Mint a single-use (30 s) ticket for the screen WebSocket: wss://hub/api/agents/{name}/screen/ws?ticket=…",
         "tags": [
           "screen"
         ],
@@ -2924,7 +2925,8 @@
           "429": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
       }
     },
     "/api/agents/{name}/queue": {
@@ -2971,7 +2973,8 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
       }
     },
     "/api/agents/{name}/queue/resume": {
@@ -3708,6 +3711,83 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/api/agents/{name}/native/busy": {
+      "get": {
+        "summary": "The Hermes PROFILE-wide default for messages sent while it works (display.busy_input_mode)",
+        "responses": {
+          "200": {
+            "description": "{mode, scope:'profile'}"
+          }
+        },
+        "tags": [
+          "native"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "operationId": "nativeBusyGet"
+      },
+      "post": {
+        "summary": "Change the profile default. Affects every chat of the profile; requires confirm:true",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "mode",
+                  "confirm"
+                ],
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ]
+                  },
+                  "confirm": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{mode, scope:'profile'}"
+          },
+          "400": {
+            "description": "missing confirmation or invalid mode"
+          }
+        },
+        "tags": [
+          "native"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "operationId": "nativeBusySet"
       }
     }
   },
@@ -4498,15 +4578,17 @@
           "state": {
             "type": "string",
             "enum": [
-              "queued",
               "awaiting_stop",
-              "sending",
-              "running",
-              "guidance_accepted",
+              "cancelled",
               "done",
               "failed",
+              "guidance_accepted",
               "interrupted",
-              "cancelled"
+              "queued",
+              "rejected",
+              "running",
+              "sending",
+              "uncertain"
             ]
           },
           "mode": {
@@ -4535,6 +4617,21 @@
           },
           "session_id": {
             "type": "string"
+          },
+          "ack": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "streaming",
+              "queued",
+              "steered",
+              "redirected",
+              "rejected",
+              null
+            ],
+            "description": "What Hermes itself answered (native sessions). Shown as received, never predicted; null until it answered."
           }
         }
       },
@@ -4572,6 +4669,17 @@
             "items": {
               "type": "string"
             }
+          },
+          "open_requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpenRequest"
+            },
+            "description": "Native sessions: cards that are still open, so a reload or a second device shows them again"
+          },
+          "can_cancel": {
+            "type": "boolean",
+            "description": "False when the agent keeps the queue itself (Hermes): DELETE /queue/{id} answers 409"
           }
         }
       },
@@ -4719,6 +4827,55 @@
             ]
           }
         }
+      },
+      "OpenRequest": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "kind"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "clarify",
+              "approval"
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                },
+                "choices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "multi_select": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "command": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "description": "A question or approval the agent waits on. Answer once with POST /api/agents/{name}/native/sessions/{sid}/requests/{rid}. Other request kinds are declined upstream and never listed."
       }
     }
   }

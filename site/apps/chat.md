@@ -49,3 +49,13 @@ Typing `/` opens the command list; choosing a command opens its choices (`/busy 
 ::: warning Not verified against a live Hermes yet
 Native runs (`/v1/runs`) and steering follow the Hermes documentation and were tested against a fake server. Until you have tried them on your own Hermes, treat Steer and Interrupt & send as experimental.
 :::
+
+## Hermes native sessions: questions, approvals, models
+
+When the agent's machine has the Hermes checkout (see [Hermes](../agents/hermes.md)), the chat gains a few things. They appear only for those agents; for every other agent nothing changes.
+
+- **Question and approval cards.** When Hermes needs an answer it shows a card under the reply. Answer once; the card goes away. If the agent cancels the question the card disappears, and after a reload or on another device the card is still there while the question is open. An approval offers *Allow once* and *Deny*. Anything else Hermes could ask (passwords, secrets) is declined for you right away instead of leaving the agent waiting.
+- **What Hermes did with your message.** A message sent while it works shows Hermes's own answer: *started*, *queued*, *accepted as guidance*, *switched to it* or *did not accept it*. A queued message cannot be taken back, because Hermes holds the queue; the button says so.
+- **Send modes.** *Queue* lets it finish first. *Steer* gives guidance to the reply in progress. *Redirect* asks Hermes to switch to your message now; Hermes can refuse, and you see its answer. (With other agents the third mode is *Interrupt & send*: it stops the reply, waits until it has really stopped, then sends.)
+- **Chat controls.** *Model for this chat* changes the model of this conversation only. *Hermes default for messages sent while it works* is a setting of the whole Hermes profile (it also affects the terminal and messaging apps), so it sits behind a warning and a confirmation. The **/busy** command in the composer is different: it only chooses what this app asks for.
+- **Tools.** The tools used during a reply are listed under the status line.

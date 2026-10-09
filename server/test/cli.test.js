@@ -173,3 +173,16 @@ test('install.sh installs from a (mock) release, verifies the checksum and links
     const bad = await run({ FOXFLEET_APPS_DIR: path.join(sb.root, 'inst2') }); assert.notEqual(bad.code, 0); assert.match(bad.o, /checksum mismatch/); assert.ok(!fs.existsSync(path.join(sb.root, 'inst2/9.9.0-alpha')));
   } finally { rel.close(); }
 });
+
+test('doctor checks the native Hermes gateway on a computer with a paired connector, and says how to fix it', async () => {
+  const sb = sandbox(), cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-conn-')), hh = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-hh-')); fs.writeFileSync(path.join(hh, '.env'), 'x=1\n');
+  fs.copyFileSync(path.join(SRC, '..', 'connector', 'foxfleet-connector.mjs'), path.join(sb.app, 'connector', 'foxfleet-connector.mjs'));
+  const write = (c) => fs.writeFileSync(path.join(cfgDir, 'connector.json'), JSON.stringify({ hub: 'http://127.0.0.1:1', token: 'a.b', name: 'x', expose: 'all', profiles: {}, ...c }));
+  const env = { FOXFLEET_CONFIG_DIR: cfgDir, FOXFLEET_HERMES_HOME: hh };
+  write({}); const none = await cli(sb, ['doctor', '--json', '--offline'], { ...env, HOME: hh });
+  const g = none.json().checks.find((c) => c.id === 'native-gateway'); assert.equal(g.status, 'warn'); assert.match(g.fix, /uiGatewayCommand|HERMES_AGENT_DIR/);
+  write({ uiGatewayCommand: [process.execPath, path.join(SRC, 'test', 'fake-gateway.mjs')] }); const ok = await cli(sb, ['doctor', '--json', '--offline'], env);
+  assert.equal(ok.json().checks.find((c) => c.id === 'native-gateway-start').status, 'ok');
+  write({ uiGatewayCommand: [process.execPath, '-e', 'process.exit(3)'] }); const bad = await cli(sb, ['doctor', '--json', '--offline'], env);
+  assert.equal(bad.json().checks.find((c) => c.id === 'native-gateway-start').status, 'fail'); assert.equal(bad.code, 1);
+});

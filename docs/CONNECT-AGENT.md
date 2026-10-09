@@ -74,3 +74,13 @@ The connector can run Hermes's own UI gateway (`python -m tui_gateway.entry`, th
 - **What changes for you.** Send modes map to Hermes itself: Queue is `prompt.submit` with `queued`, Steer is `session.steer`, Interrupt & send is `session.redirect`. The hub shows exactly what Hermes answered and never turns a rejected redirect into a Stop. Approval and clarification questions arrive as cards and can be answered once.
 - **/busy** changes a Hermes setting for the whole profile, not for one chat, so Foxfleet only changes it when you ask.
 - **Needs Python 3.14** for the pinned Hermes dependencies at the time of writing (see `design/notes/hermes-ui-gateway.md`).
+
+### Setting up the native gateway (and checking it)
+
+Native sessions need the machine to have the Hermes **checkout** (the connector starts its `tui_gateway`). Nothing else changes for you: chats still work over HTTP without it.
+
+```
+foxfleet connector doctor          # or: node foxfleet-connector.mjs doctor
+```
+
+It lists the Hermes profiles it found, how it found the gateway, starts the gateway to prove it works and prints a fix when something is off. Discovery order: `uiGatewayCommand` in `connector.json` (an array, e.g. `["/home/me/hermes-agent/venv/bin/python","-m","tui_gateway.entry"]`, optional `uiGatewayCwd`), the `FOXFLEET_HERMES_GATEWAY_CMD` environment variable (same array as JSON), `hermesAgentDir` / `HERMES_AGENT_DIR` (a checkout with a `venv`), a checkout next to the Hermes home (`hermes-agent`, `~/hermes-agent`, `~/.hermes/hermes-agent`), then the interpreter named in the first line of the `hermes` command on PATH. `"uiGateway": "off"` disables it. Hermes' own dependencies decide the Python version (3.14 at the time of writing): use the interpreter Hermes itself runs in.

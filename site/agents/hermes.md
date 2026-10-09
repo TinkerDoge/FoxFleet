@@ -37,3 +37,13 @@ A healthy agent shows three checks in the app: **Dashboard**, **Management** and
 ## Troubleshooting
 
 See the table in [Connect a real machine](./real-machine#troubleshooting).
+
+## Native sessions on the machine (optional, recommended)
+
+If the computer running Hermes also has the Hermes checkout, the connector can run Hermes's own session gateway and you get questions and approvals as cards, a live Redirect, a model picker and consistent queueing across devices (see [Chat](../apps/chat.md)). Check it with:
+
+```
+foxfleet connector doctor
+```
+
+The check lists profiles, shows how the gateway was found, starts it and tells you the fix if it cannot (a missing checkout, or the wrong Python). Without the checkout everything keeps working over HTTP. The command and the discovery order are described in `docs/CONNECT-AGENT.md`.
