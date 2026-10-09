@@ -1,0 +1,43 @@
+{
+  "desktop": {
+    "agent": "Atlas",
+    "url": "#/chat?agent=atlas&session=sess_a3",
+    "messageButtons": [
+      "Copy"
+    ],
+    "headingCount": 0
+  },
+  "beforeRouteChange": "#/chat?agent=atlas&session=sess_a2",
+  "sameAgentRouteChange": {
+    "url": "#/chat?agent=atlas&session=sess_a1",
+    "selected": "sess_a2"
+  },
+  "phone": {
+    "headHeight": 61,
+    "topbarHeight": 55,
+    "sendSize": {
+      "width": 38,
+      "height": 38
+    },
+    "pageOverflow": false
+  },
+  "attachmentMenuAfterEscape": {
+    "hidden": false,
+    "expanded": null
+  },
+  "phoneDrawerFocus": {
+    "open": true,
+    "focusBehindDrawer": true,
+    "focusedText": "Screen"
+  },
+  "narrowLargeText": {
+    "headHeight": 67.59375,
+    "pageOverflow": false,
+    "nameOverlapsScreenButton": true
+  },
+  "historyFailure": {
+    "alerts": [],
+    "sessionCount": 4,
+    "loadingText": false
+  }
+}
