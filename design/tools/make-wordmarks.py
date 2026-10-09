@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Builds the Foxfleet wordmark lockups (fox + "Foxfleet", Nunito ExtraBold) from the W3 fox. Needs Pillow and Nunito.
-Usage: python3 design/tools/make-wordmarks.py [path/to/Nunito-VariableFont_wght.ttf]"""
+Usage:  NUNITO_FONT=/path/to/Nunito-VariableFont_wght.ttf python3 design/tools/make-wordmarks.py
+        python3 design/tools/make-wordmarks.py /path/to/Nunito-VariableFont_wght.ttf
+        or put Nunito-VariableFont_wght.ttf in design/fonts/ (git-ignored; get it from fonts.google.com/specimen/Nunito, SIL OFL 1.1)."""
 import sys, os
 from PIL import Image, ImageDraw, ImageFont
 here = os.path.dirname(os.path.abspath(__file__)); brand = os.path.join(here, '..', 'brand')
-font_path = sys.argv[1] if len(sys.argv) > 1 else '/usr/share/fonts/truetype/sand-box/google/Nunito/Nunito-VariableFont_wght.ttf'
+font_path = sys.argv[1] if len(sys.argv) > 1 else os.environ.get('NUNITO_FONT') or os.path.join(here, '..', 'fonts', 'Nunito-VariableFont_wght.ttf')
+if not os.path.isfile(font_path):
+    sys.exit(f'Nunito font not found at {font_path}\nSet NUNITO_FONT, pass the path as an argument, or place Nunito-VariableFont_wght.ttf in design/fonts/ (download: https://fonts.google.com/specimen/Nunito).')
 fox = Image.open(os.path.join(brand, 'option-W3-transparent.png')).convert('RGBA'); fox = fox.crop(fox.getbbox())
 for name, ink in (('light', '#2A2420'), ('dark', '#F6F1EA')):
     H = 400; f = ImageFont.truetype(font_path, 300); f.set_variation_by_axes([800])

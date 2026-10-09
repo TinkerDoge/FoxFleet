@@ -19,3 +19,22 @@ server/backups/
 backups/
 .DS_Store
 !server/config.example.json
+
+# logs, local databases, backups, local env (examples stay tracked)
+*.log
+*.db
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.tar.gz
+*.tgz
+backups/
+deploy.local.env
+**/deploy.local.env
+.env
+.env.*
+design/fonts/
+!*.example
+!.env.example
+!deploy/env.example
+!deploy/deploy.local.env.example

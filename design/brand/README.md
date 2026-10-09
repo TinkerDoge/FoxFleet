@@ -13,3 +13,7 @@ The Foxfleet mascot is a hand-carved-wood style fox head ("W3").
 | `wordmark-light.png` / `wordmark-dark.png` | "Foxfleet" lockups (built by `tools/make-wordmarks.py`, Nunito ExtraBold) |
 
 Accent: `#D9653B` (light) / `#F08A5D` (dark), see `../tokens.json`.
+
+## Regenerating the wordmarks
+
+`design/tools/make-wordmarks.py` needs Pillow and the Nunito variable font (SIL OFL 1.1, not included). Point `NUNITO_FONT` at `Nunito-VariableFont_wght.ttf`, pass the path as the first argument, or drop it into `design/fonts/` (git-ignored). The script exits with a clear message if the font is missing.
