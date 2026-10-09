@@ -1,0 +1,86 @@
+{
+  "checkedDate": "2026-10-10",
+  "timezone": "Asia/Bangkok",
+  "environment": "Chromium and isolated mock hub; no device or screen-reader acceptance",
+  "checks": [
+    {
+      "name": "same-agent session link"
+    },
+    {
+      "name": "session reload"
+    },
+    {
+      "name": "History selection and Back/Forward"
+    },
+    {
+      "name": "failed history refresh retains stale rows"
+    },
+    {
+      "name": "history Retry clears the error"
+    },
+    {
+      "name": "attachment Escape and focus restoration"
+    },
+    {
+      "name": "file picker opens after menu closes"
+    },
+    {
+      "name": "320px Large text header",
+      "heading": {
+        "x": 28,
+        "y": 66.296875,
+        "width": 149.953125,
+        "height": 23.28125
+      },
+      "actions": {
+        "x": 233.953125,
+        "y": 68.578125,
+        "width": 74.046875,
+        "height": 44
+      },
+      "more": {
+        "x": 183.953125,
+        "y": 68.578125,
+        "width": 44,
+        "height": 44
+      }
+    },
+    {
+      "name": "long agent identity at 320px Large text",
+      "heading": {
+        "x": 28,
+        "y": 66.296875,
+        "width": 149.953125,
+        "height": 23.28125
+      },
+      "actions": {
+        "x": 233.953125,
+        "y": 68.578125,
+        "width": 74.046875,
+        "height": 44
+      },
+      "more": {
+        "x": 183.953125,
+        "y": 68.578125,
+        "width": 44,
+        "height": 44
+      }
+    },
+    {
+      "name": "mobile secondary actions remain accessible"
+    },
+    {
+      "name": "phone drawer containment and Escape restoration"
+    },
+    {
+      "name": "desktop resize releases the modal background"
+    },
+    {
+      "name": "chat has a descriptive heading"
+    },
+    {
+      "name": "no browser application errors"
+    }
+  ],
+  "errors": []
+}

@@ -55,8 +55,9 @@ export function SessionsMenu({ sessions, current, open, onOpenChange, onSelect, 
         }}>{t('chat.history')}</button>
       {open && (
         <div class="sessions card" ref={menu} id={`${id}-menu`} role="menu" aria-labelledby={`${id}-trigger`} tabIndex={-1} onKeyDown={navigate}>
-          {error && <p class="error small" role="alert">{error}</p>}
-          {sessions.length === 0 && !loading && <p class="muted small">{t('chat.noSessions')}</p>}
+          {error && <div role="none"><p class="error small" role="alert">{error}</p>{onRefresh && <button role="menuitem" tabIndex={-1} disabled={loading} onClick={onRefresh}>{t('home.retry')}</button>}</div>}
+          {loading && <p class="muted small" role="status">{t('home.loading')}</p>}
+          {sessions.length === 0 && !loading && !error && <p class="muted small">{t('chat.noSessions')}</p>}
           {sessions.map((s) => editing === s.id ? (
             <form key={s.id} class="session-edit" onSubmit={(e) => { e.preventDefault(); const v = title.trim(); if (!v) return; setEditing(null); void onRename?.(s.id, v); }}>
               <input value={title} maxLength={120} aria-label={t('chat.rename')} autofocus onInput={(e) => setTitle((e.target as HTMLInputElement).value)}

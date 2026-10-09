@@ -2,6 +2,14 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased
+
+### Added
+- **Slash menu parity (web and Android).** Bare `/` lists the commands that can run plus skills, with no 60-row cut-off; aliases and commands that cannot run from here appear when their name is typed (or description words). `/help` and `/palette` open a searchable command browser. A connected Hermes gateway adds that profile's skills and any extra names it discovered (shown, never executable: discovery is not permission). The catalog can be scoped to a chat (`?session=`). See `docs/HERMES-SLASH-PARITY.md`.
+
+### Changed
+- **UI audit stage 1 (web).** Reliable chat navigation and history (route follows the open chat, Back/Forward, stale responses ignored), recovery actions on errors, run status line, accessible action menus (attachments, secondary header actions), modal drawer focus handling, a real chat heading and 320 px / large-text layouts. Android theme tokens and fleet screen contrast adjusted.
+
 ## 0.3.1-alpha
 
 ### Changed (chat feels like Telegram/Discord)

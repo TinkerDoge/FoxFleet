@@ -165,13 +165,13 @@ private fun AgentCard(a: AgentStatus, unread: Boolean, onOpen: (AgentStatus) -> 
 @Composable
 fun StatusPill(p: Presence) {
     val c = LocalHubColors.current
-    val (label, tone) = when (p) {
-        Presence.Ready -> "Ready" to c.online
-        Presence.Online -> "Online" to c.idle
-        Presence.Offline -> "Offline" to c.textFaint
+    val (label, tone, text) = when (p) {
+        Presence.Ready -> Triple("Ready", c.online, c.onlineText)
+        Presence.Online -> Triple("Online", c.idle, c.idleText)
+        Presence.Offline -> Triple("Offline", c.offline, c.textMuted)
     }
     Text(
-        label, style = MaterialTheme.typography.labelMedium, color = tone,
+        label, style = MaterialTheme.typography.labelMedium, color = text,
         modifier = Modifier.clip(RoundedCornerShape(50)).background(tone.copy(alpha = 0.12f)).padding(horizontal = 10.dp, vertical = 3.dp),
     )
 }

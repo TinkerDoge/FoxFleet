@@ -36,7 +36,9 @@ data class HubColors(
     val accent: Color,
     val onAccent: Color,
     val online: Color,
+    val onlineText: Color,
     val idle: Color,
+    val idleText: Color,
     val offline: Color,
     val dark: Boolean,
 )
@@ -49,12 +51,12 @@ fun hubColors(dark: Boolean, accentIndex: Int): HubColors {
         bg = Tokens.Dark.bg, surface = Tokens.Dark.surface, surfaceAlt = Tokens.Dark.surfaceAlt,
         hairline = Tokens.Dark.hairline, text = Tokens.Dark.text, textMuted = Tokens.Dark.textMuted,
         textFaint = Tokens.Dark.textFaint, userBubble = accent.copy(alpha = Tokens.Dark.userBubbleAlpha), accent = accent,
-        onAccent = onAccent, online = Tokens.Dark.online, idle = Tokens.Dark.idle, offline = Tokens.Dark.offline, dark = true,
+        onAccent = onAccent, online = Tokens.Dark.online, onlineText = Tokens.Dark.onlineText, idle = Tokens.Dark.idle, idleText = Tokens.Dark.idleText, offline = Tokens.Dark.offline, dark = true,
     ) else HubColors(
         bg = Tokens.Light.bg, surface = Tokens.Light.surface, surfaceAlt = Tokens.Light.surfaceAlt,
         hairline = Tokens.Light.hairline, text = Tokens.Light.text, textMuted = Tokens.Light.textMuted,
         textFaint = Tokens.Light.textFaint, userBubble = accent.copy(alpha = Tokens.Light.userBubbleAlpha), accent = accent,
-        onAccent = onAccent, online = Tokens.Light.online, idle = Tokens.Light.idle, offline = Tokens.Light.offline, dark = false,
+        onAccent = onAccent, online = Tokens.Light.online, onlineText = Tokens.Light.onlineText, idle = Tokens.Light.idle, idleText = Tokens.Light.idleText, offline = Tokens.Light.offline, dark = false,
     )
 }
 

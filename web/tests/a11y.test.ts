@@ -11,8 +11,15 @@ const on = (bg: string, fg: string, alpha: number) => { const A = rgb(bg), B = r
 describe('colour contrast (WCAG AA = 4.5:1 for text, 3:1 for UI components)', () => {
   for (const mode of ['light', 'dark'] as const) {
     const c: any = tokens.colors[mode];
-    it(`${mode}: body and muted text on bg, surface, surfaceAlt`, () => {
-      for (const bg of [c.bg, c.surface, c.surfaceAlt]) { expect(contrast(c.text, bg)).toBeGreaterThanOrEqual(7); expect(contrast(c.textMuted, bg)).toBeGreaterThanOrEqual(4.5); }
+    it(`${mode}: body, muted and faint text on bg, surface, surfaceAlt`, () => {
+      for (const bg of [c.bg, c.surface, c.surfaceAlt]) { expect(contrast(c.text, bg)).toBeGreaterThanOrEqual(7); expect(contrast(c.textMuted, bg)).toBeGreaterThanOrEqual(4.5); expect(contrast(c.textFaint, bg)).toBeGreaterThanOrEqual(4.5); }
+    });
+    it(`${mode}: status text passes on plain and tinted surfaces`, () => {
+      for (const bg of [c.bg, c.surface, c.surfaceAlt]) for (const status of ['online', 'idle']) {
+        expect(contrast(c[status + 'Text'], bg)).toBeGreaterThanOrEqual(4.5);
+        expect(contrast(c[status + 'Text'], on(bg, c[status], 0.12))).toBeGreaterThanOrEqual(4.5);
+      }
+      for (const bg of [c.bg, c.surface, c.surfaceAlt]) expect(contrast(c.textMuted, on(bg, c.offline, 0.12))).toBeGreaterThanOrEqual(4.5);
     });
     it(`${mode}: danger text on bg and surface`, () => { for (const bg of [c.bg, c.surface]) expect(contrast(c.danger, bg)).toBeGreaterThanOrEqual(4.5); });
     it(`${mode}: online and idle status colours are visible (3:1) on surface`, () => { expect(contrast(c.online, c.surface)).toBeGreaterThanOrEqual(3); expect(contrast(c.idle, c.surface)).toBeGreaterThanOrEqual(3); });

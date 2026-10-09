@@ -6,7 +6,7 @@ import { ApiError } from '../src/api/errors';
 import type { AgentSummary } from '../src/api/types';
 import { Composer, plainMode } from '../src/chat/Composer';
 import { chatOf, newChat, resetChats, send, stop, syncQueue } from '../src/chat/store';
-import { argSuggestions, commandSuggestions, parseHub, unavailableReason, type Catalog } from '../src/lib/commands';
+import { BUNDLED_CATALOG, argSuggestions, commandSuggestions, parseHub, unavailableReason, type Catalog } from '../src/lib/commands';
 import { setDraftScope } from '../src/chat/drafts';
 
 const cat = (over: Record<string, unknown> = {}): Catalog => ({ source: 'bundled', busy: ['queue', 'steer', 'interrupt'], commands: [
@@ -135,6 +135,14 @@ describe('composer while the agent works', () => {
     await type('/steer use PostgreSQL'); await click(); expect(onSend).toHaveBeenLastCalledWith('use PostgreSQL', [], [], 'steer');
     await type('/queue then deploy'); await click(); expect(onSend).toHaveBeenLastCalledWith('then deploy', [], [], 'queue');
     onSend.mockClear(); await type('/busy steer'); await click(); expect(onSend).not.toHaveBeenCalled(); expect(host.textContent).toMatch(/profile setting/);
+  });
+  it('slash discovery and the typed-command UX coexist: bare / lists /model, /help opens the browser and sends nothing, /model still opens the picker', async () => {
+    const onModel = vi.fn(); const { onSend, type, click } = await mount({ ...agent, capabilities: { ...agent.capabilities, nativeUi: true } }, { onModel }, fake({ commands: vi.fn(async () => BUNDLED_CATALOG) }));
+    await type('/'); const labels = [...host.querySelectorAll('.suggest [role="option"]')].map((li) => li.querySelector('b')?.firstChild?.textContent);
+    expect(labels).toContain('/model'); expect(labels).toContain('/help'); expect(host.querySelector('select')).toBeNull();
+    await type('/help'); await click(); expect(onSend).not.toHaveBeenCalled(); expect(onModel).not.toHaveBeenCalled(); expect(host.querySelector('[role="dialog"]')).toBeTruthy();
+    await act(() => host.querySelector<HTMLButtonElement>('[role="dialog"] button[aria-label="Close"]')!.click());
+    await type('/model'); await click(); expect(onModel).toHaveBeenLastCalledWith('');
   });
   it('/model without arguments asks the chat to open the picker; with arguments it sets the model for this chat', async () => {
     const onModel = vi.fn(); const { type, click } = await mount({ ...agent, capabilities: { ...agent.capabilities, nativeUi: true } }, { onModel });

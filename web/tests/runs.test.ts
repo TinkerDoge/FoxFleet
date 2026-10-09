@@ -28,7 +28,7 @@ describe('chat stream resume', () => {
     await expect(createClient({ fetch: fetch as never }).chat('a', [{ role: 'user', content: 'x' }], { signal: ctrl.signal, onContent() {}, onReasoning() {}, onTool() {}, onSession() {} })).rejects.toThrow();
     expect(fetch).toHaveBeenCalledTimes(1);
     const gone = vi.fn(async (url: string) => (url.endsWith('/chat') ? sse([ev(1, 'a')], { breakAfter: true, headers: { 'X-Foxfleet-Run': 'r' } }) : new Response('{}', { status: 404 })));
-    let t = ''; await createClient({ fetch: gone as never }).chat('a', [{ role: 'user', content: 'x' }], { onContent: (d) => { t += d; }, onReasoning() {}, onTool() {}, onSession() {} }); expect(t).toBe('a');
+    let t = ''; const state = vi.fn(); await createClient({ fetch: gone as never }).chat('a', [{ role: 'user', content: 'x' }], { onContent: (d) => { t += d; }, onReasoning() {}, onTool() {}, onSession() {}, onRunState: state }); expect(t).toBe('a'); expect(state).toHaveBeenCalledWith('unavailable');
   });
   it('follow() replays a finished run from the start, stop sends a POST to the run', async () => {
     const fetch = vi.fn(async (url: string, init?: RequestInit) => url.includes('/stop') ? new Response(JSON.stringify({ run: { id: 'r', state: 'stopped' } }), { status: 200, headers: { 'Content-Type': 'application/json' } }) : sse([ev(1, 'All '), ev(2, 'done'), 'data: [DONE]\n\n'], { headers: { 'X-Foxfleet-Run': 'r' } }));
