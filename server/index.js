@@ -624,6 +624,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     })().catch((error) => deny(error.status === 401 ? 401 : error.status === 404 ? 404 : 403, error.status === 401 ? 'Unauthorized' : error.status === 404 ? 'Not Found' : 'Forbidden'));
   });
   server.on('close', () => { authFails.clear(); connectors.closeAll(); for (const p of registries.values()) p.then((r) => { r.upstream.clear(); r.artifacts.clear(); r.screens.clear(); }); });
+  server.connectors = connectors; // test seam: native UI calls go through the machine connector
   // Upgraded sockets (screen proxy, gateway client) are not HTTP connections; end them on close.
   const originalClose = server.close;
   server.close = function (...args) { connectors.closeAll(); for (const p of registries.values()) p.then((r) => r.screens.clear()); return originalClose.apply(this, args); };

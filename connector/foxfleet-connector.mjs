@@ -14,7 +14,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 export const VERSION = '0.3.0-alpha';
@@ -96,7 +96,7 @@ export function profileTargets(p, { cfg = {}, env = process.env, defaultDashboar
   const apiPort = toPort(over.apiPort ?? e.API_SERVER_PORT ?? pick(y, 'api_server.port', 'api_server.extra.port'), 8642);
   const dashPort = toPort(over.dashboardPort ?? cfg.dashboardPort ?? env.FOXFLEET_DASHBOARD_PORT, defaultDashboardPort);
   return {
-    profile: p.profile,
+    profile: p.profile, home: p.home,
     api: { url: new URL(`http://${apiHost.includes(':') ? `[${apiHost.replace(/[\[\]]/g, '')}]` : apiHost}:${apiPort}`), key: over.apiKey ?? e.API_SERVER_KEY ?? pick(y, 'api_server.key', 'api_server.extra.key') },
     dashboard: { url: new URL(`http://127.0.0.1:${dashPort}`),
       user: over.dashboardUser ?? env[`FOXFLEET_DASHBOARD_USER_${upper}`] ?? e.HERMES_DASHBOARD_BASIC_AUTH_USERNAME ?? pick(y, 'basic_auth.username'),
@@ -186,6 +186,15 @@ function runLink(cfg, onState = () => {}) {
   let delay = 1000, ws, stopped = false, everOpened = false, refusals = 0, timer, agents = new Map(), lastSent = '';
   const reqs = new Map();
   const cookies = new Map(); // agent -> dashboard session cookie (kept in memory only)
+  const gateways = new Map(); // profile -> HermesGateway (native UI protocol, started lazily)
+  function gatewayFor(name) {
+    let g = gateways.get(name); if (g) return g;
+    const t = agents.get(name); const gw = t && gatewayCommand(root, loadConfig() ?? cfg); if (!gw) return null;
+    g = new HermesGateway({ profile: name, home: t.home, launch: defaultLaunch(gw), emit: (ev) => send({ t: 'ui-ev', agent: name, ev }), log });
+    gateways.set(name, g); return g;
+  }
+  // Capability probe: cheap (no process is started); the hub prefers native UI > HTTP runs > chat completions.
+  const uiCaps = () => Object.fromEntries([...agents.keys()].map((n) => [n, { native: Boolean(gatewayCommand(root, loadConfig() ?? cfg)), protocol: 'tui-gateway-jsonrpc', ops: Object.keys(UI_OPS).concat(['attach', 'respond', 'info']) }]));
   function scan() {
     const found = discoverProfiles(root), cur = loadConfig() ?? cfg, names = chosen(found, cur);
     const next = new Map(); for (const p of found) if (names.includes(p.profile)) next.set(p.profile, profileTargets(p, { cfg: cur }));
@@ -198,7 +207,7 @@ function runLink(cfg, onState = () => {}) {
   function announce(force = false) {
     const names = scan(), key = names.join(',');
     if (!force && key === lastSent) return; lastSent = key;
-    send({ t: 'profiles', os: process.platform, profiles: names.map((profile) => ({ profile })) });
+    send({ t: 'profiles', os: process.platform, profiles: names.map((profile) => ({ profile })) }); send({ t: 'ui-caps', caps: uiCaps() });
   }
   async function dashCookie(t, name) {
     if (cookies.has(name)) return cookies.get(name);
@@ -211,6 +220,12 @@ function runLink(cfg, onState = () => {}) {
     return '';
   }
   async function handle(m) {
+    if (m.t === 'ui-call') { // hub -> connector: one allowlisted action for one shared profile
+      const g = gatewayFor(m.agent); if (!g) return send({ t: 'ui-res', id: m.id, ok: false, error: 'This profile has no native Hermes gateway on this machine', code: 'unavailable' });
+      try { send({ t: 'ui-res', id: m.id, ok: true, result: await g.call(m.op, m.params ?? {}) }); }
+      catch (e) { send({ t: 'ui-res', id: m.id, ok: false, error: String(e.message || e).slice(0, 300), code: e.code || 'error', ...(e.rpc !== undefined ? { rpc: e.rpc } : {}) }); }
+      return;
+    }
     if (m.t === 'req' || m.t === 'ws-open') {
       const t = agents.get(m.agent), svc = t?.[m.svc];
       if (!svc) return send({ t: 'error', id: m.id });
@@ -272,7 +287,139 @@ function runLink(cfg, onState = () => {}) {
     ws.onerror = () => {};
   }
   connect(); timer = setInterval(() => announce(false), Math.max(30, Number(cfg.rescanSeconds) || 300) * 1000); timer.unref?.();
-  return { stop() { stopped = true; clearInterval(timer); try { ws.close(); } catch {} } };
+  return { stop() { stopped = true; clearInterval(timer); for (const g of gateways.values()) g.stop(); try { ws.close(); } catch {} } };
+}
+
+
+// ---------- Hermes UI gateway bridge (native sessions, see design/notes/hermes-ui-gateway.md) ----------
+// One long-lived `python -m tui_gateway.entry` per shared profile (newline-delimited JSON-RPC on stdio), owned by this connector so
+// there is exactly ONE runtime owner per session. The hub reaches it only through the allowlist below; the gateway never sees a
+// browser, credentials stay in the profile's own HERMES_HOME on this machine, and no arbitrary RPC (cli.exec, config.set, ...) is relayed.
+const MAX_TEXT = 100_000;
+const SERVER_REQUESTS = new Set(['approval', 'clarify']); // the only kinds this bridge answers; others get -32601 so the agent fails fast
+// command.dispatch only runs quick/plugin/bundle/skill commands and a few built-ins (compress, retry, undo, memory, skills, queue, steer, goal ...).
+// /model and /busy are NOT dispatched: they are config.set (ops `setmodel`, `busy`).
+const DISPATCH_OK = new Set(['compress', 'retry', 'undo', 'memory', 'skills']);
+const str = (v, max = 200) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
+const need = (v, what) => { if (v === null) throw Object.assign(new Error(`${what} is required`), { code: 'bad_params' }); return v; };
+// op -> (params) => [gateway method, params]. Anything not listed is refused.
+export const UI_OPS = {
+  create: (p) => ['session.create', { cols: 100, ...(str(p.title, 300) ? { title: p.title } : {}), ...(str(p.idempotency_key, 80) ? { idempotency_key: p.idempotency_key } : {}) }],
+  sessions: () => ['session.list', {}],
+  'events.since': (p) => ['session.events.since', { session_id: need(str(p.session_id), 'session_id'), last_seen: Number.isInteger(p.last_seen) ? p.last_seen : 0 }],
+  submit: (p) => { if (typeof p.text !== 'string' || !p.text.trim() || p.text.length > MAX_TEXT) throw Object.assign(new Error('text is required'), { code: 'bad_params' }); return ['prompt.submit', { session_id: need(str(p.session_id), 'session_id'), text: p.text, ...(p.queued === true ? { queued: true } : {}) }]; },
+  steer: (p) => ['session.steer', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
+  redirect: (p) => ['session.redirect', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
+  interrupt: (p) => ['session.interrupt', { session_id: need(str(p.session_id), 'session_id') }],
+  catalog: () => ['commands.catalog', {}],
+  resolve: (p) => ['command.resolve', { name: need(str(p.name, 100), 'name') }],
+  dispatch: (p) => { const name = need(str(p.name, 100), 'name').replace(/^\//, ''); if (!DISPATCH_OK.has(name)) throw Object.assign(new Error(`/${name} is not available remotely`), { code: 'not_allowed' }); return ['command.dispatch', { name, arg: typeof p.arg === 'string' ? p.arg.slice(0, 2000) : '', session_id: need(str(p.session_id), 'session_id') }]; },
+  // /model: session-scoped switch. `--global` / `--once` flags are refused here; a profile default is changed in Hermes itself.
+  setmodel: (p) => { const v = need(str(p.value, 300), 'value'); if (/(^|\s)--(global|once)\b/.test(v)) throw Object.assign(new Error('Changing the profile default is not available remotely'), { code: 'not_allowed' }); return ['config.set', { key: 'model', value: v, session_id: need(str(p.session_id), 'session_id') }]; },
+  // /busy: the mode is a PROFILE-wide Hermes setting (display.busy_input_mode), not per conversation. `status` only reads it.
+  busy: (p) => { const m = need(str(p.mode, 20), 'mode'); if (!['queue', 'steer', 'interrupt', 'status'].includes(m)) throw Object.assign(new Error('mode must be queue, steer, interrupt or status'), { code: 'bad_params' }); return ['config.set', { key: 'busy', value: m }]; },
+  models: (p) => ['model.options', { ...(str(p.session_id) ? { session_id: p.session_id } : {}), refresh: p.refresh === true }],
+  lock: (p) => ['clarify.lock', { request_id: need(str(p.request_id), 'request_id'), question_id: need(str(p.question_id), 'question_id'), answer: typeof p.answer === 'string' ? p.answer.slice(0, 4000) : '' }],
+};
+
+// Which command starts the gateway for a profile: config `uiGatewayCommand` (array), env FOXFLEET_HERMES_GATEWAY_CMD (JSON array),
+// or a Hermes checkout/venv found next to the profile root. Returns null when none is found (the profile then keeps the HTTP path).
+export function gatewayCommand(root, cfg = {}, env = process.env) {
+  let cmd = cfg.uiGatewayCommand; if (!cmd && env.FOXFLEET_HERMES_GATEWAY_CMD) { try { cmd = JSON.parse(env.FOXFLEET_HERMES_GATEWAY_CMD); } catch { /* ignore */ } }
+  if (Array.isArray(cmd) && cmd.length && cmd.every((x) => typeof x === 'string')) return { cmd: cmd[0], args: cmd.slice(1), cwd: cfg.uiGatewayCwd || undefined };
+  if (cfg.uiGateway === 'off') return null;
+  for (const dir of [path.join(root, 'hermes-agent'), path.join(path.dirname(root), 'hermes-agent')]) {
+    for (const py of [path.join(dir, 'venv', 'bin', 'python'), path.join(dir, '.venv', 'bin', 'python'), path.join(dir, 'venv', 'Scripts', 'python.exe')]) if (fs.existsSync(py) && fs.existsSync(path.join(dir, 'tui_gateway', 'entry.py'))) return { cmd: py, args: ['-m', 'tui_gateway.entry'], cwd: dir };
+  }
+  return null;
+}
+
+export class HermesGateway {
+  constructor({ profile, home, launch, emit, log: lg = () => {}, readyMs = 60_000, callMs = 30_000 }) {
+    Object.assign(this, { profile, home, launch, emit, lg, readyMs, callMs }); this.state = 'stopped'; this.pending = new Map(); this.open = new Map(); this.runtime = new Map();
+    this.nid = 0; this.failures = 0; this.epoch = null; this.readyP = null; this.child = null;
+  }
+  // Start (or reuse) the gateway; resolves once `gateway.ready` arrived and client.capabilities was advertised.
+  ensure() {
+    if (this.state === 'ready') return Promise.resolve();
+    if (this.readyP) return this.readyP;
+    const wait = this.failures ? Math.min(30_000, 1000 * 2 ** (this.failures - 1)) : 0;
+    this.readyP = new Promise((resolve, reject) => {
+      const go = () => {
+        this.state = 'starting'; let done = false, buf = '';
+        const fail = (e) => { if (done) return; done = true; this.failures++; this.readyP = null; this.state = 'down'; try { this.child?.kill(); } catch {} reject(e); };
+        const timer = setTimeout(() => fail(new Error('The Hermes gateway did not become ready')), this.readyMs);
+        let child; try { child = this.launch(this.profile, this.home); } catch (e) { clearTimeout(timer); return fail(e); }
+        this.child = child; child.stderr?.on('data', (c) => { this.stderrTail = (this.stderrTail + c.toString()).slice(-2000); });
+        this.stderrTail = '';
+        child.stdout.on('data', (c) => {
+          buf += c.toString('utf8'); let i;
+          while ((i = buf.indexOf('\n')) >= 0) {
+            const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
+            let f; try { f = JSON.parse(line); } catch { continue; }
+            if (f?.method === 'event' && f.params?.type === 'gateway.ready' && !done) {
+              done = true; clearTimeout(timer); this.state = 'ready'; this.epoch = f.params.payload?.replay_epoch ?? null; this.readyP = null;
+              this.rpc('client.capabilities', { server_requests: true }).catch(() => {}); setTimeout(() => { if (this.state === 'ready') this.failures = 0; }, 60_000).unref?.();
+              this.emit({ kind: 'gateway.ready', epoch: this.epoch }); resolve(); continue;
+            }
+            this.frame(f);
+          }
+        });
+        child.on('error', (e) => { clearTimeout(timer); fail(e); });
+        child.on('exit', (code) => { clearTimeout(timer); this.exited(code, fail); });
+      };
+      if (wait) setTimeout(go, wait); else go();
+    });
+    return this.readyP;
+  }
+  exited(code, fail) {
+    const was = this.state; this.state = 'down'; this.child = null; this.runtime.clear();
+    for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The Hermes gateway stopped'), { code: 'gateway_down' })); } this.pending.clear();
+    const open = [...this.open.keys()]; this.open.clear();
+    if (was === 'starting') return fail?.(new Error(`The Hermes gateway exited while starting (code ${code}). ${this.stderrTail.trim().split('\n').slice(-2).join(' ')}`));
+    this.failures++; this.readyP = null; this.emit({ kind: 'gateway.down', code, open_requests: open });
+  }
+  write(o) { if (!this.child || this.state === 'down') throw Object.assign(new Error('The Hermes gateway is not running'), { code: 'gateway_down' }); this.child.stdin.write(JSON.stringify(o) + '\n'); }
+  frame(f) {
+    if (f && typeof f === 'object' && f.method === 'event') { if (f.params?.type === 'request.cancel') this.open.delete(f.params.payload?.id); return this.emit({ kind: 'event', ...f.params }); }
+    if (f && typeof f === 'object' && f.method && f.id !== undefined) { // server -> client request
+      if (!SERVER_REQUESTS.has(f.method) || typeof f.id !== 'string') { try { this.write({ jsonrpc: '2.0', id: f.id, error: { code: -32601, message: `${f.method} is not handled by Foxfleet` } }); } catch {} return; }
+      this.open.set(f.id, { method: f.method, sid: f.params?.session_id }); return this.emit({ kind: 'request', id: f.id, method: f.method, params: f.params });
+    }
+    const p = this.pending.get(f?.id); if (!p) return; this.pending.delete(f.id); clearTimeout(p.timer);
+    if (f.error) p.reject(Object.assign(new Error(String(f.error.message || 'error').slice(0, 300)), { code: 'upstream', rpc: f.error.code })); else p.resolve(f.result);
+  }
+  rpc(method, params, ms = this.callMs) {
+    return new Promise((resolve, reject) => {
+      const id = ++this.nid, timer = setTimeout(() => { this.pending.delete(id); reject(Object.assign(new Error('The Hermes gateway did not answer in time'), { code: 'timeout' })); }, ms);
+      this.pending.set(id, { resolve, reject, timer });
+      try { this.write({ jsonrpc: '2.0', id, method, params }); } catch (e) { this.pending.delete(id); clearTimeout(timer); reject(e); }
+    });
+  }
+  // The allowlisted entry point.
+  async call(op, params = {}) {
+    if (op === 'info') { await this.ensure(); return { ready: true, epoch: this.epoch, open_requests: [...this.open.keys()] }; }
+    if (op === 'respond') { // answer a server request by id, once
+      const id = need(str(params.id), 'id'); if (!this.open.has(id)) throw Object.assign(new Error('That request is no longer open'), { code: 'gone' });
+      this.open.delete(id); this.write({ jsonrpc: '2.0', id, ...(params.error ? { error: { code: -32000, message: String(params.error).slice(0, 200) } } : { result: params.result && typeof params.result === 'object' ? params.result : {} }) }); return { ok: true };
+    }
+    await this.ensure();
+    if (op === 'attach') { // one owner per session: reuse the live runtime when we have it, otherwise resume the stored session
+      const stored = need(str(params.stored_session_id), 'stored_session_id'), rt = this.runtime.get(stored);
+      let r; if (rt) { try { r = await this.rpc('session.activate', { session_id: rt }); } catch (e) { if (e.rpc !== 4007) throw e; this.runtime.delete(stored); } }
+      if (!r) r = await this.rpc('session.resume', { session_id: stored, cols: 100 });
+      if (r?.session_id) this.runtime.set(stored, r.session_id); return r;
+    }
+    const build = Object.hasOwn(UI_OPS, op) ? UI_OPS[op] : null; if (!build) throw Object.assign(new Error(`${String(op).slice(0, 40)} is not an allowed action`), { code: 'not_allowed' });
+    const [method, p] = build(params); const r = await this.rpc(method, p);
+    if (op === 'create' && r?.stored_session_id && r?.session_id) this.runtime.set(r.stored_session_id, r.session_id);
+    return r;
+  }
+  stop() { this.state = 'down'; this.readyP = null; try { this.child?.kill(); } catch {} }
+}
+
+export function defaultLaunch(gw, profileEnv = {}) {
+  return (profile, home) => spawn(gw.cmd, gw.args, { cwd: gw.cwd, env: { ...process.env, ...profileEnv, HERMES_HOME: home, PYTHONUNBUFFERED: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 // ---------- commands ----------
