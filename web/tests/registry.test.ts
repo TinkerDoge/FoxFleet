@@ -71,7 +71,7 @@ describe('api client: registry and chat', () => {
   });
   it('lists sessions and skills, tolerating shape variants and failures', async () => {
     const ok = (o: unknown) => (async () => new Response(JSON.stringify(o), { status: 200, headers: { 'content-type': 'application/json' } })) as any;
-    expect(await c(ok({ sessions: [{ id: 's1', title: 'T' }, { nope: 1 }] })).sessions('a')).toEqual([{ id: 's1', title: 'T' }]);
+    expect(await c(ok({ sessions: [{ id: 's1', title: 'T' }, { nope: 1 }] })).sessions('a')).toEqual({ sessions: [{ id: 's1', title: 'T' }], total: 1 });
     expect(await c(ok({ data: [{ name: 'x' }, 'y', 'x'] })).skills('a')).toEqual(['x', 'y']);
     expect(await c(async () => new Response('{}', { status: 500 }) as any).skills('a')).toEqual([]);
   });

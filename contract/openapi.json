@@ -1,2840 +1,3438 @@
 {
- "openapi": "3.1.0",
- "info": {
-  "title": "Foxfleet hub API",
-  "version": "0.2.0-alpha",
-  "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
-  "license": {
-   "name": "MIT",
-   "identifier": "MIT"
-  }
- },
- "servers": [
-  {
-   "url": "https://hub.example.com",
-   "description": "Your hub; clients ask for the address on first launch"
-  }
- ],
- "security": [
-  {
-   "session": []
-  }
- ],
- "paths": {
- "/api/machines": {
-  "get": {
-   "operationId": "listMachines",
-   "summary": "Connected machines (computers running the connector) and their profiles.",
-   "tags": [
-    "machines"
-   ],
-   "responses": {
-    "200": {
-     "description": "OK",
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "machines"
-        ],
-        "properties": {
-         "machines": {
-          "type": "array",
-          "items": {
-           "$ref": "#/components/schemas/Machine"
-          }
-         }
-        }
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Foxfleet hub API",
+    "version": "0.2.0-alpha",
+    "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
+    "license": {
+      "name": "MIT",
+      "identifier": "MIT"
     }
-   }
-  }
- },
- "/api/machines/pairing": {
-  "post": {
-   "operationId": "createMachinePairing",
-   "summary": "Create a 15-minute, single-use pairing code for connecting a machine (or re-pairing one with machineId).",
-   "tags": [
-    "machines"
-   ],
-   "requestBody": {
-    "required": true,
-    "content": {
-     "application/json": {
-      "schema": {
-       "type": "object",
-       "properties": {
-        "machineId": {
-         "type": "string"
-        }
-       }
-      }
-     }
-    }
-   },
-   "responses": {
-    "201": {
-     "description": "Pairing code and one-line commands",
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/Pairing"
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
-    },
-    "404": {
-     "$ref": "#/components/responses/Error"
-    },
-    "429": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
   },
-  "get": {
-   "operationId": "getMachinePairing",
-   "summary": "Live status of a pairing code: waiting, paired (with the machine and its profiles) or expired.",
-   "tags": [
-    "machines"
-   ],
-   "parameters": [
+  "servers": [
     {
-     "name": "code",
-     "in": "query",
-     "required": true,
-     "schema": {
-      "type": "string"
-     }
+      "url": "https://hub.example.com",
+      "description": "Your hub; clients ask for the address on first launch"
     }
-   ],
-   "responses": {
-    "200": {
-     "description": "OK",
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "state"
-        ],
-        "properties": {
-         "state": {
-          "enum": [
-           "waiting",
-           "paired",
-           "expired"
-          ]
-         },
-         "expires": {
-          "type": "number"
-         },
-         "machine": {
-          "$ref": "#/components/schemas/Machine"
-         }
-        }
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
-    },
-    "404": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
-  }
- },
- "/api/machines/redeem": {
-  "post": {
-   "operationId": "redeemPairing",
-   "summary": "Called by the connector (no login): exchanges a pairing code once for a machine token.",
-   "tags": [
-    "machines"
-   ],
-   "security": [],
-   "requestBody": {
-    "required": true,
-    "content": {
-     "application/json": {
-      "schema": {
-       "type": "object",
-       "required": [
-        "code"
-       ],
-       "properties": {
-        "code": {
-         "type": "string"
-        },
-        "name": {
-         "type": "string"
-        },
-        "os": {
-         "type": "string"
-        }
-       }
-      }
-     }
-    }
-   },
-   "responses": {
-    "200": {
-     "description": "OK",
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "machineId",
-         "token",
-         "name"
-        ],
-        "properties": {
-         "machineId": {
-          "type": "string"
-         },
-         "token": {
-          "type": "string"
-         },
-         "name": {
-          "type": "string"
-         },
-         "hub": {
-          "type": "string"
-         }
-        }
-       }
-      }
-     }
-    },
-    "403": {
-     "$ref": "#/components/responses/Error"
-    },
-    "429": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
-  }
- },
- "/api/machines/{id}": {
-  "patch": {
-   "operationId": "renameMachine",
-   "summary": "Rename a machine.",
-   "tags": [
-    "machines"
-   ],
-   "parameters": [
+  ],
+  "security": [
     {
-     "name": "id",
-     "in": "path",
-     "required": true,
-     "schema": {
-      "type": "string"
-     }
+      "session": []
     }
-   ],
-   "requestBody": {
-    "required": true,
-    "content": {
-     "application/json": {
-      "schema": {
-       "type": "object",
-       "required": [
-        "name"
-       ],
-       "properties": {
-        "name": {
-         "type": "string"
-        }
-       }
-      }
-     }
-    }
-   },
-   "responses": {
-    "200": {
-     "description": "OK",
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "machine"
+  ],
+  "paths": {
+    "/api/machines": {
+      "get": {
+        "operationId": "listMachines",
+        "summary": "Connected machines (computers running the connector) and their profiles.",
+        "tags": [
+          "machines"
         ],
-        "properties": {
-         "machine": {
-          "$ref": "#/components/schemas/Machine"
-         }
-        }
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
-    },
-    "404": {
-     "$ref": "#/components/responses/Error"
-    },
-    "409": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
-  },
-  "delete": {
-   "operationId": "deleteMachine",
-   "summary": "Revoke a machine: its token stops working, it disconnects and its agents are removed.",
-   "tags": [
-    "machines"
-   ],
-   "parameters": [
-    {
-     "name": "id",
-     "in": "path",
-     "required": true,
-     "schema": {
-      "type": "string"
-     }
-    }
-   ],
-   "responses": {
-    "200": {
-     "description": "OK",
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "properties": {
-         "ok": {
-          "type": "boolean"
-         }
-        }
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
-    },
-    "404": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
-  }
- },
- "/api/machines/{id}/token": {
-  "post": {
-   "operationId": "rotateMachineToken",
-   "summary": "Rotate: the current token dies now; the returned pairing code re-pairs the same machine (agents stay).",
-   "tags": [
-    "machines"
-   ],
-   "parameters": [
-    {
-     "name": "id",
-     "in": "path",
-     "required": true,
-     "schema": {
-      "type": "string"
-     }
-    }
-   ],
-   "responses": {
-    "201": {
-     "description": "New pairing code",
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/Pairing"
-       }
-      }
-     }
-    },
-    "401": {
-     "$ref": "#/components/responses/Error"
-    },
-    "404": {
-     "$ref": "#/components/responses/Error"
-    }
-   }
-  }
- },
-  "/health": {
-   "get": {
-    "operationId": "health",
-    "summary": "Liveness",
-    "tags": [
-     "system"
-    ],
-    "responses": {
-     "200": {
-      "description": "Alive",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "ok"
-         ],
-         "properties": {
-          "ok": {
-           "type": "boolean"
-          }
-         }
-        }
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth": {
-   "get": {
-    "operationId": "getAuth",
-    "summary": "Who am I, and does this hub need setup? Safe to call unauthenticated (also the hub-address probe).",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Auth state",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/AuthInfo"
-        }
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth/setup": {
-   "post": {
-    "operationId": "setup",
-    "summary": "First-run owner creation (only while setupRequired).",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Signed in",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SessionReply"
-        }
-       }
-      }
-     },
-     "409": {
-      "$ref": "#/components/responses/Error"
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/SetupRequest"
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth/login": {
-   "post": {
-    "operationId": "login",
-    "summary": "Sign in. client=app returns a bearer token; web gets a cookie.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Signed in",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SessionReply"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/LoginRequest"
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth/register": {
-   "post": {
-    "operationId": "register",
-    "summary": "Join with an invite (or openly, per registration mode).",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Signed in",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SessionReply"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/RegisterRequest"
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth/logout": {
-   "post": {
-    "operationId": "logout",
-    "summary": "Sign out this device.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Signed out",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object"
-        }
-       }
-      }
-     }
-    },
-    "security": []
-   }
-  },
-  "/api/auth/logout-all": {
-   "post": {
-    "operationId": "logoutAll",
-    "summary": "Sign out every device.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Signed out",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   }
-  },
-  "/api/auth/devices": {
-   "get": {
-    "operationId": "listDevices",
-    "summary": "Signed-in devices.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Devices",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "devices"
-         ],
-         "properties": {
-          "devices": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/Device"
-           }
-          }
-         }
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   }
-  },
-  "/api/auth/devices/{id}": {
-   "delete": {
-    "operationId": "revokeDevice",
-    "summary": "Sign a device out.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "Revoked",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "ok"
-         ],
-         "properties": {
-          "ok": {
-           "type": "boolean"
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "machines"
+                  ],
+                  "properties": {
+                    "machines": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Machine"
+                      }
+                    }
+                  }
+                }
+              }
+            }
           },
-          "signedOut": {
-           "type": "boolean"
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
-         }
         }
-       }
       }
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
     },
-    "parameters": [
-     {
-      "name": "id",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/auth/password": {
-   "post": {
-    "operationId": "changePassword",
-    "summary": "Change password; other devices are signed out.",
-    "tags": [
-     "auth"
-    ],
-    "responses": {
-     "200": {
-      "description": "OK",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Ok"
-        }
-       }
-      }
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/PasswordRequest"
-       }
-      }
-     }
-    }
-   }
-  },
-  "/api/admin/settings": {
-   "get": {
-    "operationId": "getAdminSettings",
-    "summary": "Registration mode (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Settings",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/AdminSettings"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   },
-   "put": {
-    "operationId": "putAdminSettings",
-    "summary": "Set registration mode (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Settings",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/AdminSettings"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "$ref": "#/components/schemas/AdminSettings"
-       }
-      }
-     }
-    }
-   }
-  },
-  "/api/admin/pairing": {
-   "get": {
-    "operationId": "getPairing",
-    "summary": "Link + QR for pairing a phone with this hub (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Pairing",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Shareable"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   }
-  },
-  "/api/admin/invites": {
-   "get": {
-    "operationId": "listInvites",
-    "summary": "Open invites (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Invites",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "invites"
-         ],
-         "properties": {
-          "invites": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/Invite"
-           }
-          }
-         }
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   },
-   "post": {
-    "operationId": "createInvite",
-    "summary": "Create an invite; the code appears once, inside the link (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Invite",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Shareable"
-        }
-       }
-      }
-     },
-     "201": {
-      "description": "Invite",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Shareable"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "properties": {
-         "ttlHours": {
-          "type": "integer"
-         }
-        }
-       }
-      }
-     }
-    }
-   }
-  },
-  "/api/admin/invites/{id}": {
-   "delete": {
-    "operationId": "deleteInvite",
-    "summary": "Revoke an invite (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "OK",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Ok"
-        }
-       }
-      }
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "id",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/admin/users": {
-   "get": {
-    "operationId": "listUsers",
-    "summary": "All accounts (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "Users",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "users"
-         ],
-         "properties": {
-          "users": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/User"
-           }
-          }
-         }
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   }
-  },
-  "/api/admin/users/{id}": {
-   "patch": {
-    "operationId": "patchUser",
-    "summary": "Disable or enable a user (owner; the owner cannot be disabled).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "User",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "user"
-         ],
-         "properties": {
-          "user": {
-           "$ref": "#/components/schemas/User"
-          }
-         }
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "disabled"
+    "/api/machines/pairing": {
+      "post": {
+        "operationId": "createMachinePairing",
+        "summary": "Create a 15-minute, single-use pairing code for connecting a machine (or re-pairing one with machineId).",
+        "tags": [
+          "machines"
         ],
-        "properties": {
-         "disabled": {
-          "type": "boolean"
-         }
-        }
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "id",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   },
-   "delete": {
-    "operationId": "deleteUser",
-    "summary": "Remove a user (owner).",
-    "tags": [
-     "admin"
-    ],
-    "responses": {
-     "200": {
-      "description": "OK",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Ok"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "429": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "id",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agent-kinds": {
-   "get": {
-    "operationId": "listAgentKinds",
-    "summary": "Provider kinds and their form schema; clients render add/edit forms from this.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Kinds",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "kinds"
-         ],
-         "properties": {
-          "kinds": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/AgentKind"
-           }
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "machineId": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
           }
-         }
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   }
-  },
-  "/api/connections": {
-   "get": {
-    "operationId": "listConnections",
-    "summary": "Saved agents. Secrets and addresses are never returned, only has* flags.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Connections",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "connections"
-         ],
-         "properties": {
-          "connections": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/Connection"
-           }
+        },
+        "responses": {
+          "201": {
+            "description": "Pairing code and one-line commands",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pairing"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
           }
-         }
         }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    }
-   },
-   "post": {
-    "operationId": "createConnection",
-    "summary": "Add an agent. Connector bootstrap or mailbox token is returned once.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "201": {
-      "description": "Created",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SaveResult"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "name"
+      },
+      "get": {
+        "operationId": "getMachinePairing",
+        "summary": "Live status of a pairing code: waiting, paired (with the machine and its profiles) or expired.",
+        "tags": [
+          "machines"
         ],
-        "properties": {
-         "kind": {
-          "type": "string"
-         },
-         "name": {
-          "type": "string"
-         }
-        }
-       }
-      }
-     }
-    }
-   }
-  },
-  "/api/connections/{name}": {
-   "put": {
-    "operationId": "updateConnection",
-    "summary": "Edit an agent. Omitted write-only fields keep their saved value.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Saved",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/SaveResult"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   },
-   "delete": {
-    "operationId": "deleteConnection",
-    "summary": "Remove an agent and its secrets.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "OK",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/Ok"
-        }
-       }
-      }
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/connections/order": {
-   "post": {
-    "operationId": "reorderConnections",
-    "summary": "Persist agent order.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Order",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "order"
-         ],
-         "properties": {
-          "order": {
-           "type": "array",
-           "items": {
-            "type": "string"
-           }
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
           }
-         }
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object",
-        "required": [
-         "names"
         ],
-        "properties": {
-         "names": {
-          "type": "array",
-          "items": {
-           "type": "string"
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "state"
+                  ],
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "waiting",
+                        "paired",
+                        "expired"
+                      ]
+                    },
+                    "expires": {
+                      "type": "number"
+                    },
+                    "machine": {
+                      "$ref": "#/components/schemas/Machine"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
           }
-         }
         }
-       }
       }
-     }
-    }
-   }
-  },
-  "/api/connections/test": {
-   "post": {
-    "operationId": "testConnection",
-    "summary": "Probe a draft or saved agent without saving.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Result",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/TestResult"
+    },
+    "/api/machines/redeem": {
+      "post": {
+        "operationId": "redeemPairing",
+        "summary": "Called by the connector (no login): exchanges a pairing code once for a machine token.",
+        "tags": [
+          "machines"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  },
+                  "os": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "machineId",
+                    "token",
+                    "name"
+                  ],
+                  "properties": {
+                    "machineId": {
+                      "type": "string"
+                    },
+                    "token": {
+                      "type": "string"
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "hub": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
         }
-       }
       }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
     },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    }
-   }
-  },
-  "/api/connections/{name}/token": {
-   "post": {
-    "operationId": "rotateToken",
-    "summary": "New connector bootstrap (Hermes connector) or mailbox token; the old one stops working.",
-    "tags": [
-     "registry"
-    ],
-    "responses": {
-     "200": {
-      "description": "Token",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object"
+    "/api/machines/{id}": {
+      "patch": {
+        "operationId": "renameMachine",
+        "summary": "Rename a machine.",
+        "tags": [
+          "machines"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "machine"
+                  ],
+                  "properties": {
+                    "machine": {
+                      "$ref": "#/components/schemas/Machine"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
         }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
       },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents": {
-   "get": {
-    "operationId": "listAgents",
-    "summary": "Fleet with live status and capabilities.",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Agents",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
+      "delete": {
+        "operationId": "deleteMachine",
+        "summary": "Revoke a machine: its token stops working, it disconnects and its agents are removed.",
+        "tags": [
+          "machines"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/machines/{id}/token": {
+      "post": {
+        "operationId": "rotateMachineToken",
+        "summary": "Rotate: the current token dies now; the returned pairing code re-pairs the same machine (agents stay).",
+        "tags": [
+          "machines"
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "New pairing code",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Pairing"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "summary": "Liveness",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "Alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth": {
+      "get": {
+        "operationId": "getAuth",
+        "summary": "Who am I, and does this hub need setup? Safe to call unauthenticated (also the hub-address probe).",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Auth state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthInfo"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/setup": {
+      "post": {
+        "operationId": "setup",
+        "summary": "First-run owner creation (only while setupRequired).",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReply"
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetupRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/login": {
+      "post": {
+        "operationId": "login",
+        "summary": "Sign in. client=app returns a bearer token; web gets a cookie.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/register": {
+      "post": {
+        "operationId": "register",
+        "summary": "Join with an invite (or openly, per registration mode).",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed in",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionReply"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterRequest"
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "summary": "Sign out this device.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/auth/logout-all": {
+      "post": {
+        "operationId": "logoutAll",
+        "summary": "Sign out every device.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed out",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/auth/devices": {
+      "get": {
+        "operationId": "listDevices",
+        "summary": "Signed-in devices.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Devices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "devices"
+                  ],
+                  "properties": {
+                    "devices": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Device"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/auth/devices/{id}": {
+      "delete": {
+        "operationId": "revokeDevice",
+        "summary": "Sign a device out.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "Revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "signedOut": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/auth/password": {
+      "post": {
+        "operationId": "changePassword",
+        "summary": "Change password; other devices are signed out.",
+        "tags": [
+          "auth"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordRequest"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/settings": {
+      "get": {
+        "operationId": "getAdminSettings",
+        "summary": "Registration mode (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "putAdminSettings",
+        "summary": "Set registration mode (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminSettings"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/pairing": {
+      "get": {
+        "operationId": "getPairing",
+        "summary": "Link + QR for pairing a phone with this hub (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Pairing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Shareable"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/admin/invites": {
+      "get": {
+        "operationId": "listInvites",
+        "summary": "Open invites (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Invites",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "invites"
+                  ],
+                  "properties": {
+                    "invites": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Invite"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createInvite",
+        "summary": "Create an invite; the code appears once, inside the link (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Invite",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Shareable"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Invite",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Shareable"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ttlHours": {
+                    "type": "integer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/admin/invites/{id}": {
+      "delete": {
+        "operationId": "deleteInvite",
+        "summary": "Revoke an invite (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/admin/users": {
+      "get": {
+        "operationId": "listUsers",
+        "summary": "All accounts (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "users"
+                  ],
+                  "properties": {
+                    "users": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/User"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/admin/users/{id}": {
+      "patch": {
+        "operationId": "patchUser",
+        "summary": "Disable or enable a user (owner; the owner cannot be disabled).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "User",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "user"
+                  ],
+                  "properties": {
+                    "user": {
+                      "$ref": "#/components/schemas/User"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "disabled"
+                ],
+                "properties": {
+                  "disabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteUser",
+        "summary": "Remove a user (owner).",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agent-kinds": {
+      "get": {
+        "operationId": "listAgentKinds",
+        "summary": "Provider kinds and their form schema; clients render add/edit forms from this.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Kinds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "kinds"
+                  ],
+                  "properties": {
+                    "kinds": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AgentKind"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/connections": {
+      "get": {
+        "operationId": "listConnections",
+        "summary": "Saved agents. Secrets and addresses are never returned, only has* flags.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Connections",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "connections"
+                  ],
+                  "properties": {
+                    "connections": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Connection"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createConnection",
+        "summary": "Add an agent. Connector bootstrap or mailbox token is returned once.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaveResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "name"
+                ],
+                "properties": {
+                  "kind": {
+                    "type": "string"
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connections/{name}": {
+      "put": {
+        "operationId": "updateConnection",
+        "summary": "Edit an agent. Omitted write-only fields keep their saved value.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SaveResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "deleteConnection",
+        "summary": "Remove an agent and its secrets.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/connections/order": {
+      "post": {
+        "operationId": "reorderConnections",
+        "summary": "Persist agent order.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Order",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "order"
+                  ],
+                  "properties": {
+                    "order": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "names"
+                ],
+                "properties": {
+                  "names": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connections/test": {
+      "post": {
+        "operationId": "testConnection",
+        "summary": "Probe a draft or saved agent without saving.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/connections/{name}/token": {
+      "post": {
+        "operationId": "rotateToken",
+        "summary": "New connector bootstrap (Hermes connector) or mailbox token; the old one stops working.",
+        "tags": [
+          "registry"
+        ],
+        "responses": {
+          "200": {
+            "description": "Token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents": {
+      "get": {
+        "operationId": "listAgents",
+        "summary": "Fleet with live status and capabilities.",
+        "tags": [
           "agents"
-         ],
-         "properties": {
-          "agents": {
-           "type": "array",
-           "items": {
-            "$ref": "#/components/schemas/Agent"
-           }
+        ],
+        "responses": {
+          "200": {
+            "description": "Agents",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "agents"
+                  ],
+                  "properties": {
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Agent"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
           }
-         }
         }
-       }
       }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     }
+    },
+    "/api/agents/{name}/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "Past sessions, newest activity first. Hermes agents: the dashboard's sessions. API-key agents: hub-stored history (see /api/history/settings).",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "sessions"
+                  ],
+                  "properties": {
+                    "sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "title": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "updated": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "description": "Last activity, ms since epoch"
+                          },
+                          "started": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "messages": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          },
+                          "preview": {
+                            "type": "string"
+                          },
+                          "pinned": {
+                            "type": "boolean"
+                          }
+                        }
+                      }
+                    },
+                    "total": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "1-100, default 30"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": ""
+          },
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "search text"
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/sessions/{id}/messages": {
+      "get": {
+        "operationId": "getSessionMessages",
+        "summary": "One page of a conversation, normalised (tool calls folded into the assistant turn, tags and hidden rows removed). offset counts back from the newest message; each page is chronological.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "messages"
+                  ],
+                  "properties": {
+                    "messages": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "role"
+                        ],
+                        "properties": {
+                          "role": {
+                            "type": "string",
+                            "enum": [
+                              "user",
+                              "assistant"
+                            ]
+                          },
+                          "content": {
+                            "type": "string"
+                          },
+                          "reasoning": {
+                            "type": "string"
+                          },
+                          "images": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "ts": {
+                            "type": "integer"
+                          },
+                          "tools": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "required": [
+                                "name"
+                              ],
+                              "properties": {
+                                "name": {
+                                  "type": "string"
+                                },
+                                "args": {
+                                  "type": "string"
+                                },
+                                "result": {
+                                  "type": "string"
+                                },
+                                "ok": {
+                                  "type": "boolean"
+                                }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    "has_more": {
+                      "type": "boolean"
+                    },
+                    "offset": {
+                      "type": "integer"
+                    },
+                    "limit": {
+                      "type": "integer"
+                    },
+                    "total": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "1-200, default 80"
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/skills": {
+      "get": {
+        "operationId": "listSkills",
+        "summary": "Skill names for / and # autocomplete.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Skills",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/chat": {
+      "post": {
+        "operationId": "chat",
+        "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `[DONE]`. Session id in X-Hermes-Session-Id.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "messages"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  },
+                  "stream": {
+                    "type": "boolean"
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "messages": {
+                    "type": "array"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/files": {
+      "post": {
+        "operationId": "uploadFile",
+        "summary": "Upload (application/octet-stream body, ?name=&type=) into the agent's managed files.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "path"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string"
+                    },
+                    "path": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "name",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/screen/status": {
+      "get": {
+        "operationId": "screenStatus",
+        "summary": "Screen availability and who holds control.",
+        "tags": [
+          "screen"
+        ],
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/screen/start": {
+      "post": {
+        "operationId": "screenStart",
+        "summary": "Start the virtual screen.",
+        "tags": [
+          "screen"
+        ],
+        "responses": {
+          "200": {
+            "description": "Status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenStatus"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/screen/observe": {
+      "post": {
+        "operationId": "screenObserve",
+        "summary": "Mint a single-use (30 s) ticket for the screen WebSocket: wss://hub/api/agents/{name}/screen/ws?ticket=\u2026",
+        "tags": [
+          "screen"
+        ],
+        "responses": {
+          "200": {
+            "description": "Ticket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenTicket"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/screen/takeover": {
+      "post": {
+        "operationId": "screenTakeover",
+        "summary": "Take control (auto hand-back at autoHandBackAt).",
+        "tags": [
+          "screen"
+        ],
+        "responses": {
+          "200": {
+            "description": "Lease",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenLease"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/screen/handback": {
+      "post": {
+        "operationId": "screenHandback",
+        "summary": "Hand control back to the agent.",
+        "tags": [
+          "screen"
+        ],
+        "responses": {
+          "200": {
+            "description": "Lease",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScreenLease"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ]
+      }
+    },
+    "/api/media-proxy": {
+      "get": {
+        "operationId": "mediaProxy",
+        "summary": "Fetch a remote https image for Markdown through the hub (SSRF-checked: public addresses only, https:443, no SVG, 8 MB, 10 s).",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Image bytes",
+            "content": {
+              "image/png": {},
+              "image/jpeg": {},
+              "image/gif": {},
+              "image/webp": {},
+              "image/avif": {}
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "parameters": [
+          {
+            "name": "url",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uri"
+            }
+          }
+        ]
+      }
+    },
+    "/api/agents/{name}/sessions/{id}": {
+      "patch": {
+        "operationId": "renameSession",
+        "summary": "Rename a session.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "title"
+                ],
+                "properties": {
+                  "title": {
+                    "type": "string",
+                    "maxLength": 200
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Renamed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "title": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteSession",
+        "summary": "Delete a session.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/runs": {
+      "get": {
+        "operationId": "listRuns",
+        "summary": "Chat runs of this agent still held by the hub (running, or finished within the last 10 minutes). A run keeps going if the client disconnects.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Runs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "runs"
+                  ],
+                  "properties": {
+                    "runs": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "state"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "session_id": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "state": {
+                            "type": "string",
+                            "enum": [
+                              "running",
+                              "done",
+                              "error",
+                              "stopped"
+                            ]
+                          },
+                          "started": {
+                            "type": "integer"
+                          },
+                          "events": {
+                            "type": "integer"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/runs/{id}/events": {
+      "get": {
+        "operationId": "followRun",
+        "summary": "Replays a run's events after the cursor (?after=N or Last-Event-ID) and follows it live. Events carry `id: N`; `foxfleet.gap` says older events were dropped from the bounded log; `foxfleet.run` says the run was stopped or failed.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Event stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/runs/{id}/stop": {
+      "post": {
+        "operationId": "stopRun",
+        "summary": "The only thing that cancels the agent: an explicit Stop. Closing the app or tab does not.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Stopped",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "run": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "state"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "session_id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "running",
+                            "done",
+                            "error",
+                            "stopped"
+                          ]
+                        },
+                        "started": {
+                          "type": "integer"
+                        },
+                        "events": {
+                          "type": "integer"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/history/settings": {
+      "get": {
+        "operationId": "getHistorySettings",
+        "summary": "History retention for the signed-in user.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "retentionDays"
+                  ],
+                  "properties": {
+                    "retentionDays": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 3650,
+                      "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "setHistorySettings",
+        "summary": "Set history retention (days).",
+        "tags": [
+          "agents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "retentionDays"
+                ],
+                "properties": {
+                  "retentionDays": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 3650,
+                    "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Settings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "retentionDays"
+                  ],
+                  "properties": {
+                    "retentionDays": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 3650,
+                      "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
-   }
   },
-  "/api/agents/{name}/sessions": {
-   "get": {
-    "operationId": "listSessions",
-    "summary": "Recent sessions (agents with capabilities.sessions).",
-    "tags": [
-     "agents"
-    ],
+  "components": {
+    "securitySchemes": {
+      "session": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "foxfleet_session",
+        "description": "Web: HttpOnly cookie. Apps send the token from login(client=app) as `Authorization: Bearer`."
+      }
+    },
     "responses": {
-     "200": {
-      "description": "Sessions",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "sessions"
-         ],
-         "properties": {
-          "sessions": {
-           "type": "array",
-           "items": {
-            "type": "object",
-            "required": [
-             "id"
-            ],
-            "properties": {
-             "id": {
-              "type": "string"
-             },
-             "title": {
-              "type": [
-               "string",
-               "null"
-              ]
-             }
+      "Error": {
+        "description": "Error",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
             }
-           }
           }
-         }
         }
-       }
       }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     }
     },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/sessions/{id}/messages": {
-   "get": {
-    "operationId": "getSessionMessages",
-    "summary": "Messages of one session.",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Messages",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "messages"
-         ],
-         "properties": {
-          "messages": {
-           "type": "array",
-           "items": {
-            "type": "object",
-            "required": [
-             "role"
-            ],
-            "properties": {
-             "role": {
-              "type": "string"
-             }
-            }
-           }
-          }
-         }
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     },
-     {
-      "name": "id",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/skills": {
-   "get": {
-    "operationId": "listSkills",
-    "summary": "Skill names for / and # autocomplete.",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Skills",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/chat": {
-   "post": {
-    "operationId": "chat",
-    "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `[DONE]`. Session id in X-Hermes-Session-Id.",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Event stream",
-      "content": {
-       "text/event-stream": {
-        "schema": {
-         "type": "string"
-        }
-       }
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "413": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
+    "schemas": {
+      "Machine": {
         "type": "object",
         "required": [
-         "messages"
+          "id",
+          "name",
+          "paired",
+          "profiles"
         ],
         "properties": {
-         "model": {
-          "type": "string"
-         },
-         "stream": {
-          "type": "boolean"
-         },
-         "session_id": {
-          "type": "string"
-         },
-         "messages": {
-          "type": "array"
-         }
-        }
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/files": {
-   "post": {
-    "operationId": "uploadFile",
-    "summary": "Upload (application/octet-stream body, ?name=&type=) into the agent's managed files.",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Stored",
-      "content": {
-       "application/json": {
-        "schema": {
-         "type": "object",
-         "required": [
-          "path"
-         ],
-         "properties": {
-          "name": {
-           "type": "string"
+          "id": {
+            "type": "string"
           },
-          "path": {
-           "type": "string"
+          "name": {
+            "type": "string"
+          },
+          "os": {
+            "enum": [
+              "linux",
+              "darwin",
+              "win32",
+              "other"
+            ]
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "paired": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "number"
+          },
+          "lastSeen": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "profiles": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "profile",
+                "agent"
+              ],
+              "properties": {
+                "profile": {
+                  "type": "string"
+                },
+                "agent": {
+                  "type": "string"
+                }
+              }
+            }
           }
-         }
         }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "413": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
       },
-      "description": ""
-     },
-     {
-      "name": "name",
-      "in": "query",
-      "required": true,
-      "schema": {
-       "type": "string"
+      "Pairing": {
+        "type": "object",
+        "required": [
+          "code",
+          "display",
+          "expires",
+          "url",
+          "link",
+          "commands"
+        ],
+        "properties": {
+          "code": {
+            "type": "string"
+          },
+          "display": {
+            "type": "string"
+          },
+          "expires": {
+            "type": "number"
+          },
+          "url": {
+            "type": "string"
+          },
+          "link": {
+            "type": "string"
+          },
+          "rows": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "commands": {
+            "type": "object",
+            "required": [
+              "sh",
+              "powershell",
+              "node"
+            ],
+            "properties": {
+              "sh": {
+                "type": "string"
+              },
+              "powershell": {
+                "type": "string"
+              },
+              "node": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      "Ok": {
+        "type": "object",
+        "required": [
+          "ok"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "User": {
+        "type": "object",
+        "required": [
+          "id",
+          "username",
+          "role"
+        ],
+        "properties": {
+          "acceptedTerms": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Terms version this user accepted at sign-up, if recorded."
+          },
+          "id": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "role": {
+            "enum": [
+              "owner",
+              "user"
+            ]
+          },
+          "totp": {
+            "type": "boolean"
+          },
+          "disabled": {
+            "type": "boolean"
+          },
+          "created": {
+            "type": "number"
+          }
+        }
+      },
+      "AuthInfo": {
+        "type": "object",
+        "required": [
+          "required",
+          "authenticated"
+        ],
+        "properties": {
+          "termsVersion": {
+            "type": "string",
+            "description": "Current version label of the Terms of Use and Privacy Policy."
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "authenticated": {
+            "type": "boolean"
+          },
+          "setupRequired": {
+            "type": "boolean"
+          },
+          "setupCodeRequired": {
+            "type": "boolean"
+          },
+          "registration": {
+            "enum": [
+              "closed",
+              "invite",
+              "open"
+            ]
+          },
+          "user": {
+            "$ref": "#/components/schemas/User"
+          }
+        }
+      },
+      "SessionReply": {
+        "type": "object",
+        "required": [
+          "user"
+        ],
+        "properties": {
+          "user": {
+            "$ref": "#/components/schemas/User"
+          },
+          "token": {
+            "type": "string"
+          },
+          "authenticated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "SetupRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "acceptedTerms": {
+            "type": "string",
+            "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string"
+          },
+          "client": {
+            "enum": [
+              "app",
+              "web"
+            ]
+          },
+          "deviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "LoginRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "client": {
+            "enum": [
+              "app",
+              "web"
+            ]
+          },
+          "deviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "RegisterRequest": {
+        "type": "object",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "acceptedTerms": {
+            "type": "string",
+            "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."
+          },
+          "username": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "invite": {
+            "type": "string"
+          },
+          "client": {
+            "enum": [
+              "app",
+              "web"
+            ]
+          },
+          "deviceName": {
+            "type": "string"
+          }
+        }
+      },
+      "PasswordRequest": {
+        "type": "object",
+        "required": [
+          "current",
+          "next"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "next": {
+            "type": "string"
+          }
+        }
+      },
+      "Device": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "current"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "created": {
+            "type": "number"
+          },
+          "lastSeen": {
+            "type": "number"
+          },
+          "current": {
+            "type": "boolean"
+          }
+        }
+      },
+      "AdminSettings": {
+        "type": "object",
+        "required": [
+          "registration"
+        ],
+        "properties": {
+          "registration": {
+            "enum": [
+              "closed",
+              "invite",
+              "open"
+            ]
+          }
+        }
+      },
+      "Invite": {
+        "type": "object",
+        "required": [
+          "id",
+          "expires"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "created": {
+            "type": "number"
+          },
+          "expires": {
+            "type": "number"
+          },
+          "used": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Shareable": {
+        "type": "object",
+        "required": [
+          "link"
+        ],
+        "properties": {
+          "link": {
+            "type": "string"
+          },
+          "hub": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "expires": {
+            "type": "number"
+          },
+          "svg": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rows": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Capabilities": {
+        "type": "object",
+        "properties": {
+          "chat": {
+            "type": "boolean"
+          },
+          "images": {
+            "type": "boolean"
+          },
+          "files": {
+            "type": "boolean"
+          },
+          "screen": {
+            "type": "boolean"
+          },
+          "voice": {
+            "type": "boolean"
+          },
+          "skills": {
+            "type": "boolean"
+          },
+          "sessions": {
+            "type": "boolean"
+          },
+          "mailbox": {
+            "type": "boolean"
+          }
+        }
+      },
+      "Agent": {
+        "type": "object",
+        "required": [
+          "kind",
+          "online",
+          "chatReady",
+          "capabilities"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "displayName": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          },
+          "online": {
+            "type": "boolean"
+          },
+          "chatReady": {
+            "type": "boolean"
+          },
+          "managementReady": {
+            "type": "boolean"
+          },
+          "description": {
+            "type": "string"
+          },
+          "capabilities": {
+            "$ref": "#/components/schemas/Capabilities"
+          }
+        }
+      },
+      "KindField": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "type"
+        ],
+        "properties": {
+          "key": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          },
+          "required": {
+            "type": "boolean"
+          },
+          "writeOnly": {
+            "type": "boolean"
+          },
+          "advanced": {
+            "type": "boolean"
+          },
+          "default": {
+            "type": [
+              "string",
+              "number",
+              "boolean",
+              "null"
+            ]
+          },
+          "help": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "when": {
+            "type": "object"
+          }
+        }
+      },
+      "AgentKind": {
+        "type": "object",
+        "required": [
+          "kind",
+          "label",
+          "fields"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "planned": {
+            "type": "boolean"
+          },
+          "auth": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KindField"
+            }
+          }
+        }
+      },
+      "Connection": {
+        "type": "object",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "description": "Plain fields plus hasX flags for write-only ones. Never carries secrets or addresses.",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string"
+          }
+        }
+      },
+      "SaveResult": {
+        "type": "object",
+        "required": [
+          "connection"
+        ],
+        "properties": {
+          "connection": {
+            "$ref": "#/components/schemas/Connection"
+          },
+          "inboxToken": {
+            "type": "string"
+          },
+          "connectorToken": {
+            "type": "string"
+          },
+          "bootstrap": {
+            "type": "string"
+          },
+          "mcpUrl": {
+            "type": "string"
+          }
+        }
+      },
+      "TestResult": {
+        "type": "object",
+        "required": [
+          "checks"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean"
+          },
+          "checks": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "required": [
+                "ok"
+              ],
+              "properties": {
+                "ok": {
+                  "type": "boolean"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "ScreenStatus": {
+        "type": "object",
+        "properties": {
+          "running": {
+            "type": "boolean"
+          },
+          "supported": {
+            "type": "boolean"
+          },
+          "installed": {
+            "type": "boolean"
+          },
+          "geometry": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "blocker": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "lease": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "holder": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "number"
+              }
+            }
+          }
+        }
+      },
+      "ScreenTicket": {
+        "type": "object",
+        "required": [
+          "ticket"
+        ],
+        "properties": {
+          "ticket": {
+            "type": "string"
+          },
+          "expiresInMs": {
+            "type": "number"
+          },
+          "running": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ScreenLease": {
+        "type": "object",
+        "properties": {
+          "lease": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "holder": {
+                "type": "string"
+              },
+              "epoch": {
+                "type": "number"
+              }
+            }
+          },
+          "autoHandBackAt": {
+            "type": "number"
+          }
+        }
       }
-     }
-    ],
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/octet-stream": {
-       "schema": {
-        "type": "string",
-        "format": "binary"
-       }
-      }
-     }
     }
-   }
-  },
-  "/api/agents/{name}/screen/status": {
-   "get": {
-    "operationId": "screenStatus",
-    "summary": "Screen availability and who holds control.",
-    "tags": [
-     "screen"
-    ],
-    "responses": {
-     "200": {
-      "description": "Status",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ScreenStatus"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/screen/start": {
-   "post": {
-    "operationId": "screenStart",
-    "summary": "Start the virtual screen.",
-    "tags": [
-     "screen"
-    ],
-    "responses": {
-     "200": {
-      "description": "Status",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ScreenStatus"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "502": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/screen/observe": {
-   "post": {
-    "operationId": "screenObserve",
-    "summary": "Mint a single-use (30 s) ticket for the screen WebSocket: wss://hub/api/agents/{name}/screen/ws?ticket=\u2026",
-    "tags": [
-     "screen"
-    ],
-    "responses": {
-     "200": {
-      "description": "Ticket",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ScreenTicket"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "404": {
-      "$ref": "#/components/responses/Error"
-     },
-     "502": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/screen/takeover": {
-   "post": {
-    "operationId": "screenTakeover",
-    "summary": "Take control (auto hand-back at autoHandBackAt).",
-    "tags": [
-     "screen"
-    ],
-    "responses": {
-     "200": {
-      "description": "Lease",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ScreenLease"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "409": {
-      "$ref": "#/components/responses/Error"
-     },
-     "502": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/agents/{name}/screen/handback": {
-   "post": {
-    "operationId": "screenHandback",
-    "summary": "Hand control back to the agent.",
-    "tags": [
-     "screen"
-    ],
-    "responses": {
-     "200": {
-      "description": "Lease",
-      "content": {
-       "application/json": {
-        "schema": {
-         "$ref": "#/components/schemas/ScreenLease"
-        }
-       }
-      }
-     },
-     "401": {
-      "$ref": "#/components/responses/Error"
-     },
-     "502": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "requestBody": {
-     "required": true,
-     "content": {
-      "application/json": {
-       "schema": {
-        "type": "object"
-       }
-      }
-     }
-    },
-    "parameters": [
-     {
-      "name": "name",
-      "in": "path",
-      "required": true,
-      "schema": {
-       "type": "string"
-      },
-      "description": ""
-     }
-    ]
-   }
-  },
-  "/api/media-proxy": {
-   "get": {
-    "operationId": "mediaProxy",
-    "summary": "Fetch a remote https image for Markdown through the hub (SSRF-checked: public addresses only, https:443, no SVG, 8 MB, 10 s).",
-    "tags": [
-     "agents"
-    ],
-    "responses": {
-     "200": {
-      "description": "Image bytes",
-      "content": {
-       "image/png": {},
-       "image/jpeg": {},
-       "image/gif": {},
-       "image/webp": {},
-       "image/avif": {}
-      }
-     },
-     "400": {
-      "$ref": "#/components/responses/Error"
-     },
-     "403": {
-      "$ref": "#/components/responses/Error"
-     },
-     "413": {
-      "$ref": "#/components/responses/Error"
-     },
-     "415": {
-      "$ref": "#/components/responses/Error"
-     },
-     "502": {
-      "$ref": "#/components/responses/Error"
-     },
-     "504": {
-      "$ref": "#/components/responses/Error"
-     }
-    },
-    "parameters": [
-     {
-      "name": "url",
-      "in": "query",
-      "required": true,
-      "schema": {
-       "type": "string",
-       "format": "uri"
-      }
-     }
-    ]
-   }
   }
- },
- "components": {
-  "securitySchemes": {
-   "session": {
-    "type": "apiKey",
-    "in": "cookie",
-    "name": "foxfleet_session",
-    "description": "Web: HttpOnly cookie. Apps send the token from login(client=app) as `Authorization: Bearer`."
-   }
-  },
-  "responses": {
-   "Error": {
-    "description": "Error",
-    "content": {
-     "application/json": {
-      "schema": {
-       "$ref": "#/components/schemas/Error"
-      }
-     }
-    }
-   }
-  },
-  "schemas": {
- "Machine": {
-  "type": "object",
-  "required": [
-   "id",
-   "name",
-   "paired",
-   "profiles"
-  ],
-  "properties": {
-   "id": {
-    "type": "string"
-   },
-   "name": {
-    "type": "string"
-   },
-   "os": {
-    "enum": [
-     "linux",
-     "darwin",
-     "win32",
-     "other"
-    ]
-   },
-   "online": {
-    "type": "boolean"
-   },
-   "paired": {
-    "type": "boolean"
-   },
-   "created": {
-    "type": "number"
-   },
-   "lastSeen": {
-    "type": [
-     "number",
-     "null"
-    ]
-   },
-   "profiles": {
-    "type": "array",
-    "items": {
-     "type": "object",
-     "required": [
-      "profile",
-      "agent"
-     ],
-     "properties": {
-      "profile": {
-       "type": "string"
-      },
-      "agent": {
-       "type": "string"
-      }
-     }
-    }
-   }
-  }
- },
- "Pairing": {
-  "type": "object",
-  "required": [
-   "code",
-   "display",
-   "expires",
-   "url",
-   "link",
-   "commands"
-  ],
-  "properties": {
-   "code": {
-    "type": "string"
-   },
-   "display": {
-    "type": "string"
-   },
-   "expires": {
-    "type": "number"
-   },
-   "url": {
-    "type": "string"
-   },
-   "link": {
-    "type": "string"
-   },
-   "rows": {
-    "type": [
-     "array",
-     "null"
-    ],
-    "items": {
-     "type": "string"
-    }
-   },
-   "commands": {
-    "type": "object",
-    "required": [
-     "sh",
-     "powershell",
-     "node"
-    ],
-    "properties": {
-     "sh": {
-      "type": "string"
-     },
-     "powershell": {
-      "type": "string"
-     },
-     "node": {
-      "type": "string"
-     }
-    }
-   }
-  }
- },
-   "Ok": {
-    "type": "object",
-    "required": [
-     "ok"
-    ],
-    "properties": {
-     "ok": {
-      "type": "boolean"
-     }
-    }
-   },
-   "Error": {
-    "type": "object",
-    "required": [
-     "error"
-    ],
-    "properties": {
-     "error": {
-      "type": "string"
-     }
-    }
-   },
-   "User": {
-    "type": "object",
-    "required": [
-     "id",
-     "username",
-     "role"
-    ],
-    "properties": {
-   "acceptedTerms": {"type": ["string", "null"], "description": "Terms version this user accepted at sign-up, if recorded."},
-     "id": {
-      "type": "string"
-     },
-     "username": {
-      "type": "string"
-     },
-     "role": {
-      "enum": [
-       "owner",
-       "user"
-      ]
-     },
-     "totp": {
-      "type": "boolean"
-     },
-     "disabled": {
-      "type": "boolean"
-     },
-     "created": {
-      "type": "number"
-     }
-    }
-   },
-   "AuthInfo": {
-    "type": "object",
-    "required": [
-     "required",
-     "authenticated"
-    ],
-    "properties": {
-   "termsVersion": {"type": "string", "description": "Current version label of the Terms of Use and Privacy Policy."},
-     "required": {
-      "type": "boolean"
-     },
-     "authenticated": {
-      "type": "boolean"
-     },
-     "setupRequired": {
-      "type": "boolean"
-     },
-     "setupCodeRequired": {
-      "type": "boolean"
-     },
-     "registration": {
-      "enum": [
-       "closed",
-       "invite",
-       "open"
-      ]
-     },
-     "user": {
-      "$ref": "#/components/schemas/User"
-     }
-    }
-   },
-   "SessionReply": {
-    "type": "object",
-    "required": [
-     "user"
-    ],
-    "properties": {
-     "user": {
-      "$ref": "#/components/schemas/User"
-     },
-     "token": {
-      "type": "string"
-     },
-     "authenticated": {
-      "type": "boolean"
-     }
-    }
-   },
-   "SetupRequest": {
-    "type": "object",
-    "required": [
-     "username",
-     "password"
-    ],
-    "properties": {
-   "acceptedTerms": {"type": "string", "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."},
-     "username": {
-      "type": "string"
-     },
-     "password": {
-      "type": "string"
-     },
-     "code": {
-      "type": "string"
-     },
-     "client": {
-      "enum": [
-       "app",
-       "web"
-      ]
-     },
-     "deviceName": {
-      "type": "string"
-     }
-    }
-   },
-   "LoginRequest": {
-    "type": "object",
-    "required": [
-     "username",
-     "password"
-    ],
-    "properties": {
-     "username": {
-      "type": "string"
-     },
-     "password": {
-      "type": "string"
-     },
-     "client": {
-      "enum": [
-       "app",
-       "web"
-      ]
-     },
-     "deviceName": {
-      "type": "string"
-     }
-    }
-   },
-   "RegisterRequest": {
-    "type": "object",
-    "required": [
-     "username",
-     "password"
-    ],
-    "properties": {
-   "acceptedTerms": {"type": "string", "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."},
-     "username": {
-      "type": "string"
-     },
-     "password": {
-      "type": "string"
-     },
-     "invite": {
-      "type": "string"
-     },
-     "client": {
-      "enum": [
-       "app",
-       "web"
-      ]
-     },
-     "deviceName": {
-      "type": "string"
-     }
-    }
-   },
-   "PasswordRequest": {
-    "type": "object",
-    "required": [
-     "current",
-     "next"
-    ],
-    "properties": {
-     "current": {
-      "type": "string"
-     },
-     "next": {
-      "type": "string"
-     }
-    }
-   },
-   "Device": {
-    "type": "object",
-    "required": [
-     "id",
-     "name",
-     "current"
-    ],
-    "properties": {
-     "id": {
-      "type": "string"
-     },
-     "name": {
-      "type": "string"
-     },
-     "kind": {
-      "type": "string"
-     },
-     "created": {
-      "type": "number"
-     },
-     "lastSeen": {
-      "type": "number"
-     },
-     "current": {
-      "type": "boolean"
-     }
-    }
-   },
-   "AdminSettings": {
-    "type": "object",
-    "required": [
-     "registration"
-    ],
-    "properties": {
-     "registration": {
-      "enum": [
-       "closed",
-       "invite",
-       "open"
-      ]
-     }
-    }
-   },
-   "Invite": {
-    "type": "object",
-    "required": [
-     "id",
-     "expires"
-    ],
-    "properties": {
-     "id": {
-      "type": "string"
-     },
-     "created": {
-      "type": "number"
-     },
-     "expires": {
-      "type": "number"
-     },
-     "used": {
-      "type": "boolean"
-     }
-    }
-   },
-   "Shareable": {
-    "type": "object",
-    "required": [
-     "link"
-    ],
-    "properties": {
-     "link": {
-      "type": "string"
-     },
-     "hub": {
-      "type": "string"
-     },
-     "id": {
-      "type": "string"
-     },
-     "expires": {
-      "type": "number"
-     },
-     "svg": {
-      "type": [
-       "string",
-       "null"
-      ]
-     },
-     "rows": {
-      "type": [
-       "array",
-       "null"
-      ],
-      "items": {
-       "type": "string"
-      }
-     }
-    }
-   },
-   "Capabilities": {
-    "type": "object",
-    "properties": {
-     "chat": {
-      "type": "boolean"
-     },
-     "images": {
-      "type": "boolean"
-     },
-     "files": {
-      "type": "boolean"
-     },
-     "screen": {
-      "type": "boolean"
-     },
-     "voice": {
-      "type": "boolean"
-     },
-     "skills": {
-      "type": "boolean"
-     },
-     "sessions": {
-      "type": "boolean"
-     },
-     "mailbox": {
-      "type": "boolean"
-     }
-    }
-   },
-   "Agent": {
-    "type": "object",
-    "required": [
-     "kind",
-     "online",
-     "chatReady",
-     "capabilities"
-    ],
-    "properties": {
-     "id": {
-      "type": "string"
-     },
-     "name": {
-      "type": "string"
-     },
-     "displayName": {
-      "type": "string"
-     },
-     "label": {
-      "type": "string"
-     },
-     "kind": {
-      "type": "string"
-     },
-     "online": {
-      "type": "boolean"
-     },
-     "chatReady": {
-      "type": "boolean"
-     },
-     "managementReady": {
-      "type": "boolean"
-     },
-     "description": {
-      "type": "string"
-     },
-     "capabilities": {
-      "$ref": "#/components/schemas/Capabilities"
-     }
-    }
-   },
-   "KindField": {
-    "type": "object",
-    "required": [
-     "key",
-     "label",
-     "type"
-    ],
-    "properties": {
-     "key": {
-      "type": "string"
-     },
-     "label": {
-      "type": "string"
-     },
-     "type": {
-      "type": "string"
-     },
-     "required": {
-      "type": "boolean"
-     },
-     "writeOnly": {
-      "type": "boolean"
-     },
-     "advanced": {
-      "type": "boolean"
-     },
-     "default": {
-      "type": [
-       "string",
-       "number",
-       "boolean",
-       "null"
-      ]
-     },
-     "help": {
-      "type": "string"
-     },
-     "options": {
-      "type": "array",
-      "items": {
-       "type": "string"
-      }
-     },
-     "when": {
-      "type": "object"
-     }
-    }
-   },
-   "AgentKind": {
-    "type": "object",
-    "required": [
-     "kind",
-     "label",
-     "fields"
-    ],
-    "properties": {
-     "kind": {
-      "type": "string"
-     },
-     "label": {
-      "type": "string"
-     },
-     "summary": {
-      "type": "string"
-     },
-     "planned": {
-      "type": "boolean"
-     },
-     "auth": {
-      "type": "array",
-      "items": {
-       "type": "string"
-      }
-     },
-     "warnings": {
-      "type": "array",
-      "items": {
-       "type": "string"
-      }
-     },
-     "fields": {
-      "type": "array",
-      "items": {
-       "$ref": "#/components/schemas/KindField"
-      }
-     }
-    }
-   },
-   "Connection": {
-    "type": "object",
-    "required": [
-     "name",
-     "kind"
-    ],
-    "description": "Plain fields plus hasX flags for write-only ones. Never carries secrets or addresses.",
-    "properties": {
-     "name": {
-      "type": "string"
-     },
-     "kind": {
-      "type": "string"
-     }
-    }
-   },
-   "SaveResult": {
-    "type": "object",
-    "required": [
-     "connection"
-    ],
-    "properties": {
-     "connection": {
-      "$ref": "#/components/schemas/Connection"
-     },
-     "inboxToken": {
-      "type": "string"
-     },
-     "connectorToken": {
-      "type": "string"
-     },
-     "bootstrap": {
-      "type": "string"
-     },
-     "mcpUrl": {
-      "type": "string"
-     }
-    }
-   },
-   "TestResult": {
-    "type": "object",
-    "required": [
-     "checks"
-    ],
-    "properties": {
-     "ok": {
-      "type": "boolean"
-     },
-     "checks": {
-      "type": "object",
-      "additionalProperties": {
-       "type": "object",
-       "required": [
-        "ok"
-       ],
-       "properties": {
-        "ok": {
-         "type": "boolean"
-        },
-        "message": {
-         "type": "string"
-        }
-       }
-      }
-     }
-    }
-   },
-   "ScreenStatus": {
-    "type": "object",
-    "properties": {
-     "running": {
-      "type": "boolean"
-     },
-     "supported": {
-      "type": "boolean"
-     },
-     "installed": {
-      "type": "boolean"
-     },
-     "geometry": {
-      "type": [
-       "string",
-       "null"
-      ]
-     },
-     "blocker": {
-      "type": [
-       "string",
-       "null"
-      ]
-     },
-     "lease": {
-      "type": [
-       "object",
-       "null"
-      ],
-      "properties": {
-       "holder": {
-        "type": "string"
-       },
-       "epoch": {
-        "type": "number"
-       }
-      }
-     }
-    }
-   },
-   "ScreenTicket": {
-    "type": "object",
-    "required": [
-     "ticket"
-    ],
-    "properties": {
-     "ticket": {
-      "type": "string"
-     },
-     "expiresInMs": {
-      "type": "number"
-     },
-     "running": {
-      "type": "boolean"
-     }
-    }
-   },
-   "ScreenLease": {
-    "type": "object",
-    "properties": {
-     "lease": {
-      "type": [
-       "object",
-       "null"
-      ],
-      "properties": {
-       "holder": {
-        "type": "string"
-       },
-       "epoch": {
-        "type": "number"
-       }
-      }
-     },
-     "autoHandBackAt": {
-      "type": "number"
-     }
-    }
-   }
-  }
- }
 }

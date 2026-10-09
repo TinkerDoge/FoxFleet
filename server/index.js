@@ -14,6 +14,8 @@ import { screenRelay } from './screen.js';
 import { inboxStore } from './inbox.js';
 import { mcpHandler, bearer } from './mcp.js';
 import { runRegistry } from './runs.js';
+import { historyStore, newSessionId, validSessionId } from './history.js';
+import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
@@ -63,6 +65,7 @@ async function readJson(req, limit = BODY_LIMIT, allowArray = false) {
   try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); if (!value || (Array.isArray(value) && !allowArray) || typeof value !== 'object') throw new Error(); return value; }
   catch { throw fault(400, 'Invalid JSON body'); }
 }
+const pageInt = (v, lo, hi, d) => { const n = Number(v ?? d); return Number.isInteger(n) ? Math.min(Math.max(n, lo), hi) : d; };
 function sessionId(value) { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value)) throw fault(400, 'Invalid session ID'); return value; }
 async function serveStatic(url, res, avatarBase = DEFAULT_AVATAR_DIR) {
   let name; try { name = decodeURIComponent(url.pathname); } catch { throw fault(400, 'Invalid path'); }
@@ -131,13 +134,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
-      const up = hermesClient(timeoutMs), reg = { store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
+      const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
       reg.mcp = mcpHandler(reg.inbox); return reg;
     })());
     return registries.get(userId);
   }
   const scoped = (key) => new Proxy({}, { get: (_, prop) => { const t = als.getStore()?.reg?.[key]; if (!t) throw fault(401, 'Login required'); const v = t[prop]; return typeof v === 'function' ? v.bind(t) : v; } });
-  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), mcp = (...a) => als.getStore().reg.mcp(...a);
+  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), history = scoped('history'), mcp = (...a) => als.getStore().reg.mcp(...a);
   const allRegistries = async () => singleUser ? [await registryFor('local', true)] : Promise.all(accounts.users().map((u) => registryFor(u.id, u.role === 'owner')));
   await allRegistries(); // fail fast on unreadable saved config
   const secureRequest = (req) => req.headers['x-forwarded-proto'] === 'https' || trusted.has(`https://${req.headers.host}`);
@@ -381,6 +384,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
+      if (url.pathname === '/api/history/settings' && ['GET', 'PUT'].includes(req.method)) { // how long the hub keeps chat history for API-key agents (this user only)
+        if (req.method === 'PUT') { const b = await readJson(req, 1024); await history.setRetention(b.retentionDays); }
+        return sendJson(res, 200, { retentionDays: history.retentionDays });
+      }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
         const agents = await Promise.all(originalConnections.map(async (m, i) => agentView(m, await probeAny(m), i))); originalConnections.forEach(current); return sendJson(res, 200, { agents }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = agentView(m, await probeAny(m), originalConnections.indexOf(m)); current(m); return sendJson(res, 200, { agent: view }); }
@@ -397,11 +404,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (isChatKind(kindOf(m))) {
           if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
             const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
-            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
+            const sid = validSessionId(data.session_id) ? data.session_id : newSessionId(), hist = ctx.reg.history;
+            const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: sid, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
               if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-              return {};
-            } });
+              return { 'X-Hermes-Session-Id': sid };
+            }, onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, userText, r.text); } });
             return runs.attach(req, res, run);
+          }
+          if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
+            if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
+            if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }));
+            if (parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); return sendJson(res, 200, await history.rename(m.name, sessionId(parts[4]), b.title)); }
+            if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); return sendJson(res, 200, { ok: true }); }
           }
           throw fault(404, 'Not available for this agent');
         }
@@ -487,7 +502,17 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             }, FILE_UNAVAILABLE);
           }
         }
-        if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, agentData(m, route, await upstream.messages(m, sessionId(parts[4])), originalConnections));
+        if (route === 'sessions' && parts.length === 4 && req.method === 'GET') {
+          const limit = pageInt(url.searchParams.get('limit'), 1, 100, 30), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), q = (url.searchParams.get('q') || '').slice(0, 200);
+          const data = await upstreamJson(await upstream.dashboard(m, q ? '/api/sessions/search?q=' + encodeURIComponent(q) : `/api/sessions?limit=${limit}&offset=${offset}&order=recent`)), rows = Array.isArray(data?.sessions) ? data.sessions : Array.isArray(data) ? data : [];
+          return sendJson(res, 200, agentData(m, route, { sessions: rows.filter((r) => r?.id != null).map(sessionRow), total: Number.isInteger(data?.total) ? data.total : rows.length, limit, offset }, originalConnections));
+        }
+        if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
+          const limit = pageInt(url.searchParams.get('limit'), 1, 200, 80), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), raw = (await upstream.messages(m, sessionId(parts[4]), { limit, offset })).messages;
+          return sendJson(res, 200, agentData(m, route, { messages: normalizeTranscript(raw), offset, limit, has_more: raw.length >= limit }, originalConnections));
+        }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); return sendJson(res, 200, { ok: true }); }
         let remote, opts = {};
         if (req.method === 'GET' && parts.length === 4) remote = { sessions: '/api/sessions?limit=50', cron: '/api/cron/jobs', skills: '/api/skills', config: '/api/config', profiles: '/api/profiles' }[route];
         if (req.method === 'GET' && route === 'usage' && parts.length === 4) { const days = url.searchParams.get('days') || '30'; if (!/^\d{1,3}$/.test(days) || Number(days) < 1 || Number(days) > 365) throw fault(400, 'Invalid usage period'); remote = '/api/analytics/usage?days=' + days; }

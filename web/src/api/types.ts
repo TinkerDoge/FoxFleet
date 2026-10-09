@@ -13,7 +13,9 @@ export interface AgentSummary {
   online: boolean; chatReady: boolean; capabilities?: Partial<Capabilities>;
 }
 export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean }
-export interface SessionInfo { id: string; title?: string }
+export interface SessionInfo { id: string; title?: string; updated?: number; preview?: string; messages?: number; pinned?: boolean }
+export interface SessionPage { sessions: SessionInfo[]; total: number }
+export interface HistoryPage { messages: import('../lib/chat').UiMessage[]; hasMore: boolean }
 export interface Device { id: string; name: string; kind: string; created: number; lastSeen: number; current: boolean }
 export interface AdminUser { id: string; username: string; role: 'owner' | 'user'; disabled: boolean }
 export interface Invite { id: string; created?: number; expires: number; used: boolean }

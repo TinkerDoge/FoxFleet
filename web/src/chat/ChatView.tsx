@@ -4,7 +4,8 @@ import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
-import { chatOf, loadAgent, newChat, openSession, restore, send, stop, useChat } from './store';
+import { chatOf, loadAgent, loadOlder, newChat, restore, send, stop, useChat } from './store';
+import { Sessions } from './Sessions';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate } from '../router';
@@ -22,7 +23,10 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   useEffect(() => { rememberAgent(agent.name); void loadAgent(client, agent.name, onAuthLost); void restore(client, agent.name, session, onAuthLost); }, [agent.name]);
   // The URL always names the open chat, so a reload, a bookmark or the back button returns to it.
   useEffect(() => { const q = new URLSearchParams({ agent: agent.name, ...(c.session ? { session: c.session } : {}) }); history.replaceState(null, '', `#/chat?${q}`); }, [agent.name, c.session]);
-  useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [c.messages, c.streamText, c.streamReasoning, c.tool, agent.name]);
+  const before = useRef(0);
+  useEffect(() => { const el = scroller.current; if (!el) return; if (before.current) { el.scrollTop += el.scrollHeight - before.current; before.current = 0; } else if (stick.current) el.scrollTop = el.scrollHeight; }, [c.messages, c.streamText, c.streamReasoning, c.tool, agent.name]);
+  useEffect(() => { stick.current = true; }, [c.session]); // a freshly opened conversation starts at the bottom
+  const older = () => { const el = scroller.current; if (el && c.hasOlder && !c.loadingOlder) { before.current = el.scrollHeight; void loadOlder(client, agent.name, onAuthLost); } };
   const local = (cmd: LocalCommand) => { if (cmd === 'new') newChat(agent.name); else if (cmd === 'stop') stop(agent.name, client); else setSessionsOpen(true); };
   const last = c.messages[c.messages.length - 1];
   // Screen readers get one announcement when a reply starts and one when it ends, never a token-by-token flood.
@@ -37,18 +41,14 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         <div class="grow"><b>{name}</b><small class="muted">{status ?? (agent.online ? t('chat.online') : t('chat.offline'))}</small></div>
         {agent.capabilities?.screen && agent.online && <button class="btn text" onClick={() => navigate('screen', { agent: agent.name })}>{t('chat.screen')}</button>}
         <button class="btn text" onClick={() => newChat(agent.name)}>{t('chat.new')}</button>
-        {agent.capabilities?.sessions !== false && <button class="btn text" aria-expanded={sessionsOpen} onClick={() => setSessionsOpen(!sessionsOpen)}>{t('chat.sessions')}</button>}
+        {agent.capabilities?.sessions !== false && <button class="btn text" aria-expanded={sessionsOpen} onClick={() => setSessionsOpen(!sessionsOpen)}>{t('chat.history')}</button>}
       </header>
-      {sessionsOpen && (
-        <div class="sessions card" role="menu">
-          {c.sessions.length === 0 && <p class="muted small">{t('chat.noSessions')}</p>}
-          {c.sessions.map((s) => <button key={s.id} role="menuitem" class={s.id === c.session ? 'on' : ''} onClick={() => { setSessionsOpen(false); void openSession(client, agent.name, s.id, onAuthLost); }}>{s.title || s.id}</button>)}
-        </div>
-      )}
-      <div class="messages" ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
+      {sessionsOpen && <Sessions client={client} agent={agent.name} onClose={() => setSessionsOpen(false)} onAuthLost={onAuthLost} />}
+      <div class="messages" ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
+        {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <p class="muted center">{t('home.loading')}</p>}
         {!c.loading && c.messages.length === 0 && !c.streaming && <div class="empty"><p>{t('chat.empty', { agent: name })}</p></div>}
-        {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} />)}
+        {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} />)}
         {c.streaming && (
           <div class="msg assistant">
             {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{c.streamReasoning}</div></details>}

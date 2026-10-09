@@ -1,8 +1,8 @@
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, Shareable } from './types';
+import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, SessionPage, HistoryPage, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
 import type { UiMessage } from '../lib/chat';
-import { chatMessages } from '../lib/chat';
+import { chatMessages, fromHistory } from '../lib/chat';
 import type { FileRef } from '../lib/files';
 import { SseParser } from '../lib/sse';
 
@@ -153,8 +153,21 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     rotateMachine: (id: string) => request<Pairing>('/api/machines/' + enc(id) + '/token', { body: {} }),
 
     // ---- sessions and skills ----
-    sessions: async (agent: string): Promise<SessionInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions`)).sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined })),
-    messages: async (agent: string, id: string): Promise<UiMessage[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions/${enc(id)}/messages`)).messages ?? []).map((m: any) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: contentText(m.content) })),
+    sessions: async (agent: string, o: { limit?: number; offset?: number; q?: string } = {}): Promise<SessionPage> => {
+      const q = new URLSearchParams({ limit: String(o.limit ?? 30), offset: String(o.offset ?? 0), ...(o.q ? { q: o.q } : {}) });
+      const r = await request<any>(`/api/agents/${enc(agent)}/sessions?${q}`);
+      const sessions: SessionInfo[] = (r.sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined, ...(Number(s.updated) ? { updated: Number(s.updated) } : {}), ...(typeof s.preview === 'string' && s.preview ? { preview: s.preview } : {}), ...(Number.isInteger(s.messages) ? { messages: s.messages } : {}), ...(s.pinned ? { pinned: true } : {}) }));
+      return { sessions, total: Number.isInteger(r.total) ? r.total : sessions.length };
+    },
+    /** One page of a conversation, newest first by page (offset counts back from the end); messages inside a page are chronological. */
+    messages: async (agent: string, id: string, o: { limit?: number; offset?: number } = {}): Promise<HistoryPage> => {
+      const r = await request<any>(`/api/agents/${enc(agent)}/sessions/${enc(id)}/messages?limit=${o.limit ?? 80}&offset=${o.offset ?? 0}`);
+      return { messages: (r.messages ?? []).map(fromHistory).filter((m: UiMessage | null): m is UiMessage => !!m), hasMore: r.has_more === true };
+    },
+    renameSession: (agent: string, id: string, title: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'PATCH', body: { title } }),
+    deleteSession: (agent: string, id: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'DELETE' }),
+    historyRetention: async (): Promise<number> => Number((await request<any>('/api/history/settings')).retentionDays),
+    setHistoryRetention: (retentionDays: number) => request<unknown>('/api/history/settings', { method: 'PUT', body: { retentionDays } }),
     skills: async (agent: string): Promise<string[]> => { try { const o = await request<any>(`/api/agents/${enc(agent)}/skills`); const a = o.skills ?? o.data ?? []; return [...new Set<string>(a.map((x: any) => (typeof x === 'string' ? x : x?.name)).filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200); } catch (e) { if (e instanceof AuthRequiredError) throw e; return []; } },
 
     /**
@@ -198,5 +211,4 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
 }
 const enc = encodeURIComponent;
 const shareable = (o: any): Shareable => ({ link: String(o?.link ?? ''), hub: o?.hub, id: o?.id, expires: Number(o?.expires) || undefined, rows: Array.isArray(o?.rows) ? o.rows.map(String) : null });
-function contentText(c: unknown): string { if (typeof c === 'string') return c; if (Array.isArray(c)) return c.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join(''); return ''; }
 export type Client = ReturnType<typeof createClient>;

@@ -10,10 +10,11 @@ import { clearSaved, loadSaved, saveChat } from '../lib/persist';
 
 export interface ChatState {
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
-  streamText: string; streamReasoning: string; tool?: string; error?: string; sessions: SessionInfo[]; skills: string[]; loading: boolean;
+  streamText: string; streamReasoning: string; tool?: string; error?: string; sessions: SessionInfo[]; sessionsTotal: number; sessionsLoading: boolean; skills: string[]; loading: boolean;
+  hasOlder: boolean; loadingOlder: boolean; olderOffset: number;
 }
 const states = new Map<string, ChatState>(); const aborts = new Map<string, AbortController>(); const runIds = new Map<string, string>(); const subs = new Set<() => void>();
-const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], skills: [], loading: false });
+const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0 });
 export const chatOf = (agent: string): ChatState => { let s = states.get(agent); if (!s) { s = fresh(agent); states.set(agent, s); } return s; };
 function patch(agent: string, p: Partial<ChatState>) { states.set(agent, { ...chatOf(agent), ...p }); subs.forEach((f) => f()); }
 export function useChat(agent: string): ChatState {
@@ -28,16 +29,38 @@ const friendly = (e: unknown) => e instanceof NetworkError ? t('error.network') 
 export async function loadAgent(client: Client, agent: string, onAuthLost: () => void) {
   patch(agent, { loading: true });
   try {
-    const [sessions, skills] = await Promise.all([client.sessions(agent).catch(() => [] as SessionInfo[]), client.skills(agent)]);
-    patch(agent, { sessions, skills, loading: false });
+    const [page, skills] = await Promise.all([client.sessions(agent).catch(() => ({ sessions: [] as SessionInfo[], total: 0 })), client.skills(agent)]);
+    patch(agent, { sessions: page.sessions, sessionsTotal: page.total, skills, loading: false });
   } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loading: false }); }
 }
 export async function openSession(client: Client, agent: string, id: string, onAuthLost: () => void) {
-  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, session: id, messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined });
-  try { patch(agent, { messages: await client.messages(agent, id), loading: false }); }
+  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, session: id, messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, olderOffset: 0 });
+  try { const page = await client.messages(agent, id); patch(agent, { messages: page.messages, hasOlder: page.hasMore, olderOffset: PAGE, loading: false }); }
   catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loading: false, error: friendly(e) }); }
 }
-export function newChat(agent: string) { detach(agent); clearSaved(agent); patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined }); }
+const PAGE = 80;
+/** Scrolling up: fetch the next older page and put it in front. */
+export async function loadOlder(client: Client, agent: string, onAuthLost: () => void) {
+  const c = chatOf(agent); if (!c.session || !c.hasOlder || c.loadingOlder || c.loading) return;
+  patch(agent, { loadingOlder: true });
+  try { const page = await client.messages(agent, c.session, { offset: c.olderOffset }); const cur = chatOf(agent); if (cur.session !== c.session) return; patch(agent, { messages: [...page.messages, ...cur.messages], hasOlder: page.hasMore, olderOffset: c.olderOffset + PAGE, loadingOlder: false }); }
+  catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loadingOlder: false }); }
+}
+/** History list: first page (reset) or the next page appended. */
+export async function loadSessions(client: Client, agent: string, more = false, onAuthLost: () => void = () => {}) {
+  const c = chatOf(agent); if (c.sessionsLoading) return;
+  patch(agent, { sessionsLoading: true });
+  try { const page = await client.sessions(agent, { offset: more ? c.sessions.length : 0 }); patch(agent, { sessions: more ? [...c.sessions, ...page.sessions.filter((s) => !c.sessions.some((x) => x.id === s.id))] : page.sessions, sessionsTotal: page.total, sessionsLoading: false }); }
+  catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { sessionsLoading: false }); }
+}
+export async function renameSession(client: Client, agent: string, id: string, title: string) {
+  await client.renameSession(agent, id, title); patch(agent, { sessions: chatOf(agent).sessions.map((s) => (s.id === id ? { ...s, title } : s)) });
+}
+export async function deleteSession(client: Client, agent: string, id: string) {
+  await client.deleteSession(agent, id); const c = chatOf(agent); patch(agent, { sessions: c.sessions.filter((s) => s.id !== id), sessionsTotal: Math.max(0, c.sessionsTotal - 1) });
+  if (c.session === id) newChat(agent);
+}
+export function newChat(agent: string) { detach(agent); clearSaved(agent); patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false }); }
 /** Leaves the screen without cancelling anything: the hub keeps the agent running and the reply can be picked up later. */
 function detach(agent: string) { aborts.get(agent)?.abort(); aborts.delete(agent); runIds.delete(agent); }
 /** The explicit Stop button: cancels the agent's run on the hub, then closes the stream. */
@@ -88,7 +111,7 @@ export async function send(client: Client, agent: string, text: string, images: 
     const sid = await client.chat(agent, history, { sessionId: cur.session, ...callbacks(agent, ctrl, acc) });
     const reply = acc.reply, reasoning = acc.reasoning; clearRun(agent);
     patch(agent, { messages: [...history, { role: 'assistant', content: reply, ...(reasoning ? { reasoning } : {}) }], streaming: false, streamText: '', streamReasoning: '', tool: undefined, ...(sid ? { session: sid } : {}) });
-    void client.sessions(agent).then((sessions) => patch(agent, { sessions })).catch(() => {});
+    void client.sessions(agent).then((p) => patch(agent, { sessions: p.sessions, sessionsTotal: p.total })).catch(() => {});
   } catch (e) {
     const reply = acc.reply;
     if ((e as Error).name === 'AbortError') {
