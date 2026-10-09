@@ -26,11 +26,12 @@ export function nativeFacade({ runs }) {
   const meta = new Map();   // nat session key -> { m, scope }
   const akey = (scope, agent, stored) => `${scope}\0${agent}\0${stored}`;
 
-  const starting = new Map(), began = new Map(); // began: how many runs were opened per session, so a turn that started and ended while a send was in flight is not opened twice
+  const starting = new Map(), began = new Map(), links = new Map(); // links: the newest run's link per session; its `terminal` is set the moment the turn ends, before the run registry marks the run done.
+  const live = (k) => { const r = active.get(k); return r && !r.done && !links.get(k)?.terminal ? r : null; }; // began: how many runs were opened per session, so a turn that started and ended while a send was in flight is not opened twice
   function startRun(nat, { scope, m, stored, from }) {
-    const k = akey(scope, m.name, stored), cur = active.get(k); if (cur && !cur.done) return Promise.resolve(cur); if (starting.has(k)) return starting.get(k);
+    const k = akey(scope, m.name, stored), cur = live(k); if (cur) return Promise.resolve(cur); if (starting.has(k)) return starting.get(k);
     began.set(k, (began.get(k) ?? 0) + 1);
-    const link = { runId: 'native', sessionId: stored, stop: async () => { await nat.interrupt(scope, m.machineId, m.profile, stored); } };
+    const link = { runId: 'native', sessionId: stored, stop: async () => { await nat.interrupt(scope, m.machineId, m.profile, stored); } }; links.set(k, link);
     let unsub = () => {}, closed = false;
     const open = async () => {
       let ctl; const body = new ReadableStream({ start(c) { ctl = c; }, cancel() { unsub(); } });
@@ -46,7 +47,7 @@ export function nativeFacade({ runs }) {
     };
     const p = runs.start({ scope, agent: m.name, session: stored, open, timeoutMs: 30_000, link, check: () => ({ 'X-Hermes-Session-Id': stored }) }).then((r) => { active.set(k, r); return r; }).finally(() => starting.delete(k)); starting.set(k, p); return p;
   }
-  const activeRun = (scope, agent, stored) => { const r = active.get(akey(scope, agent, stored)); return r && !r.done ? r : null; };
+  const activeRun = (scope, agent, stored) => live(akey(scope, agent, stored));
 
   return {
     attachHooks(nat) { // turns Hermes starts by itself (its own queue) still get a run clients can follow
