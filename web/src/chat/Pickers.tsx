@@ -17,22 +17,25 @@ export function ModelPicker({ client, picker, onDone }: { client: Client; picker
     try { const r = await client.setModel(picker.agent, picker.session, `${model}${slug ? ` --provider ${slug}` : ''}`); closePicker(picker.agent, picker.id); onDone(r?.confirm_required ? String(r.confirm_message ?? '') : t('picker.modelSet', { model })); }
     catch (e) { setErr(msg(e)); } finally { setBusy(false); }
   }
-  const p = prov?.find((x) => x.slug === sel);
-  const all = p ? p.models.filter((m) => m.toLowerCase().includes(q.trim().toLowerCase())) : [];
-  const pg = pageOf(all, page);
+  const p = prov?.find((x) => x.slug === sel), needle = q.trim().toLowerCase();
+  const provRows = (prov ?? []).filter((x) => `${x.name} ${x.slug}`.toLowerCase().includes(needle));
+  const all = p ? p.models.filter((m) => m.toLowerCase().includes(needle)) : [];
+  const pg = pageOf<any>(p ? all : provRows, page);
   return (
     <div class="card picker" role="group" aria-label={t('picker.model.title')} onKeyDown={(e) => { if (e.key === 'Escape') cancel(); }}>
       <p><b>{p ? t('picker.model.step2', { provider: p.name }) : t('picker.model.step1')}</b></p>
       {!picker.session && <p class="muted" role="note">{t('ctl.modelNeedsChat')}</p>}
       {!prov && !err && <p class="muted">{t('ctl.loading')}</p>}
       {prov && prov.length === 0 && <p class="muted">{t('ctl.noModels')}</p>}
-      {prov && !p && <ul class="choices">{prov.map((x) => <li key={x.slug}><button class="btn outline" onClick={() => { setSel(x.slug); setQ(''); setPage(0); }}>{x.name}<small class="muted"> · {x.models.length}</small></button></li>)}</ul>}
-      {p && (<>
-        <input type="search" class="search" aria-label={t('picker.search')} placeholder={t('picker.search')} value={q} onInput={(e) => { setQ((e.currentTarget as HTMLInputElement).value); setPage(0); }} />
-        {pg.rows.length === 0 && <p class="muted">{t('picker.none')}</p>}
-        <ul class="choices">{pg.rows.map((m) => <li key={m}><button class="btn outline" disabled={!picker.session || busy} title={picker.session ? undefined : t('ctl.modelNeedsChat')} onClick={() => void choose(p.slug, m)}>{m}</button></li>)}</ul>
-        {pg.pages > 1 && <div class="row pager"><button class="btn text" disabled={pg.page === 0} onClick={() => setPage(pg.page - 1)}>{t('picker.prev')}</button><small class="muted">{pg.page + 1}/{pg.pages}</small><button class="btn text" disabled={pg.page >= pg.pages - 1} onClick={() => setPage(pg.page + 1)}>{t('picker.next')}</button></div>}
-      </>)}
+      {prov && prov.length > 0 && <input type="search" class="search" aria-label={t('picker.search')} placeholder={t('picker.search')} value={q} onInput={(e) => { setQ((e.currentTarget as HTMLInputElement).value); setPage(0); }} />}
+      {prov && prov.length > 0 && (
+        <ul class="choices fixed" aria-label={p ? p.name : t('picker.model.step1')}>
+          {pg.rows.length === 0 && <li class="muted">{t('picker.none')}</li>}
+          {p ? (pg.rows as string[]).map((m) => <li key={m}><button class="btn outline" disabled={!picker.session || busy} title={picker.session ? undefined : t('ctl.modelNeedsChat')} onClick={() => void choose(p.slug, m)}>{m}</button></li>)
+            : (pg.rows as Providers).map((x) => <li key={x.slug}><button class="btn outline" onClick={() => { setSel(x.slug); setQ(''); setPage(0); }}>{x.name}<small class="muted"> · {x.models.length}</small></button></li>)}
+        </ul>
+      )}
+      {prov && prov.length > 0 && <div class="row pager"><button class="btn text" disabled={pg.page === 0} onClick={() => setPage(pg.page - 1)}>{t('picker.prev')}</button><small class="muted" aria-live="polite">{t('picker.page', { n: pg.page + 1, total: pg.pages })}</small><button class="btn text" disabled={pg.page >= pg.pages - 1} onClick={() => setPage(pg.page + 1)}>{t('picker.next')}</button></div>}
       {err && <p class="error" role="alert">{err}</p>}
       <div class="row">{p && <button class="btn text" onClick={() => { setSel(null); setQ(''); }}>{t('picker.back')}</button>}<button class="btn text" onClick={cancel}>{t('picker.cancel')}</button></div>
     </div>

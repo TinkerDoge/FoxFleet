@@ -105,6 +105,9 @@ class PickerCard(val sessionId: String?, val kind: String, val command: String? 
     fun valid(session: String?, now: Long = System.currentTimeMillis()) = session == sessionId && now - openedAt <= PICKER_TTL_MS
     companion object { const val PICKER_TTL_MS = 5 * 60_000L }
 }
+internal const val PICKER_PAGE = 6
+internal val PICKER_ROW_DP = 52.dp
+
 /** One page of a filtered list: rows, page count, the page actually shown. */
 internal fun <T> pageOf(items: List<T>, page: Int, size: Int = 8): Triple<List<T>, Int, Int> {
     val pages = maxOf(1, (items.size + size - 1) / size); val p = page.coerceIn(0, pages - 1)
@@ -137,18 +140,25 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
             when {
                 providers == null && err == null -> Text("Loading models…", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 providers.isNullOrEmpty() -> Text("This agent did not list any models.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-                p == null -> providers!!.forEach { x -> ChoiceRow("${x.name} · ${x.models.size}", true) { sel = x.slug; q = ""; page = 0 } }
                 else -> {
-                    OutlinedTextField(q, { q = it; page = 0 }, singleLine = true, label = { Text("Search models") }, modifier = Modifier.fillMaxWidth())
-                    val (rows, pages, shown) = pageOf(p.models.filter { it.contains(q.trim(), ignoreCase = true) }, page)
-                    if (rows.isEmpty()) Text("Nothing matches", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-                    rows.forEach { m -> ChoiceRow(m, hasSession && !busy) {
-                        busy = true
-                        scope.launch { runCatching { controls.setModel(m, p.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { err = it.message; busy = false } }
-                    } }
-                    if (pages > 1) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    OutlinedTextField(q, { q = it; page = 0 }, singleLine = true, label = { Text(if (p == null) "Search providers" else "Search models") }, modifier = Modifier.fillMaxWidth())
+                    // one fixed-height list for both steps: six rows tall whatever is in it, so the sheet does not jump between pages or while searching
+                    val needle = q.trim()
+                    val (rows, pages, shown) = if (p == null) pageOf(providers!!.filter { "${it.name} ${it.slug}".contains(needle, ignoreCase = true) }, page, PICKER_PAGE)
+                        else pageOf(p.models.filter { it.contains(needle, ignoreCase = true) }, page, PICKER_PAGE)
+                    Column(Modifier.fillMaxWidth().height(PICKER_ROW_DP * PICKER_PAGE + 6.dp * (PICKER_PAGE - 1)), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        if (rows.isEmpty()) Text("Nothing matches", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                        rows.forEach { row ->
+                            if (row is HubApi.ModelProvider) ChoiceRow("${row.name} · ${row.models.size}", true) { sel = row.slug; q = ""; page = 0 }
+                            else { val m = row.toString(); ChoiceRow(m, hasSession && !busy) {
+                                busy = true
+                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { err = it.message; busy = false } }
+                            } }
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                         TextButton({ page = shown - 1 }, enabled = shown > 0) { Text("Previous", color = c.accent) }
-                        Text("${shown + 1}/$pages", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                        Text("Page ${shown + 1} of $pages", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                         TextButton({ page = shown + 1 }, enabled = shown < pages - 1) { Text("Next", color = c.accent) }
                     }
                 }

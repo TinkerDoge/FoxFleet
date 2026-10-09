@@ -208,43 +208,13 @@ fun ChatScreen(
 ) {
     val c = LocalHubColors.current
     var viewing by remember { mutableStateOf(initialViewing) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
-    LaunchedEffect(drawer.currentValue) { if (drawer.currentValue == DrawerValue.Open) onDrawerOpened() }
-
-    ModalNavigationDrawer(
-        drawerState = drawer,
-        drawerContent = {
-            ModalDrawerSheet(drawerContainerColor = c.bg, drawerShape = RoundedCornerShape(topEnd = 20.dp, bottomEnd = 20.dp)) {
-                Column(Modifier.statusBarsPadding().padding(vertical = 12.dp)) {
-                    Text("Agents", style = MaterialTheme.typography.titleLarge, color = c.text, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp))
-                    agents.forEach { a ->
-                        DrawerRow(a, selected = a.name == agent.name, unread = unread(a.name)) {
-                            scope.launch { drawer.close() }; if (a.chatReady) onSwitchAgent(a)
-                        }
-                    }
-                    if (sessions.isNotEmpty()) {
-                        Hairline(Modifier.padding(vertical = 12.dp))
-                        Text("Recent with ${agent.name}", style = MaterialTheme.typography.labelMedium, color = c.textFaint,
-                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp))
-                        sessions.take(12).forEach { s ->
-                            Text(s.title?.takeIf { it.isNotBlank() } ?: s.id.take(10), maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (s.id == state.sessionId) c.accent else c.text,
-                                modifier = Modifier.fillMaxWidth().clickable { scope.launch { drawer.close() }; onOpenSession(s.id) }
-                                    .padding(horizontal = 20.dp, vertical = 10.dp))
-                        }
-                    }
-                }
-            }
-        },
-    ) {
+    Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 SoftIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tint = c.text)
-                SoftIconButton(Icons.Filled.Menu, "Agents", { scope.launch { drawer.open() } })
                 Spacer(Modifier.width(4.dp))
                 AgentAvatar(agent.name, agent.presence(), 34.dp, Modifier.sharedAvatar(agent.name)
                     .combinedClickable(onClick = {}, onLongClick = { onAvatarLongPress(agent.name) }))
@@ -295,20 +265,6 @@ fun ChatScreen(
     }
 }
 
-@Composable
-private fun DrawerRow(a: AgentStatus, selected: Boolean, unread: Boolean, onClick: () -> Unit) {
-    val c = LocalHubColors.current
-    Row(
-        Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 2.dp).clip(RoundedCornerShape(12.dp))
-            .background(if (selected) c.surfaceAlt else c.bg).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        AgentAvatar(a.name, a.presence(), 32.dp)
-        Spacer(Modifier.width(12.dp))
-        Text(a.name, style = MaterialTheme.typography.bodyLarge, color = if (a.chatReady) c.text else c.textFaint, modifier = Modifier.weight(1f))
-        if (unread) Box(Modifier.size(8.dp).clip(CircleShape).background(c.accent))
-    }
-}
 
 @Composable
 private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, onOpen: (MediaRef) -> Unit) {
@@ -736,10 +692,6 @@ private fun Composer(
                         })
                     }
                 }
-                if (agentCommands) Text(
-                    "/", color = c.accent, style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.semantics { contentDescription = "All commands" }.clip(CircleShape).clickable { browser = true; browserQuery = ""; showHidden = false }.padding(horizontal = 10.dp, vertical = 8.dp),
-                )
                 Box(Modifier.weight(1f).heightIn(min = 40.dp).padding(vertical = 10.dp, horizontal = 6.dp), contentAlignment = Alignment.CenterStart) {
                     if (input.isEmpty()) Text(
                         if (voice.listening) "Listening…" else placeholder ?: "Message $agentName",

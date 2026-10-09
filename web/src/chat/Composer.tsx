@@ -164,7 +164,6 @@ export function Composer(props: {
             <input ref={file} type="file" multiple hidden onChange={media} />
           </span>
         )}
-        {isHermes && <button type="button" class="cmd-btn" aria-label={t('chat.browse')} onClick={() => { setBrowser(true); setMenu(false); }}>/</button>}
         <textarea ref={ta} rows={1} value={text} placeholder={t('chat.placeholder', { agent: agent.displayName || agent.name })} aria-label={t('chat.message')}
           onInput={(e) => { setText((e.currentTarget as HTMLTextAreaElement).value); setMenu(true); }} onKeyDown={key} onBlur={() => setMenu(false)}
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />

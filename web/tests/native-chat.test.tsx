@@ -97,12 +97,22 @@ describe('model picker and profile setting', () => {
   const mount = (el: HTMLElement, node: any) => act(() => render(node, el));
   const btn = (el: HTMLElement, text: string) => [...el.querySelectorAll('button')].find((b) => b.textContent?.startsWith(text))!;
   beforeEach(() => resetPickers());
+  it('the provider list is searchable and paged (Previous / Next, page indicator) in a fixed-height list', async () => {
+    const many = { providers: Array.from({ length: 19 }, (_, i) => ({ slug: `p${i}`, name: `Prov ${String(i).padStart(2, '0')}`, models: ['x'] })) };
+    const client = { models: vi.fn(async () => many), setModel: vi.fn() } as unknown as Client;
+    const el = document.createElement('div'); document.body.append(el); const p = openPicker({ agent: 'a', session: 's', kind: 'model' });
+    await mount(el, <ModelPicker client={client} picker={p} onDone={vi.fn()} />); await flush();
+    expect(el.querySelector('ul.choices.fixed')).toBeTruthy(); expect(el.textContent).toContain('Page 1 of 3'); expect(el.textContent).toContain('Prov 07'); expect(el.textContent).not.toContain('Prov 08');
+    await act(async () => { btn(el, 'Next').click(); }); expect(el.textContent).toContain('Page 2 of 3'); expect(el.textContent).toContain('Prov 08');
+    const q = el.querySelector('input.search') as HTMLInputElement; await act(async () => { q.value = 'prov 18'; q.dispatchEvent(new Event('input', { bubbles: true })); });
+    expect(el.textContent).toContain('Page 1 of 1'); expect(el.textContent).toContain('Prov 18'); expect(el.textContent).not.toContain('Prov 07');
+  });
   it('two steps: provider, then that provider\'s models (paged, searchable); choosing sets the model for this chat only and confirms', async () => {
     const setModel = vi.fn(async () => ({ model: 'm-9', scope: 'session' })), client = { models: vi.fn(async () => models), setModel } as unknown as Client, done = vi.fn();
     const el = document.createElement('div'); document.body.append(el); const p = openPicker({ agent: 'a', session: 'sess-9', kind: 'model' });
     await mount(el, <ModelPicker client={client} picker={p} onDone={done} />); await flush();
     expect(el.textContent).toContain('Choose a provider'); expect(el.textContent).toContain('OpenRouter'); expect(el.textContent).not.toContain('m-0');
-    await act(async () => { btn(el, 'OpenRouter').click(); }); expect(el.textContent).toContain('Models from OpenRouter'); expect([...el.querySelectorAll('.choices button')]).toHaveLength(8); expect(el.textContent).toContain('1/2');
+    await act(async () => { btn(el, 'OpenRouter').click(); }); expect(el.textContent).toContain('Models from OpenRouter'); expect([...el.querySelectorAll('.choices button')]).toHaveLength(8); expect(el.textContent).toContain('Page 1 of 2');
     await act(async () => { btn(el, 'Next').click(); }); expect([...el.querySelectorAll('.choices button')].map((b) => b.textContent)).toEqual(['m-8', 'm-9', 'm-10']);
     const q = el.querySelector<HTMLInputElement>('input.search')!; await act(async () => { q.value = 'm-9'; q.dispatchEvent(new Event('input', { bubbles: true })); }); expect([...el.querySelectorAll('.choices button')].map((b) => b.textContent)).toEqual(['m-9']);
     await act(async () => { btn(el, 'Back').click(); }); expect(el.textContent).toContain('Choose a provider'); await act(async () => { btn(el, 'OpenRouter').click(); });

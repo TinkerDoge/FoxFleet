@@ -175,7 +175,6 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .older{align-self:center}.msg.grouped{margin-top:-6px}.msg-time{display:block;font-size:11px;margin-top:4px}
 .tools{background:var(--surface-alt);border-radius:var(--radius-control);padding:6px 12px;margin-bottom:8px;font-size:13px;color:var(--text-muted)}.tools summary{cursor:pointer}.tools ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}.tools li{display:flex;flex-direction:column;gap:2px}.tools li.bad b::after{content:' ⚠';color:var(--danger)}.tools code{font-size:12px;word-break:break-all}
 .suggest{max-height:min(46vh,380px);overflow:auto}.suggest .grp{position:sticky;top:0;background:var(--surface);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint,var(--text-muted));padding:6px 12px 2px;pointer-events:none}.suggest li.off{opacity:.55}.suggest em{font-style:normal;color:var(--text-muted);font-weight:400}
-.cmd-btn{width:38px;height:38px;border-radius:50%;border:0;background:var(--surface-alt);color:var(--text);font:inherit;font-weight:600;cursor:pointer;flex:none}
 .cmd-browser{position:fixed;inset:0;z-index:40;background:#000a;display:grid;place-items:center;padding:16px}
 .cmd-browser .panel{width:min(560px,100%);max-height:min(80vh,640px);display:flex;flex-direction:column;gap:8px;background:var(--surface);color:var(--text);border:1px solid var(--hairline);border-radius:var(--radius-card);padding:12px}
 .cmd-browser .head{display:flex;align-items:center;justify-content:space-between}.cmd-browser h2{margin:0;font-size:1.05rem;font-weight:600}
@@ -213,5 +212,7 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .picker .choices { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .picker .choices .btn { width: 100%; justify-content: flex-start; text-align: left; overflow-wrap: anywhere; min-height: 44px; }
 .picker .search { width: 100%; box-sizing: border-box; min-height: 44px; }
-.picker .pager { justify-content: space-between; }
+.picker .pager { justify-content: space-between; align-items: center; }
+/* eight rows tall whatever is in them, so the card does not jump between pages or while searching */
+.picker .choices.fixed { min-height: calc(8 * 44px + 7 * 6px); align-content: flex-start; }
 .msg.notice { text-align: center; padding: 4px 12px; }

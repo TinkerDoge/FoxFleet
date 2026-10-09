@@ -46,9 +46,7 @@ describe('slash discovery', () => {
     expect(labels).toContain('/usage');
     expect(labels).toContain('/deploy-notes');
     expect(labels).not.toContain('/clear');
-    await act(() => host.querySelector<HTMLButtonElement>('[aria-label="All commands"]')!.click());
-    expect(host.querySelector('[role="dialog"]')).toBeTruthy();
-    await act(() => host.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click());
+    expect(host.querySelector('.cmd-btn, [aria-label="All commands"]')).toBeNull(); // no extra "/" button: typing / and /help are the way in
     await type('/help');
     await act(() => editor().blur());
     await act(() => { editor().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
