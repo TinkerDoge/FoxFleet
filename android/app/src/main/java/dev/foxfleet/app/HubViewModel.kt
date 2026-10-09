@@ -132,7 +132,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         fleetLoading = true; fleetError = null
         viewModelScope.launch {
             try {
-                agents = api.agents(); fleetLoadedOnce = true
+                agents = api.agents(); fleetLoadedOnce = true; restoreLastChat()
             } catch (e: AuthRequiredException) {
                 authed = false
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
@@ -142,7 +142,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun navigate(r: Route) {
-        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead() }
+        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent) }
         route = r
     }
 
@@ -156,7 +156,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         else -> { route = Route.Fleet; true }
     }
 
-    fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState() }
+    fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState().also { s -> s.persist = { c -> settings.saveChat(agent, c) } } }
 
     fun agent(name: String): AgentStatus? = agents.firstOrNull { it.name == name }
 
@@ -252,9 +252,44 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun deleteAgent(name: String) { api.deleteAgent(name); loadRegistry(); refreshFleet() }
 
-    fun stop(agent: String) { jobs.remove(agent)?.cancel() }
+    /** Leaving a chat never cancels the agent: the hub keeps the run going and the reply is picked up when we come back. */
+    private fun detach(agent: String) { jobs.remove(agent)?.cancel() }
 
-    fun newChat(agent: String) { stop(agent); chatFor(agent).newConversation() }
+    /** The explicit Stop button: cancels the agent's run on the hub, then the local stream. */
+    fun stop(agent: String) {
+        val state = chatFor(agent); val run = state.runId
+        if (run != null) viewModelScope.launch { runCatching { api.stopRun(agent, run) } }
+        detach(agent); state.finishRun()
+    }
+
+    fun newChat(agent: String) { detach(agent); chatFor(agent).newConversation() }
+
+    private var restoredOnce = false
+    /** After a process restart, open straight into the chat that was open (and its running reply) instead of the fleet list. */
+    private fun restoreLastChat() {
+        if (restoredOnce) return; restoredOnce = true
+        val a = settings.lastAgent; val saved = if (a.isNotEmpty()) settings.savedChat(a) else return
+        if (route == Route.Fleet && agents.any { it.name == a } && (saved.session != null || saved.run != null)) navigate(Route.Chat(a))
+    }
+
+    /** Reopen the remembered session of [agent] and, if its reply was still being written, reattach to it. */
+    fun restore(agent: String) {
+        val state = chatFor(agent)
+        if (state.streaming || state.messages.isNotEmpty() || state.sessionId != null || jobs.containsKey(agent)) return
+        val saved = settings.savedChat(agent); val session = saved.session ?: return
+        state.beginLoad()
+        jobs[agent] = viewModelScope.launch {
+            try {
+                state.load(api.messages(agent, session), session)
+                val run = runCatching { api.runs(agent, session).maxByOrNull { it.started } }.getOrNull()
+                val endsWithReply = state.messages.lastOrNull()?.role == "assistant"
+                if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); return@launch }
+                state.resume(api, agent, run.id, saved.user)
+            } catch (e: CancellationException) {
+            } catch (e: AuthRequiredException) { authed = false
+            } catch (e: Exception) { if (state.sessionId == null) state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load") }
+        }
+    }
 
     fun loadSessions(agent: String) {
         viewModelScope.launch {
@@ -263,7 +298,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun openSession(agent: String, id: String) {
-        stop(agent)
+        detach(agent)
         val state = chatFor(agent)
         state.beginLoad()
         viewModelScope.launch {

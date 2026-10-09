@@ -61,6 +61,16 @@ class SettingsStore(private val prefs: SharedPreferences) {
         get() = prefs.getString("last_agent", null) ?: ""
         set(value) = prefs.edit().putString("last_agent", value).apply()
 
+    /** Per hub and agent: survives process death so reopening the app returns to the same chat (and its running reply). */
+    fun savedChat(agent: String): SavedChat = SavedChat(
+        prefs.getString("chat_s_${activeHubId}_$agent", null)?.takeIf { it.isNotBlank() },
+        prefs.getString("chat_r_${activeHubId}_$agent", null)?.takeIf { it.isNotBlank() },
+        prefs.getString("chat_u_${activeHubId}_$agent", null)?.takeIf { it.isNotBlank() })
+    fun saveChat(agent: String, chat: SavedChat) {
+        prefs.edit().putString("chat_s_${activeHubId}_$agent", chat.session ?: "").putString("chat_r_${activeHubId}_$agent", chat.run ?: "").putString("chat_u_${activeHubId}_$agent", chat.user ?: "").apply()
+    }
+    fun forgetChats() { val e = prefs.edit(); prefs.all.keys.filter { it.startsWith("chat_") }.forEach { e.remove(it) }; e.apply() }
+
     var appPrefs: AppPrefs
         get() = AppPrefs(
             theme = enumOr(prefs.getString("theme", null), ThemeMode.System),
@@ -78,7 +88,7 @@ class SettingsStore(private val prefs: SharedPreferences) {
             .apply()
 
     /** Sign out locally: drop the session token, keep the hub. */
-    fun clearSession() { sessionToken = null }
+    fun clearSession() { sessionToken = null; forgetChats() }
 
     companion object {
         const val ACCENT_COUNT = 5

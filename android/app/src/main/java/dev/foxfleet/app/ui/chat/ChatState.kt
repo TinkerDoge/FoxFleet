@@ -7,6 +7,7 @@ import dev.foxfleet.app.data.AgentStatus
 import dev.foxfleet.app.data.AuthRequiredException
 import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.data.HubApiException
+import dev.foxfleet.app.data.SavedChat
 import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.UiMessage
 import kotlinx.coroutines.CancellationException
@@ -27,6 +28,11 @@ class ChatState {
         private set
     var sessionId by mutableStateOf<String?>(null)
         private set
+
+    /** The hub run behind the reply being streamed, and where to remember it (set by the ViewModel). */
+    var runId: String? = null
+        private set
+    var persist: (SavedChat) -> Unit = {}
 
     var loading by mutableStateOf(false)
         private set
@@ -57,36 +63,48 @@ class ChatState {
     fun load(messages: List<UiMessage>, sessionId: String?) {
         this.messages = messages
         this.sessionId = sessionId
+        if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
         loading = false
         resetStream(); error = null
     }
 
     fun newConversation() {
-        messages = emptyList(); sessionId = null
+        messages = emptyList(); sessionId = null; runId = null; persist(SavedChat())
         resetStream(); error = null
     }
 
+    private fun callbacks() = HubApi.StreamCallbacks(
+        onContent = { streamText += it }, onReasoning = { streamReasoning += it }, onTool = { toolLabel = it },
+        onSession = { adopt(it); persist(SavedChat(sessionId, runId, pendingUser)) },
+        onRun = { runId = it; persist(SavedChat(sessionId, it, pendingUser)) },
+        onGap = { streamText = "" },
+    )
+    private var pendingUser: String? = null
+
     /** Streams one assistant turn into the live overlays, then commits it. */
     suspend fun send(api: HubApi, agent: String, userText: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList()) {
-        val user = UiMessage(role = "user", content = userText, images = images)
-        push(user)
+        push(UiMessage(role = "user", content = userText, images = images))
+        pendingUser = userText; runId = null
+        stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap) }
+    }
+
+    /** Reattach to a reply that was still being written (or just finished) while the app was away. */
+    suspend fun resume(api: HubApi, agent: String, run: String, userText: String?) {
+        if (userText != null && messages.lastOrNull()?.content != userText) push(UiMessage(role = "user", content = userText))
+        pendingUser = userText; runId = run
+        stream { cb -> api.follow(agent, run, 0, cb) }
+    }
+
+    private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
         streaming = true; error = null; streamText = ""; streamReasoning = ""; toolLabel = null
-        val history = messages // includes the just-pushed user message
         try {
-            val text = api.chat(
-                agent = agent,
-                history = history,
-                sessionId = sessionId,
-                onContent = { streamText += it },
-                onReasoning = { streamReasoning += it },
-                onTool = { toolLabel = it },
-                onSession = { adopt(it) },
-            )
+            val text = block(callbacks())
             toolLabel = null
             push(UiMessage(role = "assistant", content = text))
-            resetStream()
+            resetStream(); finishRun()
         } catch (e: CancellationException) {
-            // keep partial text as a committed message so the turn isn't lost
+            // The app left the screen or the process is going away. The hub keeps the run alive, so keep what we have and
+            // leave the saved run id in place: the next launch reattaches and fills in the rest.
             val partial = streamText
             resetStream()
             if (partial.isNotBlank()) push(UiMessage(role = "assistant", content = partial))
@@ -98,4 +116,6 @@ class ChatState {
             throw e
         }
     }
+
+    fun finishRun() { runId = null; pendingUser = null; persist(SavedChat(sessionId, null, null)) }
 }

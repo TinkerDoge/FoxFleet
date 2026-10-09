@@ -48,6 +48,12 @@ data class AgentStatus(
 
 data class SessionInfo(val id: String, val title: String?)
 
+/** A chat run on the hub (an agent reply that outlives the app's connection). state: running | done | error | stopped. */
+data class RunInfo(val id: String, val sessionId: String?, val state: String, val started: Long)
+
+/** What the app remembers per agent across process death: the open session, the in-flight run and the pending user text. */
+data class SavedChat(val session: String? = null, val run: String? = null, val user: String? = null)
+
 data class UiMessage(
     val role: String,
     val content: String,
