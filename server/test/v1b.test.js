@@ -8,6 +8,7 @@ import path from 'node:path';
 import { mockHermes, fakeDashboard, rawClient } from './fixtures.js';
 import { createHub } from '../index.js';
 import { encodeFrame } from '../ws.js';
+import { fakeHermesHome, runConnector, tmpDir, waitFor } from './machine-helpers.js';
 
 async function hub(t, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-v1b-'));
@@ -21,34 +22,35 @@ async function hub(t, options = {}) {
 test('screen takeover works through the connector: tickets, RFB splice, lease, hand-back', async (t) => {
   const log = [], mock = await mockHermes(t, { onUpgrade: fakeDashboard(log) });
   const { base, call } = await hub(t);
-  const created = await (await call('/api/connections', { name: 'Remote', kind: 'hermes', dashboardUser: 'admin', dashboardPass: 'dashboard-secret', apiServerKey: 'api-secret' })).json();
-  const p = spawn(process.execPath, ['--experimental-websocket', path.join(import.meta.dirname, '..', '..', 'connector', 'foxfleet-connector.mjs')], { env: { ...process.env, HUB_URL: base, FOXFLEET_TOKEN: created.connectorToken, DASHBOARD_URL: `http://127.0.0.1:${mock.connection.dashboardPort}`, API_URL: `http://127.0.0.1:${mock.connection.apiServerPort}` }, stdio: 'ignore' }); t.after(() => p.kill());
-  let a; for (let i = 0; i < 40; i++) { await new Promise((r) => setTimeout(r, 150)); a = (await (await call('/api/agents')).json()).agents[0]; if (a.online) break; }
+  const root = await fakeHermesHome(t, mock, { profiles: [] }), cfgDir = await tmpDir(); const pr = runConnector(t, ['pair', '--hub', base, '--code', (await (await call('/api/machines/pairing', {})).json()).code, '--all', '--dashboard-port', String(mock.connection.dashboardPort)], { hermes: root, configDir: cfgDir });
+  let a = await waitFor(async () => { const x = (await (await call('/api/agents')).json()).agents.find((g) => g.name === 'default'); return x?.online ? x : null; }); assert.ok(a, pr.out);
   assert.equal(a.capabilities.screen, true);
-  const status = await (await call('/api/agents/Remote/screen/status')).json(); assert.equal(status.running, true); assert.equal(status.lease.holder, 'agent');
-  assert.equal((await call('/api/agents/Remote/screen/takeover', {})).status, 409);
-  const obs = await (await call('/api/agents/Remote/screen/observe', {})).json();
+  const status = await (await call('/api/agents/default/screen/status')).json(); assert.equal(status.running, true); assert.equal(status.lease.holder, 'agent');
+  assert.equal((await call('/api/agents/default/screen/takeover', {})).status, 409);
+  const obs = await (await call('/api/agents/default/screen/observe', {})).json();
   assert.match(obs.ticket, /^[A-Za-z0-9_-]{32}$/); assert.ok(!JSON.stringify(obs).includes('display-ticket-1'));
   const gw = log.find((x) => x.path === '/api/ws'); assert.equal(gw.origin, `http://127.0.0.1:${mock.connection.dashboardPort}`, 'origin rewritten to the local dashboard');
-  assert.equal((await rawClient(base, `/api/agents/Remote/screen/ws?ticket=${obs.ticket}`, {})).status, 403, 'no Origin');
-  const obs2 = await (await call('/api/agents/Remote/screen/observe', {})).json();
-  const ok = await rawClient(base, `/api/agents/Remote/screen/ws?ticket=${obs2.ticket}`, { Origin: base });
+  assert.equal((await rawClient(base, `/api/agents/default/screen/ws?ticket=${obs.ticket}`, {})).status, 403, 'no Origin');
+  const obs2 = await (await call('/api/agents/default/screen/observe', {})).json();
+  const ok = await rawClient(base, `/api/agents/default/screen/ws?ticket=${obs2.ticket}`, { Origin: base });
   assert.equal(ok.status, 101); assert.equal(ok.accept, 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=');
   ok.socket.write(encodeFrame(2, Buffer.from('key-down'), true)); await new Promise((r) => setTimeout(r, 300));
   assert.deepEqual(ok.frames.map((f) => f.data.toString()), ['RFB 003.008\n', 'echo:key-down']);
-  assert.equal((await rawClient(base, `/api/agents/Remote/screen/ws?ticket=${obs2.ticket}`, { Origin: base })).status, 403, 'single use');
-  const obs3 = await (await call('/api/agents/Remote/screen/observe', {})).json();
-  const app = await rawClient(base, `/api/agents/Remote/screen/ws?ticket=${obs3.ticket}`, { Origin: 'https://appassets.androidplatform.net' }); assert.equal(app.status, 101); app.socket.destroy();
-  const take = await (await call('/api/agents/Remote/screen/takeover', {})).json(); assert.equal(take.lease.holder, 'human'); assert.ok(take.autoHandBackAt > Date.now());
-  const back = await (await call('/api/agents/Remote/screen/handback', {})).json(); assert.equal(back.lease.holder, 'agent');
+  assert.equal((await rawClient(base, `/api/agents/default/screen/ws?ticket=${obs2.ticket}`, { Origin: base })).status, 403, 'single use');
+  const obs3 = await (await call('/api/agents/default/screen/observe', {})).json();
+  const app = await rawClient(base, `/api/agents/default/screen/ws?ticket=${obs3.ticket}`, { Origin: 'https://appassets.androidplatform.net' }); assert.equal(app.status, 101); app.socket.destroy();
+  const take = await (await call('/api/agents/default/screen/takeover', {})).json(); assert.equal(take.lease.holder, 'human'); assert.ok(take.autoHandBackAt > Date.now());
+  const back = await (await call('/api/agents/default/screen/handback', {})).json(); assert.equal(back.lease.holder, 'agent');
   ok.socket.destroy();
-  const bad = await rawClient(base, `/api/agents/Remote/screen/ws?ticket=nope`, { Origin: base }); assert.equal(bad.status, 403);
+  const bad = await rawClient(base, `/api/agents/default/screen/ws?ticket=nope`, { Origin: base }); assert.equal(bad.status, 403);
 });
 
-test('connector ws tunnel refuses when the agent is offline (no stale ports)', async (t) => {
-  const { call } = await hub(t);
-  await call('/api/connections', { name: 'Remote', kind: 'hermes' });
-  const r = await call('/api/agents/Remote/screen/status'); assert.ok([502, 409, 404].includes(r.status), String(r.status));
+test('screen route refuses when the machine is offline (no stale ports)', async (t) => {
+  const mock = await mockHermes(t), { base, call } = await hub(t), root = await fakeHermesHome(t, mock, { profiles: [] });
+  const pr = runConnector(t, ['pair', '--hub', base, '--code', (await (await call('/api/machines/pairing', {})).json()).code, '--all', '--dashboard-port', String(mock.connection.dashboardPort)], { hermes: root, configDir: await tmpDir() });
+  assert.ok(await waitFor(async () => (await (await call('/api/agents')).json()).agents.length), pr.out); pr.p.kill();
+  await waitFor(async () => !(await (await call('/api/agents')).json()).agents[0].online);
+  const r = await call('/api/agents/default/screen/status'); assert.ok([502, 409, 404].includes(r.status), String(r.status));
 });
 
 import { qrMatrix, qrSvg } from '../qr.js';

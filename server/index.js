@@ -16,6 +16,7 @@ import { mcpHandler, bearer } from './mcp.js';
 import { openaiClient } from './openai.js';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
+import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
@@ -122,6 +123,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // Legacy FOXFLEET_PASSWORD bootstraps the first owner ("owner") so existing deployments keep working.
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
+  const machines = await machineStore(path.join(dataDir, 'machines.json'));
   const connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
@@ -151,9 +153,36 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     }
     throw fault(401, 'Invalid token');
   }
-  const newConnectorToken = () => { const id = randomBytes(16).toString('hex'), secret = randomBytes(32).toString('base64url'); return { id, token: `${id}.${secret}`, hash: createHash('sha256').update(secret).digest('hex') }; };
   const hubOrigin = (req) => `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`;
-  const bootstrapText = (req, token) => { const o = hubOrigin(req); return `Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).\n1. curl -fsSL ${o}/connector.mjs -o foxfleet-connector.mjs\n2. HUB_URL=${o} FOXFLEET_TOKEN=${token} node foxfleet-connector.mjs   (Node 22+; keep it running with systemd, tmux or pm2)\nFull guide: ${o}/connect-agent.md\nThe token is a secret: do not paste it anywhere else.`; };
+  // ---- machines (one connector per computer) ----
+  const safeOrigin = (req) => { const o = hubOrigin(req); if (!/^https?:\/\/[A-Za-z0-9.\-:\[\]]{1,200}$/.test(o)) throw fault(400, 'Unusable host header'); return o; };
+  const installScript = (origin, code, ps) => ps
+    ? `# Foxfleet connector installer (PowerShell). Needs Node.js 22+.\n$ErrorActionPreference = 'Stop'\n$Hub = '${origin}'; $Code = '${code}'\nif (-not (Get-Command node -ErrorAction SilentlyContinue)) { throw 'Foxfleet needs Node.js 22 or newer: https://nodejs.org' }\nif ([int](node -p "process.versions.node.split('.')[0]") -lt 22) { throw "Node 22+ required (found $(node -v))" }\n$Dir = Join-Path $env:USERPROFILE '.foxfleet\\connector'; New-Item -ItemType Directory -Force $Dir | Out-Null\nInvoke-WebRequest "$Hub/connector.mjs" -OutFile (Join-Path $Dir 'foxfleet-connector.mjs')\nnode (Join-Path $Dir 'foxfleet-connector.mjs') pair --hub $Hub --code $Code\n`
+    : `#!/bin/sh\n# Foxfleet connector installer, served by your hub. Needs Node.js 22+ and curl or wget.\n# It downloads the connector to ~/.foxfleet/connector and pairs this machine with the one-time code below.\nset -eu\nHUB='${origin}'\nCODE='${code}'\ncommand -v node >/dev/null 2>&1 || { echo "Foxfleet needs Node.js 22 or newer: https://nodejs.org" >&2; exit 1; }\nnode -e 'process.exit(Number(process.versions.node.split(".")[0])>=22?0:1)' || { echo "Node 22 or newer is required (found $(node -v))" >&2; exit 1; }\nDIR="\${FOXFLEET_HOME:-$HOME/.foxfleet}/connector"\nmkdir -p "$DIR"\nif command -v curl >/dev/null 2>&1; then curl -fsSL "$HUB/connector.mjs" -o "$DIR/foxfleet-connector.mjs"; else wget -qO "$DIR/foxfleet-connector.mjs" "$HUB/connector.mjs"; fi\nif [ -t 1 ] && [ -r /dev/tty ]; then exec node "$DIR/foxfleet-connector.mjs" pair --hub "$HUB" --code "$CODE" </dev/tty; fi\necho "No terminal available: exposing every Hermes profile found. Change later with: node $DIR/foxfleet-connector.mjs profiles"\nexec node "$DIR/foxfleet-connector.mjs" pair --hub "$HUB" --code "$CODE" --all\n`;
+  function pairingView(req, made) {
+    const hub = safeOrigin(req), url = `${hub}/c/${made.code}`, link = `foxfleet://pair?hub=${encodeURIComponent(hub)}&code=${made.code}`;
+    let rows = null; try { rows = qrRows(url); } catch { /* link too long for the built-in QR: clients show the link only */ }
+    return { code: made.code, display: made.display, expires: made.expires, url, link, rows,
+      commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${hub}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${hub} --code ${made.code}` } };
+  }
+  const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
+  const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n)) n = `${base}-${i++}`; return n; };
+  // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
+  async function syncProfiles(machine, msg, link) {
+    const user = ownerOf(machine.userId); if (!user) throw fault(403, 'Owner is gone');
+    const reg = await registryFor(user.id, user.role === 'owner');
+    const names = [...new Set((Array.isArray(msg.profiles) ? msg.profiles : []).map((p) => String(p?.profile ?? '')).filter((n) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(n)))].slice(0, 32);
+    const mine = reg.store.all().filter((a) => a.machineId === machine.id);
+    for (const a of mine) if (!names.includes(a.profile)) { await reg.store.remove(a.name); reg.upstream.clear(); }
+    const out = [];
+    for (const profile of names) {
+      let a = reg.store.all().find((x) => x.machineId === machine.id && x.profile === profile);
+      if (!a) a = await reg.store.add({ kind: 'hermes', connection: 'machine', machineId: machine.id, profile, name: uniqueName(reg, profile, machine.id) });
+      out.push({ profile, agent: a.name });
+    }
+    await link.expose(names); await machines.setProfiles(machine.id, out); reg.upstream.clear();
+    return { agents: out };
+  }
   const newInboxToken = () => { const value = randomBytes(32).toString('base64url'); return { value, hash: createHash('sha256').update(value).digest('hex') }; };
   // The only agent shape clients get: no host, port, URL, profile path or upstream version strings.
   function agentView(m, p, index) {
@@ -169,8 +198,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   function probeAny(m) {
     if (isChatKind(kindOf(m))) return openai.probe(m);
     if (kindOf(m) === 'mcp-inbox') { const seen = inbox.lastSeen(m.name); return Promise.resolve({ name: m.name, kind: 'mcp-inbox', label: m.label, online: seen > Date.now() - 24 * 3600 * 1000, chatReady: true, managementReady: false, lastSeen: seen ? new Date(seen).toISOString() : null, checks: { inbox: { ok: true, message: seen ? 'Agent checked in' : 'Waiting for the agent to connect' } }, capabilities: { object: 'foxfleet.bridge', features: { chat_completions: true, mailbox: true, images: false, files: false, screen: false, sessions: true } } }); }
-    if (m.connectorId && !connectors.isOnline(m.connectorId)) return Promise.resolve({ name: m.name, kind: 'hermes', label: m.label, online: false, chatReady: false, managementReady: false, checks: { connector: { ok: false, message: 'Waiting for the connector to dial in' } } });
-    return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.connectorId ? { checks: { connector: { ok: true, message: 'Connector online' }, ...a.checks } } : {}) }));
+    if (m.machineId && !connectors.isOnline(m.machineId)) return Promise.resolve({ name: m.name, kind: 'hermes', label: m.label, online: false, chatReady: false, managementReady: false, checks: { connector: { ok: false, message: 'Waiting for the machine to connect' } } });
+    return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
   function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
   function agentData(m, route, data, originalConnections) { current(m); const safe = safeAgentData(data, [...originalConnections, ...store.all()]); return route === 'skills' && Array.isArray(safe) ? { skills: safe } : safe; }
@@ -218,6 +247,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/connector.mjs') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'connector', 'foxfleet-connector.mjs'))); }
       if (req.method === 'GET' && url.pathname === '/connect-agent.md') { res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'docs', 'CONNECT-AGENT.md'))); }
+      { // one-line installer for a machine: GET /c/<code> (sh) or /c/<code>.ps1 (PowerShell). Reading it does NOT use the code up.
+        const m = req.method === 'GET' && /^\/c\/([A-Za-z0-9-]{10,12})(\.ps1)?$/.exec(url.pathname);
+        if (m) {
+          authThrottle(req); const code = normalizeCode(m[1]);
+          if (!validCode(code)) { res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('That pairing link is not valid.\n'); }
+          res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' }); return res.end(installScript(safeOrigin(req), code, Boolean(m[2])));
+        }
+      }
+      if (req.method === 'POST' && url.pathname === '/api/machines/redeem') { // the connector exchanges a pairing code for its machine token (once)
+        authThrottle(req); const b = await readJson(req, 4096);
+        try { const r = await machines.redeem(b.code, { name: b.name, os: b.os }, clientIp(req)); return sendJson(res, 200, { machineId: r.machineId, token: r.token, name: r.name, hub: safeOrigin(req) }); }
+        catch (e) { if (e.retryAfter) { res.setHeader('Retry-After', String(e.retryAfter)); } throw e; }
+      }
       const auth = await identify(req); ctx.auth = auth;
       if (req.method === 'GET' && url.pathname === '/pair') { // owner-only page with the pairing QR (web counterpart of the in-app Admin screen)
         if (!auth || auth.user.role !== 'owner') { res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' }); return res.end(); }
@@ -297,28 +339,42 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicConnection) });
         if (req.method === 'POST') {
           const data = await readJson(req), token = data?.kind === 'mcp-inbox' ? newInboxToken() : null;
-          const wantsConnector = (data?.kind ?? 'hermes') === 'hermes' && (data?.connection ?? (data?.host ? 'direct' : 'connector')) === 'connector', link = wantsConnector ? newConnectorToken() : null;
-          const m = await store.add(token ? { ...data, inboxTokenHash: token.hash } : link ? { ...data, connection: 'connector', connectorId: link.id, connectorTokenHash: link.hash } : data);
+          if (data?.connection === 'machine' || data?.machineId) throw fault(400, 'Machine agents are added by connecting a machine (Manage > Machines)');
+          const m = await store.add(token ? { ...data, inboxTokenHash: token.hash } : data);
           // Tokens are shown once; only their hashes are stored.
-          return sendJson(res, 201, { connection: publicConnection(m), ...(token ? { inboxToken: token.value, mcpUrl: '/mcp' } : {}), ...(link ? { connectorToken: link.token, bootstrap: bootstrapText(req, link.token) } : {}) });
+          return sendJson(res, 201, { connection: publicConnection(m), ...(token ? { inboxToken: token.value, mcpUrl: '/mcp' } : {}) });
         }
+      }
+      if (parts[0] === 'api' && parts[1] === 'machines') {
+        const uid = auth.user.id, view = (m) => machines.publicMachine(m, { online: connectors.isOnline(m.id), ...(connectors.lastSeen(m.id) ? { lastSeen: connectors.lastSeen(m.id) } : {}) });
+        if (parts.length === 2 && req.method === 'GET') return sendJson(res, 200, { machines: machines.all(uid).map(view) });
+        if (parts.length === 3 && parts[2] === 'pairing' && req.method === 'POST') { const b = await body0(); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: typeof b.machineId === 'string' ? b.machineId : undefined }))); }
+        if (parts.length === 3 && parts[2] === 'pairing' && req.method === 'GET') { const st = machines.pairingStatus(uid, url.searchParams.get('code')); return sendJson(res, 200, { state: st.state, ...(st.expires ? { expires: st.expires } : {}), ...(st.machine ? { machine: view(machines.get(st.machine.id)) } : {}) }); }
+        if (parts.length === 3 && req.method === 'PATCH') { const b = await body0(); return sendJson(res, 200, { machine: view(await machines.rename(uid, parts[2], b.name)) }); }
+        if (parts.length === 3 && req.method === 'DELETE') { // revoke: token gone, link dropped, its agents removed
+          const m = await machines.remove(uid, parts[2]); connectors.drop(m.id);
+          for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); }
+          upstream.clear(); return sendJson(res, 200, { ok: true });
+        }
+        if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') { // rotate: the old token dies now; a new code re-pairs the same machine
+          const m = await machines.invalidateToken(uid, parts[2]); connectors.drop(m.id); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: m.id })));
+        }
+        throw fault(404, 'Not found');
       }
       if (url.pathname === '/api/agent-kinds' && req.method === 'GET') return sendJson(res, 200, { kinds: kindSpecs() });
       if (url.pathname === '/api/connections/order' && req.method === 'POST') { const body = await readJson(req); await store.reorder(body?.names); return sendJson(res, 200, { order: store.all().map((m) => m.name) }); }
       if (url.pathname === '/api/connections/test' && req.method === 'POST') { // Probe a draft without saving; editing drafts inherit saved write-only fields.
         const data = await readJson(req); let prior; try { prior = data?.name ? store.get(data.name) : undefined; } catch {}
         if (prior && data.kind && kindOf(prior) !== data.kind) prior = undefined;
-        const hermesDraft = (data?.kind ?? 'hermes') === 'hermes' && !prior && (data?.connection ?? (data?.host ? 'direct' : 'connector')) === 'connector';
-        const draft = validateConnection(data?.kind === 'mcp-inbox' && !prior ? { ...data, inboxTokenHash: '0'.repeat(64) } : hermesDraft ? { ...data, connection: 'connector', connectorId: '0'.repeat(32), connectorTokenHash: '0'.repeat(64) } : data, prior);
+        const draft = validateConnection(data?.kind === 'mcp-inbox' && !prior ? { ...data, inboxTokenHash: '0'.repeat(64) } : data, prior);
         const result = await probeAny(draft);
         return sendJson(res, 200, { checks: agentView(draft, result, 0).checks, ok: Boolean(result.chatReady || result.online) });
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
         if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicConnection(m) }); }
-        if (parts.length === 3 && req.method === 'DELETE') { { const gone = store.get(parts[2]); if (gone.connectorId) connectors.drop(gone.connectorId); } await store.remove(parts[2]); inbox.drop(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
+        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); inbox.drop(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') {
           const prior = store.get(parts[2]);
-          if (kindOf(prior) === 'hermes' && prior.connectorId) { const secret = randomBytes(32).toString('base64url'), token = `${prior.connectorId}.${secret}`; const m = await store.edit(parts[2], { connectorTokenHash: createHash('sha256').update(secret).digest('hex') }); connectors.drop(prior.connectorId); return sendJson(res, 200, { connection: publicConnection(m), connectorToken: token, bootstrap: bootstrapText(req, token) }); }
           if (prior.kind !== 'mcp-inbox') throw fault(400, 'This agent has no token'); const t = newInboxToken(); const m = await store.edit(parts[2], { inboxTokenHash: t.hash }); return sendJson(res, 200, { connection: publicConnection(m), inboxToken: t.value, mcpUrl: '/mcp' });
         }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
@@ -447,17 +503,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const url = new URL(req.url, 'http://hub'), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       if (req.headers.upgrade?.toLowerCase() !== 'websocket') return deny(404, 'Not Found');
       boundary(req, server);
-      if (url.pathname === '/connector') { // Agent dials out: credential is the per-agent token in the subprotocol list.
+      if (url.pathname === '/connector') { // a machine dials out: credential is its machine token in the subprotocol list
         authThrottle(req);
         const token = String(req.headers['sec-websocket-protocol'] || '').split(',').map((v) => v.trim()).find((v) => /^[0-9a-f]{32}\.[\w-]{20,100}$/.test(v));
-        if (!token) return deny(401, 'Unauthorized');
-        const [id, secret] = token.split('.'), hash = createHash('sha256').update(secret).digest('hex');
-        for (const reg of await allRegistries()) {
-          const m = reg.store.all().find((c) => c.connectorId === id); if (!m) continue;
-          if (m.connectorTokenHash.length !== hash.length || !timingSafeEqual(Buffer.from(m.connectorTokenHash), Buffer.from(hash))) break;
-          return void connectors.attach(id, wsAccept(req, socket, { protocol: 'foxfleet.v1' }));
-        }
-        return deny(401, 'Unauthorized');
+        const machine = token ? machines.authenticate(token) : null;
+        if (!machine) return deny(401, 'Unauthorized');
+        await machines.touch(machine.id);
+        return void connectors.attach(machine.id, wsAccept(req, socket, { protocol: 'foxfleet.v1' }), { onProfiles: (msg, link) => { machines.touch(machine.id, { os: ['linux', 'darwin', 'win32'].includes(msg.os) ? msg.os : undefined }).catch(() => {}); return syncProfiles(machine, msg, link); } });
       }
       if (!(parts.length === 5 && parts[0] === 'api' && parts[1] === 'agents' && parts[3] === 'screen' && parts[4] === 'ws')) return deny(404, 'Not Found');
       // A browser always sends Origin on a WebSocket upgrade: it must be this hub, or the Android

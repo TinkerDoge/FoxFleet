@@ -127,7 +127,7 @@ test('plugins: kinds list api_key chat plugins with auth + warnings; no URLs lea
   const kinds = (await (await h.call('/api/agent-kinds')).json()).kinds, by = Object.fromEntries(kinds.map((k) => [k.kind, k]));
   for (const k of ['openai', 'openrouter', 'zai', 'opencode', 'grok']) { assert.deepEqual(by[k].auth, ['api_key']); assert.equal(by[k].capabilities.screen, false); assert.equal(by[k].capabilities.files, false); }
   assert.ok(by.zai.warnings[0].includes('Coding Plan')); assert.equal(by.zai.capabilities.images, false);
-  assert.equal(by.hermes.fields.find((f) => f.key === 'connection').default, 'connector');
+  assert.equal(by.hermes.fields.find((f) => f.key === 'connection').default, 'direct');
   assert.ok(by.hermes.fields.find((f) => f.key === 'host').advanced);
   assert.doesNotMatch(JSON.stringify(kinds), /https?:\/\//);
 });
@@ -167,28 +167,6 @@ test('migration v2 -> v3: provider hosts become plugins, hermes becomes direct; 
   assert.deepEqual(stored.machines.map((m) => m.kind ?? 'hermes'), ['openrouter', 'zai', 'openai', 'hermes']);
   assert.equal(stored.machines[1].endpoint, 'coding'); assert.equal(stored.machines[3].connection, 'direct');
   assert.match(await readFile(h.configPath + '.v2.bak', 'utf8'), /"version":\s*2/);
-});
-
-test('hermes connector: outbound agent tunnels dashboard + chat; offline until it dials in; token rotation drops it', async (t) => {
-  const mock = await mockHermes(t);
-  const h = await hub(t, { singleUser: true });
-  const add = await h.call('/api/connections', { data: { name: 'Remote', kind: 'hermes', dashboardUser: 'admin', dashboardPass: 'dashboard-secret', apiServerKey: 'api-secret' } });
-  assert.equal(add.status, 201); const created = await add.json(); assert.ok(created.connectorToken); assert.match(created.bootstrap, /connector\.mjs/); assert.match(created.bootstrap, new RegExp(created.connectorToken.replace('.', '\\.')));
-  assert.doesNotMatch(JSON.stringify(created.connection), /connector[Ii]d|TokenHash|127\.0\.0\.1/); assert.equal(created.connection.hasConnectorToken, true);
-  const stored = await readFile(h.configPath, 'utf8'); assert.ok(!stored.includes(created.connectorToken.split('.')[1]), 'only a hash is stored');
-  let a = (await (await h.call('/api/agents')).json()).agents[0]; assert.equal(a.online, false); assert.equal(a.checks.connector.ok, false); assert.equal(a.capabilities.screen, true);
-  const run = (token) => { const p = spawn(process.execPath, ['--experimental-websocket', path.join(import.meta.dirname, '..', '..', 'connector', 'foxfleet-connector.mjs')], { env: { ...process.env, HUB_URL: h.base, FOXFLEET_TOKEN: token, DASHBOARD_URL: `http://127.0.0.1:${mock.connection.dashboardPort}`, API_URL: `http://127.0.0.1:${mock.connection.apiServerPort}` }, stdio: ['ignore', 'pipe', 'pipe'] }); t.after(() => p.kill()); return p; };
-  const bad = run(created.connectorToken.replace(/.$/, (c) => (c === 'a' ? 'b' : 'a')));
-  await new Promise((r) => setTimeout(r, 700)); bad.kill();
-  a = (await (await h.call('/api/agents')).json()).agents[0]; assert.equal(a.online, false, 'wrong token is refused');
-  const good = run(created.connectorToken);
-  let ready; for (let i = 0; i < 40 && !ready; i++) { await new Promise((r) => setTimeout(r, 150)); a = (await (await h.call('/api/agents')).json()).agents[0]; ready = a.chatReady && a.online; }
-  assert.ok(ready, JSON.stringify(a)); assert.equal(a.checks.connector.ok, true); assert.doesNotMatch(JSON.stringify(a), /127\.0\.0\.1|:\d{4,5}/);
-  const sessions = await (await h.call('/api/agents/Remote/sessions')).json(); assert.equal(sessions.sessions[0].id, 'sess-1');
-  const chat = await h.call('/api/agents/Remote/chat', { data: { messages: [{ role: 'user', content: 'hello' }] } }); assert.equal(chat.status, 200); assert.ok((await chat.text()).length > 0);
-  const rotated = await (await h.call('/api/connections/Remote/token', { data: {} })).json(); assert.ok(rotated.connectorToken && rotated.connectorToken !== created.connectorToken);
-  await new Promise((r) => setTimeout(r, 300)); a = (await (await h.call('/api/agents')).json()).agents[0]; assert.equal(a.checks.connector.ok, false, 'old token connection dropped');
-  good.kill();
 });
 
 test('connector files are served without auth and carry no secrets', async (t) => {

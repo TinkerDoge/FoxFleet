@@ -1,6 +1,6 @@
-// Reverse connector: a Hermes agent dials OUT to the hub (WebSocket, per-agent token) and the hub
-// tunnels its dashboard/chat-API HTTP calls back over that socket. Nothing on the agent's network
-// has to be reachable from outside. Each connected agent gets two loopback-only forwarders; the
+// Reverse connector: one process per MACHINE dials OUT to the hub (WebSocket, per-machine token) and the hub
+// tunnels each profile's dashboard/chat-API HTTP calls back over that single socket (every frame names its agent). Nothing on the agent's network
+// has to be reachable from outside. Each exposed profile gets two loopback-only forwarders; the
 // existing Hermes client simply talks to those ports (see hermes.js `tunnelPorts`).
 import http from 'node:http';
 import { randomBytes } from 'node:crypto';
@@ -11,13 +11,13 @@ const HOP = new Set(['host', 'connection', 'keep-alive', 'proxy-connection', 'tr
 
 export function connectorHub() {
   const links = new Map(); // connectorId -> link
-  function forwarder(link, svc) {
+  function forwarder(link, agent, svc) {
     const server = http.createServer((creq, cres) => {
       if (link.streams.size >= MAX_STREAMS) { cres.writeHead(503); return cres.end(); }
       const id = randomBytes(6).toString('hex'), s = { cres, started: false };
       link.streams.set(id, s);
       const headers = {}; for (const [k, v] of Object.entries(creq.headers)) if (!HOP.has(k)) headers[k] = v;
-      link.send({ t: 'req', id, svc, method: creq.method, url: creq.url, headers });
+      link.send({ t: 'req', id, agent, svc, method: creq.method, url: creq.url, headers });
       creq.on('data', (c) => { for (let i = 0; i < c.length; i += CHUNK) link.send({ t: 'body', id, b: c.subarray(i, i + CHUNK).toString('base64') }); });
       creq.on('end', () => link.send({ t: 'body-end', id }));
       const gone = () => { if (link.streams.delete(id)) link.send({ t: 'cancel', id }); };
@@ -29,7 +29,7 @@ export function connectorHub() {
       const id = randomBytes(6).toString('hex'), s = { socket, started: false, ws: true };
       link.streams.set(id, s);
       const headers = {}; for (const [k, v] of Object.entries(creq.headers)) if (k !== 'host') headers[k] = v;
-      link.send({ t: 'ws-open', id, svc, url: creq.url, headers });
+      link.send({ t: 'ws-open', id, agent, svc, url: creq.url, headers });
       socket.on('data', (c) => { for (let i = 0; i < c.length; i += CHUNK) link.send({ t: 'ws-data', id, b: c.subarray(i, i + CHUNK).toString('base64') }); });
       const gone = () => { if (link.streams.delete(id)) link.send({ t: 'ws-close', id }); };
       socket.on('close', gone); socket.on('error', () => socket.destroy());
@@ -41,14 +41,23 @@ export function connectorHub() {
     drop: (id) => links.get(id)?.close(),
     isOnline: (id) => links.has(id),
     lastSeen: (id) => links.get(id)?.seen ?? null,
-    async attach(connectorId, ws) {
+    async attach(connectorId, ws, hooks = {}) {
       links.get(connectorId)?.close(); // a new connection replaces the old one
-      const link = { streams: new Map(), seen: Date.now(), servers: [], send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
-        close() { for (const { server } of this.servers) server.close(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) { links.delete(connectorId); tunnelPorts.delete(connectorId); } try { ws.close(); } catch {} } };
-      const dash = await forwarder(link, 'dashboard'), api = await forwarder(link, 'api');
-      link.servers = [dash, api]; links.set(connectorId, link); tunnelPorts.set(connectorId, { dashboard: dash.port, api: api.port });
+      const link = { streams: new Map(), seen: Date.now(), servers: [], agents: new Set(), send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
+        close() { for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
+      // Profiles the machine exposes: one pair of loopback forwarders each, replaced wholesale on every `profiles` frame.
+      link.expose = async (names) => {
+        const want = new Set(names);
+        for (const a of [...link.agents]) if (!want.has(a)) { link.agents.delete(a); tunnelPorts.delete(`${connectorId}:${a}`); const keep = []; for (const e of link.servers) if (e.agent === a) e.server.close(); else keep.push(e); link.servers = keep; }
+        for (const a of want) if (!link.agents.has(a)) {
+          const dash = await forwarder(link, a, 'dashboard'), api = await forwarder(link, a, 'api');
+          link.servers.push({ ...dash, agent: a }, { ...api, agent: a }); link.agents.add(a); tunnelPorts.set(`${connectorId}:${a}`, { dashboard: dash.port, api: api.port });
+        }
+      };
+      links.set(connectorId, link);
       ws.on('message', (text) => {
         link.seen = Date.now(); let m; try { m = JSON.parse(text); } catch { return; }
+        if (m.t === 'profiles') { Promise.resolve(hooks.onProfiles?.(m, link)).then((reply) => reply && link.send({ t: 'registered', ...reply })).catch(() => link.send({ t: 'registered', agents: [], error: 'sync failed' })); return; }
         const s = link.streams.get(m.id);
         if (s?.ws) {
           if (m.t === 'ws-up' && !s.started) { s.started = true; const h = m.headers || {}; s.socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', ...(h['sec-websocket-accept'] ? [`Sec-WebSocket-Accept: ${String(h['sec-websocket-accept']).replace(/[\r\n]/g, '')}`] : []), ...(h['sec-websocket-protocol'] ? [`Sec-WebSocket-Protocol: ${String(h['sec-websocket-protocol']).replace(/[\r\n]/g, '')}`] : []), '', ''].join('\r\n')); }
@@ -63,7 +72,7 @@ export function connectorHub() {
         else if (m.t === 'error' && s) { link.streams.delete(m.id); if (!s.started) { s.cres.writeHead(502); } s.cres.end(); }
       });
       ws.on('close', () => link.close());
-      link.send({ t: 'hello', v: 1 });
+      link.send({ t: 'hello', v: 2 });
       const beat = setInterval(() => { if (Date.now() - link.seen > 90_000) return link.close(); link.send({ t: 'ping' }); }, 25_000); beat.unref?.();
       const baseClose = link.close; link.close = function () { clearInterval(beat); return baseClose.call(this); };
       return link;

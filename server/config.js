@@ -29,7 +29,7 @@ export const PRESETS = {
 };
 // Endpoint and credential fields are write-only: only the hub ever reads them back. Clients get
 // booleans (hasHost, hasApiKey, …); a blank value on edit keeps the saved one.
-export const WRITE_ONLY = ['connectorId', 'connectorTokenHash', 'host', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'baseUrl', 'dashboardPass', 'apiServerKey', 'apiKey', 'dashboardWsToken', 'inboxTokenHash'];
+export const WRITE_ONLY = ['machineId', 'host', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'baseUrl', 'dashboardPass', 'apiServerKey', 'apiKey', 'dashboardWsToken', 'inboxTokenHash'];
 const hasKey = (key) => key === 'inboxTokenHash' ? 'hasInboxToken' : 'has' + key[0].toUpperCase() + key.slice(1);
 // Per-kind schema: drives validation here and the Add-agent forms in the apps (GET /api/agent-kinds).
 // `secret`/`private` fields are write-only. `planned` kinds are listed so clients can show them, but can't be created yet.
@@ -43,7 +43,7 @@ export const KIND_SPECS = {
   hermes: { label: 'Hermes agent', summary: 'A Hermes Agent install on your network: chat, files, skills, voice and its desktop screen.',
     capabilities: { chat: true, images: true, files: true, screen: true, voice: true, skills: true, sessions: true, mailbox: false },
     fields: [...COMMON,
-      { key: 'connection', label: 'Connection', type: 'enum', options: ['connector', 'direct'], default: 'connector', help: 'Connector: the agent dials out to this hub, so no open ports. Direct: the hub dials the agent (advanced).' },
+      { key: 'connection', label: 'Connection', type: 'enum', options: ['direct'], default: 'direct', help: 'Advanced: the hub dials the agent directly. For the normal outbound-only setup use Connect a machine instead, which adds every Hermes profile on a computer in one step.' },
       { key: 'host', label: 'Host or IP', type: 'host', required: true, private: true, advanced: true, when: { connection: 'direct' } },
       { key: 'profile', label: 'Profile', type: 'id', default: 'default' },
       { key: 'dashboardPort', label: 'Dashboard port', type: 'port', default: 9119, private: true, advanced: true, when: { connection: 'direct' } },
@@ -130,15 +130,17 @@ export function connection(data, previous) {
   if (m.kind !== undefined && !KINDS.includes(m.kind)) throw fault(400, KIND_SPECS[m.kind]?.planned ? 'That agent type is not available yet' : 'Invalid agent kind');
   if (previous && data.kind !== undefined && (previous.kind ?? 'hermes') !== data.kind) throw fault(400, 'Agent kind cannot change; delete and re-add');
   if (m.kind && m.kind !== 'hermes') return bridged(m);
-  const mode = m.connection ?? (m.host ? 'direct' : 'connector');
-  if (!['connector', 'direct'].includes(mode)) throw fault(400, 'Invalid connection mode');
+  const mode = m.connection ?? 'direct';
+  if (!['machine', 'direct'].includes(mode)) throw fault(400, 'Invalid connection mode');
   if (previous && (previous.connection ?? 'direct') !== mode) throw fault(400, 'Connection mode cannot change; delete and re-add');
   if (!identifier(m.name) || !identifier(m.profile ?? 'default') || (mode === 'direct' && !validHost(m.host))) throw fault(400, 'Invalid name, host or profile');
   const result = meta(m, { name: m.name, connection: mode, profile: m.profile ?? 'default' });
-  if (mode === 'connector') {
-    if (!/^[0-9a-f]{32}$/.test(m.connectorId ?? '') || !/^[0-9a-f]{64}$/.test(m.connectorTokenHash ?? '')) throw fault(400, 'Invalid connector token');
-    result.connectorId = m.connectorId; result.connectorTokenHash = m.connectorTokenHash;
-  } else result.host = m.host;
+  if (mode === 'machine') {
+    // Created only by a paired machine's connector; credentials stay on that machine.
+    if (!/^[0-9a-f]{32}$/.test(m.machineId ?? '')) throw fault(400, 'Invalid machine');
+    result.machineId = m.machineId; return result;
+  }
+  result.host = m.host;
   if (mode === 'direct') for (const [key, fallback] of [['dashboardPort', 9119], ['apiServerPort', 8642]]) {
     const v = m[key] ?? fallback; if (!Number.isInteger(v) || v < 1 || v > 65535) throw fault(400, 'Invalid port'); result[key] = v;
   }
@@ -158,7 +160,6 @@ export function publicConnection(m) {
   for (const [key, value] of Object.entries(m)) if (!WRITE_ONLY.includes(key) && key !== 'kind') out[key] = value;
   for (const f of KIND_SPECS[kind].fields) if (f.secret || f.private) out[hasKey(f.key)] = Boolean(m[f.key]);
   if (kind === 'mcp-inbox') out.hasInboxToken = Boolean(m.inboxTokenHash);
-  if (kind === 'hermes') out.hasConnectorToken = Boolean(m.connectorTokenHash);
   return out;
 }
 export const capabilitiesOf = (m) => ({ ...KIND_SPECS[m.kind || 'hermes'].capabilities });

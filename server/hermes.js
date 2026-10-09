@@ -16,10 +16,11 @@ export function validMessages(data) {
   if (!Array.isArray(rows) || rows.length > 50000 || !rows.every((m) => m && typeof m === 'object' && ['user', 'assistant', 'tool', 'system', 'function'].includes(m.role) && (typeof m.content === 'string' || m.content === null || Array.isArray(m.content)))) throw fault(502, 'Invalid session transcript');
   return rows;
 }
-// Connector-mode agents have no address: their traffic goes through loopback forwarders owned by the hub.
+// Machine-mode agents have no address: their traffic goes through loopback forwarders owned by the hub (key machineId:profile).
+// Their dashboard/API credentials never reach the hub: the connector reads them from the profile locally and injects them.
 export const tunnelPorts = new Map();
 export const base = (m, service) => {
-  if (m.connectorId) { const p = tunnelPorts.get(m.connectorId); if (!p) throw fault(502, 'Agent connector is offline'); return `http://127.0.0.1:${p[service === 'dashboard' ? 'dashboard' : 'api']}`; }
+  if (m.machineId) { const p = tunnelPorts.get(`${m.machineId}:${m.profile}`); if (!p) throw fault(502, 'The machine is offline'); return `http://127.0.0.1:${p[service === 'dashboard' ? 'dashboard' : 'api']}`; }
   return m[service === 'dashboard' ? 'dashboardUrl' : 'apiServerUrl'] || `http://${m.host.includes(':') ? '[' + m.host + ']' : m.host}:${m[service === 'dashboard' ? 'dashboardPort' : 'apiServerPort']}`;
 };
 export function hermesClient(timeoutMs = 5000) {
@@ -39,6 +40,7 @@ export function hermesClient(timeoutMs = 5000) {
   function scoped(m, route) { const url = new URL(route, 'http://scope'); url.searchParams.set('profile', m.profile); return url.pathname + url.search; }
   async function dashboard(m, route, opts = {}) {
     const signal = opts.stream ? opts.signal : timed(opts.signal);
+    if (!jars.has(key(m)) && m.machineId) jars.set(key(m), '');
     if (!jars.has(key(m))) {
       let authRequired = false;
       try { const status = await upstreamJson(await call(m, 'dashboard', scoped(m, '/api/status'), { signal: timed(opts.signal) })); authRequired = status?.auth_required === true; }
@@ -49,7 +51,7 @@ export function hermesClient(timeoutMs = 5000) {
     const send = () => call(m, 'dashboard', scoped(m, route), { ...opts, signal, headers: { ...opts.headers, ...(jars.get(key(m)) ? { Cookie: jars.get(key(m)) } : {}) } });
     // Once a session exists, expired cookies get exactly one login and retry.
     let response = await send();
-    if (response.status === 401) { await response.body?.cancel(); await login(m, signal); response = await send(); }
+    if (response.status === 401) { await response.body?.cancel(); if (!m.machineId) await login(m, signal); response = await send(); } // machine agents: the connector re-logs-in locally
     return response;
   }
   function api(m, route, opts = {}) {
