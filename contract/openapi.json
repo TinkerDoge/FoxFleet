@@ -2499,7 +2499,7 @@
     "/api/agents/{name}/runs/{id}/stop": {
       "post": {
         "operationId": "stopRun",
-        "summary": "The only thing that cancels the agent: an explicit Stop. Closing the app or tab does not.",
+        "summary": "Stop the run. Resolves once termination is confirmed (confirmed=true) or reports the truth when it is not (confirmed=false, the run keeps going). Halts queue draining.",
         "tags": [
           "agents"
         ],
@@ -2561,6 +2561,7 @@
                           "type": "string",
                           "enum": [
                             "running",
+                            "stopping",
                             "done",
                             "error",
                             "stopped"
@@ -2573,6 +2574,9 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "confirmed": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -2761,9 +2765,318 @@
                           },
                           "reason": {
                             "type": "string"
+                          },
+                          "handler": {
+                            "type": "string",
+                            "description": "hub:stop|hub:queue|hub:steer|hub:busy|app:*|chat|none"
+                          },
+                          "busy": {
+                            "type": "string",
+                            "enum": [
+                              "control",
+                              "detach",
+                              "queue",
+                              "none"
+                            ]
+                          },
+                          "executable": {
+                            "type": "boolean"
+                          },
+                          "disabledReason": {
+                            "type": "string"
+                          },
+                          "verified": {
+                            "type": "boolean"
+                          },
+                          "unavailableSubcommands": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
                           }
                         }
                       }
+                    },
+                    "busy": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/messages": {
+      "post": {
+        "operationId": "sendMessage",
+        "summary": "Send a message even while the agent is replying. Persisted and acknowledged first; follow the reply with /runs/{id}/events. client_id makes retries idempotent.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "messages"
+                ],
+                "properties": {
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "client_id": {
+                    "type": "string",
+                    "pattern": "^[\\w.:-]{8,100}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Duplicate client_id: the stored message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/queue": {
+      "get": {
+        "operationId": "getQueue",
+        "summary": "The persisted message queue of one conversation",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/queue/resume": {
+      "post": {
+        "operationId": "resumeQueue",
+        "summary": "Resume automatic queue draining after Stop or a hub restart",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/queue/{id}": {
+      "delete": {
+        "operationId": "cancelQueued",
+        "summary": "Remove a message that is still waiting in the queue",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
                     }
                   }
                 }
@@ -3254,6 +3567,22 @@
           },
           "mailbox": {
             "type": "boolean"
+          },
+          "busy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "queue",
+                "steer",
+                "interrupt"
+              ]
+            },
+            "description": "Send modes this agent supports while it is replying"
+          },
+          "nativeRuns": {
+            "type": "boolean",
+            "description": "Hermes advertises native run controls (run_submission, run_events_sse, run_steer, run_stop)"
           }
         }
       },
@@ -3529,6 +3858,98 @@
           },
           "autoHandBackAt": {
             "type": "number"
+          }
+        }
+      },
+      "QueuedMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "mode",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "awaiting_stop",
+              "sending",
+              "running",
+              "guidance_accepted",
+              "done",
+              "failed",
+              "interrupted",
+              "cancelled"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "steer",
+              "interrupt"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "e.g. accepted_not_consumed, stop_failed, unused_guidance, steer_rejected_run_ended"
+          },
+          "session_id": {
+            "type": "string"
+          }
+        }
+      },
+      "QueueState": {
+        "type": "object",
+        "required": [
+          "items",
+          "halted"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedMessage"
+            }
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedMessage"
+            }
+          },
+          "halted": {
+            "type": "boolean",
+            "description": "Automatic draining is paused (after Stop or a hub restart) until resume or a new message"
+          },
+          "active_run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         }
       }
