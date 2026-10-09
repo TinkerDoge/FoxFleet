@@ -1,76 +1,225 @@
-<p align="center"><img src="design/brand/wordmark-light.png" alt="Foxfleet" width="360"></p>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="design/brand/wordmark-dark.png">
+    <img src="design/brand/wordmark-light.png" alt="Foxfleet" width="360">
+  </picture>
+</p>
 
-**Foxfleet** is one calm place for all your AI agents: a small self-hosted **hub**, a **web app** and an **Android app**. Add the agents you already run (Hermes machines, MCP agents) and the API-key chat providers you use (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok), then talk to them from your phone or browser. Free and MIT licensed.
+<p align="center"><b>A universal hub for all your AI agents: web + Android, self-hosted.</b></p>
 
-> **Status: 0.1.0-alpha.** The hub and Android app are usable; the web app is being rebuilt to match the Android app (sign-in and first-run screens are done, agents/chat/admin are next). See [docs/roadmap.html](docs/roadmap.html).
+<p align="center">
+  <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
+</p>
 
-## How it fits together
+Foxfleet puts the agents you run on your own machines and the chat APIs you pay for in **one calm place**. You run a small hub
+on a box you control; you talk to every agent from a browser or from the Android app, with real accounts, and your API keys and
+machine addresses never leave the hub.
 
-```
- phone / browser  ──https──▶  hub (Node, zero dependencies)  ◀──outbound WebSocket──  agent machines (connector)
-   Android app                 accounts, per-user agents,                              Hermes, MCP agents
-   web app                     keys stay on the hub                      API-key providers: hub calls them directly
-```
+> **Status: alpha (0.1.x).** Everything below exists in this repository and is covered by automated tests, but it has had very little
+> real-world use. Not yet verified: the **Docker image build** (no Docker was available when this was written), the **Android app on
+> physical devices** and the `foxfleet://connect` deep link, and a **screen-reader pass** of the web app. See [Known limits](#known-limits).
 
-- Clients only ever see agent *names, status and capabilities*; hosts, URLs and keys never leave the hub.
-- Real accounts: first-run owner setup, optional invites or open registration, devices with revoke, rate limiting and lockout.
-- Agents on your machines **dial out** to the hub with a per-agent token: no open ports, no public hostname per agent.
-- Screen takeover (watch an agent's desktop, take control, hand back), files, images, voice, Markdown replies, slash commands.
+<p align="center">
+  <img src="docs/images/web-chat.png" alt="Web app: chat with a table, code block with copy button and an image" width="820">
+</p>
+
+## Features
+
+- **One hub, many agents.** Add, edit, reorder and remove agents from forms the hub describes itself (`/api/agent-kinds`), with *Test connection* and write-only secret fields ("saved on the hub, leave blank to keep").
+- **Chat that streams.** Server-sent events, Markdown (tables, code with copy button, safe links), collapsible reasoning, tool/status line, `/` commands and `#` skills autocomplete.
+- **Images and files.** Camera/gallery or drag-and-drop/paste; images are downscaled in the client (~2.5 MB budget); files upload with progress straight to the agent's machine. Remote images in replies are fetched by the hub through an SSRF-checked proxy, never by your browser.
+- **Voice input** on the web where the browser offers the Web Speech API (button hidden otherwise) and in the Android app.
+- **Screen takeover.** Watch an agent's virtual desktop (noVNC), *Take over*, then *Hand back* — with a countdown, a red border while you are in control, auto hand-back when you leave, and single-use tickets. Works for Hermes agents, including through the outbound connector.
+- **Real accounts.** First-run owner setup, scrypt-hashed passwords, optional invites or open registration, per-user agents and secrets, a device list with revoke, change password, sign out everywhere, rate limiting and lockout.
+- **No hard-coded hosts.** Both apps ask for your hub address on first launch (type it, scan the pairing QR, or open a `foxfleet://connect?hub=…` link) and can remember several hubs.
+- **Pairing QR and invites** in the web Admin page and the in-app Admin screen (owner only).
+- **Installable web app (PWA)** with an app-shell-only service worker and an explicit "new version, reload" prompt. Nothing from `/api` is ever cached.
+- **Shared design.** One `design/tokens.json` generates the web CSS and the Android theme; light/dark, five accents, text size and reduced-motion settings.
+
+<table>
+  <tr>
+    <td><img src="docs/images/android-fleet.png" alt="Android: agent list" width="230"></td>
+    <td><img src="docs/images/android-chat-dark.png" alt="Android: rich chat, dark" width="230"></td>
+    <td><img src="docs/images/android-screen.png" alt="Android: screen takeover, dark" width="230"></td>
+  </tr>
+  <tr><td colspan="3"><sub>Android screenshots are rendered from test fixtures (Roborazzi) with generic agent names.</sub></td></tr>
+</table>
+
+<table>
+  <tr>
+    <td><img src="docs/images/web-agents.png" alt="Web: manage agents" width="400"></td>
+    <td><img src="docs/images/web-screen-takeover.png" alt="Web: in control of a remote screen (red border)" width="400"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/images/web-admin-dark.png" alt="Web: Admin with pairing QR, dark" width="400"></td>
+    <td><sub>Web screenshots come from a mock hub with fixture data (<code>web/tools/mock-hub.mjs</code>).</sub></td>
+  </tr>
+</table>
+
+## Supported agents
+
+| Type | How it connects | Auth | Chat | Images | Files | Screen | Voice | Skills / sessions |
+| --- | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| **Hermes agent** | Outbound **connector** on the agent's machine (default), or direct host/port | per-agent token / dashboard credentials | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **OpenAI-compatible** (any `/chat/completions` API, local models) | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
+| **OpenRouter** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
+| **Z.ai (GLM)** | Hub calls the API | API key | ✅ | – | – | – | – | – |
+| **OpenCode** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
+| **Grok (xAI)** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
+| **MCP inbox** | The outside agent reads and answers a mailbox over MCP (`/mcp`, bearer token) | per-agent token | ✅ | – | – | – | – | sessions |
+| A2A, Webhook | planned, not implemented | | | | | | | |
+
+Capabilities come from each plugin (`server/config.js`) and the apps show only what an agent supports. Provider behaviour was written against the documented APIs and exercised with test doubles; live calls to each provider are not part of the automated tests.
 
 ## Quick start
 
-**Docker**
+You need a machine that stays on (small server, NAS, old PC). Details and environment variables: [docs/INSTALL.md](docs/INSTALL.md).
+
+### Docker Compose
 
 ```bash
-git clone <this repo> foxfleet && cd foxfleet
+git clone https://github.com/TinkerDoge/FoxFleet.git && cd FoxFleet
 docker compose up -d --build
-docker compose logs foxfleet | grep "setup code"     # one-time code to create the owner
-# open http://localhost:3080, create the owner, then Admin > Pair a phone
+docker compose logs foxfleet | grep "setup code"      # one-time code that lets you create the owner
 ```
 
-**Node 22+ (systemd)**: see [docs/INSTALL.md](docs/INSTALL.md) and [deploy/](deploy/).
+Open `http://localhost:3080`. The compose file publishes the port on loopback only; put a reverse proxy or a tunnel in front for anything else, and set `FOXFLEET_TRUSTED_ORIGINS` to your public `https://` address.
+*(The Dockerfile and compose file have not been build-tested yet.)*
 
-**Android**: build with `cd android && ./gradlew assembleDebug` (JDK 17, Android SDK 36), install the APK, enter your hub address or scan the QR from Admin > Pair a phone.
+### Plain Node (22+) 
 
-**Connect an agent**: [docs/CONNECT-AGENT.md](docs/CONNECT-AGENT.md) (written so an AI agent can follow it).
+```bash
+(cd web && npm ci && npm run build)       # the hub serves web/dist
+node server/index.js                       # listens on 127.0.0.1:3080; prints "First-run setup code: …" on the first start
+```
 
-## Repository layout
+The hub itself has no npm dependencies. For a systemd user service and the update script (backup, tests, restart, health check, rollback) see [docs/INSTALL.md](docs/INSTALL.md) and [`deploy/`](deploy/); `deploy/deploy.sh --dry-run` checks prerequisites without changing anything.
+
+### First-run owner setup
+
+1. Open the hub in a browser (or the app), choose *Create the owner*, enter the **setup code** from the log, then a username and a password (10+ characters). On a loopback-only bind no code is needed. Alternatively set `FOXFLEET_PASSWORD` once and remove it after the first sign-in.
+2. **Admin → Who can join**: registration starts **closed**. Switch to *Invite only* and create invite links (copy the link or show the QR) for other people.
+
+### Android app and pairing
+
+```bash
+cd android && ./gradlew assembleDebug      # JDK 17, Android SDK 36; APK in app/build/outputs/apk/debug/
+```
+
+Install the APK, then on the first screen type your hub address, tap **Scan QR**, or open a `foxfleet://connect?hub=https://…` link. In the web app, **Admin → Pair a phone** shows the QR; invite links carry the invite code too. Public hubs must use `https://` (plain `http://` is only offered for local addresses, behind an explicit switch).
+
+## Connect an agent on a real machine
+
+For a Hermes agent, add it under **Manage agents → Add agent → Hermes agent** with the *Connector* connection. The hub shows a **bootstrap prompt once**; paste it into the agent on that machine. It looks like:
+
+```text
+Connect this machine to my Foxfleet hub.
+1. Download foxfleet-connector.mjs from <your hub>/connector.mjs
+2. Run: node foxfleet-connector.mjs --hub <your hub> --token <per-agent token>
+It only makes an outbound connection; no ports to open.
+```
+
+The connector dials **out** to the hub over a WebSocket authenticated with the per-agent token, so the agent needs no open port and no public hostname; chat, files and the screen WebSocket are tunnelled through that link. The full, agent-readable guide is [docs/CONNECT-AGENT.md](docs/CONNECT-AGENT.md). A direct host/port mode remains as an advanced option for agents on the same network.
+
+## Putting it on the internet (Cloudflare Tunnel)
+
+The hub speaks plain HTTP on loopback by design. To reach it from outside, run a reverse proxy or a Cloudflare Tunnel on the same machine pointing at `http://127.0.0.1:3080`, set `FOXFLEET_TRUSTED_ORIGINS` to the public origin, and make sure WebSockets are allowed (they carry the screen and the connector). A step-by-step note is in [deploy/cloudflare-tunnel.md](deploy/cloudflare-tunnel.md). Do not publish the port directly.
+
+## Security overview
+
+- Passwords hashed with scrypt; sessions are rotating tokens with a per-user device list you can revoke; HttpOnly SameSite cookies for the web, bearer tokens for the app; CSRF/Origin checks on cookie sessions; per-username lockout and per-IP throttling.
+- **Secrets stay on the hub.** API keys, passwords, hosts and URLs are write-only: the API returns only `has…` flags, and the UI never shows an address.
+- Connector and mailbox tokens are stored **hashed** and shown once.
+- Strict CSP on the web app (same-origin scripts, no inline script, `img-src 'self' data: blob:`); Markdown is sanitised with DOMPurify; remote images go through a hub proxy that allows only public `https:443` addresses, raster types, 8 MB, and every redirect hop is re-checked.
+- Screen access uses single-use, agent-bound 30-second tickets, an explicit take-over lease, and automatic hand-back.
+- Service worker never touches the API; the web app is tested against a shared OpenAPI contract.
+
+Report vulnerabilities as described in [SECURITY.md](SECURITY.md). This is alpha software and has not had an external security review.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Clients
+    W["Web app (Preact, PWA)"]
+    A["Android app (Compose)"]
+  end
+  subgraph Hub["Foxfleet hub (Node, no dependencies)"]
+    API["HTTP API + SSE\naccounts · per-user agents"]
+    P["Provider plugins"]
+    C["Connector tunnel"]
+    S["Screen relay"]
+    M["Media proxy"]
+  end
+  W -- https --> API
+  A -- https --> API
+  API --> P
+  P -- API key --> LLM["OpenAI-compatible · OpenRouter\nZ.ai · OpenCode · Grok"]
+  C <-- "outbound WebSocket (per-agent token)" --> H["Hermes agent machine\nfoxfleet-connector"]
+  S <--> C
+  API --> C
+  API --> M -- "public https only" --> IMG["Remote images"]
+  MCP["MCP agents"] -- "bearer token" --> API
+```
+
+More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The API contract lives in [`contract/openapi.json`](contract/openapi.json) (OpenAPI 3.1) and is checked against both the real hub and the web mock by the same test scenario.
+
+## Project layout
 
 | Path | What |
 | --- | --- |
-| `server/` | The hub: HTTP API, accounts, plugins (agent kinds), connector tunnel, screen relay, MCP inbox. Node standard library only. Tests: `npm test` |
-| `web/` | Web app: Preact + Vite + TypeScript. `cd web && npm ci && npm run build` (the hub serves `web/dist`) |
-| `android/` | Android app (Kotlin, Jetpack Compose), package `dev.foxfleet.app` |
-| `connector/` | `foxfleet-connector.mjs`, runs on a Hermes machine and dials the hub |
-| `design/` | `tokens.json` (colours, radii, type) that generates the web CSS and the Android theme; brand assets |
-| `deploy/` | systemd unit, deploy script (backup, tests, restart, health, rollback), Cloudflare Tunnel guide |
-| `docs/` | Install, architecture, connecting agents, roadmap |
+| `server/` | The hub: HTTP API, accounts, provider plugins, connector tunnel, screen relay, media proxy, MCP inbox. Node standard library only. |
+| `web/` | Web app: Preact + Vite + TypeScript, PWA, lazy-loaded noVNC. The hub serves `web/dist`. |
+| `android/` | Android app (Kotlin, Jetpack Compose), package `dev.foxfleet.app`. |
+| `connector/` | `foxfleet-connector.mjs`, runs on an agent machine and dials the hub. |
+| `contract/` | OpenAPI 3.1 spec, dependency-free validator and the shared contract scenario. |
+| `design/` | `tokens.json` (colours, radii, type) and generators; brand assets and how to rebuild the wordmarks. |
+| `deploy/` | systemd unit, deploy script (backup, tests, restart, health, rollback), env example, Cloudflare Tunnel note. |
+| `docs/` | Install, architecture, connecting agents, accessibility checklist, roadmap. |
 
 ## Development
 
 ```bash
-npm test                      # hub tests (node --test)
-cd web && npm ci && npm test  # web unit tests (vitest) ; npm run dev proxies to a hub on :3080
-cd android && ./gradlew testDebugUnitTest assembleDebug
-node design/tools/gen-tokens.mjs   # after editing design/tokens.json
+npm test                                  # hub: node --test (104 tests, includes the contract scenario)
+cd web && npm ci && npm test              # web: vitest (79 tests); `npm run dev` proxies to a hub on :3080
+cd web && npm run build                   # → web/dist
+node web/tools/mock-hub.mjs 3099          # mock hub with fixture data (also used for screenshots)
+cd android && ./gradlew testDebugUnitTest assembleDebug     # 124 unit tests, then a debug APK
+node design/tools/gen-tokens.mjs          # after editing design/tokens.json
+node design/tools/gen-notice.mjs          # regenerate NOTICE.md after dependency changes
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+CI workflows for the hub tests, the web build, the Android assemble and a secret scan are in `.github/workflows/` (written, not yet run on GitHub).
+
+## Known limits
+
+- Docker image/compose, the deploy script's real run and systemd units are untested on a live host.
+- Android: unit and screenshot tests only; no instrumented or on-device testing yet.
+- Web: screen-reader testing and automated axe checks are still to do ([docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md)); the contract scenario does not yet cover chat streaming, uploads and screen (they need a live agent).
+- Providers are written to the public API docs; there is no live-provider test suite. A2A and Webhook agents are planned, not built. No two-factor login yet.
+
+## Roadmap
+
+[docs/roadmap.html](docs/roadmap.html) is a single-file tracker (open it in a browser; ticks are saved locally and the board is a JSON block you can edit).
+
+## Contributing
+
+Issues and pull requests are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.md). Please run the hub and web tests before opening a PR.
 
 ## Support
 
-Foxfleet is free, and it will stay free. If it saves you time, you can chip in (these are placeholders until the maintainer sets up real accounts):
+Foxfleet is free and MIT licensed. If it saves you time you can chip in; these links are **placeholders** until the maintainer sets up real accounts:
 
 - GitHub Sponsors: _coming soon_ (`https://github.com/sponsors/REPLACE_WITH_GITHUB_USERNAME`)
 - Ko-fi: _coming soon_ (`https://ko-fi.com/REPLACE_WITH_KOFI_NAME`)
 - Other: `https://example.com/support-foxfleet`
 
-Starring the repo, reporting bugs and sending pull requests help just as much.
+Stars, bug reports and pull requests help just as much.
 
-## About the artwork
+## About the artwork (AI-generated)
 
-The wooden fox mascot and wordmark are **AI-generated** images (see [design/brand/README.md](design/brand/README.md)) and are included under the MIT licence.
+The wooden-fox mascot, app icon and wordmark are **AI-generated images** (ChatGPT image generation for the first concept, Grok Imagine for the final variation), post-processed locally, and published under the repository's MIT licence. Details: [design/brand/README.md](design/brand/README.md).
 
 ## Licence
 
-[MIT](LICENSE). Third-party components: [NOTICE.md](NOTICE.md).
+[MIT](LICENSE) © 2026 Shibe De Doge. Third-party components and their licences: [NOTICE.md](NOTICE.md).
