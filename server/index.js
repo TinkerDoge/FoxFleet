@@ -18,7 +18,7 @@ import { coordinator } from './coordinator.js';
 import { nativeFeatures, busyModes, nativeRun, nativeControl } from './hermes-runs.js';
 import { nativeHub } from './hermes-ui.js';
 import { nativeFacade, viewOf } from './native-facade.js';
-import { catalogFor } from './commands.js';
+import { applyLive, catalogFor, readLiveCatalog } from './commands.js';
 import { historyStore, newSessionId, validSessionId } from './history.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
@@ -450,7 +450,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             if (req.method === 'GET') return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, 'status')), scope: 'profile' });
             if (req.method === 'POST') { const b = await readJson(req); if (b.confirm !== true) throw fault(400, 'This changes how every chat of this Hermes profile treats messages sent while it works; confirm to continue'); if (!['queue', 'steer', 'interrupt'].includes(b.mode)) throw fault(400, 'Invalid mode'); return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, b.mode)), scope: 'profile' }); }
           }
-          if (parts.length === 5 && parts[4] === 'commands' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'catalog'); return sendJson(res, 200, { source: 'agent', pairs: (r.pairs ?? []).slice(0, 500) }); }
+          if (parts.length === 5 && parts[4] === 'commands' && req.method === 'GET') {
+            const sid = url.searchParams.get('session_id') || '';
+            const r = await nat.ui(mid).call(prof, 'catalog', /^[\w.:-]{1,120}$/.test(sid) ? { session_id: sid } : {});
+            const live = readLiveCatalog(r);
+            return sendJson(res, 200, { source: 'agent', pairs: live.pairs, sub: live.sub, canon: live.canon, commands: live.commands, categories: live.categories, skills: live.skills, skill_count: live.skillCount, ...(live.warning ? { warning: live.warning } : {}) });
+          }
           if (parts.length === 5 && parts[4] === 'models' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'models', { refresh: url.searchParams.get('refresh') === '1' }); return sendJson(res, 200, { providers: (r.providers ?? []).map((pr) => ({ slug: String(pr.slug), name: String(pr.name ?? pr.slug), current: pr.is_current === true, models: (pr.models ?? []).map((x) => (typeof x === 'string' ? x : x?.id ?? x?.name)).filter(Boolean).slice(0, 300).map(String) })).slice(0, 60) }); }
           if (parts.length === 7 && parts[4] === 'sessions') {
             const sid = sidOf(parts[5]), what = parts[6];
@@ -470,9 +475,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (parts.length === 8 && parts[4] === 'sessions' && parts[6] === 'requests' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.respond(scope, mid, prof, sidOf(parts[5]), parts[7], { result: b.result, error: b.error })); }
           throw fault(404, 'Not found');
         }
-        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // per-agent catalog: Hermes' full list (bundled; Hermes has no REST endpoint for its live registry) marked with what THIS agent can run
+        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // bundled registry, intersected with what this agent can run. A live gateway adds its skills and any names it discovered; those names stay non-executable until a handler exists.
           const native = await nativeFor(m), modes = nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native });
-          return sendJson(res, 200, { source: kindOf(m) === 'hermes' ? 'bundled' : 'local', busy: modes, ...(nativeUi(m) ? { native: true } : {}), commands: catalogFor({ kind: kindOf(m), bundled: HERMES_COMMANDS.commands, modes }) });
+          let live = null;
+          if (nativeUi(m)) {
+            try {
+              const stored = url.searchParams.get('session') || '';
+              const rt = stored ? ctx.reg.native.runtimeOf(m.machineId, m.profile, stored) : '';
+              live = readLiveCatalog(await ctx.reg.native.ui(m.machineId).call(m.profile, 'catalog', rt ? { session_id: rt } : {}));
+            } catch { live = null; }
+          }
+          const base = catalogFor({ kind: kindOf(m), bundled: HERMES_COMMANDS.commands, modes });
+          const merged = live ? applyLive(base, live) : { commands: base, skills: [], warning: '' };
+          return sendJson(res, 200, { source: live ? 'agent' : kindOf(m) === 'hermes' ? 'bundled' : 'local', busy: modes, ...(nativeUi(m) ? { native: true } : {}), commands: merged.commands, ...(merged.skills.length ? { skills: merged.skills } : {}), ...(merged.warning ? { warning: merged.warning } : {}) });
         }
         if (route === 'queue' && nativeUi(m)) { // native sessions: Hermes holds the queue; the hub only reports what it was told and what Hermes still has
           const session = url.searchParams.get('session_id') || '';

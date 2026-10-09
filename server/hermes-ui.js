@@ -140,6 +140,8 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       publish(s, { v: 1, session_id: stored, type: 'request.answered', request_id: requestId }); return { ok: true };
     },
     ui: (machineId) => ensureSub(machineId),
+    /** Runtime session id for a stored chat, when this hub has attached it. Empty until then. */
+    runtimeOf: (machineId, agent, stored) => sessions.get(key(machineId, agent, stored))?.runtime || '',
     // Follow the session: replay from a hub cursor, then live. Returns { events, truncated, unsubscribe }.
     follow(scope, machineId, agent, stored, after, push) {
       own(scope, stored); const s = st(machineId, agent, stored, scope); if (s.viewers.size >= MAX_VIEWERS) throw fault(429, 'Too many viewers');

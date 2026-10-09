@@ -123,10 +123,14 @@ import dev.foxfleet.app.ui.chat.LocalCommand
 import dev.foxfleet.app.ui.chat.MediaRef
 import dev.foxfleet.app.ui.chat.HermesCatalog
 import dev.foxfleet.app.ui.chat.commandSuggestions
+import dev.foxfleet.app.ui.chat.opensCommandBrowser
 import dev.foxfleet.app.ui.chat.parseLocal
 import dev.foxfleet.app.ui.chat.parseHub
 import dev.foxfleet.app.ui.chat.CommandDef
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.window.Dialog
 import dev.foxfleet.app.ui.chat.extractMedia
 import dev.foxfleet.app.ui.chat.localCommandFor
 import dev.foxfleet.app.ui.components.MediaViewer
@@ -542,6 +546,9 @@ private fun Composer(
     var uploads by remember { mutableStateOf(mapOf<Long, Float>()) }
     var note by remember { mutableStateOf<String?>(null) }
     var menu by remember { mutableStateOf(false) }
+    var browser by remember { mutableStateOf(false) }
+    var browserQuery by remember { mutableStateOf("") }
+    var showHidden by remember { mutableStateOf(false) }
     val haptic = rememberHaptic()
     val reduce = reduceMotion()
     val voice = remember { VoiceInput(ctx.applicationContext) }
@@ -585,11 +592,12 @@ private fun Composer(
     LaunchedEffect(voice.error) { voice.error?.let { note = it } }
     LaunchedEffect(note) { if (note != null) { delay(2500); note = null } }
 
-    val suggestions = remember(input, skills, agentCommands, defs) { commandSuggestions(input, skills, limit = 60, agentCommands = agentCommands, defs = defs) }
+    val suggestions = remember(input, skills, agentCommands, defs) { commandSuggestions(input, skills, limit = Int.MAX_VALUE, agentCommands = agentCommands, defs = defs) }
     val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && encoding == 0 && uploads.isEmpty()
     fun send() {
         if (!canSend) return
         if (attachments.isEmpty() && files.isEmpty()) {
+            if (agentCommands && opensCommandBrowser(input)) { input = ""; browser = true; browserQuery = ""; showHidden = false; return }
             parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
             if (native) Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m -> input = ""; onModel(m.groupValues[1].trim()); return }
             if (native) Regex("^/([A-Za-z0-9_-]+)$").find(input.trim())?.let { m ->
@@ -611,8 +619,43 @@ private fun Composer(
         haptic(HapticFeedbackType.Confirm); onSend(t, imgs, mode)
     }
 
+    val browserRows = if (browser) commandSuggestions(if (browserQuery.isBlank()) "/" else "/$browserQuery", skills, limit = Int.MAX_VALUE, agentCommands = agentCommands, defs = defs, includeHidden = showHidden) else emptyList()
     Column(Modifier.fillMaxWidth()) {
-        AnimatedVisibility(suggestions.isNotEmpty(), enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
+        if (browser) Dialog(onDismissRequest = { browser = false }) {
+            Column(Modifier.fillMaxWidth().heightIn(max = 560.dp).clip(RoundedCornerShape(16.dp)).background(c.surface).padding(16.dp)) {
+                Text("Commands", style = MaterialTheme.typography.titleMedium, color = c.text)
+                Spacer(Modifier.size(8.dp))
+                BasicTextField(
+                    value = browserQuery, onValueChange = { browserQuery = it }, singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = c.text), cursorBrush = SolidColor(c.accent),
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).padding(10.dp),
+                    decorationBox = { inner -> if (browserQuery.isEmpty()) Text("Search commands", color = c.textFaint, style = MaterialTheme.typography.bodyLarge); inner() },
+                )
+                Row(Modifier.padding(top = 8.dp).clickable { showHidden = !showHidden }, verticalAlignment = Alignment.CenterVertically) {
+                    Text(if (showHidden) "☑" else "☐", color = c.accent)
+                    Spacer(Modifier.width(8.dp))
+                    Text("Show commands that can't run from here", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                }
+                Column(Modifier.padding(top = 8.dp).heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
+                    if (browserRows.isEmpty()) Text("No matching commands.", color = c.textMuted)
+                    browserRows.forEachIndexed { i, s ->
+                        if (s.group.isNotEmpty() && s.group != browserRows.getOrNull(i - 1)?.group)
+                            Text(s.group.uppercase(), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(top = 8.dp))
+                        Text(
+                            s.label + if (s.hint.isNotEmpty()) "  ${s.hint}" else "",
+                            color = if (s.availability == "unavailable") c.textFaint else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.fillMaxWidth().clickable {
+                                if (s.availability == "unavailable") note = "${s.label}: ${s.reason.ifEmpty { "Not available remotely" }}"
+                                else if (s.local != null && s.local != LocalCommand.Title) { onLocal(s.local, ""); input = "" } else input = s.insert
+                                browser = false
+                            }.padding(vertical = 8.dp),
+                        )
+                    }
+                }
+                Text("Close", color = c.accent, modifier = Modifier.padding(top = 8.dp).clickable { browser = false })
+            }
+        }
+        AnimatedVisibility(suggestions.isNotEmpty() && !browser, enter = fadeIn() + expandVertically(), exit = fadeOut() + shrinkVertically()) {
             Column(
                 Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface)
                     .heightIn(max = 260.dp).verticalScroll(rememberScrollState()).padding(vertical = 4.dp),
@@ -622,7 +665,8 @@ private fun Composer(
                         Text(s.group.uppercase(), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 2.dp))
                     Row(
                         Modifier.fillMaxWidth().clickable {
-                            if (s.availability == "unavailable") note = "${s.label}: ${s.reason.ifEmpty { "Not available remotely" }}"
+                            if (s.label == "/help" || s.label == "/palette") { input = ""; browser = true; browserQuery = ""; showHidden = false }
+                            else if (s.availability == "unavailable") note = "${s.label}: ${s.reason.ifEmpty { "Not available remotely" }}"
                             else if (s.local != null && s.local != LocalCommand.Title) { onLocal(s.local, ""); input = "" } else input = s.insert
                         }.padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -692,6 +736,10 @@ private fun Composer(
                         })
                     }
                 }
+                if (agentCommands) Text(
+                    "/", color = c.accent, style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.semantics { contentDescription = "All commands" }.clip(CircleShape).clickable { browser = true; browserQuery = ""; showHidden = false }.padding(horizontal = 10.dp, vertical = 8.dp),
+                )
                 Box(Modifier.weight(1f).heightIn(min = 40.dp).padding(vertical = 10.dp, horizontal = 6.dp), contentAlignment = Alignment.CenterStart) {
                     if (input.isEmpty()) Text(
                         if (voice.listening) "Listening…" else placeholder ?: "Message $agentName",

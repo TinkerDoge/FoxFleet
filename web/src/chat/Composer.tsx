@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Client, SendMode } from '../api/client';
 import type { AgentSummary } from '../api/types';
-import { BUNDLED_CATALOG, LOCAL_CATALOG, commandSuggestions, parseHub, parseLocal, resolveCommand, unavailableReason, type Catalog, type LocalCommand, type Suggestion } from '../lib/commands';
+import { BUNDLED_CATALOG, LOCAL_CATALOG, commandSuggestions, opensCommandBrowser, parseHub, parseLocal, resolveCommand, unavailableReason, type Catalog, type LocalCommand, type Suggestion } from '../lib/commands';
+import { CommandBrowser } from './CommandBrowser';
 import type { QueueItem } from './store';
 import { downscaleImage, isImageFile } from '../lib/images';
 import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
@@ -24,17 +25,20 @@ export function Composer(props: {
   const caps = agent.capabilities ?? {};
   const isHermes = agent.kind === 'hermes', queue = props.queue ?? [];
   const modes = ((caps.busy ?? ['queue']) as SendMode[]).filter((m) => ['queue', 'steer', 'interrupt'].includes(m));
-  const [catalog, setCatalog] = useState<Catalog>(() => catalogs.get(agent.name) ?? (isHermes ? BUNDLED_CATALOG : LOCAL_CATALOG));
-  useEffect(() => { let on = true; void Promise.resolve().then(() => client.commands(agent.name)).then((c) => { if (!on || (c.source === 'bundled' && !isHermes)) return; catalogs.set(agent.name, c); setCatalog(c); }).catch(() => {}); return () => { on = false; }; }, [agent.name]);
+  const cacheKey = `${agent.name}\0${props.session ?? ''}`;
+  const [catalog, setCatalog] = useState<Catalog>(() => catalogs.get(cacheKey) ?? (isHermes ? BUNDLED_CATALOG : LOCAL_CATALOG));
+  useEffect(() => { let on = true; setCatalog(catalogs.get(cacheKey) ?? (isHermes ? BUNDLED_CATALOG : LOCAL_CATALOG)); void Promise.resolve().then(() => client.commands(agent.name, props.session)).then((c) => { if (!on || (c.source === 'bundled' && !isHermes)) return; catalogs.set(cacheKey, c); setCatalog(c); }).catch(() => {}); return () => { on = false; }; }, [cacheKey, isHermes]);
   const [{ text, pending }, setDraft] = useDraft(props.draftKey);
   const setText = (text: string) => setDraft((draft) => ({ ...draft, text }));
   const setPending = (update: Pending[] | ((pending: Pending[]) => Pending[])) => setDraft((draft) => ({ ...draft, pending: typeof update === 'function' ? update(draft.pending) : update }));
-  const [menu, setMenu] = useState(false), [sel, setSel] = useState(0), [note, setNote] = useState<string | null>(null), [drag, setDrag] = useState(false), [listening, setListening] = useState(false);
-  const ta = useRef<HTMLTextAreaElement>(null), recog = useRef<any>(null), photo = useRef<HTMLInputElement>(null), cam = useRef<HTMLInputElement>(null), file = useRef<HTMLInputElement>(null);
+  const [menu, setMenu] = useState(false), [browser, setBrowser] = useState(false), [sel, setSel] = useState(0), [note, setNote] = useState<string | null>(null), [drag, setDrag] = useState(false), [listening, setListening] = useState(false);
+  const ta = useRef<HTMLTextAreaElement>(null), listRef = useRef<HTMLUListElement>(null), recog = useRef<any>(null), photo = useRef<HTMLInputElement>(null), cam = useRef<HTMLInputElement>(null), file = useRef<HTMLInputElement>(null);
   useEffect(() => () => recog.current?.abort(), []);
   useEffect(() => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 168) + 'px'; } }, [text]);
-  const suggestions = useMemo(() => commandSuggestions(text, isHermes ? skills : [], 60, isHermes, catalog), [text, skills, agent.kind, catalog]);
+  const skillNames = useMemo(() => [...new Set([...(isHermes ? skills : []), ...(catalog.skills ?? [])])], [skills, catalog, isHermes]);
+  const suggestions = useMemo(() => commandSuggestions(text, skillNames, Number.POSITIVE_INFINITY, isHermes, catalog), [text, skillNames, isHermes, catalog]);
   useEffect(() => setSel(0), [text]);
+  useEffect(() => { const row = listRef.current?.querySelector('[aria-selected="true"]'); if (typeof row?.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' }); }, [sel, suggestions.length]);
 
   async function addImages(files: File[]) {
     if (!caps.images) { setNote(t('chat.noImages')); return; }
@@ -68,7 +72,7 @@ export function Composer(props: {
   function hubCommand(h: NonNullable<ReturnType<typeof parseHub>>) {
     const { cmd, args } = h, waiting = queue.filter((q) => q.state === 'queued' || q.state === 'awaiting_stop');
     if (h.command.executable === false) { setNote(`/${h.command.name}: ${h.command.disabledReason ?? t('chat.noSteer')}`); return; }
-    if (cmd === 'busy') { setNote(`${t('chat.busyCmd')}${waiting.length ? ' · ' + t('chat.queueCount', { n: waiting.length }) : ''}`); setText(''); return; }
+    if (cmd === 'busy') { setNote(`${t('chat.busyCmd')}${waiting.length ? ' Â· ' + t('chat.queueCount', { n: waiting.length }) : ''}`); setText(''); return; }
     if (cmd === 'queue') {
       const sub = /^(list|rm|clear|add|edit|move)\b\s*([\s\S]*)$/.exec(args);
       if (sub && sub[1] === 'list') { setNote(waiting.length ? waiting.map((q, i) => `${i + 1}. ${q.text.slice(0, 40)}`).join('  ') : t('chat.queueEmpty')); setText(''); return; }
@@ -83,6 +87,7 @@ export function Composer(props: {
   }
   function sendBody(body: string, m: SendMode) { setDraft({ text: '', pending: [] }); setNote(null); setMenu(false); props.onSend(body, [], [], m); }
   function submit() {
+    if (isHermes && opensCommandBrowser(text)) { setText(''); setNote(null); setMenu(false); setBrowser(true); return; }
     const mm = /^\/model(?:\s+([\s\S]*))?$/i.exec(text.trim());
     if (native && mm && props.onModel) { setText(''); setNote(null); setMenu(false); props.onModel((mm[1] ?? '').trim()); return; }
     const bare = /^\/([A-Za-z0-9_-]+)$/.exec(text.trim()), bc = bare && native ? resolveCommand(bare[1], catalog) : undefined;
@@ -97,7 +102,13 @@ export function Composer(props: {
     setDraft({ text: '', pending: [] }); setNote(null); setMenu(false); // clear first: the hub may assign the session id (and move the draft) while sending
     props.onSend(out.text, out.imgs, out.refs, mode);
   }
-  function pick(s: Suggestion) { if (s.kind === 'arg') { if (s.availability === 'unavailable') setNote(`${s.label}: ${s.reason}`); else { setText(s.insert); ta.current?.focus(); } setMenu(false); return; } if (s.availability === 'unavailable') { setNote(`${s.label}: ${s.reason ?? 'Not available remotely'}`); } else if (s.local && s.local !== 'title') { setText(''); props.onLocal(s.local); } else { setText(s.insert); ta.current?.focus(); } setMenu(false); }
+  function pick(s: Suggestion) {
+    if (s.label === '/help' || s.label === '/palette') { setText(''); setNote(null); setMenu(false); setBrowser(true); return; }
+    setBrowser(false);
+    if (s.kind === 'arg') { if (s.availability === 'unavailable') setNote(`${s.label}: ${s.reason}`); else { setText(s.insert); ta.current?.focus(); } setMenu(false); return; }
+    if (s.availability === 'unavailable') { setNote(`${s.label}: ${s.reason ?? 'Not available remotely'}`); } else if (s.local && s.local !== 'title') { setText(''); props.onLocal(s.local); } else { setText(s.insert); ta.current?.focus(); }
+    setMenu(false);
+  }
   function key(e: KeyboardEvent) {
     if (suggestions.length && menu) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => (s + 1) % suggestions.length); return; }
@@ -121,19 +132,20 @@ export function Composer(props: {
     <div class={`composer${drag ? ' dragging' : ''}`}
       onDragOver={(e) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); setDrag(true); } }} onDragLeave={() => setDrag(false)}
       onDrop={(e) => { e.preventDefault(); setDrag(false); route(Array.from(e.dataTransfer?.files ?? [])); }}>
-      {menu && suggestions.length > 0 && (
-        <ul class="suggest" role="listbox" aria-label={t('chat.commands')}>
+      {browser && <CommandBrowser skills={skillNames} catalog={catalog} onClose={() => { setBrowser(false); ta.current?.focus(); }} onPick={pick} />}
+      {menu && !browser && suggestions.length > 0 && (
+        <ul class="suggest" role="listbox" aria-label={t('chat.commands')} ref={listRef}>
           {suggestions.map((s, i) => <>{s.group && s.group !== suggestions[i - 1]?.group && <li role="presentation" class="grp">{s.group}</li>}<li key={s.label} role="option" aria-selected={i === sel} aria-disabled={s.availability === 'unavailable' ? 'true' : undefined} class={`${i === sel ? 'on' : ''}${s.availability === 'unavailable' ? ' off' : ''}`} onMouseDown={(e) => { e.preventDefault(); pick(s); }}><b>{s.label}{s.args && <em> {s.args}</em>}</b><small>{s.hint}</small></li></>)}
         </ul>
       )}
       {pending.length > 0 && (
         <div class="attachments">
           {pending.map((p) => p.kind === 'image'
-            ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}>✕</button></div>
+            ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}>âœ•</button></div>
             : <div class={`att file${p.error ? ' bad' : ''}`} key={p.id}>
-                <span class="chip-name">📎 {p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
+                <span class="chip-name">ðŸ“Ž {p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
                 {!p.ref && !p.error && <progress max={1} value={p.progress} aria-label={t('chat.uploading')} />}
-                <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}>✕</button>
+                <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}>âœ•</button>
               </div>)}
         </div>
       )}
@@ -152,12 +164,13 @@ export function Composer(props: {
             <input ref={file} type="file" multiple hidden onChange={media} />
           </span>
         )}
+        {isHermes && <button type="button" class="cmd-btn" aria-label={t('chat.browse')} onClick={() => { setBrowser(true); setMenu(false); }}>/</button>}
         <textarea ref={ta} rows={1} value={text} placeholder={t('chat.placeholder', { agent: agent.displayName || agent.name })} aria-label={t('chat.message')}
           onInput={(e) => { setText((e.currentTarget as HTMLTextAreaElement).value); setMenu(true); }} onKeyDown={key} onBlur={() => setMenu(false)}
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />
-        {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
-        {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>}
-        <button class="send" aria-label={t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
+        {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>ðŸŽ¤</button>}
+        {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>â– </button>}
+        <button class="send" aria-label={t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>â†‘</button>
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

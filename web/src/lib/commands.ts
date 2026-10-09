@@ -4,8 +4,8 @@ import bundled from '../data/hermes-commands.json';
 export type LocalCommand = 'new' | 'sessions' | 'stop' | 'retry' | 'title';
 export type Availability = 'app' | 'chat' | 'unavailable';
 export interface CatalogCommand { name: string; aliases: string[]; description: string; category: string; args: string; subcommands: string[]; availability: Availability; app?: string; reason?: string; handler?: string; busy?: string; executable?: boolean; disabledReason?: string; verified?: boolean; unavailableSubcommands?: Record<string, string> }
-export interface Catalog { source?: string; busy?: string[]; commands: CatalogCommand[] }
-export interface Suggestion { insert: string; label: string; hint: string; local?: LocalCommand; group?: string; args?: string; availability?: Availability; reason?: string; kind?: 'arg' }
+export interface Catalog { source?: string; busy?: string[]; commands: CatalogCommand[]; skills?: string[]; warning?: string }
+export interface Suggestion { insert: string; label: string; hint: string; local?: LocalCommand; group?: string; args?: string; availability?: Availability; reason?: string; kind?: 'arg'; alias?: boolean }
 
 /** The bundled list (generated from hermes-agent's command registry by design/tools/gen-hermes-commands.py); the hub may serve a fresher one. */
 export const BUNDLED_CATALOG: Catalog = { source: 'bundled', commands: (bundled as { commands: CatalogCommand[] }).commands };
@@ -17,7 +17,7 @@ const LOCAL_ONLY: Suggestion[] = [
   { insert: '/stop', label: '/stop', hint: 'Stop the current reply', local: 'stop', group: 'Chat', availability: 'app' },
 ];
 const RANK = { app: 0, chat: 1, unavailable: 2 };
-const ORDER = ['Session', 'Configuration', 'Info', 'Tools & Skills', 'Context', 'Background & Automation', 'Plugins', 'Exit'];
+const ORDER = ['Session', 'Skills', 'Configuration', 'Info', 'Tools & Skills', 'Context', 'Background & Automation', 'Plugins', 'Exit'];
 
 export function toSuggestions(cat: Catalog): Suggestion[] {
   const out: Suggestion[] = [];
@@ -27,7 +27,7 @@ export function toSuggestions(cat: Catalog): Suggestion[] {
     const local = c.availability === 'app' ? (names.map((n) => APP_LOCAL[n]).find(Boolean) as LocalCommand | undefined) : undefined;
     for (const n of names) {
       if (c.availability === 'app' && !APP_LOCAL[n]) continue;
-      out.push({ insert: `/${n}${c.args ? ' ' : ''}`, label: `/${n}`, hint: c.availability === 'unavailable' ? `${c.description} · ${c.reason ?? 'Not available remotely'}` : c.description, group: c.category, args: c.args || undefined, availability: c.availability, reason: c.reason, ...(local && APP_LOCAL[n] ? { local: APP_LOCAL[n] } : {}) });
+      out.push({ insert: `/${n}${c.args ? ' ' : ''}`, label: `/${n}`, hint: c.availability === 'unavailable' ? `${c.description} · ${c.reason ?? 'Not available remotely'}` : c.description, group: c.category, args: c.args || undefined, availability: c.availability, reason: c.reason, alias: n !== c.name, ...(local && APP_LOCAL[n] ? { local: APP_LOCAL[n] } : {}) });
     }
   }
   return out.sort((a, b) => (ORDER.indexOf(a.group!) + 1 || 99) - (ORDER.indexOf(b.group!) + 1 || 99) || RANK[a.availability!] - RANK[b.availability!] || a.label.localeCompare(b.label));
@@ -49,16 +49,23 @@ export function argSuggestions(input: string, cat: Catalog = BUNDLED_CATALOG): S
   if (hits.length === 1 && hits[0].toLowerCase() === q) return [];
   return hits.map((x): Suggestion => { const off = c.unavailableSubcommands?.[x]; return { insert: `/${m[1]} ${x}${more && ['add', 'rm', 'edit', 'move'].includes(x) ? ' ' : ''}`, label: x, hint: off ?? '', group: `Choices for /${c.name}`, kind: 'arg', availability: off ? 'unavailable' : 'chat', reason: off }; });
 }
-export function commandSuggestions(input: string, skills: string[], limit = 12, agentCommands = true, catalog?: Catalog): Suggestion[] {
+const byGroup = (a: Suggestion, b: Suggestion) => (ORDER.indexOf(a.group ?? '') + 1 || 99) - (ORDER.indexOf(b.group ?? '') + 1 || 99) || RANK[a.availability ?? 'chat'] - RANK[b.availability ?? 'chat'] || a.label.localeCompare(b.label);
+/** A word in the hint or argument text starts with the query. Used only when no command name matches. */
+const wordHit = (text: string, q: string) => text.toLowerCase().split(/[^a-z0-9_+-]+/).some((w) => w.startsWith(q));
+/** /help and /palette open Foxfleet's own command browser. They are not sent to the agent. */
+export const opensCommandBrowser = (text: string) => /^\/(help|palette)$/i.test(text.trim());
+export function commandSuggestions(input: string, skills: string[], limit = 12, agentCommands = true, catalog?: Catalog, includeHidden = false): Suggestion[] {
   if (!input) return [];
   if (/[\s]/.test(input)) return input[0] === '/' && (catalog || agentCommands) ? argSuggestions(input, catalog ?? BUNDLED_CATALOG).slice(0, limit) : [];
   const q = input.slice(1).toLowerCase();
   if (input[0] === '/') {
     const all = catalog ? toSuggestions(catalog) : agentCommands ? BUNDLED_SUGGESTIONS : LOCAL_ONLY;
-    const cmds = all.filter((c) => c.label.slice(1).startsWith(q));
     const sk = agentCommands && skills.length ? skills.filter((s) => s.toLowerCase().startsWith(q)).map((s): Suggestion => ({ insert: `/${s} `, label: `/${s}`, hint: 'Skill', group: 'Skills', availability: 'chat' })) : [];
+    const named = !q ? (includeHidden ? all : all.filter((s) => !s.alias && s.availability !== 'unavailable')) : all.filter((s) => s.label.slice(1).toLowerCase().startsWith(q));
+    const text = q.length >= 2 && named.length === 0 ? all.filter((s) => !s.alias && wordHit(`${s.hint} ${s.args ?? ''}`, q)) : [];
     const seen = new Set<string>();
-    return [...cmds, ...sk].filter((s) => (seen.has(s.label) ? false : (seen.add(s.label), true))).slice(0, limit);
+    const rows = [...named, ...sk].sort(byGroup).concat(text).filter((s) => (seen.has(s.label) ? false : (seen.add(s.label), true)));
+    return Number.isFinite(limit) ? rows.slice(0, limit) : rows;
   }
   if (input[0] === '#' && agentCommands) {
     return skills.filter((s) => s.toLowerCase().includes(q)).sort((a, b) => Number(!a.toLowerCase().startsWith(q)) - Number(!b.toLowerCase().startsWith(q)))
