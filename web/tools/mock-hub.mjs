@@ -10,6 +10,7 @@ import { catalogFor } from '../../server/commands.js';
 import { readFileSync } from 'node:fs';
 const HERMES = JSON.parse(readFileSync(new URL('../../server/hermes-commands.json', import.meta.url), 'utf8'));
 const queue = [];
+const NATIVE = process.env.MOCK_NATIVE === '1'; // atlas behaves like a native Hermes session: cards, acknowledgements, model picker
 const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, ...o });
 const REPLY = `Here is the **weekly summary** you asked for. Atlas handled most of the load, and Friday was the busiest day.
 
@@ -64,7 +65,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   const devices = [{ id: 'd1', name: 'Desktop browser', kind: 'web', created: Date.now() - 5e8, lastSeen: Date.now() - 1000 }, { id: 'd2', name: 'Phone', kind: 'app', created: Date.now() - 4e8, lastSeen: Date.now() - 36e5 }, { id: 'd3', name: 'Laptop', kind: 'web', created: Date.now() - 2e8, lastSeen: Date.now() - 86400e3 }];
   let lease = null, screenOn = true;
   const agentsOut = () => saved.map((s) => ({ id: s.name, name: s.name, displayName: s.label || s.name, kind: s.kind, online: s.name !== 'echo', chatReady: true, managementReady: s.kind === 'hermes', description: s.description || '',
-    capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true, busy: ['queue', 'steer', 'interrupt'] }) : caps({ images: s.name === 'nova', sessions: false, busy: ['queue', 'interrupt'] }) }));
+    capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true, busy: ['queue', 'steer', 'interrupt'], ...(NATIVE ? { nativeUi: true } : {}) }) : caps({ images: s.name === 'nova', sessions: false, busy: ['queue', 'interrupt'] }) }));
   let retention = 90;
   const H = 3600_000, T0 = Date.now();
   const chatSessions = { atlas: [
@@ -128,8 +129,11 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (p === '/api/agents') return json(res, 200, { agents: agentsOut() });
     if (p === '/api/history/settings') { if (m === 'PUT') { const b = await body(req); retention = b.retentionDays; } return json(res, 200, { retentionDays: retention }); }
     if (/^\/api\/agents\/[^/]+\/commands$/.test(p)) { const kind = saved.find((x) => x.name === p.split('/')[3])?.kind ?? 'openai', modes = kind === 'hermes' ? ['queue', 'steer', 'interrupt'] : ['queue', 'interrupt']; return json(res, 200, { source: kind === 'hermes' ? 'bundled' : 'local', busy: modes, commands: catalogFor({ kind, bundled: HERMES.commands, modes }) }); }
-    if (/^\/api\/agents\/[^/]+\/queue$/.test(p)) return json(res, 200, { items: queue, recent: [], halted: false, active_run: null, modes: ['queue', 'steer', 'interrupt'] });
-    if (/^\/api\/agents\/[^/]+\/messages$/.test(p) && req.method === 'POST') { const b = await body(req); const text = (b.messages?.at(-1)?.content ?? '').toString(); const m = { id: 'm_' + queue.length, state: b.mode === 'steer' ? 'guidance_accepted' : b.mode === 'interrupt' ? 'awaiting_stop' : 'queued', mode: b.mode, text, created: Date.now() }; queue.push(m); return json(res, 202, { message: m }); }
+    if (NATIVE && /^\/api\/agents\/[^/]+\/native\/models$/.test(p)) return json(res, 200, { providers: [{ slug: 'openrouter', name: 'OpenRouter', current: true, models: ['anthropic/claude-sonnet', 'openai/gpt-5', 'z-ai/glm-4.6'] }, { slug: 'custom', name: 'Local', current: false, models: ['qwen3-coder'] }] });
+    if (NATIVE && /^\/api\/agents\/[^/]+\/native\/busy$/.test(p)) { if (m === 'POST') await body(req); return json(res, 200, { mode: 'queue', scope: 'profile' }); }
+    if (NATIVE && /\/native\/sessions\/[^/]+\/(model|requests\/[^/]+)$/.test(p)) { await body(req); return json(res, 200, { ok: true, model: 'openai/gpt-5', scope: 'session' }); }
+    if (/^\/api\/agents\/[^/]+\/queue$/.test(p)) return json(res, 200, { items: queue, can_cancel: !NATIVE, recent: [], halted: false, active_run: null, modes: ['queue', 'steer', 'interrupt'] });
+    if (/^\/api\/agents\/[^/]+\/messages$/.test(p) && req.method === 'POST') { const b = await body(req); const text = (b.messages?.at(-1)?.content ?? '').toString(); const m = { id: 'm_' + queue.length, state: b.mode === 'steer' || (NATIVE && b.mode === 'interrupt') ? 'guidance_accepted' : b.mode === 'interrupt' ? 'awaiting_stop' : 'queued', mode: b.mode, text, created: Date.now(), ...(NATIVE ? { ack: { queue: 'queued', steer: 'steered', interrupt: 'redirected' }[b.mode] } : {}) }; queue.push(m); return json(res, 202, { message: m }); }
     if (/^\/api\/agents\/[^/]+\/runs$/.test(p)) return json(res, 200, { runs: [] });
     if (p === '/api/agent-kinds') return json(res, 200, { kinds });
     if (p === '/api/connections' && m === 'GET') return json(res, 200, { connections: saved });
@@ -167,6 +171,12 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
         const send = (d, e) => res.write(`${e ? 'event: ' + e + '\n' : ''}data: ${JSON.stringify(d)}\n\n`), delta = (x) => ({ choices: [{ delta: x }] });
         send(delta({ reasoning_content: 'Checking each agent’s status first.' })); await new Promise((r) => setTimeout(r, 400));
         send({ tool: 'fleet_status' }, 'hermes.tool.progress');
+        if (NATIVE && agent === 'atlas') {
+          send({ tool: 'read_file' }, 'hermes.tool.progress'); send({ tool: 'terminal' }, 'hermes.tool.progress'); send(delta({ content: 'Before I change anything, ' }));
+          send({ request_id: 'srq-000000000001', kind: 'clarify', questions: [{ id: 'q0', question: 'Which environment should I deploy to?', choices: ['staging', 'production'], multi_select: false }] }, 'foxfleet.request');
+          send({ request_id: 'srq-000000000002', kind: 'approval', command: 'rm -rf build/ && npm run build', description: 'Remove the old build folder before rebuilding' }, 'foxfleet.request');
+          await new Promise((r) => setTimeout(r, 120000)); return res.end();
+        }
         for (const ch of REPLY.match(/[^]{1,12}/g)) { await new Promise((r) => setTimeout(r, delay)); send(delta({ content: ch })); }
         res.write('data: [DONE]\n\n'); return res.end();
       }

@@ -291,5 +291,6 @@
   "ctl.busyFailed": "Could not read or change it: {error}",
   "chat.busyNote": "This only changes how this app sends. Hermes keeps its own profile default (chat controls ▸ Hermes default).",
   "chat.tools": "Tools used",
-  "chat.toolsDone": "{n} tools"
+  "chat.toolsDone": "{n} tools",
+  "ctl.close": "Close"
 }

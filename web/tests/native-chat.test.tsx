@@ -7,7 +7,7 @@ import type { AgentSummary } from '../src/api/types';
 import { Composer } from '../src/chat/Composer';
 import { RequestCards } from '../src/chat/RequestCards';
 import { ChatControls } from '../src/chat/ChatControls';
-import { answerRequest, chatOf, resetChats, send, syncQueue } from '../src/chat/store';
+import { answerRequest, chatOf, resetChats, send } from '../src/chat/store';
 import { setDraftScope } from '../src/chat/drafts';
 
 const enc = new TextEncoder();

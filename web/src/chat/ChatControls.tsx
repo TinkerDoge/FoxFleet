@@ -23,7 +23,7 @@ export function ChatControls({ client, agent, session, streaming }: { client: Cl
     <span class="controls">
       <button class="btn text" aria-expanded={open} aria-haspopup="dialog" onClick={() => setOpen(!open)}>{t('ctl.open')}</button>
       {open && (
-        <div class="card popover" role="dialog" aria-label={t('ctl.title')}>
+        <div class="card popover" role="dialog" aria-label={t('ctl.title')} onKeyDown={(e) => { if (e.key === 'Escape') setOpen(false); }}>
           <h3>{t('ctl.model')}</h3>
           <p class="muted">{t('ctl.modelHelp')}</p>
           {!prov && !err && <p class="muted">{t('ctl.loading')}</p>}
@@ -42,9 +42,10 @@ export function ChatControls({ client, agent, session, streaming }: { client: Cl
           <hr />
           <h3>{t('ctl.busyTitle')}</h3>
           <p class="warn" role="note">{t('ctl.busyWarn')}</p>
-          {busyMode && <p>{t('ctl.busyNow', { mode: t(('chat.mode.' + (['queue', 'steer', 'interrupt'].includes(busyMode) ? busyMode : 'queue')) as Parameters<typeof t>[0]) })}</p>}
-          <div class="row">{(['queue', 'steer', 'interrupt'] as SendMode[]).map((m) => <button key={m} class="btn text" disabled={busyMode === m} onClick={() => void changeBusy(m)}>{t(('chat.mode.' + m) as Parameters<typeof t>[0])}</button>)}</div>
+          {busyMode && <p>{t('ctl.busyNow', { mode: t((busyMode === 'interrupt' ? 'chat.mode.interrupt.native' : 'chat.mode.' + (['queue', 'steer'].includes(busyMode) ? busyMode : 'queue')) as Parameters<typeof t>[0]) })}</p>}
+          <div class="row">{(['queue', 'steer', 'interrupt'] as SendMode[]).map((m) => <button key={m} class="btn text" disabled={busyMode === m} onClick={() => void changeBusy(m)}>{t((m === 'interrupt' ? 'chat.mode.interrupt.native' : 'chat.mode.' + m) as Parameters<typeof t>[0])}</button>)}</div>
           {err && <p class="error" role="alert">{err}</p>}
+          <button class="btn text" onClick={() => setOpen(false)}>{t('ctl.close')}</button>
         </div>
       )}
     </span>
