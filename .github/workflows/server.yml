@@ -2,6 +2,7 @@ name: server
 on: { push: { branches: [main] }, pull_request: {} }
 jobs:
   test:
+    timeout-minutes: 10 # a hung test must fail fast, not run for the 6 h default
     runs-on: ubuntu-latest
     strategy: { matrix: { node: [22, 24] } }
     steps:

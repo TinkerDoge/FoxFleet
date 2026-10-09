@@ -52,7 +52,8 @@ test('retention drops old sessions and survives a restart', async () => {
     await h.append('a', 'old', 'first', 'reply'); t += 3 * 86400000; await h.append('a', 'new', 'second', 'reply'); await new Promise((r) => setTimeout(r, 30));
     const again = await historyStore(path.join(dir, 'h.json'), { now: () => t }); assert.equal(again.list('a').total, 2); assert.equal(again.retentionDays, 7);
     t += 6 * 86400000; assert.deepEqual(again.list('a').sessions.map((s) => s.id), ['new'], 'the 9-day-old session is gone, the 6-day-old one stays');
-  } finally { await rm(dir, { recursive: true, force: true }); }
+    await h.flush?.(); await again.flush?.(); // a sweep may still be writing: do not delete the directory under it
+  } finally { await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 }); }
 });
 
 // Realistic rows as hermes_state / GET /api/sessions/{id}/messages return them (content may be null or an array, tool rows follow the call).

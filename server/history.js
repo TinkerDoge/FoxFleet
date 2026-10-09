@@ -24,6 +24,8 @@ export async function historyStore(file, { now = () => Date.now() } = {}) {
   }
   const find = (agent, id) => { sweep(); const s = list(agent).find((x) => x.id === id); if (!s) throw fault(404, 'Session not found'); return s; };
   return {
+    /** Resolves when every queued write has hit the disk (tests, shutdown). */
+    flush: () => writing,
     get retentionDays() { return db.retentionDays; },
     async setRetention(days) { if (!Number.isInteger(days) || days < 0 || days > 3650) throw fault(400, 'Retention must be 0 to 3650 days'); db.retentionDays = days; sweep(); await save(); return days; },
     /** Called when a reply finishes: stores the user turn and the assistant turn under the session. */
