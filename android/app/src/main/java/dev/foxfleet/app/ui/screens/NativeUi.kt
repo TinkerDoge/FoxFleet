@@ -100,37 +100,100 @@ internal fun RequestCard(r: HubApi.OpenRequest, agentName: String, onAnswer: sus
     }
 }
 
-/** Model for this chat (session-scoped) and the profile-wide busy default, with its warning. Everything disabled says why. */
+/** A Telegram-style choice card. It belongs to the chat (session) that opened it and expires. */
+class PickerCard(val sessionId: String?, val kind: String, val command: String? = null, val options: List<String> = emptyList(), val openedAt: Long = System.currentTimeMillis()) {
+    fun valid(session: String?, now: Long = System.currentTimeMillis()) = session == sessionId && now - openedAt <= PICKER_TTL_MS
+    companion object { const val PICKER_TTL_MS = 5 * 60_000L }
+}
+/** One page of a filtered list: rows, page count, the page actually shown. */
+internal fun <T> pageOf(items: List<T>, page: Int, size: Int = 8): Triple<List<T>, Int, Int> {
+    val pages = maxOf(1, (items.size + size - 1) / size); val p = page.coerceIn(0, pages - 1)
+    return Triple(items.drop(p * size).take(size), pages, p)
+}
+internal fun modelSetMessage(model: String) = "Model for this chat is now $model. Your Hermes default is unchanged."
+
+/**
+ * /model: step 1 the providers, step 2 that provider's models (paged, searchable). Choosing sets the model for this chat only.
+ * Back and Cancel are always there. Opened as a bottom sheet so the keyboard and the composer stay usable.
+ */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-internal fun NativeControlsDialog(controls: NativeControls, hasSession: Boolean, streaming: Boolean, onDismiss: () -> Unit) {
+internal fun ModelPickerSheet(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = LocalHubColors.current.surface) { ModelPickerContent(controls, hasSession, onDone, onDismiss) }
+}
+
+/** The two steps themselves (also what the screenshots render, since a sheet window is not part of the root). */
+@Composable
+internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "") {
     val c = LocalHubColors.current; val scope = rememberCoroutineScope()
-    var providers by remember { mutableStateOf<List<HubApi.ModelProvider>?>(null) }; var busy by remember { mutableStateOf("") }
-    var note by remember { mutableStateOf<String?>(null) }; var err by remember { mutableStateOf<String?>(null) }; var confirmMode by remember { mutableStateOf<String?>(null) }
-    LaunchedEffect(Unit) { runCatching { providers = controls.models() }.onFailure { err = it.message }; busy = runCatching { controls.busy() }.getOrDefault("") }
-    val why = if (!hasSession) "Send the first message first: the model is set per conversation." else if (streaming) "Not available while the agent is replying" else null
-    AlertDialog(onDismissRequest = onDismiss, confirmButton = { TextButton(onDismiss) { Text("Close") } }, title = { Text("Chat controls") }, text = {
-        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text("Model for this chat", style = MaterialTheme.typography.titleSmall, color = c.text)
-            Text("Changes this conversation only. The Hermes default is not touched.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-            if (why != null) Text(why, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+    var providers by remember { mutableStateOf<List<HubApi.ModelProvider>?>(null) }; var err by remember { mutableStateOf<String?>(null) }
+    var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { runCatching { providers = controls.models() }.onFailure { err = it.message ?: "Could not load the models" } }
+    val p = providers?.firstOrNull { it.slug == sel }
+    run {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(if (p == null) "Choose a provider" else "Models from ${p.name}", style = MaterialTheme.typography.titleMedium, color = c.text)
+            if (!hasSession) Text("Send the first message first: the model is set per conversation.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
             when {
                 providers == null && err == null -> Text("Loading models…", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 providers.isNullOrEmpty() -> Text("This agent did not list any models.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-                else -> Column(Modifier.height(160.dp).let { it }, verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    providers!!.take(6).forEach { p -> p.models.take(8).forEach { m ->
-                        Text("${p.name} · $m", style = MaterialTheme.typography.bodyMedium, color = if (why == null) c.accent else c.textFaint,
-                            modifier = Modifier.fillMaxWidth().clickable(enabled = why == null) { scope.launch { runCatching { controls.setModel(m, p.slug) }.onSuccess { note = it; err = null }.onFailure { err = it.message } } }.padding(vertical = 6.dp))
+                p == null -> providers!!.forEach { x -> ChoiceRow("${x.name} · ${x.models.size}", true) { sel = x.slug; q = ""; page = 0 } }
+                else -> {
+                    OutlinedTextField(q, { q = it; page = 0 }, singleLine = true, label = { Text("Search models") }, modifier = Modifier.fillMaxWidth())
+                    val (rows, pages, shown) = pageOf(p.models.filter { it.contains(q.trim(), ignoreCase = true) }, page)
+                    if (rows.isEmpty()) Text("Nothing matches", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                    rows.forEach { m -> ChoiceRow(m, hasSession && !busy) {
+                        busy = true
+                        scope.launch { runCatching { controls.setModel(m, p.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { err = it.message; busy = false } }
                     } }
+                    if (pages > 1) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                        TextButton({ page = shown - 1 }, enabled = shown > 0) { Text("Previous", color = c.accent) }
+                        Text("${shown + 1}/$pages", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                        TextButton({ page = shown + 1 }, enabled = shown < pages - 1) { Text("Next", color = c.accent) }
+                    }
                 }
             }
-            note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.text) }
-            Text("Hermes default for messages sent while it works", style = MaterialTheme.typography.titleSmall, color = c.text)
-            Text("This is a setting of the Hermes profile. Changing it affects every chat of this profile, including the terminal and messaging apps. The send mode next to the send button only changes what this app asks for.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-            if (busy.isNotEmpty()) Text("Now: ${modeLabel(busy, true)}", style = MaterialTheme.typography.bodySmall, color = c.text)
-            Row { listOf("queue", "steer", "interrupt").forEach { m -> TextButton({ confirmMode = m }, enabled = busy != m) { Text(modeLabel(m, true), color = c.accent) } } }
             err?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
+            Row { if (p != null) TextButton({ sel = null; q = "" }) { Text("Back", color = c.accent) }; TextButton(onDismiss) { Text("Cancel", color = c.accent) } }
         }
-    })
+    }
+}
+
+/** Any command with fixed choices: tap one and it is sent as that command. */
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+internal fun ChoiceSheet(command: String, options: List<String>, onChoose: (String) -> Unit, onDismiss: () -> Unit) {
+    val c = LocalHubColors.current
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("/$command", style = MaterialTheme.typography.titleMedium, color = c.text)
+            options.forEach { o -> ChoiceRow(o, true) { onChoose("/$command $o") } }
+            TextButton(onDismiss) { Text("Cancel", color = c.accent) }
+        }
+    }
+}
+
+@Composable
+private fun ChoiceRow(label: String, enabled: Boolean, onClick: () -> Unit) {
+    val c = LocalHubColors.current
+    Text(label, style = MaterialTheme.typography.bodyLarge, color = if (enabled) c.text else c.textFaint,
+        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable(enabled = enabled, onClick = onClick).padding(horizontal = 14.dp, vertical = 14.dp))
+}
+
+/** Agent settings, not chat: the Hermes profile default for messages sent while it works. It affects every chat of the profile, so it asks first. */
+@Composable
+fun ProfileBusyCard(controls: NativeControls) {
+    val c = LocalHubColors.current; val scope = rememberCoroutineScope()
+    var busy by remember { mutableStateOf<String?>(null) }; var err by remember { mutableStateOf<String?>(null) }; var confirmMode by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(Unit) { busy = runCatching { controls.busy() }.getOrNull() }
+    val now = busy ?: return // not a native Hermes agent: nothing to set here
+    Column(Modifier.fillMaxWidth().padding(top = 16.dp).clip(RoundedCornerShape(16.dp)).background(c.surfaceAlt).padding(14.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text("Hermes default for messages sent while it works", style = MaterialTheme.typography.titleSmall, color = c.text)
+        Text("This is a setting of the Hermes profile. Changing it affects every chat of this profile, including the terminal and messaging apps.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+        if (now.isNotEmpty()) Text("Now: ${modeLabel(now, true)}", style = MaterialTheme.typography.bodySmall, color = c.text)
+        Row { listOf("queue", "steer", "interrupt").forEach { m -> TextButton({ confirmMode = m }, enabled = now != m) { Text(modeLabel(m, true), color = c.accent) } } }
+        err?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
+    }
     confirmMode?.let { m ->
         AlertDialog(onDismissRequest = { confirmMode = null }, title = { Text("Change it for the whole Hermes profile?") }, text = { Text("Every chat of this profile will treat messages sent while it works as: ${modeLabel(m, true)}.") },
             confirmButton = { TextButton({ confirmMode = null; scope.launch { runCatching { controls.setBusy(m) }.onSuccess { busy = m; err = null }.onFailure { err = it.message } } }) { Text("Change the profile default") } },

@@ -31,6 +31,10 @@ class ChatState {
         private set
     var sessionId by mutableStateOf<String?>(null)
         private set
+    /** Small bot-style lines (a confirmation such as the model change). Local to this screen: never sent to the agent. */
+    var notices by mutableStateOf<List<String>>(emptyList())
+        private set
+    fun addNotice(text: String) { notices = (notices + text).takeLast(5) }
 
     /** The hub run behind the reply being streamed, and where to remember it (set by the ViewModel). */
     var runId: String? = null
@@ -96,7 +100,7 @@ class ChatState {
     }
 
     fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
-        gen++; queue = emptyList(); halted = false; requests = emptyList()
+        gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
         this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
         if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
@@ -114,7 +118,7 @@ class ChatState {
     fun olderFailed() { loadingOlder = false }
 
     fun newConversation() {
-        gen++; queue = emptyList(); halted = false; requests = emptyList()
+        gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
         messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; persist(SavedChat())
         resetStream(); error = null
     }
@@ -177,7 +181,7 @@ class ChatState {
     /** The hub stores the message first; the mode decides what happens if the agent is busy. A rejected send returns its text so nothing is lost. */
     suspend fun sendBusy(api: HubApi, agent: String, userText: String, images: List<dev.foxfleet.app.data.ImageAttachment>, mode: String): String? {
         val clientId = java.util.UUID.randomUUID().toString()
-        val local = HubApi.QueuedMessage(clientId, if (mode == "interrupt") "awaiting_stop" else if (mode == "steer") "sending" else "queued", mode, userText)
+        val local = HubApi.QueuedMessage(clientId, if (mode == "interrupt") "awaiting_stop" else if (mode == "queue") "queued" else "sending", mode, userText)
         queue = queue + local; submitting++
         try {
             val r = api.sendMessage(agent, UiMessage(role = "user", content = userText, images = images), sessionId, mode, clientId)

@@ -1,37 +1,29 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Client, SendMode } from '../api/client';
 import type { AgentSummary } from '../api/types';
-import { BUNDLED_CATALOG, LOCAL_CATALOG, commandSuggestions, parseHub, parseLocal, unavailableReason, type Catalog, type LocalCommand, type Suggestion } from '../lib/commands';
-import { loadMode, saveMode } from '../lib/persist';
+import { BUNDLED_CATALOG, LOCAL_CATALOG, commandSuggestions, parseHub, parseLocal, resolveCommand, unavailableReason, type Catalog, type LocalCommand, type Suggestion } from '../lib/commands';
 import type { QueueItem } from './store';
 import { downscaleImage, isImageFile } from '../lib/images';
 import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
 import { estimatedBytes, HUB_BODY_LIMIT, type UiImage, type UiMessage } from '../lib/chat';
 import { t } from '../i18n/t';
-type K = Parameters<typeof t>[0];
 import { useDraft, type PendingAttachment as Pending } from './drafts';
 
 const SR: any = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
 let nextId = 1;
 const catalogs = new Map<string, Catalog>();
-const MODES: SendMode[] = ['queue', 'steer', 'interrupt'];
-/** The remembered mode of this conversation (else of this agent), limited to what the agent supports; Hermes defaults to Interrupt & send. */
-export function pickMode(agent: string, session: string | undefined, kind: string, modes: SendMode[]): SendMode {
-  const saved = loadMode(agent, session) ?? loadMode(agent, undefined);
-  if (saved && modes.includes(saved as SendMode)) return saved as SendMode;
-  return kind === 'hermes' && modes.includes('interrupt') ? 'interrupt' : 'queue';
-}
+/** What a plain message means while the agent works. Like Telegram/Discord there is no picker: Hermes applies its own profile setting (busy_input_mode) and says what it did; every other agent is stopped and the message sent. */
+export function plainMode(native: boolean, modes: SendMode[]): SendMode { return native ? 'auto' : modes.includes('interrupt') ? 'interrupt' : 'queue'; }
 
 export function Composer(props: {
   client: Client; agent: AgentSummary; history: UiMessage[]; streaming: boolean; skills: string[]; draftKey: string; session?: string; queue?: QueueItem[]; onCancelQueued?: (id: string) => void;
   onSend: (text: string, images: UiImage[], files: FileRef[], mode: SendMode) => void; onStop: () => void; onLocal: (c: LocalCommand, args?: string) => void;
+  onModel?: (args: string) => void; onChoices?: (command: string, options: string[]) => void;
 }) {
   const { client, agent, streaming, skills } = props;
   const caps = agent.capabilities ?? {};
   const isHermes = agent.kind === 'hermes', queue = props.queue ?? [];
-  const modes = ((caps.busy ?? ['queue']) as SendMode[]).filter((m) => MODES.includes(m));
-  const [mode, setModeState] = useState<SendMode>(() => pickMode(agent.name, props.session, agent.kind, modes));
-  const setMode = (m: SendMode) => { setModeState(m); saveMode(agent.name, props.session, m); saveMode(agent.name, undefined, m); };
+  const modes = ((caps.busy ?? ['queue']) as SendMode[]).filter((m) => ['queue', 'steer', 'interrupt'].includes(m));
   const [catalog, setCatalog] = useState<Catalog>(() => catalogs.get(agent.name) ?? (isHermes ? BUNDLED_CATALOG : LOCAL_CATALOG));
   useEffect(() => { let on = true; void Promise.resolve().then(() => client.commands(agent.name)).then((c) => { if (!on || (c.source === 'bundled' && !isHermes)) return; catalogs.set(agent.name, c); setCatalog(c); }).catch(() => {}); return () => { on = false; }; }, [agent.name]);
   const [{ text, pending }, setDraft] = useDraft(props.draftKey);
@@ -72,19 +64,11 @@ export function Composer(props: {
   const tooBig = estimatedBytes(draftHistory) > HUB_BODY_LIMIT;
   const canSend = !uploading && !tooBig && (text.trim().length > 0 || images.length > 0 || fileRefs.some((f) => f.ref));
 
-  const native = caps.nativeUi === true;
-  /** Native: Interrupt is a live redirect that Hermes may refuse. HTTP/other agents: it stops the reply and then sends. Labels say which. */
-  const modeLabel = (m: SendMode) => t((m === 'interrupt' && native ? 'chat.mode.interrupt.native' : 'chat.mode.' + m) as K);
-  const modeHelp = (m: SendMode) => t((native ? 'chat.mode.' + m + '.native.help' : 'chat.mode.' + m + '.help') as K);
-  function describeMode() { return modeLabel(mode); }
+  const native = caps.nativeUi === true, mode = plainMode(native, modes);
   function hubCommand(h: NonNullable<ReturnType<typeof parseHub>>) {
     const { cmd, args } = h, waiting = queue.filter((q) => q.state === 'queued' || q.state === 'awaiting_stop');
     if (h.command.executable === false) { setNote(`/${h.command.name}: ${h.command.disabledReason ?? t('chat.noSteer')}`); return; }
-    if (cmd === 'busy') {
-      if (!args || args === 'status') { setNote(`${t('chat.modeNow', { mode: describeMode() })} · ${waiting.length ? t('chat.queueCount', { n: waiting.length }) : t('chat.queueEmpty')}`); setText(''); return; }
-      if (modes.includes(args as SendMode)) { setMode(args as SendMode); setNote(`${t('chat.modeNow', { mode: modeLabel(args as SendMode) })}${native ? ' · ' + t('chat.busyNote') : ''}`); setText(''); return; }
-      setNote(`/busy ${args}: ${args === 'steer' ? t('chat.noSteer') : modes.join(' | ') + ' | status'}`); return;
-    }
+    if (cmd === 'busy') { setNote(`${t('chat.busyCmd')}${waiting.length ? ' · ' + t('chat.queueCount', { n: waiting.length }) : ''}`); setText(''); return; }
     if (cmd === 'queue') {
       const sub = /^(list|rm|clear|add|edit|move)\b\s*([\s\S]*)$/.exec(args);
       if (sub && sub[1] === 'list') { setNote(waiting.length ? waiting.map((q, i) => `${i + 1}. ${q.text.slice(0, 40)}`).join('  ') : t('chat.queueEmpty')); setText(''); return; }
@@ -99,6 +83,10 @@ export function Composer(props: {
   }
   function sendBody(body: string, m: SendMode) { setDraft({ text: '', pending: [] }); setNote(null); setMenu(false); props.onSend(body, [], [], m); }
   function submit() {
+    const mm = /^\/model(?:\s+([\s\S]*))?$/i.exec(text.trim());
+    if (native && mm && props.onModel) { setText(''); setNote(null); setMenu(false); props.onModel((mm[1] ?? '').trim()); return; }
+    const bare = /^\/([A-Za-z0-9_-]+)$/.exec(text.trim()), bc = bare && native ? resolveCommand(bare[1], catalog) : undefined;
+    if (bc && bc.subcommands.length > 1 && bc.executable !== false && !bc.handler?.startsWith('hub:') && bc.availability !== 'unavailable' && props.onChoices) { setText(''); setMenu(false); props.onChoices(bc.name, bc.subcommands); return; }
     const hub = parseHub(text, catalog); if (hub) { hubCommand(hub); return; }
     const local = parseLocal(text, isHermes);
     if (local) { setText(''); props.onLocal(local.cmd, local.args); return; }
@@ -168,13 +156,8 @@ export function Composer(props: {
           onInput={(e) => { setText((e.currentTarget as HTMLTextAreaElement).value); setMenu(true); }} onKeyDown={key} onBlur={() => setMenu(false)}
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />
         {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
-        {(streaming || queue.length > 0) && modes.length > 1 && (
-          <select class="mode" aria-label={t('chat.mode')} title={modeHelp(mode)} value={mode} onChange={(e) => setMode((e.currentTarget as HTMLSelectElement).value as SendMode)}>
-            {modes.map((m) => <option key={m} value={m} title={modeHelp(m)}>{modeLabel(m)}</option>)}
-          </select>
-        )}
         {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>}
-        <button class="send" aria-label={streaming ? `${t('chat.send')} · ${modeLabel(mode)}` : t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
+        <button class="send" aria-label={t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

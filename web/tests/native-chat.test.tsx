@@ -6,7 +6,9 @@ import { ApiError } from '../src/api/errors';
 import type { AgentSummary } from '../src/api/types';
 import { Composer } from '../src/chat/Composer';
 import { RequestCards } from '../src/chat/RequestCards';
-import { ChatControls } from '../src/chat/ChatControls';
+import { ModelPicker } from '../src/chat/Pickers';
+import { ProfileBusy } from '../src/chat/ProfileBusy';
+import { activePicker, closePicker, openPicker, resetPickers, PICKER_TTL_MS } from '../src/chat/picker';
 import { answerRequest, chatOf, resetChats, send } from '../src/chat/store';
 import { setDraftScope } from '../src/chat/drafts';
 
@@ -83,35 +85,45 @@ describe('cards', () => {
 });
 
 const agent = (nativeUi: boolean): AgentSummary => ({ name: 'a', displayName: 'Atlas', kind: 'hermes', online: true, capabilities: { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, busy: ['queue', 'steer', 'interrupt'], nativeUi } } as AgentSummary);
-describe('send mode labels', () => {
+describe('composer without a mode picker', () => {
   const mount = (a: AgentSummary) => { const el = document.createElement('div'); document.body.append(el); const client = { commands: vi.fn(async () => ({ source: 'local', busy: [], commands: [] })) } as unknown as Client; act(() => render(<Composer client={client} agent={a} history={[]} streaming skills={[]} draftKey="k" session="s" onSend={() => {}} onStop={() => {}} onLocal={() => {}} />, el)); return el; };
-  it('native: the third mode is a Redirect that Hermes may refuse; HTTP: it stops the reply and then sends', () => {
-    const n = mount(agent(true)), h = mount(agent(false));
-    const opts = (el: HTMLElement) => [...el.querySelectorAll('select.mode option')].map((o) => [o.textContent, o.getAttribute('title')]);
-    expect(opts(n)[2]).toEqual(['Redirect', expect.stringMatching(/may refuse/)]); expect(opts(n)[0][1]).toMatch(/Hermes holds it/);
-    expect(opts(h)[2]).toEqual(['Interrupt & send', expect.stringMatching(/Stops the reply, waits/)]);
+  it('neither kind of agent shows a mode selector: the composer is text, Send and Stop', () => {
+    for (const el of [mount(agent(true)), mount(agent(false))]) { expect(el.querySelector('select')).toBeNull(); expect(el.querySelector('.controls')).toBeNull(); expect(el.querySelectorAll('button.send').length).toBeGreaterThan(0); }
   });
 });
 
-describe('chat controls', () => {
-  const mount = (client: Partial<Client>, session?: string, streaming = false) => { const el = document.createElement('div'); document.body.append(el); act(() => render(<ChatControls client={client as Client} agent="a" session={session} streaming={streaming} />, el)); return el; };
-  const models = { providers: [{ slug: 'openrouter', name: 'OpenRouter', models: ['m-one', 'm-two'] }] };
-  it('the model picker is disabled with its reason until a chat exists, and changes the chat only (no --global)', async () => {
-    const setModel = vi.fn(async () => ({ model: 'm-two', scope: 'session' })), client = { models: vi.fn(async () => models), profileBusy: vi.fn(async () => 'queue'), setModel };
-    const none = mount(client); await act(async () => { (none.querySelector('button') as HTMLButtonElement).click(); }); await flush();
-    expect(none.querySelector<HTMLSelectElement>('select')!.disabled).toBe(true); expect(none.textContent).toContain('Send the first message first');
-    const el = mount(client, 'sess-9'); await act(async () => { (el.querySelector('button') as HTMLButtonElement).click(); }); await flush();
-    const sel = el.querySelector<HTMLSelectElement>('select')!; await act(async () => { sel.value = 'openrouter\u0000m-two'; sel.dispatchEvent(new Event('change')); }); await flush();
-    await act(async () => { [...el.querySelectorAll('button')].find((b) => b.textContent === 'Use')!.click(); }); await flush();
-    expect(setModel).toHaveBeenCalledWith('a', 'sess-9', 'm-two --provider openrouter'); expect(JSON.stringify(setModel.mock.calls)).not.toContain('global');
-    const busy = mount(client, 'sess-9', true); await act(async () => { (busy.querySelector('button') as HTMLButtonElement).click(); }); await flush(); expect(busy.querySelector<HTMLSelectElement>('select')!.disabled).toBe(true); expect(busy.textContent).toContain('Not available while the agent is replying');
+describe('model picker and profile setting', () => {
+  const models = { providers: [{ slug: 'openrouter', name: 'OpenRouter', models: Array.from({ length: 11 }, (_, i) => `m-${i}`) }, { slug: 'zai', name: 'Z.ai', models: ['glm-x'] }] };
+  const mount = (el: HTMLElement, node: any) => act(() => render(node, el));
+  const btn = (el: HTMLElement, text: string) => [...el.querySelectorAll('button')].find((b) => b.textContent?.startsWith(text))!;
+  beforeEach(() => resetPickers());
+  it('two steps: provider, then that provider\'s models (paged, searchable); choosing sets the model for this chat only and confirms', async () => {
+    const setModel = vi.fn(async () => ({ model: 'm-9', scope: 'session' })), client = { models: vi.fn(async () => models), setModel } as unknown as Client, done = vi.fn();
+    const el = document.createElement('div'); document.body.append(el); const p = openPicker({ agent: 'a', session: 'sess-9', kind: 'model' });
+    await mount(el, <ModelPicker client={client} picker={p} onDone={done} />); await flush();
+    expect(el.textContent).toContain('Choose a provider'); expect(el.textContent).toContain('OpenRouter'); expect(el.textContent).not.toContain('m-0');
+    await act(async () => { btn(el, 'OpenRouter').click(); }); expect(el.textContent).toContain('Models from OpenRouter'); expect([...el.querySelectorAll('.choices button')]).toHaveLength(8); expect(el.textContent).toContain('1/2');
+    await act(async () => { btn(el, 'Next').click(); }); expect([...el.querySelectorAll('.choices button')].map((b) => b.textContent)).toEqual(['m-8', 'm-9', 'm-10']);
+    const q = el.querySelector<HTMLInputElement>('input.search')!; await act(async () => { q.value = 'm-9'; q.dispatchEvent(new Event('input', { bubbles: true })); }); expect([...el.querySelectorAll('.choices button')].map((b) => b.textContent)).toEqual(['m-9']);
+    await act(async () => { btn(el, 'Back').click(); }); expect(el.textContent).toContain('Choose a provider'); await act(async () => { btn(el, 'OpenRouter').click(); });
+    await act(async () => { btn(el, 'm-0').click(); }); await flush();
+    expect(setModel).toHaveBeenCalledWith('a', 'sess-9', 'm-0 --provider openrouter'); expect(JSON.stringify(setModel.mock.calls)).not.toContain('global');
+    expect(done).toHaveBeenCalledWith(expect.stringContaining('m-0')); expect(activePicker('a', 'sess-9')).toBeUndefined();
   });
-  it('/busy is shown as a profile-wide setting with a warning, and changing it asks for confirmation', async () => {
-    const set = vi.fn(async () => ({})), client = { models: vi.fn(async () => models), profileBusy: vi.fn(async () => 'queue'), setProfileBusy: set };
-    const el = mount(client, 's'); await act(async () => { (el.querySelector('button') as HTMLButtonElement).click(); }); await flush();
+  it('a card belongs to the chat that opened it and expires; Cancel closes it; without a chat nothing can be chosen', async () => {
+    const t0 = Date.now(); openPicker({ agent: 'a', session: 's1', kind: 'model' }, t0);
+    expect(activePicker('a', 's1', t0 + 1000)).toBeTruthy(); expect(activePicker('a', 's2', t0 + 1000)).toBeUndefined(); expect(activePicker('a', undefined, t0 + 1000)).toBeUndefined();
+    expect(activePicker('a', 's1', t0 + PICKER_TTL_MS + 1)).toBeUndefined(); closePicker('a'); expect(activePicker('a', 's1', t0 + 1)).toBeUndefined();
+    const client = { models: vi.fn(async () => models), setModel: vi.fn() } as unknown as Client, el = document.createElement('div'); document.body.append(el);
+    await mount(el, <ModelPicker client={client} picker={openPicker({ agent: 'a', session: undefined, kind: 'model' })} onDone={() => {}} />); await flush(); await act(async () => { btn(el, 'Z.ai').click(); });
+    expect(btn(el, 'glm-x').disabled).toBe(true); expect(el.textContent).toContain('Send the first message first');
+  });
+  it('the profile-wide busy setting lives in agent settings: warning, current value, confirmation before changing; absent for agents without it', async () => {
+    const set = vi.fn(async () => ({})), client = { profileBusy: vi.fn(async () => 'queue'), setProfileBusy: set } as unknown as Client, el = document.createElement('div'); document.body.append(el);
+    await mount(el, <ProfileBusy client={client} agent="a" />); await flush();
     expect(el.textContent).toContain('affects every chat of this profile'); expect(el.textContent).toContain('Now: Queue');
-    const steer = [...el.querySelectorAll('button')].find((b) => b.textContent === 'Steer')!;
-    vi.stubGlobal('confirm', vi.fn(() => false)); await act(async () => { steer.click(); }); expect(set).not.toHaveBeenCalled();
-    vi.stubGlobal('confirm', vi.fn(() => true)); await act(async () => { steer.click(); }); await flush(); expect(set).toHaveBeenCalledWith('a', 'steer'); vi.unstubAllGlobals();
+    vi.stubGlobal('confirm', vi.fn(() => false)); await act(async () => { btn(el, 'Steer').click(); }); expect(set).not.toHaveBeenCalled();
+    vi.stubGlobal('confirm', vi.fn(() => true)); await act(async () => { btn(el, 'Steer').click(); }); await flush(); expect(set).toHaveBeenCalledWith('a', 'steer'); vi.unstubAllGlobals();
+    const none = document.createElement('div'); await mount(none, <ProfileBusy client={{ profileBusy: vi.fn(async () => { throw new Error('no'); }) } as unknown as Client} agent="p" />); await flush(); expect(none.textContent).toBe('');
   });
 });

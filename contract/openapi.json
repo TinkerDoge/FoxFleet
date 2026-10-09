@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.0-alpha",
+    "version": "0.3.1-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -2860,8 +2860,10 @@
                     "enum": [
                       "queue",
                       "steer",
-                      "interrupt"
+                      "interrupt",
+                      "auto"
                     ],
+                    "description": "Apps send a plain message as `interrupt` (stop, then send) to agents the hub queues for, and as `auto` to native Hermes sessions (Hermes applies its own busy_input_mode and the answer is shown on the message). `steer` and `queue` come from the typed /steer and /queue commands.",
                     "default": "queue"
                   },
                   "client_id": {

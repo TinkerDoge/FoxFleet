@@ -71,6 +71,8 @@ export async function deleteSession(client: Client, agent: string, id: string) {
   await client.deleteSession(agent, id); discardDraft(draftKey(agent, id)); const c = chatOf(agent); patch(agent, { sessions: c.sessions.filter((s) => s.id !== id), sessionsTotal: Math.max(0, c.sessionsTotal - 1) });
   if (c.session === id) newChat(agent);
 }
+/** A small bot-style line in the chat (a confirmation), not sent to the agent. */
+export function notice(agent: string, text: string) { patch(agent, { messages: [...chatOf(agent).messages, { role: 'system', content: text, ts: Date.now() }] }); }
 export function newChat(agent: string) { detach(agent); clearSaved(agent); discardDraft(draftKey(agent)); // the unsent text of a brand-new chat goes with it; drafts of other sessions stay
   patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, queue: [], halted: false, requests: [], toolLog: [] }); }
 /** Leaves the screen without cancelling anything: the hub keeps the agent running and the reply can be picked up later. */
@@ -174,7 +176,7 @@ const uid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? cry
  * Send. Idle: start the reply and stream it. Busy (a reply is running, or messages are waiting): never dropped, never overwriting the
  * transcript: the hub stores it first and applies the chosen mode (steer / queue / interrupt & send).
  */
-export async function send(client: Client, agent: string, text: string, images: UiImage[], files: FileRef[], onAuthLost: () => void, mode: SendMode = 'queue') {
+export async function send(client: Client, agent: string, text: string, images: UiImage[], files: FileRef[], onAuthLost: () => void, mode: SendMode = 'interrupt') {
   const cur = chatOf(agent), user: UiMessage = { role: 'user', content: composeWithFiles(text, files), ...(images.length ? { images } : {}) };
   if (cur.streaming || cur.queue.some((q) => PENDING.has(q.state))) return submitBusy(client, agent, user, mode, onAuthLost);
   const base = [...cur.messages, user];
@@ -193,7 +195,7 @@ export async function send(client: Client, agent: string, text: string, images: 
 }
 async function submitBusy(client: Client, agent: string, user: UiMessage, mode: SendMode, onAuthLost: () => void) {
   const cur = chatOf(agent), clientId = uid(), images = user.images ?? [];
-  const local: QueueItem = { id: clientId, text: user.content, mode, images, state: mode === 'interrupt' ? 'awaiting_stop' : mode === 'steer' ? 'sending' : 'queued' };
+  const local: QueueItem = { id: clientId, text: user.content, mode, images, state: mode === 'interrupt' ? 'awaiting_stop' : mode === 'queue' ? 'queued' : 'sending' };
   localImages.set(clientId, images); submitting.set(agent, (submitting.get(agent) ?? 0) + 1);
   patch(agent, { queue: [...cur.queue, local], error: undefined });
   try {

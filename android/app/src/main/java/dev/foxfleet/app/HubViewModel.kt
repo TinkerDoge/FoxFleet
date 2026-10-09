@@ -179,19 +179,13 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Send mode per agent (Steer / Queue / Interrupt & send), remembered across launches. Hermes defaults to Interrupt & send. */
-    private val modePrefs by lazy { getApplication<Application>().getSharedPreferences("foxfleet_send_mode", 0) }
-    fun sendMode(agent: dev.foxfleet.app.data.AgentStatus): String {
-        val modes = agent.capabilities.busy
-        return modePrefs.getString(agent.name, null)?.takeIf { it in modes } ?: if (agent.kind == "hermes" && "interrupt" in modes) "interrupt" else "queue"
-    }
-    var sendModes by mutableStateOf<Map<String, String>>(emptyMap())
-    fun setSendMode(agent: String, mode: String) { modePrefs.edit().putString(agent, mode).apply(); sendModes = sendModes + (agent to mode) }
+    /** What a plain message means while the agent works. There is no picker (Telegram/Discord style): native Hermes applies its own profile setting and says what it did; every other agent is stopped and the message sent. */
+    fun sendMode(agent: dev.foxfleet.app.data.AgentStatus): String = dev.foxfleet.app.ui.screens.plainMode(agent.capabilities.nativeUi, agent.capabilities.busy)
 
     fun send(agent: String, text: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList(), mode: String? = null) {
         val state = chatFor(agent)
         if (text.isBlank() && images.isEmpty()) return
-        val m = mode ?: sendModes[agent] ?: agents.firstOrNull { it.name == agent }?.let { sendMode(it) } ?: "queue"
+        val m = mode ?: agents.firstOrNull { it.name == agent }?.let { sendMode(it) } ?: "interrupt"
         if (state.streaming || state.queue.isNotEmpty()) { // busy: the hub takes it (queue / steer / interrupt) and the reply keeps streaming
             viewModelScope.launch {
                 try { state.sendBusy(api, agent, text.trim(), images, m)?.let { lastRejected[agent] = it }; state.syncQueue(api, agent) }

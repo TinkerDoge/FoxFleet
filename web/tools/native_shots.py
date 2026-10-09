@@ -4,7 +4,11 @@ from playwright.sync_api import sync_playwright
 from PIL import Image
 out = sys.argv[1]; os.makedirs(out, exist_ok=True)
 env = dict(os.environ, MOCK_DELAY='40', MOCK_NATIVE='1')
-hub = subprocess.Popen(['node', 'tools/mock-hub.mjs', '3098'], stdout=subprocess.DEVNULL, env=env); time.sleep(1)
+hub = None
+def fresh_hub():  # the mock keeps its queue in memory: one clean hub per screen size
+    global hub
+    if hub: hub.terminate(); hub.wait()
+    hub = subprocess.Popen(['node', 'tools/mock-hub.mjs', '3098'], stdout=subprocess.DEVNULL, env=env); time.sleep(1)
 U = 'http://127.0.0.1:3098/'
 def shot(page, name): page.screenshot(path=f'{out}/{name}.png'); print(name, flush=True)
 def login(page):
@@ -12,17 +16,20 @@ def login(page):
 with sync_playwright() as p:
     b = p.chromium.launch(executable_path=os.environ.get('CHROME', '/usr/bin/google-chrome'), args=['--no-sandbox'])
     for tag, (w, h, mobile, scheme) in {'desktop': (1280, 800, False, 'light'), 'phone': (390, 844, True, 'dark')}.items():
-        c = b.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme, device_scale_factor=2 if mobile else 1, is_mobile=mobile, has_touch=mobile); pg = c.new_page(); login(pg)
+        fresh_hub(); c = b.new_context(viewport={'width': w, 'height': h}, color_scheme=scheme, device_scale_factor=2 if mobile else 1, is_mobile=mobile, has_touch=mobile); pg = c.new_page(); login(pg)
         pg.goto(U + '#/chat?agent=atlas'); pg.wait_for_selector('.chat'); time.sleep(.6)
-        pg.click('text=Chat controls'); pg.wait_for_selector('.popover'); time.sleep(.5); shot(pg, f'01-controls-no-chat-{tag}'); pg.click('.popover >> text=Close'); time.sleep(.2)
-        pg.fill('textarea', 'deploy the new build'); pg.keyboard.press('Enter'); pg.wait_for_selector('.requests', timeout=10000); time.sleep(.8); shot(pg, f'02-approval-and-question-cards-{tag}')
-        pg.click('input[type=radio] >> nth=0'); time.sleep(.3); shot(pg, f'03-question-answered-choice-{tag}')
-        pg.wait_for_selector('select.mode'); pg.fill('textarea', 'also run the tests after'); pg.select_option('select.mode', 'queue'); pg.keyboard.press('Enter'); time.sleep(.7)
-        pg.fill('textarea', 'keep the logs short'); pg.select_option('select.mode', 'steer'); pg.keyboard.press('Enter'); time.sleep(.7)
-        pg.fill('textarea', 'actually only deploy the docs'); pg.select_option('select.mode', 'interrupt'); pg.keyboard.press('Enter'); time.sleep(.7)
-        pg.evaluate("document.querySelector('.messages').scrollTo(0, 1e6)"); time.sleep(.3); shot(pg, f'04-hermes-acknowledgements-{tag}')
-        pg.fill('textarea', 'and one more thing'); time.sleep(.2); shot(pg, f'05-redirect-mode-label-{tag}')
-        pg.click('text=Chat controls'); pg.wait_for_selector('.popover select:not([disabled]), .popover select'); time.sleep(.6); shot(pg, f'06-controls-busy-warning-{tag}'); pg.click('.popover >> text=Close')
+        assert pg.locator('select').count() == 0 and pg.locator('.controls').count() == 0, 'no mode selector, no controls'
+        pg.fill('textarea', 'deploy the new build'); pg.keyboard.press('Enter'); pg.wait_for_selector('.requests', timeout=10000); time.sleep(.8); shot(pg, f'01-composer-text-send-stop-with-cards-{tag}')
+        pg.click('input[type=radio] >> nth=0'); time.sleep(.3)
+        pg.fill('textarea', '/queue also run the tests after'); pg.keyboard.press('Enter'); time.sleep(.7)
+        pg.fill('textarea', '/steer keep the logs short'); pg.keyboard.press('Enter'); time.sleep(.7)
+        pg.fill('textarea', 'actually only deploy the docs'); pg.keyboard.press('Enter'); time.sleep(.7)
+        pg.evaluate("document.querySelector('.messages').scrollTo(0, 1e6)"); time.sleep(.3); shot(pg, f'02-typed-commands-and-hermes-status-{tag}')
+        pg.fill('textarea', '/model'); time.sleep(.2); pg.keyboard.press('Escape'); pg.keyboard.press('Enter'); pg.wait_for_selector('.picker'); time.sleep(.5); shot(pg, f'03-model-step1-providers-{tag}')
+        pg.click('.picker .choices button >> nth=0'); time.sleep(.4); shot(pg, f'04-model-step2-models-{tag}')
+        pg.click('.picker .choices button >> nth=0'); time.sleep(.8); pg.evaluate("document.querySelector('.messages').scrollTo(0, 1e6)"); shot(pg, f'05-model-confirmed-in-chat-{tag}')
+        if mobile:
+            pg.set_viewport_size({'width': 390, 'height': 520}); pg.fill('textarea', 'keyboard open (viewport shrunk to what is left)'); time.sleep(.4); shot(pg, f'06-keyboard-open-simulated-{tag}')
         c.close()
     b.close()
 hub.terminate()

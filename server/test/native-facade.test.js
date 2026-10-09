@@ -90,5 +90,5 @@ test('Stop right after the turn was created ends truthfully and starts no second
   const x = await boot(t), a = x.sse(`${x.A}/chat`, { body: chat('slow story') }); await waitFor(async () => a.headers, { tries: 100, ms: 50 }); const run = a.headers.get('x-foxfleet-run'), sid = a.headers.get('x-hermes-session-id');
   const stop = await x.api(`${x.A}/runs/${run}/stop`, {}); assert.equal(stop.body.confirmed, true); await a.done;
   assert.ok(['stopped', 'completed'].includes(a.events.find((e) => e.event === 'foxfleet.upstream').data.state));
-  await new Promise((r) => setTimeout(r, 400)); const q = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; assert.equal(q.active_run, null, 'nothing restarted by itself');
+  for (let i = 0; i < 8; i++) { const q = (await x.api(`${x.A}/queue?session_id=${sid}`)).body; assert.equal(q.active_run, null, 'nothing restarted by itself'); await new Promise((r) => setTimeout(r, 100)); } // polled, not one fixed sleep
 });

@@ -17,7 +17,7 @@ import readline from 'node:readline';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.0-alpha';
+export const VERSION = '0.3.1-alpha';
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const log = (...a) => console.log(...a);
@@ -407,7 +407,12 @@ export class HermesGateway {
           }
         });
         child.on('error', (e) => { clearTimeout(timer); fail(e); });
-        child.on('exit', (code) => { clearTimeout(timer); this.exited(code, fail); });
+        // 'exit' can fire before the last stdout lines (an answer written just before the process died) have been read; 'close' comes after
+        // the streams ended. Wait for it (bounded, in case a grandchild keeps the pipe open) so a reply that did arrive is never reported as lost.
+        let over = false, grace; const gone = (code) => { if (over) return; over = true; clearTimeout(grace); clearTimeout(timer); this.exited(code, fail); };
+        child.stdin.on('error', () => {});
+        child.on('exit', (code) => { clearTimeout(timer); grace = setTimeout(() => gone(code), 500); grace.unref?.(); });
+        child.on('close', (code) => gone(code));
       };
       if (wait) setTimeout(go, wait); else go();
     });

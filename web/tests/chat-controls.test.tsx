@@ -4,10 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Client } from '../src/api/client';
 import { ApiError } from '../src/api/errors';
 import type { AgentSummary } from '../src/api/types';
-import { Composer, pickMode } from '../src/chat/Composer';
+import { Composer, plainMode } from '../src/chat/Composer';
 import { chatOf, newChat, resetChats, send, stop, syncQueue } from '../src/chat/store';
 import { argSuggestions, commandSuggestions, parseHub, unavailableReason, type Catalog } from '../src/lib/commands';
-import { saveMode } from '../src/lib/persist';
 import { setDraftScope } from '../src/chat/drafts';
 
 const cat = (over: Record<string, unknown> = {}): Catalog => ({ source: 'bundled', busy: ['queue', 'steer', 'interrupt'], commands: [
@@ -42,12 +41,10 @@ describe('command arguments', () => {
     const off = cat({ executable: false, disabledReason: 'This agent has no native steering' }); expect(unavailableReason('/steer x', off)).toMatch(/no native steering/);
     expect(commandSuggestions('/ste', [], 5, true, off)[0].availability).toBe('unavailable');
   });
-  it('mode defaults to Interrupt & send for Hermes, is remembered per conversation and limited to supported modes', () => {
-    expect(pickMode('a', 's1', 'hermes', ['queue', 'steer', 'interrupt'])).toBe('interrupt');
-    expect(pickMode('a', 's1', 'openai', ['queue', 'interrupt'])).toBe('queue');
-    saveMode('a', 's1', 'steer'); expect(pickMode('a', 's1', 'hermes', ['queue', 'steer', 'interrupt'])).toBe('steer');
-    expect(pickMode('a', 's1', 'hermes', ['queue', 'interrupt'])).toBe('interrupt'); // a saved mode the agent no longer supports is ignored
-    expect(pickMode('a', 's2', 'hermes', ['queue', 'steer', 'interrupt'])).toBe('interrupt');
+  it('a plain message has no mode picker: Hermes native uses its own busy setting, every other agent stops then sends', () => {
+    expect(plainMode(true, ['queue', 'steer', 'interrupt'])).toBe('auto');
+    expect(plainMode(false, ['queue', 'interrupt'])).toBe('interrupt');
+    expect(plainMode(false, ['queue'])).toBe('queue');
   });
 });
 
@@ -117,29 +114,31 @@ describe('sending while the agent works', () => {
 describe('composer while the agent works', () => {
   let host: HTMLDivElement; beforeEach(() => { host = document.createElement('div'); document.body.append(host); }); afterEach(async () => { await act(() => render(null, host)); host.remove(); });
   const agent: AgentSummary = { id: 'a', name: 'a', kind: 'hermes', online: true, chatReady: true, capabilities: { chat: true, busy: ['queue', 'steer', 'interrupt'] } };
-  it('keeps Send and Stop both available, with a mode selector limited to the agent\'s modes and honest labels', async () => {
-    const onSend = vi.fn(), onStop = vi.fn(), f = fake();
-    await act(() => render(<Composer client={f.client} agent={agent} history={[]} streaming={true} skills={[]} draftKey="k" session="s1" queue={[]} onSend={onSend} onStop={onStop} onLocal={() => {}} />, host)); await flush();
-    const ta = host.querySelector('textarea')!; await act(() => { ta.value = 'do it differently'; ta.dispatchEvent(new Event('input', { bubbles: true })); });
-    const sel = host.querySelector<HTMLSelectElement>('select.mode')!; expect([...sel.options].map((o) => o.text)).toEqual(['Queue', 'Steer', 'Interrupt & send']); expect(sel.value).toBe('interrupt');
-    expect(sel.title).toMatch(/not a live redirect/);
-    const send = host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!, stopBtn = host.querySelector<HTMLButtonElement>('button.send.stop')!; expect(send.disabled).toBe(false); expect(stopBtn).toBeTruthy();
-    await act(() => send.click()); expect(onSend).toHaveBeenCalledWith('do it differently', [], [], 'interrupt');
-    await act(() => stopBtn.click()); expect(onStop).toHaveBeenCalled();
+  const mount = async (a: AgentSummary, props: Record<string, unknown> = {}, f = fake({ commands: vi.fn(async () => cat()) })) => {
+    const onSend = vi.fn(), onStop = vi.fn(); await act(() => render(<Composer client={f.client} agent={a} history={[]} streaming={true} skills={[]} draftKey={'k' + Math.random()} session="s1" queue={[]} onSend={onSend} onStop={onStop} onLocal={() => {}} {...props} />, host)); await flush();
+    const ta = host.querySelector('textarea')!, type = (v: string) => act(() => { ta.value = v; ta.dispatchEvent(new Event('input', { bubbles: true })); }), click = () => act(() => host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.click());
+    return { onSend, onStop, type, click };
+  };
+  it('the composer is text, Send and Stop: no mode selector, no extra row', async () => {
+    const { onSend, onStop, type, click } = await mount(agent);
+    expect(host.querySelector('select')).toBeNull(); expect(host.querySelector('.controls')).toBeNull();
+    await type('do it differently'); expect(host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.disabled).toBe(false); await click();
+    expect(onSend).toHaveBeenCalledWith('do it differently', [], [], 'interrupt'); // HTTP agent: stop then send
+    await act(() => host.querySelector<HTMLButtonElement>('button.send.stop')!.click()); expect(onStop).toHaveBeenCalled();
   });
-  it('typing /busy opens the choices; /busy steer changes and remembers the mode; /s sends guidance', async () => {
-    const onSend = vi.fn(), f = fake({ commands: vi.fn(async () => cat()) });
-    await act(() => render(<Composer client={f.client} agent={agent} history={[]} streaming={true} skills={[]} draftKey="k2" session="s2" queue={[]} onSend={onSend} onStop={() => {}} onLocal={() => {}} />, host)); await flush();
-    const ta = host.querySelector('textarea')!, type = (v: string) => act(() => { ta.value = v; ta.dispatchEvent(new Event('input', { bubbles: true })); });
-    await type('/busy '); expect([...host.querySelectorAll('.suggest [role="option"]')].map((o) => o.querySelector('b')!.textContent)).toEqual(['queue', 'steer', 'interrupt', 'status']);
-    await type('/busy st'); expect([...host.querySelectorAll('.suggest [role="option"]')].map((o) => o.querySelector('b')!.textContent)).toEqual(['steer', 'status']);
-    await type('/busy steer'); await act(() => host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.click());
-    expect(host.querySelector<HTMLSelectElement>('select.mode')!.value).toBe('steer'); expect(pickMode('a', 's2', 'hermes', ['queue', 'steer', 'interrupt'])).toBe('steer');
-    await type('/s use PostgreSQL'); await act(() => host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.click()); expect(onSend).toHaveBeenCalledWith('use PostgreSQL', [], [], 'steer');
+  it('native Hermes: a plain message goes as auto (Hermes applies its profile setting and the ack is shown on the message)', async () => {
+    const { onSend, type, click } = await mount({ ...agent, capabilities: { ...agent.capabilities, nativeUi: true } }); await type('change of plan'); await click();
+    expect(onSend).toHaveBeenCalledWith('change of plan', [], [], 'auto');
   });
-  it('no Steer option for an agent without native steering', async () => {
-    const f = fake(); const a2 = { ...agent, kind: 'openai', capabilities: { chat: true, busy: ['queue', 'interrupt'] } } as AgentSummary;
-    await act(() => render(<Composer client={f.client} agent={a2} history={[]} streaming={true} skills={[]} draftKey="k3" queue={[]} onSend={() => {}} onStop={() => {}} onLocal={() => {}} />, host)); await flush();
-    expect([...host.querySelector<HTMLSelectElement>('select.mode')!.options].map((o) => o.value)).toEqual(['queue', 'interrupt']);
+  it('/steer <text> steers, /queue <text> queues; /busy only points at the settings', async () => {
+    const { onSend, type, click } = await mount(agent);
+    await type('/steer use PostgreSQL'); await click(); expect(onSend).toHaveBeenLastCalledWith('use PostgreSQL', [], [], 'steer');
+    await type('/queue then deploy'); await click(); expect(onSend).toHaveBeenLastCalledWith('then deploy', [], [], 'queue');
+    onSend.mockClear(); await type('/busy steer'); await click(); expect(onSend).not.toHaveBeenCalled(); expect(host.textContent).toMatch(/profile setting/);
+  });
+  it('/model without arguments asks the chat to open the picker; with arguments it sets the model for this chat', async () => {
+    const onModel = vi.fn(); const { type, click } = await mount({ ...agent, capabilities: { ...agent.capabilities, nativeUi: true } }, { onModel });
+    await type('/model'); await click(); expect(onModel).toHaveBeenLastCalledWith('');
+    await type('/model gpt-x --provider openrouter'); await click(); expect(onModel).toHaveBeenLastCalledWith('gpt-x --provider openrouter');
   });
 });

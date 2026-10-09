@@ -36,6 +36,7 @@ function Tools({ m }: { m: UiMessage }) {
 const Time = ({ ts }: { ts?: number }) => (ts ? <time class="msg-time muted" dateTime={new Date(ts).toISOString()}>{clock(ts)}</time> : null);
 
 export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean }) {
+  if (m.role === 'system') return <div class="msg notice" role="status"><small class="muted">{m.content}</small></div>;
   if (m.role === 'user') {
     const { text, files } = splitFiles(m.content);
     return (
