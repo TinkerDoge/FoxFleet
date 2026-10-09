@@ -125,7 +125,8 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
         else if (mode === 'interrupt') { r = await ui.call(agent, 'redirect', { session_id: rt, text }); if (r.status === 'rejected') { m.state = 'rejected'; m.ack = 'rejected'; m.note = 'This agent cannot redirect the running turn right now. Use Queue, Steer, or Stop and send again'; await save(); return { message: msgView(m) }; } }
         else r = await ui.call(agent, 'submit', { session_id: rt, text });
       } catch (e) { m.state = e.code === 'timeout' || e.code === 'disconnected' || e.code === 'gateway_down' ? 'uncertain' : 'failed'; m.error = e.safe ? e.message : String(e.message).slice(0, 200); m.note = m.state === 'uncertain' ? 'The answer from Hermes did not arrive. Check the transcript before resending' : undefined; await save(); throw e.code === 'upstream' ? fault(502, 'Hermes refused the message') : e; }
-      m.ack = String(r.status ?? 'streaming'); m.state = m.ack === 'rejected' ? 'rejected' : 'acked'; if (r.user_row_id !== undefined) m.upstream = { user_row_id: r.user_row_id };
+      m.ack = String(r.status ?? 'streaming'); m.state = m.ack === 'rejected' ? 'rejected' : 'acked';
+      if (m.state === 'acked' && s.runtime !== rt) { m.state = 'uncertain'; m.note = 'The Hermes process on the machine restarted while this was being delivered; check the transcript before resending'; } // a late answer from a gateway that has since gone down: Hermes did answer, but the turn may be lost. Never resent. if (r.user_row_id !== undefined) m.upstream = { user_row_id: r.user_row_id };
       await save(); publish(s, { v: 1, session_id: stored, type: 'ack', message_id: m.id, ack: m.ack });
       return { message: msgView(m) };
     },

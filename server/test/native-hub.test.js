@@ -92,11 +92,27 @@ test('hub link drop mid-turn: the owner on the machine keeps running, the viewer
 
 test('gateway crash: journal marks in-flight messages uncertain (never resent), viewers are told the owner went down', async (t) => {
   if (REAL) return t.skip('crash needs the fake gateway');
-  if (REAL) return t.skip('crash needs the fake gateway');
   const x = await boot(t), sid = (await x.json(`${x.A}/sessions`, {})).body.session_id, f = x.follow(sid);
-  const r = await x.json(`${x.A}/sessions/${sid}/messages`, { text: 'crash please' }); assert.equal(r.body.message.state, 'acked');
+  const r = await x.json(`${x.A}/sessions/${sid}/messages`, { text: 'crash please' });
+  // the gateway dies right after answering: the hub either recorded the answer first or learned of the crash first. Both end 'uncertain', and the message is never sent twice.
+  assert.ok(['acked', 'uncertain'].includes(r.body.message.state), `unexpected ${r.body.message.state}`);
   const down = await f.wait((e) => e.type === 'owner.down'); assert.ok(down);
-  const list = (await x.json(`${x.A}/sessions/${sid}/messages`)).body.messages; assert.equal(list[0].state, 'uncertain'); assert.match(list[0].note, /check the transcript before resending/);
+  const list = await waitFor(async () => { const l = (await x.json(`${x.A}/sessions/${sid}/messages`)).body.messages; return l[0]?.state === 'uncertain' ? l : null; }, { tries: 80, ms: 100 }); assert.ok(list, 'the in-flight message ends uncertain');
+  assert.equal(list.length, 1, 'never resent'); assert.equal(f.events.filter((e) => e.type === 'turn.start').length, 1); assert.match(list[0].note, /check the transcript before resending/);
+});
+
+test('an answer that arrives after the gateway went down is recorded as uncertain, never acked, and nothing is resent', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let release; const gate = new Promise((r) => { release = r; }), calls = []; let listener;
+  const ui = { caps: () => ({ native: true }), subscribe: (fn) => { listener = fn; }, call: async (agent, op, params) => { calls.push(op); if (op === 'submit') await gate; return stub.reply(op, params); } };
+  const hub = await nativeHub({ connectors: { ui: () => ui }, file: path.join(dir, 'j.json') }); const s = await hub.create('u1', 'm1', 'p');
+  const sending = hub.send('u1', 'm1', 'p', s.session_id, { text: 'hello' });
+  await waitFor(async () => calls.includes('submit'), { tries: 100, ms: 20 });
+  listener('p', { kind: 'gateway.down', code: 7 }); // the owner died while the answer was still on its way
+  release(); const r = await sending;
+  assert.equal(r.message.state, 'uncertain'); assert.match(r.message.note, /check the transcript before resending/);
+  assert.equal(calls.filter((c) => c === 'submit').length, 1);
+  assert.equal(hub.list('u1', 'p', s.session_id)[0].state, 'uncertain');
 });
 
 // ---- hub unit tests with a scripted upstream: ownership, restart reconcile, event mapping ----

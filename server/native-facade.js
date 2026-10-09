@@ -26,9 +26,10 @@ export function nativeFacade({ runs }) {
   const meta = new Map();   // nat session key -> { m, scope }
   const akey = (scope, agent, stored) => `${scope}\0${agent}\0${stored}`;
 
-  const starting = new Map();
+  const starting = new Map(), began = new Map(); // began: how many runs were opened per session, so a turn that started and ended while a send was in flight is not opened twice
   function startRun(nat, { scope, m, stored, from }) {
     const k = akey(scope, m.name, stored), cur = active.get(k); if (cur && !cur.done) return Promise.resolve(cur); if (starting.has(k)) return starting.get(k);
+    began.set(k, (began.get(k) ?? 0) + 1);
     const link = { runId: 'native', sessionId: stored, stop: async () => { await nat.interrupt(scope, m.machineId, m.profile, stored); } };
     let unsub = () => {}, closed = false;
     const open = async () => {
@@ -61,9 +62,10 @@ export function nativeFacade({ runs }) {
       const stored = await this.session(nat, scope, m, session), m0 = MODE_IN[mode] ?? 'auto';
       if (!nat.isRunning(m.machineId, m.profile, stored) && session) await nat.attach(scope, m.machineId, m.profile, stored); // learn the real state of a session we have not seen yet
       if (idleOnly && nat.isRunning(m.machineId, m.profile, stored)) throw fault(409, 'The agent is already replying; send with /messages to queue, steer or interrupt');
-      const from = nat.cursor(m.machineId, m.profile, stored), r = await nat.send(scope, m.machineId, m.profile, stored, { text, mode: m0, clientId });
+      const bk = akey(scope, m.name, stored), b0 = began.get(bk) ?? 0, from = nat.cursor(m.machineId, m.profile, stored), r = await nat.send(scope, m.machineId, m.profile, stored, { text, mode: m0, clientId });
       let run = activeRun(scope, m.name, stored);
       if (!run && starting.has(akey(scope, m.name, stored))) run = await starting.get(akey(scope, m.name, stored));
+      if (!run && (began.get(bk) ?? 0) > b0) run = active.get(bk) ?? null; // the turn began and already ended while the ack was on its way: that run is the answer
       if (!run && r.message.ack === 'streaming') run = await startRun(nat, { scope, m, stored, from });
       return { ...r, stored, run };
     },
