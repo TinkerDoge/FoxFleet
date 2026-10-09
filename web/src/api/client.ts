@@ -38,14 +38,15 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     return {
     required: o.required, authenticated: Boolean(o?.authenticated), setupRequired: Boolean(o?.setupRequired),
     setupCodeRequired: Boolean(o?.setupCodeRequired), registration: (['closed', 'invite', 'open'].includes(o?.registration) ? o.registration : 'closed') as Registration,
+    termsVersion: typeof o?.termsVersion === 'string' ? o.termsVersion : undefined,
     user: o?.user && typeof o.user.username === 'string' ? { id: String(o.user.id ?? ''), username: o.user.username, role: o.user.role === 'owner' ? 'owner' : 'user' } : undefined,
     };
   };
   return {
     authInfo: async () => normalize(await request('/api/auth', { plain401: true })),
     login: (username: string, password: string) => request<unknown>('/api/auth/login', { body: { username, password, client: 'web' }, plain401: true }),
-    setup: (username: string, password: string, setupCode?: string) => request<unknown>('/api/auth/setup', { body: { username, password, setupCode, client: 'web' }, plain401: true }),
-    register: (username: string, password: string, invite: string) => request<unknown>('/api/auth/register', { body: { username, password, invite, client: 'web' }, plain401: true }),
+    setup: (username: string, password: string, setupCode?: string, acceptedTerms?: string) => request<unknown>('/api/auth/setup', { body: { username, password, setupCode, acceptedTerms, client: 'web' }, plain401: true }),
+    register: (username: string, password: string, invite: string, acceptedTerms?: string) => request<unknown>('/api/auth/register', { body: { username, password, invite, acceptedTerms, client: 'web' }, plain401: true }),
     logout: () => request<unknown>('/api/auth/logout', { method: 'POST', body: {}, plain401: true }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
 

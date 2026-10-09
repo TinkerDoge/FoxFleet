@@ -5,6 +5,7 @@ export interface AuthInfo {
   setupRequired: boolean;
   setupCodeRequired: boolean;
   registration: Registration;
+  termsVersion?: string;
   user?: { id: string; username: string; role: 'owner' | 'user' };
 }
 export interface AgentSummary {

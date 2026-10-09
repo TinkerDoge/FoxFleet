@@ -120,8 +120,8 @@ class HubApi(private val store: SettingsStore) {
         return AuthInfo(authenticated = true, username = obj["user"]?.jsonObject?.str("username"))
     }
     suspend fun login(username: String, password: String) = withContext(Dispatchers.IO) { signIn("/api/auth/login", mapOf("username" to username, "password" to password)) }
-    suspend fun setup(username: String, password: String, code: String) = withContext(Dispatchers.IO) { signIn("/api/auth/setup", buildMap { put("username", username); put("password", password); if (code.isNotBlank()) put("setupCode", code) }) }
-    suspend fun register(username: String, password: String, invite: String) = withContext(Dispatchers.IO) { signIn("/api/auth/register", buildMap { put("username", username); put("password", password); if (invite.isNotBlank()) put("invite", invite) }) }
+    suspend fun setup(username: String, password: String, code: String, acceptedTerms: String? = null) = withContext(Dispatchers.IO) { signIn("/api/auth/setup", buildMap { put("username", username); put("password", password); if (code.isNotBlank()) put("setupCode", code); if (acceptedTerms != null) put("acceptedTerms", acceptedTerms) }) }
+    suspend fun register(username: String, password: String, invite: String, acceptedTerms: String? = null) = withContext(Dispatchers.IO) { signIn("/api/auth/register", buildMap { put("username", username); put("password", password); if (invite.isNotBlank()) put("invite", invite); if (acceptedTerms != null) put("acceptedTerms", acceptedTerms) }) }
 
     // ---- admin (owner only) ----
     suspend fun registrationMode(): String = withContext(Dispatchers.IO) { request("/api/admin/settings")["registration"]?.jsonPrimitive?.contentOrNull ?: "closed" }
@@ -409,7 +409,7 @@ class HubApi(private val store: SettingsStore) {
 
         fun parseAuthInfo(o: JsonObject) = AuthInfo(
             required = o.bool("required") ?: true, authenticated = o.bool("authenticated") ?: false, setupRequired = o.bool("setupRequired") ?: false,
-            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
+            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
         )
         fun parseShareable(o: JsonObject) = Shareable(
             o.str("link") ?: "", o["rows"]?.let { r -> runCatching { r.jsonArray.map { it.jsonPrimitive.content } }.getOrNull() },

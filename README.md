@@ -229,6 +229,10 @@ Stars, bug reports and pull requests help just as much.
 
 Mascot and brand artwork © 2026 Shibe De Doge, included under the MIT licence unless noted.
 
+## Legal
+
+[Terms of Use](TERMS.md) · [Privacy Policy](PRIVACY.md) · [User Agreement](https://tinkerdoge.github.io/FoxFleet/legal/user-agreement). These are templates pending legal review (see [LEGAL-CHECKLIST.md](LEGAL-CHECKLIST.md)). The apps ask hub owners and new users to accept them on the setup and join screens.
+
 ## Licence
 
 [MIT](LICENSE) © 2026 Shibe De Doge. Third-party components and their licences: [NOTICE.md](NOTICE.md).

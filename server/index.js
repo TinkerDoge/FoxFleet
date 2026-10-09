@@ -19,6 +19,7 @@ import { connectorHub } from './connector.js';
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
+import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
 
@@ -229,12 +230,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const originalConnections = auth ? store.all() : [];
       const body0 = () => readJson(req, 64 * 1024), deviceMeta = (b, client) => ({ name: typeof b.deviceName === 'string' && b.deviceName.trim() ? b.deviceName.trim() : client === 'app' ? 'Android app' : 'Web browser', kind: client, ip: clientIp(req), ua: req.headers['user-agent'] });
       const clientOf = (b) => b.client === 'app' ? 'app' : 'web';
-      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
+      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), termsVersion: TERMS_VERSION, authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
       if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
         authThrottle(req); const b = await body0();
         if (singleUser || !accounts.needsSetup()) throw fault(409, 'Setup is already complete');
         if (setupCode) { const given = Buffer.from(String(b.setupCode ?? '')), want = Buffer.from(setupCode); if (given.length !== want.length || !timingSafeEqual(given, want)) throw fault(403, 'Setup code is wrong'); }
-        const user = await accounts.createUser(b.username, b.password, 'owner'), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
+        const user = await accounts.createUser(b.username, b.password, 'owner', { terms: acceptedTerms(b.acceptedTerms) }), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
         return sessionReply(req, res, null, user, clientOf(b), deviceId, token);
       }
       if (req.method === 'POST' && url.pathname === '/api/auth/login') {
@@ -244,7 +245,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       }
       if (req.method === 'POST' && url.pathname === '/api/auth/register') {
         authThrottle(req); const b = await body0(); if (singleUser) throw fault(403, 'Registration is closed');
-        const user = await accounts.register(b.username, b.password, b.invite), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
+        const user = await accounts.register(b.username, b.password, b.invite, acceptedTerms(b.acceptedTerms)), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
         return sessionReply(req, res, null, user, clientOf(b), deviceId, token);
       }
       if (req.method === 'POST' && url.pathname === '/api/auth/logout') {

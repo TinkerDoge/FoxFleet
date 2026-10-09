@@ -1803,6 +1803,7 @@
      "role"
     ],
     "properties": {
+   "acceptedTerms": {"type": ["string", "null"], "description": "Terms version this user accepted at sign-up, if recorded."},
      "id": {
       "type": "string"
      },
@@ -1833,6 +1834,7 @@
      "authenticated"
     ],
     "properties": {
+   "termsVersion": {"type": "string", "description": "Current version label of the Terms of Use and Privacy Policy."},
      "required": {
       "type": "boolean"
      },
@@ -1881,6 +1883,7 @@
      "password"
     ],
     "properties": {
+   "acceptedTerms": {"type": "string", "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."},
      "username": {
       "type": "string"
      },
@@ -1932,6 +1935,7 @@
      "password"
     ],
     "properties": {
+   "acceptedTerms": {"type": "string", "description": "Version label of the Terms of Use and Privacy Policy the person accepted (see termsVersion in GET /api/auth). Optional for older clients; the hub records version and time."},
      "username": {
       "type": "string"
      },

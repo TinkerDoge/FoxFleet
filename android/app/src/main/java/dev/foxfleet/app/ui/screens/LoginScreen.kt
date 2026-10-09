@@ -15,6 +15,9 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.Row
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
@@ -30,6 +33,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.LinkAnnotation
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -37,6 +47,7 @@ import androidx.compose.ui.unit.dp
 import dev.foxfleet.app.data.AuthInfo
 import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.data.HubApiException
+import dev.foxfleet.app.data.Terms
 import dev.foxfleet.app.data.scrubAddresses
 import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.motion.rememberHaptic
@@ -78,7 +89,12 @@ fun LoginScreen(hubName: String, api: HubApi, notice: String?, onChangeHub: () -
     val haptic = rememberHaptic()
     LaunchedEffect(previewInfo) { if (previewInfo == null) runCatching { api.authInfo() }.onSuccess { info = it } }
     val mode = authModeFor(info, wantsJoin)
-    val canSubmit = !busy && username.isNotBlank() && password.isNotEmpty() && (mode != AuthMode.Setup || password.length >= 10) && (mode != AuthMode.Register || password.length >= 10)
+    // Terms of Use / Privacy Policy: required when creating the owner or joining; remembered per hub and version on this device.
+    val context = LocalContext.current
+    val termsVersion = info?.termsVersion ?: Terms.FALLBACK_VERSION
+    val needsTerms = mode != AuthMode.SignIn
+    var agreed by remember(hubName, termsVersion) { mutableStateOf(runCatching { Terms.accepted(Terms.prefs(context), hubName, termsVersion) }.getOrDefault(false)) }
+    val canSubmit = !busy && (!needsTerms || agreed) && username.isNotBlank() && password.isNotEmpty() && (mode != AuthMode.Setup || password.length >= 10) && (mode != AuthMode.Register || password.length >= 10)
 
     fun submit() {
         if (!canSubmit) return
@@ -86,10 +102,11 @@ fun LoginScreen(hubName: String, api: HubApi, notice: String?, onChangeHub: () -
         scope.launch {
             try {
                 when (mode) {
-                    AuthMode.Setup -> api.setup(username.trim(), password, code.trim())
-                    AuthMode.Register -> api.register(username.trim(), password, code.trim())
+                    AuthMode.Setup -> api.setup(username.trim(), password, code.trim(), termsVersion)
+                    AuthMode.Register -> api.register(username.trim(), password, code.trim(), termsVersion)
                     AuthMode.SignIn -> api.login(username.trim(), password)
                 }
+                if (needsTerms) runCatching { Terms.remember(Terms.prefs(context), hubName, termsVersion) }
                 haptic(HapticFeedbackType.Confirm)
                 onLoggedIn()
             } catch (e: CancellationException) { throw e } catch (e: HubApiException) {
@@ -124,6 +141,20 @@ fun LoginScreen(hubName: String, api: HubApi, notice: String?, onChangeHub: () -
             Spacer(Modifier.height(12.dp))
             OutlinedTextField(code, { code = it }, label = { Text(if (mode == AuthMode.Setup) "Setup code (printed when the hub starts)" else "Invite code") }, singleLine = true, shape = RoundedCornerShape(14.dp),
                 modifier = Modifier.fillMaxWidth(), colors = fieldColors())
+        }
+        if (needsTerms) {
+            Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(agreed, { agreed = it }, colors = CheckboxDefaults.colors(checkedColor = c.accent, uncheckedColor = c.textMuted))
+                val link = TextLinkStyles(SpanStyle(color = c.accent, fontWeight = FontWeight.Medium))
+                Text(buildAnnotatedString {
+                    append("I agree to the ")
+                    withLink(LinkAnnotation.Url(Terms.TERMS_URL, link)) { append("Terms of Use") }
+                    append(" and ")
+                    withLink(LinkAnnotation.Url(Terms.PRIVACY_URL, link)) { append("Privacy Policy") }
+                    append(".")
+                }, style = MaterialTheme.typography.bodyMedium, color = c.textMuted)
+            }
         }
         Spacer(Modifier.height(20.dp))
         PrimaryAction(when (mode) { AuthMode.Setup -> "Create owner"; AuthMode.Register -> "Create account"; AuthMode.SignIn -> "Sign in" }.let { if (busy) "$it…" else it }, Modifier.fillMaxWidth(), busy, enabled = canSubmit) { submit() }

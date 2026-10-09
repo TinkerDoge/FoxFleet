@@ -67,7 +67,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     const user = sessions.get(tokenOf(req));
     const publicUser = (u) => ({ id: u.id, username: u.username, role: u.role, disabled: u.disabled });
     const session = (b) => { const token = randomBytes(12).toString('hex'); sessions.set(token, users[0]); return json(res, 200, { authenticated: true, user: publicUser(users[0]), ...(b.client === 'app' ? { token } : {}) }, { 'set-cookie': `foxfleet_session=${token}; Path=/; HttpOnly; SameSite=Strict` }); };
-    if (p === '/api/auth' && m === 'GET') return json(res, 200, { required: true, authenticated: Boolean(user), setupRequired: !setupDone, setupCodeRequired: false, registration, ...(user ? { user: publicUser(user) } : {}) });
+    if (p === '/api/auth' && m === 'GET') return json(res, 200, { required: true, authenticated: Boolean(user), setupRequired: !setupDone, setupCodeRequired: false, registration, termsVersion: '1.0', ...(user ? { user: publicUser(user) } : {}) });
     if (p === '/api/auth/setup' && m === 'POST') { const b = await body(req); if (setupDone) return json(res, 409, { error: 'Setup already completed' }); setupDone = true; return session(b); }
     if (p === '/api/auth/login' && m === 'POST') { const b = await body(req); if (b.password === 'wrong wrong wrong') return json(res, 401, { error: 'Wrong username or password' }); return session(b); }
     if (p === '/api/auth/register' && m === 'POST') { await body(req); return session({}); }

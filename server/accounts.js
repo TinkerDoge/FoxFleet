@@ -56,7 +56,7 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     return { fail() { const cur = fails.get(key) && fails.get(key).until > t ? fails.get(key) : { count: 0, until: t + windowMs }; cur.count++; if (cur.count >= limit) { cur.lockedUntil = t + lockMs; } fails.set(key, cur); }, clear() { fails.delete(key); } };
   }
   const byName = (name) => [...users.values()].find((u) => u.username.toLowerCase() === String(name).toLowerCase());
-  const publicUser = (u) => ({ id: u.id, username: u.username, role: u.role, totp: Boolean(u.totp), disabled: Boolean(u.disabled), created: u.created });
+  const publicUser = (u) => ({ id: u.id, username: u.username, role: u.role, totp: Boolean(u.totp), disabled: Boolean(u.disabled), created: u.created, acceptedTerms: u.terms?.version ?? null });
   const dummy = await hashPassword('dummy-password-for-timing');
   const newToken = (sid) => { const secret = randomBytes(32).toString('base64url'); return { token: `${sid}.${secret}`, hash: sha(secret) }; };
   function prune() { const t = now(); let changed = false; for (const [id, s] of sessions) if (s.expires <= t) { sessions.delete(id); changed = true; } for (const [id, i] of invites) if (i.expires <= t || i.usedBy) { if (i.expires <= t) { invites.delete(id); } } return changed; }
@@ -68,12 +68,12 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     user: (id) => users.has(id) ? publicUser(users.get(id)) : null,
     registration: () => settings.registration,
     async setRegistration(mode, userId) { if (!['closed', 'invite', 'open'].includes(mode)) throw fault(400, 'Invalid registration mode'); if (users.get(userId)?.role !== 'owner') throw fault(403, 'Owner only'); settings = { ...settings, registration: mode }; await persist.settings(); },
-    async createUser(username, password, role = 'user', { skipPolicy = false } = {}) {
+    async createUser(username, password, role = 'user', { skipPolicy = false, terms = null } = {}) {
       if (!validUsername(username)) throw fault(400, 'Username: 3–32 letters, digits, . _ -');
       if (!skipPolicy) checkPassword(password);
       if (byName(username)) throw fault(409, 'That username is taken');
       if (users.size >= 1000) throw fault(400, 'User limit reached');
-      const u = { id: randomBytes(8).toString('hex'), username, pass: await hashPassword(password), role, created: now(), totp: null };
+      const u = { id: randomBytes(8).toString('hex'), username, pass: await hashPassword(password), role, created: now(), totp: null, ...(terms ? { terms: { version: terms, at: now() } } : {}) };
       users.set(u.id, u); await persist.users(); return publicUser(u);
     },
     async verify(username, password, ip, code) {
@@ -125,7 +125,7 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     },
     invites: () => [...invites.values()].filter((i) => i.expires > now()).map((i) => ({ id: i.id, created: i.created, expires: i.expires, used: Boolean(i.usedBy) })),
     async deleteInvite(id) { if (!invites.delete(id)) throw fault(404, 'Unknown invite'); await persist.invites(); },
-    async register(username, password, inviteCode) {
+    async register(username, password, inviteCode, terms = null) {
       const mode = settings.registration;
       if (mode === 'closed') throw fault(403, 'Registration is closed');
       let invite;
@@ -134,7 +134,7 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
         invite = [...invites.values()].find((i) => i.hash === h && !i.usedBy && i.expires > now());
         if (!invite) throw fault(403, 'Invite is invalid or expired');
       }
-      const u = await api.createUser(username, password, 'user');
+      const u = await api.createUser(username, password, 'user', { terms });
       if (invite) { invite.usedBy = u.id; await persist.invites(); }
       return u;
     },

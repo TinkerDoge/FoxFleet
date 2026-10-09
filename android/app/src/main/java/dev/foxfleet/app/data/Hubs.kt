@@ -14,6 +14,7 @@ data class AuthInfo(
     val registration: String = "closed",
     val username: String? = null,
     val role: String? = null,
+    val termsVersion: String? = null,
 ) { val isOwner get() = role == "owner" }
 
 data class ConnectLink(val hub: String, val invite: String? = null)

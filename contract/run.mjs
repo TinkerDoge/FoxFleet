@@ -24,7 +24,8 @@ export async function runContract(base, { fetchImpl = fetch, username = 'owner1'
   }
   await call('health', '/health', { auth: false });
   const info = await call('getAuth', '/api/auth', { auth: false });
-  const creds = { username, password, client: 'app', deviceName: 'contract' };
+  const creds = { username, password, client: 'app', deviceName: 'contract', acceptedTerms: info.termsVersion };
+  if (typeof info.termsVersion !== 'string') throw new Error('GET /api/auth must report termsVersion');
   const session = info.setupRequired ? await call('setup', '/api/auth/setup', { method: 'POST', body: creds }) : await call('login', '/api/auth/login', { method: 'POST', body: creds });
   token = session.token; if (!token) throw new Error('login(client=app) must return a token');
   if (info.setupRequired) await call('login', '/api/auth/login', { method: 'POST', body: creds });
