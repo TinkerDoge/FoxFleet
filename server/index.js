@@ -13,6 +13,7 @@ import { scanAvatarPacks } from './avatars.js';
 import { screenRelay } from './screen.js';
 import { inboxStore } from './inbox.js';
 import { mcpHandler, bearer } from './mcp.js';
+import { runRegistry } from './runs.js';
 import { openaiClient } from './openai.js';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
@@ -98,6 +99,7 @@ const sse = (res, text, headers = {}) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] })}\n\ndata: [DONE]\n\n`);
 };
+const scopeOf = (ctx) => ctx?.auth?.user?.id ?? 'local';
 async function streamResponse(req, res, getResponse, timeoutMs, headers, failureMessage = 'Agent request failed') {
   const abort = new AbortController(), onClose = () => { if (!res.writableEnded) abort.abort(); };
   res.once('close', onClose);
@@ -124,7 +126,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
@@ -385,13 +387,21 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (route === 'runs') { // resumable chat runs: list, follow from a cursor, stop. A run outlives its client connection.
+          const scope = scopeOf(ctx);
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { runs: runs.list(scope, m.name, url.searchParams.get('session_id') || undefined) });
+          if (parts.length === 6 && parts[5] === 'events' && req.method === 'GET') { const r = runs.get(scope, m.name, parts[4]), after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0); return runs.attach(req, res, r, Number.isInteger(after) && after > 0 ? after : 0); }
+          if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') { await readJson(req); const r = runs.get(scope, m.name, parts[4]); runs.stop(r); return sendJson(res, 200, { run: runs.view(r) }); }
+          throw fault(404, 'Not found');
+        }
         if (isChatKind(kindOf(m))) {
           if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
-            const payload = chatBody(await readJson(req, LIMITS.chat)); current(m);
-            return await streamResponse(req, res, (signal) => openai.chat(m, payload.messages, signal), Math.max(timeoutMs, 30000), (r) => {
+            const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
               if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-              return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff' };
-            });
+              return {};
+            } });
+            return runs.attach(req, res, run);
           }
           throw fault(404, 'Not available for this agent');
         }
@@ -451,11 +461,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
           current(m);
-          return await streamResponse(req, res, (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), timeoutMs, (r) => {
+          const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, timeoutMs, open: (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), check: (r) => {
             current(m);
             if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-            return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
-          });
+            return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
+          } });
+          return runs.attach(req, res, run);
         }
         if (route === 'artifacts') {
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { artifacts: artifacts.list(m, url.searchParams.get('session_id')) });
