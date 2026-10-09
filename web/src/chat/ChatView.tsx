@@ -4,7 +4,8 @@ import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
-import { chatOf, loadAgent, newChat, openSession, send, stop, useChat } from './store';
+import { chatOf, loadAgent, newChat, openSession, restore, send, stop, useChat } from './store';
+import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate } from '../router';
 import { t } from '../i18n/t';
@@ -14,13 +15,15 @@ export function statusLine(agent: string, tool: string | undefined, _hasText: bo
   return hasReasoning ? t('chat.thinking', { agent }) : t('chat.working', { agent });
 }
 
-export function ChatView({ client, agent, onAuthLost }: { client: Client; agent: AgentSummary; onAuthLost: () => void }) {
+export function ChatView({ client, agent, onAuthLost, session }: { client: Client; agent: AgentSummary; onAuthLost: () => void; session?: string }) {
   const c = useChat(agent.name);
   const [viewer, setViewer] = useState<MediaItem | null>(null), [sessionsOpen, setSessionsOpen] = useState(false);
   const scroller = useRef<HTMLDivElement>(null), stick = useRef(true);
-  useEffect(() => { void loadAgent(client, agent.name, onAuthLost); }, [agent.name]);
+  useEffect(() => { rememberAgent(agent.name); void loadAgent(client, agent.name, onAuthLost); void restore(client, agent.name, session, onAuthLost); }, [agent.name]);
+  // The URL always names the open chat, so a reload, a bookmark or the back button returns to it.
+  useEffect(() => { const q = new URLSearchParams({ agent: agent.name, ...(c.session ? { session: c.session } : {}) }); history.replaceState(null, '', `#/chat?${q}`); }, [agent.name, c.session]);
   useEffect(() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }, [c.messages, c.streamText, c.streamReasoning, c.tool, agent.name]);
-  const local = (cmd: LocalCommand) => { if (cmd === 'new') newChat(agent.name); else if (cmd === 'stop') stop(agent.name); else setSessionsOpen(true); };
+  const local = (cmd: LocalCommand) => { if (cmd === 'new') newChat(agent.name); else if (cmd === 'stop') stop(agent.name, client); else setSessionsOpen(true); };
   const last = c.messages[c.messages.length - 1];
   // Screen readers get one announcement when a reply starts and one when it ends, never a token-by-token flood.
   const announce = c.streaming ? t('a11y.replying', { agent: agent.displayName || agent.name }) : last?.role === 'assistant' ? t('a11y.replied', { agent: agent.displayName || agent.name, text: last.content.replace(/\s+/g, ' ').slice(0, 300) }) : '';
@@ -56,7 +59,7 @@ export function ChatView({ client, agent, onAuthLost }: { client: Client; agent:
         {c.error && <div class="card error-card" role="alert"><p class="error">{c.error}</p></div>}
       </div>
       <Composer key={agent.name + (c.session ?? '')} client={client} agent={agent} history={c.messages} streaming={c.streaming} skills={c.skills} draftKey={agent.name + (c.session ?? '')}
-        onSend={(text, imgs, files) => void send(client, agent.name, text, imgs, files, onAuthLost)} onStop={() => stop(agent.name)} onLocal={local} />
+        onSend={(text, imgs, files) => void send(client, agent.name, text, imgs, files, onAuthLost)} onStop={() => stop(agent.name, client)} onLocal={local} />
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>
   );
