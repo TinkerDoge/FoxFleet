@@ -5,10 +5,11 @@ import { Composer } from './Composer';
 import { draftKey } from './drafts';
 import { SessionsMenu } from './SessionsMenu';
 import { RequestCards } from './RequestCards';
-import { ChatControls } from './ChatControls';
+import { ModelPicker, ChoicePicker } from './Pickers';
+import { openPicker, closePicker, usePicker } from './picker';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
-import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, openSession, renameSession, restore, retryLast, send, stop, answerRequest, useChat, syncQueue, resumeQueue, cancelQueued } from './store';
+import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, openSession, renameSession, restore, retryLast, send, stop, notice, answerRequest, useChat, syncQueue, resumeQueue, cancelQueued } from './store';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate } from '../router';
@@ -21,7 +22,14 @@ export function statusLine(agent: string, tool: string | undefined, _hasText: bo
 }
 
 export function ChatView({ client, agent, onAuthLost, session }: { client: Client; agent: AgentSummary; onAuthLost: () => void; session?: string }) {
-  const c = useChat(agent.name);
+  const c = useChat(agent.name), picker = usePicker(agent.name, c.session);
+  useEffect(() => { closePicker(agent.name); }, [agent.name, c.session]); // a card never outlives the chat that opened it
+  const onModel = (args: string) => {
+    if (!args) { openPicker({ agent: agent.name, session: c.session, kind: 'model' }); return; }
+    if (/(^|\s)--global(\s|$)/.test(args)) { notice(agent.name, t('picker.noGlobal')); return; }
+    if (!c.session) { notice(agent.name, t('ctl.modelNeedsChat')); return; }
+    void client.setModel(agent.name, c.session, args).then((r) => notice(agent.name, r?.confirm_required ? String(r.confirm_message ?? '') : t('picker.modelSet', { model: String(r?.model ?? args) }))).catch(() => notice(agent.name, t('error.generic')));
+  };
   const [viewer, setViewer] = useState<MediaItem | null>(null), [sessionsOpen, setSessionsOpen] = useState(false), [historyError, setHistoryError] = useState('');
   const scroller = useRef<HTMLDivElement>(null), stick = useRef(true);
   useEffect(() => { rememberAgent(agent.name); void loadAgent(client, agent.name, onAuthLost); void restore(client, agent.name, session, onAuthLost); }, [agent.name]);
@@ -47,7 +55,6 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         <span class={`dot ${agent.online ? 'on' : 'off'}`} aria-hidden="true" />
         <div class="grow"><b>{name}</b><small class="muted">{status ?? (agent.online ? t('chat.online') : t('chat.offline'))}</small></div>
         {agent.capabilities?.screen && agent.online && <button class="btn text" onClick={() => navigate('screen', { agent: agent.name })}>{t('chat.screen')}</button>}
-        {agent.capabilities?.nativeUi && <ChatControls client={client} agent={agent.name} session={c.session} streaming={c.streaming} />}
         <button class="btn text" onClick={() => newChat(agent.name)}>{t('chat.new')}</button>
         {agent.capabilities?.sessions !== false && <SessionsMenu sessions={c.sessions} current={c.session} open={sessionsOpen} onOpenChange={openHistory}
           total={c.sessionsTotal} loading={c.sessionsLoading} error={historyError}
@@ -69,7 +76,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
           </div>
         )}
         {c.queue.length > 0 && (
-          <ul class="queue" aria-label={t('chat.mode.queue')}>
+          <ul class="queue" aria-label={t('chat.queueList')}>
             {c.queue.map((q) => (
               <li key={q.id} class={`msg user queued ${q.state}`}>
                 <div class="bubble"><p class="user-text">{q.text}</p>
@@ -81,11 +88,13 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
             {c.halted && c.queue.some((q) => q.state === 'queued') && <li class="queue-paused"><span class="muted">{t('chat.q.paused')}</span> <button class="btn text" onClick={() => void resumeQueue(client, agent.name, onAuthLost)}>{t('chat.q.resume')}</button></li>}
           </ul>
         )}
+        {picker?.kind === 'model' && <ModelPicker client={client} picker={picker} onDone={(text) => notice(agent.name, text)} />}
+        {picker?.kind === 'choice' && <ChoicePicker picker={picker} onChoose={(text) => void send(client, agent.name, text, [], [], onAuthLost, 'interrupt')} />}
         <RequestCards requests={c.requests} agent={name} onAnswer={(id, result) => answerRequest(client, agent.name, id, result, onAuthLost)} />
         {c.error && <div class="card error-card" role="alert"><p class="error">{c.error}</p></div>}
       </div>
       <Composer key={draftKey(agent.name, c.session)} client={client} agent={agent} history={c.messages} streaming={c.streaming} skills={c.skills} draftKey={draftKey(agent.name, c.session)} session={c.session} queue={c.queue} onCancelQueued={(id) => void cancelQueued(client, agent.name, id)}
-        onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} />
+        onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })} />
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>
   );

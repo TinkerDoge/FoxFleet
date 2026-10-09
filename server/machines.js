@@ -2,7 +2,7 @@
 // (created by a signed-in user, bound to that user), exchanged for a machine token. The hub keeps only a hash of the token.
 // Profiles found on the machine become agents (kind hermes, connection 'machine') in the owning user's registry.
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
-import { readFile, writeFile, rename, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fault } from './config.js';
 
@@ -22,7 +22,12 @@ export async function machineStore(file, { now = () => Date.now() } = {}) {
   try { const raw = JSON.parse(await readFile(file, 'utf8')); if (Array.isArray(raw.machines)) machines = raw.machines; } catch { /* first run */ }
   const pairings = new Map(); // code hash -> { userId, expires, machineId?, used, result? }
   const fails = { byIp: new Map(), global: [] };
-  async function save() { await mkdir(path.dirname(file), { recursive: true }); const tmp = file + '.tmp'; await writeFile(tmp, JSON.stringify({ version: 1, machines }, null, 1), { mode: 0o600 }); await rename(tmp, file); }
+  // Saves are serialised and write their own temp file: two overlapping saves (a connector registering while a machine is removed) used to race on one shared '.tmp' and fail with a 500.
+  let saving = Promise.resolve();
+  function save() {
+    const run = saving.then(async () => { await mkdir(path.dirname(file), { recursive: true }); const tmp = `${file}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`; const snap = JSON.stringify({ version: 1, machines }, null, 1); try { await writeFile(tmp, snap, { mode: 0o600 }); await rename(tmp, file); } catch (e) { await rm(tmp, { force: true }).catch(() => {}); throw e; } });
+    saving = run.catch(() => {}); return run;
+  }
   const sweep = () => { const t = now(); for (const [k, p] of pairings) if (p.expires + 3600_000 < t) pairings.delete(k); };
   function failure(ip) {
     const t = now(), win = 15 * 60_000;

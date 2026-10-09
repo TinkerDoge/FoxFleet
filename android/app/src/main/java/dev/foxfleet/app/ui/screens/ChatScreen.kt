@@ -134,6 +134,8 @@ import dev.foxfleet.app.ui.components.RichText
 import dev.foxfleet.app.ui.components.VoiceInput
 import dev.foxfleet.app.ui.components.mergeDictation
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CoroutineScope
+import androidx.compose.foundation.lazy.itemsIndexed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -181,9 +183,7 @@ fun ChatScreen(
     onLoadOlder: () -> Unit = {},
     historyOpen: Boolean = false,
     onRetry: () -> Unit = {},
-    /** Send mode while the agent works, and the hub's queue controls. */
-    mode: String = "queue",
-    onMode: (String) -> Unit = {},
+    /** The hub's queue controls. */
     onResumeQueue: () -> Unit = {},
     onCancelQueued: (String) -> Unit = {},
     /** Native Hermes sessions: answer a question/approval card; model picker and profile busy setting. Null for every other agent. */
@@ -207,7 +207,7 @@ fun ChatScreen(
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
-    var controlsOpen by remember { mutableStateOf(false) }
+    var picker by remember { mutableStateOf<PickerCard?>(null) }
     LaunchedEffect(drawer.currentValue) { if (drawer.currentValue == DrawerValue.Open) onDrawerOpened() }
 
     ModalNavigationDrawer(
@@ -255,8 +255,6 @@ fun ChatScreen(
                     else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 }
                 if (onOpenScreen != null) SoftIconButton(ScreenGlyph, "Agent's screen", onOpenScreen)
-                if (nativeControls != null) Text("Controls", style = MaterialTheme.typography.labelLarge, color = c.accent,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat controls") { controlsOpen = true }.padding(horizontal = 10.dp, vertical = 8.dp))
                 if (agent.capabilities.sessions) Text("History", style = MaterialTheme.typography.labelLarge, color = c.accent,
                     modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat history") { history = true }.padding(horizontal = 10.dp, vertical = 8.dp))
                 SoftIconButton(Icons.Filled.Add, "New chat", onNewChat)
@@ -265,7 +263,7 @@ fun ChatScreen(
             Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest) { viewing = it }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
-                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, mode = mode, onMode = onMode, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
@@ -281,7 +279,12 @@ fun ChatScreen(
             )
         }
     }
-    if (controlsOpen && nativeControls != null) NativeControlsDialog(nativeControls, state.sessionId != null, state.streaming) { controlsOpen = false }
+    // A choice card belongs to the chat that opened it: another chat, a new chat or five minutes later and it is gone.
+    LaunchedEffect(state.sessionId) { picker = null }
+    picker?.takeIf { it.valid(state.sessionId) }?.let { pc ->
+        if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null })
+        else if (pc.kind == "choice") ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
+    }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
         viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
@@ -329,6 +332,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
     ) {
+        itemsIndexed(state.notices.reversed(), key = { i, _ -> "notice-$i" }) { _, n ->
+            Text(n, style = MaterialTheme.typography.bodySmall, color = c.textMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+        }
         state.error?.let { e ->
             item(key = "error") {
                 Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted,
@@ -486,6 +492,16 @@ private fun MediaCard(ref: MediaRef, onClick: () -> Unit) {
     }
 }
 
+/** What a plain message means while the agent works (no picker). */
+internal fun plainMode(native: Boolean, modes: List<String>) = if (native) "auto" else if ("interrupt" in modes) "interrupt" else "queue"
+/** /model typed in the chat: no argument opens the picker; with arguments it sets the model of this chat only (never the profile default). */
+internal fun modelCommand(args: String, controls: NativeControls?, state: ChatState, picker: () -> Unit) {
+    if (args.isEmpty()) { picker(); return }
+    if (Regex("(^|\\s)--global(\\s|$)").containsMatchIn(args)) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
+    if (state.sessionId == null || controls == null) { state.addNotice("Send the first message first: the model is set per conversation."); return }
+    val provider = Regex("--provider\\s+(\\S+)").find(args)?.groupValues?.get(1); val model = args.replace(Regex("--provider\\s+\\S+"), "").trim()
+    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { state.addNotice("Could not change the model") } }
+}
 /** Honest names for the send modes. */
 internal fun modeLabel(mode: String) = when (mode) { "steer" -> "Steer"; "interrupt" -> "Interrupt & send"; else -> "Queue" }
 internal fun queueStateLabel(state: String) = when (state) {
@@ -510,12 +526,13 @@ private fun Composer(
     agentCommands: Boolean = true,
     modes: List<String> = listOf("queue"),
     native: Boolean = false,
-    mode: String = "queue",
-    onMode: (String) -> Unit = {},
+    onModel: (String) -> Unit = {},
+    onChoices: (String, List<String>) -> Unit = { _, _ -> },
     defs: List<CommandDef>? = null,
     waiting: Int = 0,
 ) {
     val c = LocalHubColors.current
+    val mode = plainMode(native, modes)
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var input by rememberSaveable { mutableStateOf(initialInput) }
@@ -574,10 +591,15 @@ private fun Composer(
         if (!canSend) return
         if (attachments.isEmpty() && files.isEmpty()) {
             parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
+            if (native) Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m -> input = ""; onModel(m.groupValues[1].trim()); return }
+            if (native) Regex("^/([A-Za-z0-9_-]+)$").find(input.trim())?.let { m ->
+                (defs ?: HermesCatalog.defs).firstOrNull { it.name == m.groupValues[1].lowercase() || m.groupValues[1].lowercase() in it.aliases }
+                    ?.takeIf { it.executable && it.subcommands.size > 1 && !it.handler.startsWith("hub:") }?.let { d -> input = ""; onChoices(d.name, d.subcommands); return }
+            }
             parseHub(input, defs ?: HermesCatalog.defs)?.takeIf { agentCommands || it.cmd != "steer" }?.let { h ->
                 if (!h.def.executable) { note = "/${h.def.name}: ${h.def.disabledReason.ifEmpty { "Not available for this agent" }}"; return }
                 when (h.cmd) {
-                    "busy" -> { if (h.args.isEmpty() || h.args == "status") note = "Send mode: ${modeLabel(mode, native)}" + if (waiting > 0) " · $waiting waiting" else "" else if (h.args in modes) onMode(h.args) else note = "/busy ${h.args}: ${modes.joinToString(" | ")} | status"; input = ""; return }
+                    "busy" -> { note = "Behaviour while Hermes works is a profile setting: Agents \u25B8 your Hermes agent. Use /steer, /queue or /stop for one message." + if (waiting > 0) " \u00B7 $waiting waiting" else ""; input = ""; return }
                     "queue" -> if (h.args.isNotEmpty() && !Regex("^(list|rm|clear|edit|move)\\b").containsMatchIn(h.args)) { input = ""; onSend(h.args.removePrefix("add ").trim(), emptyList(), "queue"); return } else { note = "/queue <message>"; return }
                     "steer" -> if (h.args.isNotEmpty()) { input = ""; onSend(h.args, emptyList(), "steer"); return } else { note = "/steer <guidance>"; return }
                 }
@@ -701,12 +723,6 @@ private fun Composer(
                         contentAlignment = Alignment.Center,
                     ) { MicGlyph(if (voice.listening) c.onAccent else c.textMuted) }
                 } else {
-                    if (streaming && modes.size > 1) {
-                        // Small send-mode selector: tap to cycle through what this agent supports. Native: a live redirect Hermes may refuse; other agents: stop, then send.
-                        Text(modeLabel(mode, native), style = MaterialTheme.typography.labelMedium, color = c.textMuted,
-                            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt)
-                                .clickable(onClickLabel = "Change send mode") { onMode(modes[(modes.indexOf(mode) + 1) % modes.size]) }.padding(horizontal = 10.dp, vertical = 8.dp))
-                    }
                     if (streaming) {
                         val stopSrc = remember { MutableInteractionSource() }
                         Box(
@@ -720,7 +736,7 @@ private fun Composer(
                     Box(
                         Modifier.size(40.dp).pressScale(src, 0.88f).clip(CircleShape)
                             .background(if (active) c.accent else c.surfaceAlt)
-                            .clickable(interactionSource = src, indication = null, enabled = active, onClickLabel = if (streaming) "Send (${modeLabel(mode, native)})" else "Send") { send() },
+                            .clickable(interactionSource = src, indication = null, enabled = active, onClickLabel = "Send") { send() },
                         contentAlignment = Alignment.Center,
                     ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (active) c.onAccent else c.textFaint, modifier = Modifier.size(18.dp)) }
                 }

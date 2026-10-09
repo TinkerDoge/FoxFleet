@@ -159,6 +159,7 @@ fun AgentEditorScreen(
     initialTest: TestResult? = null,
     initialToken: String? = null,
     onNewToken: (suspend () -> String?)? = null,
+    nativeControls: NativeControls? = null,
 ) {
     val c = LocalHubColors.current
     val scope = rememberCoroutineScope()
@@ -237,6 +238,7 @@ fun AgentEditorScreen(
             if (editing && onNewToken != null && existing?.kind == "mcp-inbox") {
                 TextButton(onClick = { run { onNewToken()?.let { token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new token", color = c.accent) }
             }
+            if (editing && nativeControls != null) ProfileBusyCard(nativeControls)
             if (editing) {
                 Spacer(Modifier.height(24.dp))
                 TextButton(onClick = { confirmDelete = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Remove agent", color = dangerColor()) }

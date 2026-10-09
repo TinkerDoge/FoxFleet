@@ -183,3 +183,11 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 @media (prefers-reduced-motion:reduce){.controls .popover{transition:none}}
 @media (max-width:640px){.controls .popover{position:fixed;left:12px;right:12px;top:72px;width:auto;max-height:70vh;overflow:auto}}
 .btn[disabled]{opacity:.5;cursor:not-allowed}
+
+/* Telegram-style cards in the message stream (model picker, command choices) */
+.card.picker { margin: 8px 0; max-width: min(100%, 420px); }
+.picker .choices { list-style: none; margin: 8px 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.picker .choices .btn { width: 100%; justify-content: flex-start; text-align: left; overflow-wrap: anywhere; min-height: 44px; }
+.picker .search { width: 100%; box-sizing: border-box; min-height: 44px; }
+.picker .pager { justify-content: space-between; }
+.msg.notice { text-align: center; padding: 4px 12px; }

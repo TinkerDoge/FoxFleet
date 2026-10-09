@@ -1,3 +1,4 @@
+import { ProfileBusy } from '../chat/ProfileBusy';
 import { useEffect, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import { ApiError, AuthRequiredError, NetworkError } from '../api/errors';
@@ -97,6 +98,7 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
         {problem && <p class="muted small">{problem}</p>}
         {editing && kind.kind === 'mcp-inbox' && <TextButton onClick={newToken}>{t('manage.newToken')}</TextButton>}
       </form>
+      {editing && kind.kind === 'hermes' && <ProfileBusy client={client} agent={saved!.name} />}
     </div>
   );
 }

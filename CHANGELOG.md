@@ -2,6 +2,18 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## 0.3.1-alpha
+
+### Changed (chat feels like Telegram/Discord)
+- **The composer is text, Send and Stop.** The send-mode selector, the "Chat controls" button and the extra row above the composer are gone on web and Android. This also fixes the Android phone layout the extra header button broke (checked at 360 dp and 411 dp, with a large font scale and a shrunk viewport for the keyboard).
+- **No mode picking.** A plain message sent while the agent works redirects it: native Hermes applies its own profile `busy_input_mode` and the real answer is shown as a small status on the message; other agents stop, wait for confirmed termination, then send.
+- **Typed commands:** `/steer <text>`, `/queue <text>`, `/stop`. `/busy` now only points to the setting.
+- **`/model` picker.** Bare `/model` opens a two-step card (provider, then models: paged, searchable, Back/Cancel); the choice is session-scoped and confirmed in the chat. The same card pattern serves any command with fixed choices (a bottom sheet on Android, a card in the stream on web). Cards belong to the chat that opened them and expire after five minutes.
+- **The Hermes profile default for busy input moved to the agent's settings** (web and Android) with its warning and confirmation.
+
+### Fixed
+- Flaky native tests: the connector now waits for the gateway's stdout to drain before reporting that it exited; a late acknowledgement after the gateway went down is `uncertain`; the facade never opens a second run for a turn that ended while the send was in flight.
+
 ## 0.3.0-alpha
 
 Android `versionName 0.3.0-alpha`, `versionCode 7`. Not yet published. Implements stages 1 to 6 of `docs/HERMES-CHAT-CONTROLS.md`; stage 7 (a Telegram adapter) is out of scope. Source-level and fake-upstream tested only: **Hermes native runs need a live check** (see the roadmap).

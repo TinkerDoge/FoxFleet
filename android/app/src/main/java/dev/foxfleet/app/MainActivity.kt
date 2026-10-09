@@ -151,7 +151,6 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 agent = agent, agents = vm.agents, state = vm.chatFor(agent.name),
                 sessions = vm.sessions[agent.name].orEmpty(), unread = { vm.chatFor(it).unread },
                 onSend = { t, imgs -> vm.send(agent.name, t, imgs) }, onSendMode = { t, imgs, mode -> vm.send(agent.name, t, imgs, mode) }, onStop = { vm.stop(agent.name) },
-                mode = vm.sendModes[agent.name] ?: vm.sendMode(agent), onMode = { vm.setSendMode(agent.name, it) },
                 commandDefs = vm.commandDefs[agent.name], onResumeQueue = { vm.resumeQueue(agent.name) }, onCancelQueued = { vm.cancelQueued(agent.name, it) },
                 onAnswerRequest = if (agent.capabilities.nativeUi) { id, result -> vm.answerRequest(agent.name, id, result) } else null,
                 nativeControls = if (agent.capabilities.nativeUi) vm.nativeControls(agent.name) else null,
@@ -213,6 +212,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onDelete = { vm.deleteAgent(route.agent!!) },
                 onDone = { vm.navigate(Route.Agents) },
                 onNewToken = { existing?.let { vm.api.newInboxToken(it.name) } },
+                nativeControls = existing?.takeIf { it.kind == "hermes" }?.let { vm.nativeControls(it.name) },
             )
         }
     }

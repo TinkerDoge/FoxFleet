@@ -12,7 +12,7 @@ export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: numbe
 
 /** Typed hub client. Cookie session (HttpOnly, set by the hub), so no token handling in JS. */
 
-export type SendMode = 'queue' | 'steer' | 'interrupt';
+export type SendMode = 'queue' | 'steer' | 'interrupt' | 'auto';
 /** What Hermes itself answered to a message sent while it worked. Shown as received, never predicted. */
 export type Ack = 'streaming' | 'queued' | 'steered' | 'redirected' | 'rejected';
 export interface QueuedMessage { id: string; state: string; mode: SendMode; text: string; error?: string; note?: string; runId?: string; ack?: Ack }
