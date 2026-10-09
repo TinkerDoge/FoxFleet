@@ -15,7 +15,7 @@ data class Capabilities(
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
         fun forKind(kind: String) = when (kind) {
             "hermes" -> Capabilities(images = true, files = true, screen = true, voice = true, skills = true, sessions = true)
-            "openai" -> Capabilities(images = true)
+            "openai" -> Capabilities(images = true, sessions = true)
             "mcp-inbox" -> Capabilities(sessions = true, mailbox = true)
             else -> Capabilities()
         }
@@ -46,7 +46,12 @@ data class AgentStatus(
     val badge: String? get() = when (kind) { "mcp-inbox" -> "Inbox"; "openai" -> "API"; "hermes" -> null; else -> kind.replaceFirstChar { it.uppercase() } }
 }
 
-data class SessionInfo(val id: String, val title: String?)
+data class SessionInfo(val id: String, val title: String?, val updated: Long = 0L, val preview: String = "", val messages: Int = 0)
+data class SessionPage(val sessions: List<SessionInfo>, val total: Int)
+data class HistoryPage(val messages: List<UiMessage>, val hasMore: Boolean)
+
+/** One tool call folded into an assistant turn (name, short args, short result). */
+data class ToolStep(val name: String, val args: String = "", val result: String = "", val ok: Boolean = true)
 
 /** A chat run on the hub (an agent reply that outlives the app's connection). state: running | done | error | stopped. */
 data class RunInfo(val id: String, val sessionId: String?, val state: String, val started: Long)
@@ -59,6 +64,11 @@ data class UiMessage(
     val content: String,
     val reasoning: String = "",
     val tools: List<String> = emptyList(),
+    val steps: List<ToolStep> = emptyList(),
+    /** Message time (ms) for history; 0 for messages typed in this session. */
+    val ts: Long = 0L,
+    /** Image URLs from loaded history (data: or https:), shown in the same cards as live images. */
+    val imageUrls: List<String> = emptyList(),
     /** Images the user attached: local cache file path + ready-to-send data URL. */
     val images: List<ImageAttachment> = emptyList(),
 )

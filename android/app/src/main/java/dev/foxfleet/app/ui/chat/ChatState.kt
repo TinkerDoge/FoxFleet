@@ -12,6 +12,8 @@ import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.UiMessage
 import kotlinx.coroutines.CancellationException
 
+const val PAGE = 80
+
 /** Per-agent conversation state: message history, streaming overlays, session id. */
 class ChatState {
     var messages by mutableStateOf<List<UiMessage>>(emptyList())
@@ -35,6 +37,16 @@ class ChatState {
     var persist: (SavedChat) -> Unit = {}
 
     var loading by mutableStateOf(false)
+        private set
+    /** Older pages exist on the hub; [olderOffset] is where the next page starts (counted back from the newest message). */
+    var hasOlder by mutableStateOf(false)
+        private set
+    var loadingOlder by mutableStateOf(false)
+        private set
+    var olderOffset = 0
+        private set
+    /** Stable list keys: prepending older messages must not shift the keys of the ones already on screen. */
+    var keyBase = 0
         private set
     var unread by mutableStateOf(false)
         private set
@@ -60,16 +72,22 @@ class ChatState {
         if (sessionId != null && sessionId.isNotBlank()) this.sessionId = sessionId
     }
 
-    fun load(messages: List<UiMessage>, sessionId: String?) {
-        this.messages = messages
+    fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
+        this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
         if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
         loading = false
         resetStream(); error = null
     }
 
+    fun beginOlder() { loadingOlder = true }
+    fun prepend(older: List<UiMessage>, hasMore: Boolean) {
+        keyBase -= older.size; messages = older + messages; hasOlder = hasMore; olderOffset += PAGE; loadingOlder = false
+    }
+    fun olderFailed() { loadingOlder = false }
+
     fun newConversation() {
-        messages = emptyList(); sessionId = null; runId = null; persist(SavedChat())
+        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; persist(SavedChat())
         resetStream(); error = null
     }
 

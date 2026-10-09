@@ -49,6 +49,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -165,6 +166,15 @@ fun ChatScreen(
     onSwitchAgent: (AgentStatus) -> Unit,
     onOpenSession: (String) -> Unit,
     onDrawerOpened: () -> Unit,
+    sessionsTotal: Int = sessions.size,
+    sessionsLoading: Boolean = false,
+    historyError: String? = null,
+    onRefreshSessions: () -> Unit = {},
+    onLoadMoreSessions: () -> Unit = {},
+    onRenameSession: (String, String) -> Unit = { _, _ -> },
+    onDeleteSession: (String) -> Unit = {},
+    onLoadOlder: () -> Unit = {},
+    historyOpen: Boolean = false,
     initialInput: String = "",
     skills: List<String> = emptyList(),
     onAvatarLongPress: (String) -> Unit = {},
@@ -180,6 +190,7 @@ fun ChatScreen(
     var viewing by remember { mutableStateOf(initialViewing) }
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
+    var history by remember { mutableStateOf(historyOpen) }
     LaunchedEffect(drawer.currentValue) { if (drawer.currentValue == DrawerValue.Open) onDrawerOpened() }
 
     ModalNavigationDrawer(
@@ -227,10 +238,12 @@ fun ChatScreen(
                     else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 }
                 if (onOpenScreen != null) SoftIconButton(ScreenGlyph, "Agent's screen", onOpenScreen)
+                if (agent.capabilities.sessions) Text("History", style = MaterialTheme.typography.labelLarge, color = c.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat history") { history = true }.padding(horizontal = 10.dp, vertical = 8.dp))
                 SoftIconButton(Icons.Filled.Add, "New chat", onNewChat)
             }
             Hairline()
-            Transcript(agent.name, state, Modifier.weight(1f)) { viewing = it }
+            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder) { viewing = it }
             Composer(
                 agent.name, state.streaming, skills, onSend, onStop, initialInput, initialAttachments,
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
@@ -239,13 +252,14 @@ fun ChatScreen(
                 onLocal = { cmd ->
                     when (cmd) {
                         LocalCommand.New -> onNewChat()
-                        LocalCommand.Sessions -> scope.launch { drawer.open() }
+                        LocalCommand.Sessions -> history = true
                         LocalCommand.Stop -> onStop()
                     }
                 },
             )
         }
     }
+    if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
         viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
     }
@@ -267,7 +281,7 @@ private fun DrawerRow(a: AgentStatus, selected: Boolean, unread: Boolean, onClic
 }
 
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -275,6 +289,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
     LaunchedEffect(state.messages.size) {
         if (list.firstVisibleItemIndex <= 1) list.animateScrollToItem(0)
     }
+    // Long conversations load in pages: reaching the oldest loaded message fetches the next older page.
+    val nearTop by remember { derivedStateOf { list.layoutInfo.let { it.totalItemsCount > 0 && (it.visibleItemsInfo.lastOrNull()?.index ?: 0) >= it.totalItemsCount - 3 } } }
+    LaunchedEffect(nearTop, state.hasOlder, state.messages.size) { if (nearTop && state.hasOlder && !state.loadingOlder) onLoadOlder() }
     if (state.messages.isEmpty() && !state.streaming && !state.loading && state.error == null) {
         Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             AgentAvatar(agentName, null, 56.dp)
@@ -300,9 +317,10 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         }
         if (state.loading) item(key = "loading") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
         val rev = state.messages.asReversed()
-        items(rev.size, key = { rev.size - 1 - it }) { i ->
+        items(rev.size, key = { state.keyBase + rev.size - 1 - it }) { i ->
             MessageRow(agentName, rev[i], Modifier.animateItem(), onOpen)
         }
+        if (state.loadingOlder) item(key = "older") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
     }
 }
 
@@ -311,6 +329,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
     val c = LocalHubColors.current
     if (m.role == "user") {
         Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+            m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.padding(bottom = 6.dp).size(180.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
             if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
                 m.images.forEach { img ->
                     AsyncImage(
@@ -332,7 +351,11 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 if (m.reasoning.isNotBlank()) Reasoning(m.reasoning, live = false)
-                RichText(m.content)
+                if (m.steps.isNotEmpty()) ToolSteps(m.steps)
+                m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
+                    modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+                if (m.content.isNotBlank()) RichText(m.content)
+                if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(top = 4.dp))
                 val media = remember(m.content) { extractMedia(m.content) }
                 media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
             }
@@ -364,6 +387,24 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
                 )
             }
             if (status != null) ShimmerStatusText(status, Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
+/** "Used 2 tools ▸": one calm line per assistant turn, expands to the steps. The raw tool JSON never shows. */
+@Composable
+private fun ToolSteps(steps: List<dev.foxfleet.app.data.ToolStep>) {
+    val c = LocalHubColors.current
+    var open by rememberSaveable { mutableStateOf(false) }
+    val failed = steps.count { !it.ok }
+    Column(Modifier.padding(bottom = 8.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable { open = !open }.animateContentSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+        Text((if (steps.size == 1) "Used 1 tool" else "Used ${steps.size} tools") + (if (failed > 0) " · $failed failed" else "") + (if (open) " ▾" else " ▸"), style = MaterialTheme.typography.labelMedium, color = c.textMuted)
+        if (open) steps.forEach { t ->
+            Column(Modifier.padding(top = 6.dp)) {
+                Text(t.name + if (!t.ok) " ⚠" else "", style = MaterialTheme.typography.labelMedium, color = c.text)
+                if (t.args.isNotBlank()) Text(t.args, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                if (t.result.isNotBlank()) Text(t.result, style = MaterialTheme.typography.bodySmall, color = c.textFaint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }

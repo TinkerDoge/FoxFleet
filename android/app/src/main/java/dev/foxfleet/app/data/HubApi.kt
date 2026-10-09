@@ -201,26 +201,44 @@ class HubApi(private val store: SettingsStore) {
 
     // ---- sessions ----
 
-    suspend fun sessions(agent: String): List<SessionInfo> = withContext(Dispatchers.IO) {
-        val obj = request(agentPath(agent) + "/sessions", timeoutSec = 30)
+    suspend fun sessions(agent: String, offset: Int = 0, limit: Int = 30, q: String = ""): SessionPage = withContext(Dispatchers.IO) {
+        val obj = request(agentPath(agent) + "/sessions", query = buildMap { put("limit", "$limit"); put("offset", "$offset"); if (q.isNotBlank()) put("q", q) }, timeoutSec = 30)
         val arr = obj["sessions"]?.jsonArray ?: throw HubApiException(0, "Invalid response from the relay")
-        arr.map { el ->
-            val s = el.jsonObject
-            SessionInfo(
-                id = s["id"]?.jsonPrimitive?.content ?: "",
-                title = s["title"]?.jsonPrimitive?.contentOrNull,
-            )
-        }.filter { it.id.isNotEmpty() }
+        val list = arr.mapNotNull { el ->
+            val s = el.jsonObject; val id = s.str("id")?.takeIf { it.isNotEmpty() } ?: return@mapNotNull null
+            SessionInfo(id, s.str("title"), s["updated"]?.jsonPrimitive?.longOrNull ?: 0L, s.str("preview").orEmpty(), s["messages"]?.jsonPrimitive?.intOrNull ?: 0)
+        }
+        SessionPage(list, obj["total"]?.jsonPrimitive?.intOrNull ?: list.size)
     }
 
-    suspend fun messages(agent: String, sessionId: String): List<UiMessage> = withContext(Dispatchers.IO) {
-        val obj = request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/messages", timeoutSec = 60)
+    /** One page of a conversation; [offset] counts back from the newest message, the page itself is chronological. */
+    suspend fun messages(agent: String, sessionId: String, offset: Int = 0, limit: Int = 80): HistoryPage = withContext(Dispatchers.IO) {
+        val obj = request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/messages", query = mapOf("limit" to "$limit", "offset" to "$offset"), timeoutSec = 60)
         val arr = obj["messages"]?.jsonArray ?: throw HubApiException(0, "Invalid response from the relay")
-        arr.map { el ->
-            val m = el.jsonObject
-            val role = m["role"]?.jsonPrimitive?.content ?: "assistant"
-            UiMessage(role = role, content = contentToString(m["content"]))
-        }
+        HistoryPage(arr.mapNotNull { historyMessage(it) }, obj["has_more"]?.jsonPrimitive?.booleanOrNull == true)
+    }
+
+    suspend fun renameSession(agent: String, id: String, title: String) = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/sessions/" + enc(id), "PATCH", buildJsonObject { put("title", title) }.toString()); Unit
+    }
+    suspend fun deleteSession(agent: String, id: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/sessions/" + enc(id), "DELETE"); Unit }
+
+    /** Days the hub keeps chat history for API-key agents (this user); 0 keeps nothing. */
+    suspend fun historyRetention(): Int = withContext(Dispatchers.IO) { request("/api/history/settings")["retentionDays"]?.jsonPrimitive?.intOrNull ?: 90 }
+    suspend fun setHistoryRetention(days: Int) = withContext(Dispatchers.IO) { request("/api/history/settings", "PUT", buildJsonObject { put("retentionDays", days) }.toString()); Unit }
+
+    /** The hub sends normalised history (tool JSON, control tags and hidden rows already gone); anything odd is skipped. */
+    internal fun historyMessage(el: kotlinx.serialization.json.JsonElement): UiMessage? {
+        val m = runCatching { el.jsonObject }.getOrNull() ?: return null
+        val role = m.str("role")?.takeIf { it == "user" || it == "assistant" } ?: return null
+        val content = m.str("content").orEmpty(); val reasoning = m.str("reasoning").orEmpty()
+        val steps = runCatching { m["tools"]?.jsonArray }.getOrNull()?.mapNotNull { t ->
+            val o = runCatching { t.jsonObject }.getOrNull() ?: return@mapNotNull null
+            ToolStep(o.str("name") ?: return@mapNotNull null, o.str("args").orEmpty(), o.str("result").orEmpty(), o.bool("ok") != false)
+        }.orEmpty()
+        val urls = runCatching { m["images"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }.orEmpty()
+        if (content.isEmpty() && reasoning.isEmpty() && steps.isEmpty() && urls.isEmpty()) return null
+        return UiMessage(role = role, content = content, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls)
     }
 
     private fun contentToString(value: kotlinx.serialization.json.JsonElement?): String {
@@ -343,8 +361,7 @@ class HubApi(private val store: SettingsStore) {
     }
 
     suspend fun runs(agent: String, session: String?): List<RunInfo> = withContext(Dispatchers.IO) {
-        val path = agentPath(agent) + "/runs" + if (session.isNullOrBlank()) "" else "?session_id=" + enc(session)
-        request(path, timeoutSec = 15)["runs"]?.jsonArray?.mapNotNull { e ->
+        request(agentPath(agent) + "/runs", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15)["runs"]?.jsonArray?.mapNotNull { e ->
             val o = e.jsonObject; val id = o.str("id") ?: return@mapNotNull null
             RunInfo(id, o.str("session_id"), o.str("state") ?: "done", o["started"]?.jsonPrimitive?.longOrNull ?: 0L)
         } ?: emptyList()
@@ -415,8 +432,8 @@ class HubApi(private val store: SettingsStore) {
     companion object {
         private val parser = Json { ignoreUnknownKeys = true }
 
-        private fun JsonObject.str(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
-        private fun JsonObject.bool(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.booleanOrNull }.getOrNull() }
+        internal fun JsonObject.str(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
+        internal fun JsonObject.bool(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.booleanOrNull }.getOrNull() }
 
         fun parseAgent(a: JsonObject): AgentStatus {
             val kind = a.str("kind") ?: "hermes"

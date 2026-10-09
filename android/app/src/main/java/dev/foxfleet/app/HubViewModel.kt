@@ -85,7 +85,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun switchHub(id: String) { settings.switchHub(id); resetForHubChange(); boot() }
     fun removeHub(id: String) { settings.removeHub(id); resetForHubChange(); route = Route.Fleet; boot() }
     private fun resetForHubChange() {
-        jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); skills.clear()
+        jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear(); skills.clear()
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; username = ""; isOwner = false
     }
     var agents by mutableStateOf<List<AgentStatus>>(emptyList()); private set
@@ -94,6 +94,9 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     var fleetError by mutableStateOf<String?>(null); private set
     var route by mutableStateOf<Route>(Route.Fleet); private set
     val sessions = mutableStateMapOf<String, List<SessionInfo>>()
+    val sessionTotals = mutableStateMapOf<String, Int>()
+    val sessionsLoading = mutableStateMapOf<String, Boolean>()
+    var historyError by mutableStateOf<String?>(null)
     private val chats = HashMap<String, ChatState>()
     private val jobs = HashMap<String, Job>()
 
@@ -121,7 +124,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun onLoggedIn() { authed = true; bootError = null; viewModelScope.launch { runCatching { val i = api.authInfo(); username = i.username.orEmpty(); isOwner = i.isOwner; inviteDraft = "" } }; refreshFleet() }
 
     fun signOut() {
-        jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear()
+        jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
         settings.clearSession()
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
@@ -213,7 +216,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val id = state.sessionId ?: return
         if (state.streaming) return
         val fresh = runCatching { api.messages(agent, id) }.getOrNull() ?: return
-        if (fresh.size != state.messages.size && !state.streaming && state.sessionId == id) state.load(fresh, id)
+        if (fresh.messages.size != state.messages.size && !state.streaming && state.sessionId == id) state.load(fresh.messages, id, fresh.hasMore)
     }
 
     // ---- agent registry (Settings → Agents) ----
@@ -280,7 +283,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         state.beginLoad()
         jobs[agent] = viewModelScope.launch {
             try {
-                state.load(api.messages(agent, session), session)
+                api.messages(agent, session).let { state.load(it.messages, session, it.hasMore) }
                 val run = runCatching { api.runs(agent, session).maxByOrNull { it.started } }.getOrNull()
                 val endsWithReply = state.messages.lastOrNull()?.role == "assistant"
                 if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); return@launch }
@@ -291,9 +294,46 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun loadSessions(agent: String) {
+    /** History list: the first page (pull-to-refresh) or the next page appended. */
+    fun loadSessions(agent: String, more: Boolean = false) {
+        if (sessionsLoading[agent] == true) return
+        sessionsLoading[agent] = true; historyError = null
         viewModelScope.launch {
-            runCatching { api.sessions(agent) }.onSuccess { sessions[agent] = it }
+            try {
+                val have = if (more) sessions[agent].orEmpty() else emptyList()
+                val page = api.sessions(agent, offset = have.size)
+                sessions[agent] = have + page.sessions.filter { n -> have.none { it.id == n.id } }; sessionTotals[agent] = page.total
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false } catch (e: Exception) {
+                historyError = scrubAddresses(e.message ?: "Couldn't load history")
+            } finally { sessionsLoading[agent] = false }
+        }
+    }
+
+    fun renameSession(agent: String, id: String, title: String) {
+        viewModelScope.launch {
+            try { api.renameSession(agent, id, title); sessions[agent] = sessions[agent].orEmpty().map { if (it.id == id) it.copy(title = title) else it } }
+            catch (e: CancellationException) { throw e } catch (e: Exception) { historyError = scrubAddresses(e.message ?: "Couldn't rename") }
+        }
+    }
+
+    fun deleteSession(agent: String, id: String) {
+        viewModelScope.launch {
+            try {
+                api.deleteSession(agent, id); sessions[agent] = sessions[agent].orEmpty().filterNot { it.id == id }
+                sessionTotals[agent] = ((sessionTotals[agent] ?: 1) - 1).coerceAtLeast(0)
+                if (chatFor(agent).sessionId == id) newChat(agent)
+            } catch (e: CancellationException) { throw e } catch (e: Exception) { historyError = scrubAddresses(e.message ?: "Couldn't delete") }
+        }
+    }
+
+    /** Scrolled to the top of a long conversation: fetch the next older page. */
+    fun loadOlder(agent: String) {
+        val state = chatFor(agent); val id = state.sessionId ?: return
+        if (!state.hasOlder || state.loadingOlder || state.loading) return
+        state.beginOlder()
+        viewModelScope.launch {
+            try { val p = api.messages(agent, id, offset = state.olderOffset); if (state.sessionId == id) state.prepend(p.messages, p.hasMore) else state.olderFailed() }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false; state.olderFailed() } catch (_: Exception) { state.olderFailed() }
         }
     }
 
@@ -303,7 +343,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         state.beginLoad()
         viewModelScope.launch {
             try {
-                state.load(api.messages(agent, id), id)
+                api.messages(agent, id).let { state.load(it.messages, id, it.hasMore) }
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) {
                 authed = false
             } catch (e: Exception) {
