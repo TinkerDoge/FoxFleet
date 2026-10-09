@@ -1,5 +1,8 @@
-# DRAFT release workflow: runs when a tag like v0.1.0-alpha is pushed. Nothing else depends on it.
-# It builds the server tarball (+ SHA256SUMS) and, if the signing secrets exist, a release-signed APK, then creates a GitHub Release.
+# Release workflow: runs when a tag like v0.1.0-alpha is pushed. Nothing else depends on it.
+# It builds the server tarball and, if the signing secrets exist, a release-signed APK, writes SHA256SUMS for exactly the files
+# it attaches, and CREATES the GitHub Release.
+# It NEVER touches an existing release: if a release for the tag already exists (for example the maintainer published by hand),
+# it logs that and exits successfully without building or uploading anything. It never uses --clobber.
 # Repository secrets for APK signing (Settings → Secrets and variables → Actions):
 #   ANDROID_KEYSTORE_BASE64   the release .jks, base64-encoded (base64 -w0 foxfleet-release.jks)
 #   ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD
@@ -19,7 +22,20 @@ jobs:
       HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Skip if this tag already has a release
+        id: guard
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -eu
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            echo "A release for $GITHUB_REF_NAME already exists. Leaving its assets untouched; nothing to do."
+            gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | sed 's/^/  existing asset: /'
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Find the release notes for this tag
+        if: steps.guard.outputs.exists == 'false'
         id: notes
         run: |
           set -eu
@@ -29,13 +45,17 @@ jobs:
           # -alpha / -beta / -rc (any tag containing a hyphen) is a pre-release
           case "$GITHUB_REF_NAME" in *-*) echo "pre=true" >> "$GITHUB_OUTPUT";; *) echo "pre=false" >> "$GITHUB_OUTPUT";; esac
       - uses: actions/setup-node@v4
+        if: steps.guard.outputs.exists == 'false'
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - name: Test the hub
+        if: steps.guard.outputs.exists == 'false'
         run: npm test
       - name: Build the web app
+        if: steps.guard.outputs.exists == 'false'
         working-directory: web
         run: npm ci && npm run build
       - name: Package the server
+        if: steps.guard.outputs.exists == 'false'
         run: |
           set -eu
           V="${GITHUB_REF_NAME#v}"
@@ -47,10 +67,10 @@ jobs:
           cp docs/CONNECT-AGENT.md docs/INSTALL.md "out/$D/docs/"
           tar -C out -czf "out/$D.tar.gz" "$D"
       - uses: actions/setup-java@v4
-        if: env.HAS_SIGNING == 'true'
+        if: steps.guard.outputs.exists == 'false' && env.HAS_SIGNING == 'true'
         with: { distribution: temurin, java-version: 17 }
       - name: Build the signed APK
-        if: env.HAS_SIGNING == 'true'
+        if: steps.guard.outputs.exists == 'false' && env.HAS_SIGNING == 'true'
         working-directory: android
         env:
           FOXFLEET_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -67,15 +87,24 @@ jobs:
           ./gradlew assembleRelease --stacktrace
           mkdir -p ../out && cp app/build/outputs/apk/release/app-release.apk "../out/foxfleet-${GITHUB_REF_NAME#v}.apk"
           rm -f "$RUNNER_TEMP/release.jks"
-      - name: Checksums
+      - name: Checksums (exactly the files that will be attached)
+        if: steps.guard.outputs.exists == 'false'
         working-directory: out
-        run: sha256sum *.tar.gz *.apk > SHA256SUMS 2>/dev/null || sha256sum *.tar.gz > SHA256SUMS
-      - uses: softprops/action-gh-release@v2
-        with:
-          prerelease: ${{ steps.notes.outputs.pre == 'true' }}
-          generate_release_notes: true
-          body_path: ${{ steps.notes.outputs.file }}
-          files: |
-            out/*.tar.gz
-            out/*.apk
-            out/SHA256SUMS
+        run: |
+          set -eu
+          FILES="$(ls -1 *.tar.gz *.apk 2>/dev/null || true)"
+          echo "$FILES" | xargs sha256sum | tee SHA256SUMS
+          ls *.apk > /dev/null 2>&1 || echo "Signing secrets absent: no APK is attached and SHA256SUMS lists only the tarball."
+      - name: Create the release (never overwrites)
+        if: steps.guard.outputs.exists == 'false'
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: |
+          set -eu
+          FLAGS=""; if [ "${{ steps.notes.outputs.pre }}" = "true" ]; then FLAGS="--prerelease"; fi
+          # No --clobber and no `gh release upload`: if the release appeared meanwhile (a hand-made one), leave it alone.
+          if ! gh release create "$GITHUB_REF_NAME" out/*.tar.gz out/SHA256SUMS $(ls out/*.apk 2>/dev/null) --repo "$GITHUB_REPOSITORY" \
+                 --title "$GITHUB_REF_NAME" --notes-file "${{ steps.notes.outputs.file }}" $FLAGS 2>/tmp/gh.err; then
+            if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              echo "A release for $GITHUB_REF_NAME appeared while this ran; leaving it untouched."; cat /tmp/gh.err
+            else cat /tmp/gh.err; exit 1; fi
+          fi
