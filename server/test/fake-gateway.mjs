@@ -9,7 +9,7 @@ const ok = (id, result) => out({ jsonrpc: '2.0', id, result }), err = (id, code,
 const ev = (s, type, payload) => { const e = { type, session_id: s.rt, ...(payload ? { payload } : {}), seq: ++s.seq }; s.events.push(e); out({ jsonrpc: '2.0', method: 'event', params: e }); };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 out({ jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { skin: { name: 'default' }, change_events: true, replay_epoch: 'epoch-' + process.pid } } });
-const snapshot = (s) => ({ session_id: s.rt, session_key: s.stored, info: { model: 'fake-model', running: s.running, stored_session_id: s.stored }, message_count: s.messages.length, messages: s.messages.slice(), running: s.running, inflight: s.running ? { user: s.cur, assistant: s.partial, streaming: true, ...(s.corrections.length ? { corrections: s.corrections } : {}) } : undefined, queued: s.queue[0] ? { user: s.queue[0] } : undefined, open_requests: [...open.values()].filter((r) => r.params.session_id === s.rt).map((r) => ({ id: r.id, method: r.method, params: r.params })) });
+const snapshot = (s) => ({ session_id: s.rt, session_key: s.stored, info: { model: 'fake-model', running: s.running, stored_session_id: s.stored }, message_count: s.messages.length, messages: s.messages.slice(), running: s.running, inflight: s.running ? { user: s.cur, assistant: s.partial, streaming: true, ...(s.corrections.length ? { corrections: s.corrections } : {}) } : undefined, queued: s.queue[0] ? { user: s.queue[0] } : undefined, open_requests: [...open.values()].filter((r) => r.params.session_id === s.rt && !r.hidden).map((r) => ({ id: r.id, method: r.method, params: r.params })) });
 async function turn(s, text) {
   s.running = true; s.cur = text; s.partial = ''; s.corrections = []; s.messages.push({ role: 'user', content: text }); s.interrupted = false; ev(s, 'message.start');
   if (/crash/.test(text)) process.exit(7);
@@ -20,6 +20,10 @@ async function turn(s, text) {
     await new Promise((res) => { s.wait = () => res(); open.get(id).done = res; }); const was = open.get(id); open.delete(id);
     if (s.interrupted) { ev(s, 'request.cancel', { id, method: 'clarify', reason: 'interrupted' }); return finish(s, 'interrupted'); }
     ev(s, 'tool.complete', { tool_id: 'call_1', name: 'clarify', result: { responses: [was.answer] } });
+  }
+  if (/sudo/.test(text)) { // a request kind the bridge does not handle: it must be refused at once (-32601), never left to time out
+    const id = 'srq-' + (++srq).toString(16).padStart(12, '0'), params = { session_id: s.rt, prompt: 'sudo password' }; open.set(id, { id, method: 'sudo', params, s, hidden: true });
+    out({ jsonrpc: '2.0', id, method: 'sudo', params }); await new Promise((res) => { open.get(id).done = res; }); const was = open.get(id); open.delete(id); const note = was.answer === null ? 'sudo-refused ' : 'sudo-answered '; s.partial += note; ev(s, 'message.delta', { text: note });
   }
   const words = /slow/.test(text) ? 30 : 3;
   for (let i = 0; i < words && !s.interrupted; i++) { s.partial += `w${i} `; ev(s, 'message.delta', { text: `w${i} ` }); await sleep(/slow/.test(text) ? 100 : 5); }

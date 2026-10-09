@@ -17,6 +17,7 @@ import { runRegistry } from './runs.js';
 import { coordinator } from './coordinator.js';
 import { nativeFeatures, busyModes, nativeRun, nativeControl } from './hermes-runs.js';
 import { nativeHub } from './hermes-ui.js';
+import { nativeFacade, viewOf } from './native-facade.js';
 import { catalogFor } from './commands.js';
 import { historyStore, newSessionId, validSessionId } from './history.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
@@ -137,13 +138,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const runs = runRegistry(), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(), facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
       const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
-      reg.mcp = mcpHandler(reg.inbox); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); return reg;
+      reg.mcp = mcpHandler(reg.inbox); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
     })());
     return registries.get(userId);
   }
@@ -445,6 +446,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const nat = ctx.reg.native, scope = scopeOf(ctx), mid = m.machineId, prof = m.profile, sidOf = (v) => { if (!/^[\w.:-]{1,120}$/.test(v ?? '')) throw fault(400, 'Invalid session'); return v; };
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, nat.capabilities(mid, prof));
           if (parts.length === 5 && parts[4] === 'sessions' && req.method === 'POST') { await readJson(req); return sendJson(res, 201, await nat.create(scope, mid, prof)); }
+          if (parts.length === 5 && parts[4] === 'busy') { // PROFILE-wide Hermes setting (display.busy_input_mode): read freely, change only on explicit confirmation
+            if (req.method === 'GET') return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, 'status')), scope: 'profile' });
+            if (req.method === 'POST') { const b = await readJson(req); if (b.confirm !== true) throw fault(400, 'This changes how every chat of this Hermes profile treats messages sent while it works; confirm to continue'); if (!['queue', 'steer', 'interrupt'].includes(b.mode)) throw fault(400, 'Invalid mode'); return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, b.mode)), scope: 'profile' }); }
+          }
           if (parts.length === 5 && parts[4] === 'commands' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'catalog'); return sendJson(res, 200, { source: 'agent', pairs: (r.pairs ?? []).slice(0, 500) }); }
           if (parts.length === 5 && parts[4] === 'models' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'models', { refresh: url.searchParams.get('refresh') === '1' }); return sendJson(res, 200, { providers: (r.providers ?? []).map((pr) => ({ slug: String(pr.slug), name: String(pr.name ?? pr.slug), current: pr.is_current === true, models: (pr.models ?? []).map((x) => (typeof x === 'string' ? x : x?.id ?? x?.name)).filter(Boolean).slice(0, 300).map(String) })).slice(0, 60) }); }
           if (parts.length === 7 && parts[4] === 'sessions') {
@@ -466,8 +471,15 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           throw fault(404, 'Not found');
         }
         if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // per-agent catalog: Hermes' full list (bundled; Hermes has no REST endpoint for its live registry) marked with what THIS agent can run
-          const native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
-          return sendJson(res, 200, { source: kindOf(m) === 'hermes' ? 'bundled' : 'local', busy: modes, commands: catalogFor({ kind: kindOf(m), bundled: HERMES_COMMANDS.commands, modes }) });
+          const native = await nativeFor(m), modes = nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native });
+          return sendJson(res, 200, { source: kindOf(m) === 'hermes' ? 'bundled' : 'local', busy: modes, ...(nativeUi(m) ? { native: true } : {}), commands: catalogFor({ kind: kindOf(m), bundled: HERMES_COMMANDS.commands, modes }) });
+        }
+        if (route === 'queue' && nativeUi(m)) { // native sessions: Hermes holds the queue; the hub only reports what it was told and what Hermes still has
+          const session = url.searchParams.get('session_id') || '';
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, await facade.queue(ctx.reg.native, { scope: scopeOf(ctx), m, session }));
+          if (parts.length === 5 && parts[4] === 'resume' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await facade.queue(ctx.reg.native, { scope: scopeOf(ctx), m, session })); }
+          if (parts.length === 5 && req.method === 'DELETE') throw fault(409, 'Hermes owns this queue: a queued message cannot be taken back from here');
+          throw fault(404, 'Not found');
         }
         if (route === 'queue' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) { // the hub-side message queue of one conversation
           const scope = scopeOf(ctx), session = url.searchParams.get('session_id') || '', native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
@@ -475,6 +487,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (parts.length === 5 && parts[4] === 'resume' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, { ...(await ctx.reg.coord.resume(launcher(m, ctx, native), scope, m.name, session)), modes }); }
           if (parts.length === 5 && req.method === 'DELETE') return sendJson(res, 200, { message: await ctx.reg.coord.cancel(scope, m.name, session, parts[4]) });
           throw fault(404, 'Not found');
+        }
+        if (route === 'messages' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
+          const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id });
+          return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
         }
         if (route === 'messages' && parts.length === 4 && req.method === 'POST' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) {
           // Send while the agent may be busy. Persisted + acknowledged first; follow the reply through /runs/{id}/events.
@@ -562,6 +582,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const action = parts[4];
           if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
           if (req.method === 'POST' && ['start', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
+        }
+        if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: userText || '(attachment)', mode: 'auto', idleOnly: true });
+          if (!r.run) throw fault(409, 'Hermes did not start a reply for this message; check the conversation');
+          return runs.attach(req, res, r.run);
         }
         if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);

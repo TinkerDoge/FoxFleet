@@ -39,7 +39,7 @@ test('journaled send: hub id first, upstream ack mirrored (never predicted), ver
   const st = await x.json(`${x.A}/sessions/${sid}/messages`, { text: 'make it about foxes', mode: 'steer' }); assert.equal(ack(st.body.message), 'queued', 'Hermes answers queued for steer: that is what is shown, not "steered"');
   const rd = await x.json(`${x.A}/sessions/${sid}/messages`, { text: 'redirect please', mode: 'interrupt' }); assert.equal(rd.body.message.state, 'rejected'); assert.match(rd.body.message.note, /Queue, Steer, or Stop/, 'a rejected redirect stays visible and is not silently turned into a stop');
   const ackEv = await f.wait((e) => e.type === 'ack' && e.message_id === q.body.message.id); assert.ok(ackEv);
-  assert.deepEqual((await x.json(`/api/agents/default/queue?session_id=${sid}`)).body.items ?? [], [], 'no duplicate hub queue for a native session');
+  { const qq = (await x.json(`/api/agents/default/queue?session_id=${sid}`)).body; assert.equal(qq.halted, false, 'the hub has no queue of its own to pause'); assert.ok(qq.items.every((i) => i.ack), 'every item is a mirror of what Hermes acknowledged'); assert.equal(qq.can_cancel, false); }
   const list = (await x.json(`${x.A}/sessions/${sid}/messages`)).body.messages; assert.deepEqual(list.map((m) => m.mode), ['auto', 'queue', 'steer', 'interrupt']);
   await x.json(`${x.A}/sessions/${sid}/interrupt`, {});
   assert.ok(await f.wait((e) => e.type === 'turn.end' && e.status === 'interrupted'), 'partial answer ends as interrupted, not lost');

@@ -42,6 +42,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
   for (const m of journal.messages) if (m.state === 'sending') m.state = 'uncertain'; // the hub restarted between "write down" and "acknowledged"
   let writing = Promise.resolve();
   const save = () => { journal.messages = journal.messages.slice(-KEEP_JOURNAL); const snap = JSON.stringify(journal), tmp = file + '.tmp'; writing = writing.then(() => writeFile(tmp, snap, { mode: 0o600 }).then(() => rename(tmp, file))).catch(() => {}); return writing; };
+  const hooks = [];
   const sessions = new Map(), subscribed = new WeakSet(), byMachine = new Map(); // key -> state; machine -> Set(keys)
   const key = (machineId, agent, stored) => `${machineId}\0${agent}\0${stored}`;
 
@@ -50,7 +51,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     if (!s) { s = { k, machineId, agent, stored, scope, runtime: null, epoch: null, running: false, partial: '', turn: null, up: 0, log: [], next: 1, viewers: new Set(), requests: new Map(), queued: [] }; sessions.set(k, s); (byMachine.get(machineId) ?? byMachine.set(machineId, new Set()).get(machineId)).add(k); }
     return s;
   }
-  function publish(s, ev) { const e = { ...ev, seq: s.next++, at: now() }; s.log.push(e); if (s.log.length > LOG_MAX) s.log.splice(0, s.log.length - LOG_MAX); for (const v of s.viewers) { try { v(e); } catch { /* a dead viewer must not stop the others */ } } return e; }
+  function publish(s, ev) { const e = { ...ev, seq: s.next++, at: now() }; s.log.push(e); if (s.log.length > LOG_MAX) s.log.splice(0, s.log.length - LOG_MAX); for (const v of s.viewers) { try { v(e); } catch { /* a dead viewer must not stop the others */ } } if (e.type === 'turn.start') for (const h of hooks) { try { h(s, e); } catch { /* hooks are best effort */ } } return e; }
   function onUpstream(machineId, agent, up) {
     const set = byMachine.get(machineId) ?? new Set();
     if (up.kind === 'link.down') { for (const k of set) { const s = sessions.get(k); if (s) publish(s, { v: 1, session_id: s.stored, type: 'link', state: 'down' }); } return; }
@@ -62,7 +63,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     if (Number.isInteger(up.seq)) { if (up.seq <= s.up) return; s.up = up.seq; } // duplicate (live + backfill)
     if (up.type === 'request.cancel') s.requests.delete(up.payload?.id);
     const e = normalise(up, s); if (!e) return;
-    if (e.type === 'turn.end') for (const m of journal.messages) if (m.session === s.stored && m.agent === agent && m.state === 'acked' && m.ack === 'streaming' && !m.settled) { m.settled = true; }
+    if (e.type === 'turn.end') { for (const m of journal.messages) if (m.session === s.stored && m.agent === agent && m.state === 'acked' && !m.settled && (m.ack === 'streaming' || m.ack === 'steered' || m.ack === 'redirected' || (m.mode === 'steer' && m.ack === 'queued'))) m.settled = true; void save(); }
     publish(s, e);
   }
   function ensureSub(machineId) {
@@ -81,6 +82,18 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
 
   return {
     CONTRACT,
+    onTurnStart: (fn) => { hooks.push(fn); },
+    cursor: (machineId, agent, stored) => (sessions.get(key(machineId, agent, stored))?.next ?? 1) - 1,
+    isRunning: (machineId, agent, stored) => Boolean(sessions.get(key(machineId, agent, stored))?.running),
+    // What the queue panel shows: journal items Hermes still holds, from the live snapshot (Hermes schedules them; the hub never drains).
+    async pending(scope, machineId, agent, stored) {
+      const snap = await this.attach(scope, machineId, agent, stored), waiting = new Set(snap.queued); let changed = false;
+      for (const m of journal.messages) if (m.session === stored && m.agent === agent && m.state === 'acked' && m.ack === 'queued' && m.mode !== 'steer' && !m.settled && !waiting.has(m.text)) { m.settled = true; changed = true; }
+      if (changed) await save();
+      const items = journal.messages.filter((m) => m.scope === scope && m.agent === agent && m.session === stored && !m.settled && ['sending', 'acked', 'uncertain', 'rejected', 'failed'].includes(m.state) && !(m.state === 'acked' && m.ack === 'streaming')).slice(-30).map(msgView);
+      return { items, open_requests: snap.open_requests, running: snap.running, snapshot: snap };
+    },
+    async busy(scope, machineId, agent, mode) { const ui = ensureSub(machineId); const r = await ui.call(agent, 'busy', { mode }); return { mode: String(r.value ?? '') }; },
     available: (machineId, agent) => Boolean(machineId && connectors.ui(machineId)?.caps(agent)?.native),
     capabilities: (machineId, agent) => { const c = connectors.ui(machineId)?.caps(agent); return c?.native ? { native: true, protocol: c.protocol, modes: ['auto', 'queue', 'steer', 'interrupt'], contract: CONTRACT } : { native: false }; },
     async create(scope, machineId, agent) { const ui = ensureSub(machineId); const r = await ui.call(agent, 'create', {}); const s = st(machineId, agent, r.stored_session_id, scope); s.runtime = r.session_id; journal.owners[r.stored_session_id] = scope; await save(); return { session_id: r.stored_session_id, cursor: s.next - 1 }; },

@@ -8,7 +8,7 @@
 // WebSocket to your hub for all of them. Nothing listens on this machine and no port has to be opened.
 // Dashboard passwords and API keys are read from each profile's own files and used locally; they are never sent to the hub.
 //
-// Commands: pair | run | profiles | status | install-service | uninstall-service | unpair | help
+// Commands: pair | run | profiles | status | doctor | install-service | uninstall-service | unpair | help
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -322,16 +322,57 @@ export const UI_OPS = {
   lock: (p) => ['clarify.lock', { request_id: need(str(p.request_id), 'request_id'), question_id: need(str(p.question_id), 'question_id'), answer: typeof p.answer === 'string' ? p.answer.slice(0, 4000) : '' }],
 };
 
-// Which command starts the gateway for a profile: config `uiGatewayCommand` (array), env FOXFLEET_HERMES_GATEWAY_CMD (JSON array),
-// or a Hermes checkout/venv found next to the profile root. Returns null when none is found (the profile then keeps the HTTP path).
-export function gatewayCommand(root, cfg = {}, env = process.env) {
-  let cmd = cfg.uiGatewayCommand; if (!cmd && env.FOXFLEET_HERMES_GATEWAY_CMD) { try { cmd = JSON.parse(env.FOXFLEET_HERMES_GATEWAY_CMD); } catch { /* ignore */ } }
-  if (Array.isArray(cmd) && cmd.length && cmd.every((x) => typeof x === 'string')) return { cmd: cmd[0], args: cmd.slice(1), cwd: cfg.uiGatewayCwd || undefined };
-  if (cfg.uiGateway === 'off') return null;
-  for (const dir of [path.join(root, 'hermes-agent'), path.join(path.dirname(root), 'hermes-agent')]) {
-    for (const py of [path.join(dir, 'venv', 'bin', 'python'), path.join(dir, '.venv', 'bin', 'python'), path.join(dir, 'venv', 'Scripts', 'python.exe')]) if (fs.existsSync(py) && fs.existsSync(path.join(dir, 'tui_gateway', 'entry.py'))) return { cmd: py, args: ['-m', 'tui_gateway.entry'], cwd: dir };
+// Which command starts the gateway for a profile. Tried in order; the first hit wins and says where it came from:
+//  1. config `uiGatewayCommand` (array)            2. env FOXFLEET_HERMES_GATEWAY_CMD (JSON array)
+//  3. config `hermesAgentDir` / env HERMES_AGENT_DIR (a Hermes checkout with a venv)
+//  4. a checkout next to the Hermes root (`<root>/hermes-agent`, `~/hermes-agent`, `~/.hermes/hermes-agent`)
+//  5. the interpreter named in the first line of the `hermes` command on PATH (or HERMES_BIN), which is the one Hermes is installed in.
+// `uiGateway: "off"` turns it off. Returns { cmd, args, cwd, via } or null; `why` (optional array) collects what was tried.
+export function gatewayCommand(root, cfg = {}, env = process.env, why = [], platform = process.platform) {
+  if (cfg.uiGateway === 'off') { why.push('disabled in the connector config (uiGateway: "off")'); return null; }
+  let cmd = cfg.uiGatewayCommand, via = 'uiGatewayCommand in the connector config';
+  if (!cmd && env.FOXFLEET_HERMES_GATEWAY_CMD) { try { cmd = JSON.parse(env.FOXFLEET_HERMES_GATEWAY_CMD); via = 'FOXFLEET_HERMES_GATEWAY_CMD'; } catch { why.push('FOXFLEET_HERMES_GATEWAY_CMD is not valid JSON'); } }
+  if (cmd !== undefined) { if (Array.isArray(cmd) && cmd.length && cmd.every((x) => typeof x === 'string')) return { cmd: cmd[0], args: cmd.slice(1), cwd: cfg.uiGatewayCwd || undefined, via }; why.push(`${via} must be an array of strings`); }
+  const home = os.homedir(), dirs = [cfg.hermesAgentDir, env.HERMES_AGENT_DIR, path.join(root, 'hermes-agent'), path.join(path.dirname(root), 'hermes-agent'), path.join(home, 'hermes-agent'), path.join(home, '.hermes', 'hermes-agent')].filter(Boolean);
+  const pys = platform === 'win32' ? [['venv', 'Scripts', 'python.exe'], ['.venv', 'Scripts', 'python.exe']] : [['venv', 'bin', 'python'], ['.venv', 'bin', 'python'], ['venv', 'bin', 'python3'], ['.venv', 'bin', 'python3']];
+  for (const dir of [...new Set(dirs)]) {
+    if (!fs.existsSync(path.join(dir, 'tui_gateway', 'entry.py'))) continue;
+    for (const py of pys) { const f = path.join(dir, ...py); if (fs.existsSync(f)) return { cmd: f, args: ['-m', 'tui_gateway.entry'], cwd: dir, via: `Hermes checkout ${dir}` }; }
+    why.push(`${dir} has tui_gateway but no venv/.venv Python`);
   }
+  // the `hermes` launcher's own interpreter (a pip/uv install has no checkout to find)
+  const bins = []; if (env.HERMES_BIN) bins.push(env.HERMES_BIN); for (const d of String(env.PATH || '').split(path.delimiter)) if (d) bins.push(path.join(d, platform === 'win32' ? 'hermes.exe' : 'hermes'));
+  for (const bin of bins) {
+    let first = ''; try { if (!fs.statSync(bin).isFile()) continue; const fd = fs.openSync(bin, 'r'); const buf = Buffer.alloc(300); fs.readSync(fd, buf, 0, 300, 0); fs.closeSync(fd); first = buf.toString('utf8').split('\n')[0]; } catch { continue; }
+    const m = /^#!\s*(\S+)(?:\s+(\S+))?/.exec(first); let py = m ? (path.basename(m[1]) === 'env' ? null : m[1]) : null;
+    if (py && fs.existsSync(py)) return { cmd: py, args: ['-m', 'tui_gateway.entry'], cwd: undefined, via: `the interpreter of ${bin}` };
+    why.push(`${bin} found but its interpreter could not be read`);
+  }
+  why.push('no Hermes checkout or launcher found');
   return null;
+}
+// What `doctor` reports: one line per check with a fix. `probe` (default: really start the gateway) is injectable for tests.
+export async function nativeDoctor(cfg, { env = process.env, root = hermesRoot({ override: cfg.hermesHome }), probe = defaultProbe } = {}) {
+  const out = [], add = (id, status, message, fix) => out.push({ id, status, message, ...(fix ? { fix } : {}) });
+  const found = discoverProfiles(root); found.length ? add('profiles', 'ok', `${found.length} Hermes profile(s): ${found.map((p) => p.profile).join(', ')}`) : add('profiles', 'fail', `no Hermes profiles under ${root}`, 'Install Hermes, or point the connector at it with --hermes-home DIR');
+  const why = [], gw = gatewayCommand(root, cfg, env, why);
+  if (!gw) { add('gateway', 'warn', `no native Hermes gateway: ${why.join('; ')}`, 'Optional: native sessions need the Hermes checkout. Set uiGatewayCommand in the connector config, e.g. ["/path/to/hermes-agent/venv/bin/python","-m","tui_gateway.entry"], or export HERMES_AGENT_DIR=/path/to/hermes-agent. Chats keep working over HTTP without it.'); return out; }
+  add('gateway', 'ok', `gateway command: ${[gw.cmd, ...gw.args].join(' ')} (found via ${gw.via})`);
+  const r = await probe(gw, found[0]?.home ?? root);
+  if (r.ok) add('gateway-start', 'ok', `the gateway starts and reports ready in ${r.ms} ms`); else add('gateway-start', 'fail', `the gateway did not start: ${r.error}`, /ModuleNotFound|No module named/.test(r.error) ? 'The interpreter is missing Hermes dependencies. Use the Python that Hermes itself runs in (Hermes needs Python 3.14 for its pinned dependencies at the time of writing).' : 'Run the command above by hand in a terminal to see the error. It should print a line containing "gateway.ready".');
+  return out;
+}
+async function defaultProbe(gw, home) {
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    let done = false, buf = ''; const finish = (r) => { if (done) return; done = true; clearTimeout(timer); try { child.kill(); } catch {} resolve(r); };
+    const child = spawn(gw.cmd, gw.args, { cwd: gw.cwd, env: { ...process.env, HERMES_HOME: home, PYTHONUNBUFFERED: '1' }, stdio: ['pipe', 'pipe', 'pipe'] }); let err = '';
+    const timer = setTimeout(() => finish({ ok: false, error: `no gateway.ready within 60 s. ${err.trim().split('\n').slice(-2).join(' ')}` }), 60_000);
+    child.stdout.on('data', (c) => { buf += c; if (buf.includes('gateway.ready')) finish({ ok: true, ms: Date.now() - t0 }); });
+    child.stderr.on('data', (c) => { err = (err + c).slice(-1500); });
+    child.on('error', (e) => finish({ ok: false, error: e.message }));
+    child.on('exit', (code) => finish({ ok: false, error: `exited with code ${code}. ${err.trim().split('\n').slice(-2).join(' ')}` }));
+  });
 }
 
 export class HermesGateway {
@@ -456,7 +497,7 @@ export async function main(argv = process.argv.slice(2)) {
   const cfg = loadConfig();
   try {
     if (cmd === 'help' || args.help) {
-      log(`Foxfleet connector ${VERSION}\n\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
+      log(`Foxfleet connector ${VERSION}\n\n  doctor                   check Hermes profiles and the native gateway (what was found, whether it starts, how to fix)\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
     }
     if (cmd === 'pair') {
       const hub = checkHub(args.hub || process.env.FOXFLEET_HUB || ''), code = args.code || process.env.FOXFLEET_CODE;
@@ -475,6 +516,10 @@ export async function main(argv = process.argv.slice(2)) {
     if (cmd === 'profiles') {
       const root = hermesRoot({ override: cfg.hermesHome }), found = discoverProfiles(root); Object.assign(cfg, await choose(found, args, cfg)); saveConfig(cfg); summary(root, found, cfg);
       log('Saved. A running connector picks the change up within its rescan interval (or restart the service).'); return;
+    }
+    if (cmd === 'doctor') { // checks for this machine's side: Hermes profiles and the native gateway
+      const checks = await nativeDoctor(cfg ?? {}); for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
+      if (args.json) log(JSON.stringify(checks)); if (checks.some((c) => c.status === 'fail')) process.exit(1); return;
     }
     if (cmd === 'status') { const root = hermesRoot({ override: cfg.hermesHome }); log(`Machine: ${cfg.name}\nHub: ${cfg.hub}\nConfig: ${configFile()} (0600)`); summary(root, discoverProfiles(root), cfg); return; }
     if (cmd === 'install-service') { installService(); return; }
