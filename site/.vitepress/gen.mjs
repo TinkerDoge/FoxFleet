@@ -104,4 +104,5 @@ generateRoadmap(root, out);
 // Licence text for the bundled Inter font, published with the site.
 mkdirSync(resolve(site, 'public/licenses'), { recursive: true });
 copyFileSync(resolve(root, 'LICENSES/Inter-OFL-1.1.txt'), resolve(site, 'public/licenses/Inter-OFL-1.1.txt'));
+copyFileSync(resolve(root, 'LICENSES/Hermes-MIT.txt'), resolve(site, 'public/licenses/Hermes-MIT.txt'));
 console.log('docs: generated tokens css, api, environment, errors, roadmap');
