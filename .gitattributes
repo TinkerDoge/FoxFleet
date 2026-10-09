@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Vite's executable-script transform expects an LF-terminated shebang, including on Windows.
+web/tools/mock-hub.mjs text eol=lf

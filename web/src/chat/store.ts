@@ -6,6 +6,7 @@ import type { UiMessage, UiImage } from '../lib/chat';
 import { composeWithFiles, type FileRef } from '../lib/files';
 import { scrubAddresses } from '../lib/registry';
 import { t } from '../i18n/t';
+import { discardDraft, draftKey, resetDrafts } from './drafts';
 
 export interface ChatState {
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
@@ -20,7 +21,7 @@ export function useChat(agent: string): ChatState {
   useEffect(() => { const f = () => bump((n) => n + 1); subs.add(f); return () => { subs.delete(f); }; }, []);
   return chatOf(agent);
 }
-export const resetChats = () => { aborts.forEach((a) => a.abort()); aborts.clear(); states.clear(); subs.forEach((f) => f()); };
+export const resetChats = () => { aborts.forEach((a) => a.abort()); aborts.clear(); states.clear(); resetDrafts(); subs.forEach((f) => f()); };
 
 const friendly = (e: unknown) => e instanceof NetworkError ? t('error.network') : e instanceof ApiError ? scrubAddresses(e.message) : t('error.generic');
 
@@ -36,7 +37,7 @@ export async function openSession(client: Client, agent: string, id: string, onA
   try { patch(agent, { messages: await client.messages(agent, id), loading: false }); }
   catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loading: false, error: friendly(e) }); }
 }
-export function newChat(agent: string) { stop(agent); patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined }); }
+export function newChat(agent: string) { stop(agent); discardDraft(draftKey(agent)); patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined }); }
 export function stop(agent: string) { aborts.get(agent)?.abort(); aborts.delete(agent); }
 
 export async function send(client: Client, agent: string, text: string, images: UiImage[], files: FileRef[], onAuthLost: () => void) {

@@ -6,10 +6,7 @@ import { downscaleImage, isImageFile } from '../lib/images';
 import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
 import { estimatedBytes, HUB_BODY_LIMIT, type UiImage, type UiMessage } from '../lib/chat';
 import { t } from '../i18n/t';
-
-type Pending =
-  | { id: number; kind: 'image'; dataUrl: string; name: string }
-  | { id: number; kind: 'file'; name: string; size: number; progress: number; ref?: FileRef; error?: string; abort: AbortController };
+import { useDraft, type PendingAttachment as Pending } from './drafts';
 
 const SR: any = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
 let nextId = 1;
@@ -20,10 +17,12 @@ export function Composer(props: {
 }) {
   const { client, agent, streaming, skills } = props;
   const caps = agent.capabilities ?? {};
-  const [text, setText] = useState('');
-  const [pending, setPending] = useState<Pending[]>([]);
+  const [{ text, pending }, setDraft] = useDraft(props.draftKey);
+  const setText = (text: string) => setDraft((draft) => ({ ...draft, text }));
+  const setPending = (update: Pending[] | ((pending: Pending[]) => Pending[])) => setDraft((draft) => ({ ...draft, pending: typeof update === 'function' ? update(draft.pending) : update }));
   const [menu, setMenu] = useState(false), [sel, setSel] = useState(0), [note, setNote] = useState<string | null>(null), [drag, setDrag] = useState(false), [listening, setListening] = useState(false);
   const ta = useRef<HTMLTextAreaElement>(null), recog = useRef<any>(null), photo = useRef<HTMLInputElement>(null), cam = useRef<HTMLInputElement>(null), file = useRef<HTMLInputElement>(null);
+  useEffect(() => () => recog.current?.abort(), []);
   useEffect(() => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 168) + 'px'; } }, [text]);
   const suggestions = useMemo(() => commandSuggestions(text, skills, 8, agent.kind === 'hermes'), [text, skills, agent.kind]);
   useEffect(() => setSel(0), [text]);
@@ -43,8 +42,8 @@ export function Composer(props: {
       const id = nextId++, abort = new AbortController();
       setPending((p) => [...p, { id, kind: 'file', name: f.name, size: f.size, progress: 0, abort }]);
       client.uploadFile(agent.name, f, (frac) => setPending((p) => p.map((x) => (x.id === id && x.kind === 'file' ? { ...x, progress: frac } : x))), abort.signal)
-        .then((ref) => setPending((p) => p.map((x) => (x.id === id && x.kind === 'file' ? { ...x, ref, progress: 1 } : x))))
-        .catch((e) => { if (e?.name !== 'AbortError') setPending((p) => p.map((x) => (x.id === id && x.kind === 'file' ? { ...x, error: String(e?.message ?? 'Upload failed') } : x))); });
+        .then((ref) => { if (!abort.signal.aborted) setPending((p) => p.map((x) => (x.id === id && x.kind === 'file' ? { ...x, ref, progress: 1 } : x))); })
+        .catch((e) => { if (!abort.signal.aborted && e?.name !== 'AbortError') setPending((p) => p.map((x) => (x.id === id && x.kind === 'file' ? { ...x, error: String(e?.message ?? 'Upload failed') } : x))); });
     }
   }
   const route = (files: File[]) => { const imgs = files.filter(isImageFile), rest = files.filter((f) => !isImageFile(f)); if (imgs.length) void addImages(imgs); if (rest.length) addFiles(rest); };
@@ -61,7 +60,7 @@ export function Composer(props: {
     if (local) { setText(''); props.onLocal(local); return; }
     if (!canSend) return;
     props.onSend(text.trim(), images.map((i) => ({ dataUrl: i.dataUrl })), fileRefs.flatMap((f) => (f.ref ? [f.ref] : [])));
-    setText(''); setPending([]); setNote(null); setMenu(false);
+    setDraft({ text: '', pending: [] }); setNote(null); setMenu(false);
   }
   function pick(s: Suggestion) { if (s.local) { setText(''); props.onLocal(s.local); } else { setText(s.insert); ta.current?.focus(); } setMenu(false); }
   function key(e: KeyboardEvent) {

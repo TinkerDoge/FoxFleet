@@ -77,7 +77,7 @@ function PairPanel({ client, first, machineId, onClose, onAuthLost }: { client: 
       <pre class="secret" tabIndex={0}>{cmd}</pre>
       <div class="row"><Copy text={cmd} /><Copy text={t('machines.promptText', { cmd })} label={t('machines.prompt')} /></div>
       <p class="muted small">{t('machines.needs')}</p>
-      <div class="row between"><span><small class="muted">{t('machines.code')}</small><br /><b class="code">{p.display}</b></span><small class="muted">{t('machines.expires', { when: until(p.expires) })}</small></div>
+      <div class="row between"><span><small class="muted">{t('machines.code')}</small><br /><b class="pairing-code">{p.display}</b></span><small class="muted">{t('machines.expires', { when: until(p.expires) })}</small></div>
       <div class="pair-grid">
         {p.rows && <figure><QrCode rows={p.rows} label={t('machines.qr')} size={168} /><figcaption class="muted small">{t('machines.qr')}</figcaption></figure>}
         <div class="stack"><small class="muted">{t('machines.magic')}</small><pre class="secret small" tabIndex={0}>{p.link}</pre><Copy text={p.link} /></div>

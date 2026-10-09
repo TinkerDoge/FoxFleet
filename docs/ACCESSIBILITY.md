@@ -14,6 +14,7 @@ Re-run the manual pass for any change to layout, colour tokens or interaction.
 - [x] Phone drawer: menu button has `aria-expanded` / `aria-controls`; Escape closes it; the closed drawer is `visibility:hidden` so it is not in the tab order.
 - [x] Visible focus ring (3 px accent, 2 px offset) on everything focusable; `forced-colors` outlines for selected chips and swatches.
 - [x] Message list is a focusable `role=log` region (scrollable with the keyboard).
+- [x] Composer has a visible `focus-within` outline. Sessions moves focus into the menu, supports arrow keys/Home/End, closes on Escape/Tab/outside interaction, and returns focus after Escape or selection.
 
 ## Labels and semantics
 - [x] Every input has a `<label>`; hints use `aria-describedby`; errors use `role=alert`.
@@ -33,7 +34,7 @@ Re-run the manual pass for any change to layout, colour tokens or interaction.
 - [ ] Remote-screen keyboard capture while in control: noVNC grabs keys when the canvas is focused; verify with a screen reader before release.
 
 ## Visual and motion
-- [x] Text size setting (small / default / large) and OS zoom up to 200% keep the layout usable (single column on phones).
+- [x] Text size setting (small / default / large) scales typography rather than the whole body; the shell tracks the viewport and chat messages scroll independently. Browser zoom up to 200% keeps the layout usable (single column on phones).
 - [x] Status is never colour-only (online dot has an accessible name; checks say OK/Failed).
 - [x] Minimum touch target ≈ 36–40 px for icon buttons and chips.
 - [ ] Manual screen-reader pass (NVDA + Firefox, VoiceOver + Safari, TalkBack + Chrome) for sign-in, chat, add agent. Not yet done.

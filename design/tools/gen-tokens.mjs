@@ -85,7 +85,8 @@ const targets = [
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const check = process.argv.includes('--check'); let stale = false;
   for (const [file, make] of targets) {
-    const next = make(), cur = existsSync(file) ? readFileSync(file, 'utf8') : null;
+    // Generated content is the same in LF and CRLF checkouts.
+    const next = make().replace(/\r\n/g, '\n'), cur = existsSync(file) ? readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null;
     if (check) { if (cur !== next) { console.error(`stale: ${path.relative(root, file)}`); stale = true; } continue; }
     mkdirSync(path.dirname(file), { recursive: true }); if (cur !== next) writeFileSync(file, next); console.log('wrote', path.relative(root, file));
   }

@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
+import { draftKey } from './drafts';
+import { SessionsMenu } from './SessionsMenu';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { chatOf, loadAgent, newChat, openSession, send, stop, useChat } from './store';
@@ -34,14 +36,9 @@ export function ChatView({ client, agent, onAuthLost }: { client: Client; agent:
         <div class="grow"><b>{name}</b><small class="muted">{status ?? (agent.online ? t('chat.online') : t('chat.offline'))}</small></div>
         {agent.capabilities?.screen && agent.online && <button class="btn text" onClick={() => navigate('screen', { agent: agent.name })}>{t('chat.screen')}</button>}
         <button class="btn text" onClick={() => newChat(agent.name)}>{t('chat.new')}</button>
-        {agent.capabilities?.sessions !== false && <button class="btn text" aria-expanded={sessionsOpen} onClick={() => setSessionsOpen(!sessionsOpen)}>{t('chat.sessions')}</button>}
+        {agent.capabilities?.sessions !== false && <SessionsMenu sessions={c.sessions} current={c.session} open={sessionsOpen} onOpenChange={setSessionsOpen}
+          onSelect={(id) => { void openSession(client, agent.name, id, onAuthLost); }} />}
       </header>
-      {sessionsOpen && (
-        <div class="sessions card" role="menu">
-          {c.sessions.length === 0 && <p class="muted small">{t('chat.noSessions')}</p>}
-          {c.sessions.map((s) => <button key={s.id} role="menuitem" class={s.id === c.session ? 'on' : ''} onClick={() => { setSessionsOpen(false); void openSession(client, agent.name, s.id, onAuthLost); }}>{s.title || s.id}</button>)}
-        </div>
-      )}
       <div class="messages" ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
         {c.loading && <p class="muted center">{t('home.loading')}</p>}
         {!c.loading && c.messages.length === 0 && !c.streaming && <div class="empty"><p>{t('chat.empty', { agent: name })}</p></div>}
@@ -55,7 +52,7 @@ export function ChatView({ client, agent, onAuthLost }: { client: Client; agent:
         )}
         {c.error && <div class="card error-card" role="alert"><p class="error">{c.error}</p></div>}
       </div>
-      <Composer key={agent.name + (c.session ?? '')} client={client} agent={agent} history={c.messages} streaming={c.streaming} skills={c.skills} draftKey={agent.name + (c.session ?? '')}
+      <Composer key={draftKey(agent.name, c.session)} client={client} agent={agent} history={c.messages} streaming={c.streaming} skills={c.skills} draftKey={draftKey(agent.name, c.session)}
         onSend={(text, imgs, files) => void send(client, agent.name, text, imgs, files, onAuthLost)} onStop={() => stop(agent.name)} onLocal={local} />
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>

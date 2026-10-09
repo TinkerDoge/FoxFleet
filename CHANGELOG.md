@@ -2,6 +2,15 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased
+
+### Fixed
+
+- Web chat preserves unsent text and attachments per agent and session while navigating; sign-out clears drafts and cancels pending uploads.
+- Text-size preferences scale typography without pushing the chat composer or sidebar controls below the viewport.
+- The composer shows a visible focus outline, and Sessions supports keyboard navigation, Escape, outside dismissal and focus return.
+- Pairing-code styling no longer adds letter spacing to Markdown code blocks.
+
 ## 0.2.0-alpha: easy connect
 
 Android `versionName 0.2.0-alpha`, `versionCode 5`.
