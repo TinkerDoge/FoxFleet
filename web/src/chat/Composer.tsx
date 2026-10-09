@@ -144,11 +144,11 @@ export function Composer(props: {
       {pending.length > 0 && (
         <div class="attachments">
           {pending.map((p) => p.kind === 'image'
-            ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}>✕</button></div>
+            ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}><Icon name="close" size={14} /></button></div>
             : <div class={`att file${p.error ? ' bad' : ''}`} key={p.id}>
                 <Icon name="attach" size={16} /><span class="chip-name">{p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
                 {!p.ref && !p.error && <progress max={1} value={p.progress} aria-label={t('chat.uploading')} />}
-                <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}>✕</button>
+                <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}><Icon name="close" size={14} /></button>
               </div>)}
         </div>
       )}
