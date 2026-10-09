@@ -246,7 +246,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       }
       const messages = rebuild || !item.body ? [item.message] : item.body.messages; // older Hermes keeps its own transcript by session id
       return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,
-        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: 'hermes-agent', messages, stream: true }) }),
+        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: item.body?.model || 'hermes-agent', messages, stream: true }) }),
         check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }; } });
     } };
   }
@@ -471,11 +471,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
             const sid = validSessionId(data.session_id) ? data.session_id : newSessionId(), hist = ctx.reg.history;
             const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: sid, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
-              if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-              return { 'X-Hermes-Session-Id': sid };
-            }, onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, userText, r.text); } });
-            return runs.attach(req, res, run);
+            const res1 = await ctx.reg.coord.submit(launcher(m, ctx, null), { scope: scopeOf(ctx), agent: m.name, session: sid, mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
+            return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
           }
           if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
             if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
@@ -541,12 +538,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
           current(m);
-          const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, timeoutMs, open: (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), check: (r) => {
-            current(m);
-            if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-            return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
-          } });
-          return runs.attach(req, res, run);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const res1 = await ctx.reg.coord.submit(launcher(m, ctx, await nativeFor(m)), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
+          return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
         }
         if (route === 'artifacts') {
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { artifacts: artifacts.list(m, url.searchParams.get('session_id')) });

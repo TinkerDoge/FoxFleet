@@ -39,11 +39,11 @@ export async function coordinator(file, { runs, now = () => Date.now(), stopWait
   };
 
   /** deps.launch(item, { rebuild }) -> run (a runs.js run). It must throw before any byte if the agent refuses. */
-  async function start(s, key, it, deps) {
+  async function start(s, key, it, deps, rethrow = false) {
     set(it, { state: 'sending' }); await save();
     let run;
     try { run = await deps.launch(it, { rebuild: Boolean(it.behindOthers) }); }
-    catch (e) { set(it, { state: 'failed', error: e.safe ? e.message : 'Could not start the reply' }); s.halted = true; await save(); return null; }
+    catch (e) { set(it, { state: 'failed', error: e.safe ? e.message : 'Could not start the reply' }); s.halted = true; await save(); if (rethrow) throw e; return null; }
     const before = it.session; s.active = run; set(it, { state: 'running', run: run.id, session: run.session || it.session });
     if (it.session !== before) rekey(it, key, keyOf(it.scope, it.agent, it.session));
     await save();
@@ -76,10 +76,11 @@ export async function coordinator(file, { runs, now = () => Date.now(), stopWait
     keyOf,
     view,
     /** Admission. Resolves with the stored message (and the run id if it started right now). */
-    submit(deps, { scope, agent, session, mode, text, message, body, clientId, modes }) {
+    submit(deps, { scope, agent, session, mode, text, message, body, clientId, modes, idleOnly }) {
       const key = keyOf(scope, agent, session), s = slot(key);
       const job = s.chain.then(async () => {
         const dup = clientId && items.find((i) => i.scope === scope && i.agent === agent && i.client === clientId); if (dup) return { message: view(dup), duplicate: true };
+        if (idleOnly && ((s.active && !s.active.done) || s.replacement || queueOf(key).length)) throw fault(409, 'The agent is already replying; send with /messages to queue, steer or interrupt');
         if (!modes.includes(mode)) throw fault(400, mode === 'steer' ? 'This agent cannot be steered while it works' : 'That send mode is not available for this agent');
         if (typeof text !== 'string' || !text.trim() && !(message && Array.isArray(message.content))) throw fault(400, 'Empty message');
         if (text.length > MAX_TEXT) throw fault(413, 'Message too long');
@@ -105,7 +106,7 @@ export async function coordinator(file, { runs, now = () => Date.now(), stopWait
           return { message: view(it) };
         }
         // idle or queue
-        if (!active && !s.replacement) { s.halted = false; if (!queueOf(key).filter((x) => x !== it).length) { it.behindOthers = false; const run = await start(s, key, it, deps); return { message: view(it), ...(run ? { run_id: run.id, session_id: run.session || undefined } : {}) }; } }
+        if (!active && !s.replacement) { s.halted = false; if (!queueOf(key).filter((x) => x !== it).length) { it.behindOthers = false; const run = await start(s, key, it, deps, Boolean(idleOnly)); return { message: view(it), ...(run ? { run_id: run.id, session_id: run.session || undefined } : {}) }; } }
         it.behindOthers = true; s.halted = false; await save();
         if (!active && !s.replacement) void drain(deps, key, s);
         return { message: view(it) };
