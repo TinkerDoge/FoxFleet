@@ -3,9 +3,9 @@ import bundled from '../data/hermes-commands.json';
 /** Commands Foxfleet runs itself: new chat, history, stop, retry the last message, rename the session. */
 export type LocalCommand = 'new' | 'sessions' | 'stop' | 'retry' | 'title';
 export type Availability = 'app' | 'chat' | 'unavailable';
-export interface CatalogCommand { name: string; aliases: string[]; description: string; category: string; args: string; subcommands: string[]; availability: Availability; app?: string; reason?: string }
-export interface Catalog { source?: string; commands: CatalogCommand[] }
-export interface Suggestion { insert: string; label: string; hint: string; local?: LocalCommand; group?: string; args?: string; availability?: Availability; reason?: string }
+export interface CatalogCommand { name: string; aliases: string[]; description: string; category: string; args: string; subcommands: string[]; availability: Availability; app?: string; reason?: string; handler?: string; busy?: string; executable?: boolean; disabledReason?: string; verified?: boolean; unavailableSubcommands?: Record<string, string> }
+export interface Catalog { source?: string; busy?: string[]; commands: CatalogCommand[] }
+export interface Suggestion { insert: string; label: string; hint: string; local?: LocalCommand; group?: string; args?: string; availability?: Availability; reason?: string; kind?: 'arg' }
 
 /** The bundled list (generated from hermes-agent's command registry by design/tools/gen-hermes-commands.py); the hub may serve a fresher one. */
 export const BUNDLED_CATALOG: Catalog = { source: 'bundled', commands: (bundled as { commands: CatalogCommand[] }).commands };
@@ -21,7 +21,8 @@ const ORDER = ['Session', 'Configuration', 'Info', 'Tools & Skills', 'Context', 
 
 export function toSuggestions(cat: Catalog): Suggestion[] {
   const out: Suggestion[] = [];
-  for (const c of cat.commands) {
+  for (const c0 of cat.commands) {
+    const c: CatalogCommand = c0.executable === false ? { ...c0, availability: 'unavailable', reason: c0.disabledReason ?? c0.reason } : /^hub:(queue|steer|busy)$/.test(c0.handler ?? '') ? { ...c0, availability: 'chat' } : c0;
     const names = [c.name, ...c.aliases];
     const local = c.availability === 'app' ? (names.map((n) => APP_LOCAL[n]).find(Boolean) as LocalCommand | undefined) : undefined;
     for (const n of names) {
@@ -37,13 +38,25 @@ const BUNDLED_SUGGESTIONS = toSuggestions(BUNDLED_CATALOG);
  * Suggestions for the token being typed: `/` offers commands (grouped, with availability) plus skills as `/<skill>`,
  * `#` offers skills. Only while the token is the first word. Agents that are not Hermes get only the local commands.
  */
+/** The command a typed name refers to (aliases resolved: "/q" is /queue). */
+export const resolveCommand = (name: string, cat: Catalog = BUNDLED_CATALOG): CatalogCommand | undefined => cat.commands.find((c) => [c.name, ...c.aliases].includes(name.toLowerCase()));
+/** Second-level choices: "/busy " lists queue, steer, interrupt, status; "/busy st" filters to steer and status. Free text after the choice is left alone. */
+export function argSuggestions(input: string, cat: Catalog = BUNDLED_CATALOG): Suggestion[] {
+  const m = /^\/([A-Za-z0-9_-]+)\s+(\S*)$/.exec(input); if (!m) return [];
+  const c = resolveCommand(m[1], cat); if (!c?.subcommands?.length || c.executable === false) return [];
+  const q = m[2].toLowerCase(), more = /<|\bN\b|prompt/.test(c.args);
+  const hits = c.subcommands.filter((x) => x.toLowerCase().startsWith(q));
+  if (hits.length === 1 && hits[0].toLowerCase() === q) return [];
+  return hits.map((x): Suggestion => { const off = c.unavailableSubcommands?.[x]; return { insert: `/${m[1]} ${x}${more && ['add', 'rm', 'edit', 'move'].includes(x) ? ' ' : ''}`, label: x, hint: off ?? '', group: `Choices for /${c.name}`, kind: 'arg', availability: off ? 'unavailable' : 'chat', reason: off }; });
+}
 export function commandSuggestions(input: string, skills: string[], limit = 12, agentCommands = true, catalog?: Catalog): Suggestion[] {
-  if (!input || /[\s]/.test(input)) return [];
+  if (!input) return [];
+  if (/[\s]/.test(input)) return input[0] === '/' && (catalog || agentCommands) ? argSuggestions(input, catalog ?? BUNDLED_CATALOG).slice(0, limit) : [];
   const q = input.slice(1).toLowerCase();
   if (input[0] === '/') {
-    const all = agentCommands ? (catalog ? toSuggestions(catalog) : BUNDLED_SUGGESTIONS) : LOCAL_ONLY;
+    const all = catalog ? toSuggestions(catalog) : agentCommands ? BUNDLED_SUGGESTIONS : LOCAL_ONLY;
     const cmds = all.filter((c) => c.label.slice(1).startsWith(q));
-    const sk = agentCommands ? skills.filter((s) => s.toLowerCase().startsWith(q)).map((s): Suggestion => ({ insert: `/${s} `, label: `/${s}`, hint: 'Skill', group: 'Skills', availability: 'chat' })) : [];
+    const sk = agentCommands && skills.length ? skills.filter((s) => s.toLowerCase().startsWith(q)).map((s): Suggestion => ({ insert: `/${s} `, label: `/${s}`, hint: 'Skill', group: 'Skills', availability: 'chat' })) : [];
     const seen = new Set<string>();
     return [...cmds, ...sk].filter((s) => (seen.has(s.label) ? false : (seen.add(s.label), true))).slice(0, limit);
   }
@@ -70,6 +83,22 @@ export const localCommandFor = (text: string, agentCommands = true): LocalComman
 /** A command that exists in Hermes but cannot run from a phone or browser: "/clear" → the reason, else undefined. */
 export function unavailableReason(text: string, catalog: Catalog = BUNDLED_CATALOG): string | undefined {
   const m = /^\/([A-Za-z0-9_-]+)/.exec(text.trim()); if (!m) return undefined;
-  const c = catalog.commands.find((x) => [x.name, ...x.aliases].includes(m[1].toLowerCase()));
-  return c?.availability === 'unavailable' ? c.reason ?? 'Not available remotely' : undefined;
+  const c = resolveCommand(m[1], catalog);
+  return c?.executable === false ? c.disabledReason ?? 'Not available remotely' : c?.availability === 'unavailable' ? c.reason ?? 'Not available remotely' : undefined;
 }
+
+/** The hub's own busy controls typed in the composer: "/queue text", "/steer text", "/busy steer". Resolved through the catalog so aliases work (/q, /s). */
+export type HubCommand = 'queue' | 'steer' | 'busy';
+export function parseHub(text: string, cat: Catalog = BUNDLED_CATALOG): { cmd: HubCommand; args: string; command: CatalogCommand } | undefined {
+  const m = /^\/([A-Za-z0-9_-]+)(?:\s+([\s\S]*))?$/.exec(text.trim()); if (!m) return undefined;
+  const c = resolveCommand(m[1], cat), h = c?.handler?.replace('hub:', '');
+  return c && (h === 'queue' || h === 'steer' || h === 'busy') ? { cmd: h, args: (m[2] ?? '').trim(), command: c } : undefined;
+}
+/** What the composer offers for an agent when the hub's catalog could not be fetched. */
+export const LOCAL_CATALOG: Catalog = { source: 'local', commands: [
+  { name: 'new', aliases: ['reset'], description: 'Start a new chat', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'new' },
+  { name: 'history', aliases: ['sessions', 'resume'], description: 'Browse previous chats', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'history' },
+  { name: 'retry', aliases: [], description: 'Send the last message again', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'retry' },
+  { name: 'title', aliases: [], description: 'Rename this chat', category: 'Session', args: '[name]', subcommands: [], availability: 'app', app: 'title' },
+  { name: 'stop', aliases: [], description: 'Stop the reply that is running', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'stop' },
+] };

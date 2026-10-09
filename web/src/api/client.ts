@@ -12,8 +12,15 @@ export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: numbe
 
 /** Typed hub client. Cookie session (HttpOnly, set by the hub), so no token handling in JS. */
 
-export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void }
-export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'done' | 'error' | 'stopped'; started: number; events: number }
+export type SendMode = 'queue' | 'steer' | 'interrupt';
+export interface QueuedMessage { id: string; state: string; mode: SendMode; text: string; error?: string; note?: string; runId?: string }
+export interface QueueState { items: QueuedMessage[]; recent: QueuedMessage[]; halted: boolean; activeRun: string | null; modes: SendMode[] }
+export interface SendResult { message: QueuedMessage; runId?: string; sessionId?: string }
+const MODES: SendMode[] = ['queue', 'steer', 'interrupt'];
+export const parseQueued = (m: any): QueuedMessage => ({ id: String(m?.id ?? ''), state: String(m?.state ?? 'queued'), mode: MODES.includes(m?.mode) ? m.mode : 'queue', text: String(m?.text ?? ''), ...(m?.error ? { error: String(m.error) } : {}), ...(m?.note ? { note: String(m.note) } : {}), ...(m?.run_id ? { runId: String(m.run_id) } : {}) });
+export const parseQueue = (r: any): QueueState => ({ items: (Array.isArray(r?.items) ? r.items : []).map(parseQueued), recent: (Array.isArray(r?.recent) ? r.recent : []).map(parseQueued), halted: r?.halted === true, activeRun: typeof r?.active_run === 'string' ? r.active_run : null, modes: (Array.isArray(r?.modes) ? r.modes : []).filter((m: unknown): m is SendMode => MODES.includes(m as SendMode)) });
+export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onRunState?: (state: string) => void }
+export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000 }: ClientOptions = {}) {
   async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal } = {}): Promise<T> {
@@ -71,7 +78,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
         if (e.id && Number(e.id) > last) { last = Number(e.id); progressed = true; }
         if (e.data === '[DONE]') { finished = true; return false; }
         if (e.event === 'foxfleet.gap') { opts.onGap?.(); return true; }
-        if (e.event === 'foxfleet.run') { finished = true; return false; } // the run was stopped or failed on the hub
+        if (e.event === 'foxfleet.run') { try { const st = JSON.parse(e.data)?.state; if (typeof st === 'string') opts.onRunState?.(st); } catch { /* state is optional */ } finished = true; return false; } // the run was stopped or failed on the hub
         if (e.event === 'error') throw fail();
         let v: any; try { v = JSON.parse(e.data); } catch { return true; }
         if (!v || typeof v !== 'object') return true;
@@ -193,6 +200,14 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     runs: async (agent: string, session?: string): Promise<RunInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/runs${session ? '?session_id=' + enc(session) : ''}`)).runs ?? []) as RunInfo[],
     /** The explicit Stop button: cancels the agent run itself (just closing the page never does). */
     stopRun: (agent: string, run: string) => request<any>(`/api/agents/${enc(agent)}/runs/${enc(run)}/stop`, { body: {} }),
+    /** Send while the agent may be replying. The hub stores and acknowledges it first; mode says what to do if it is busy. */
+    sendMessage: async (agent: string, o: { messages: UiMessage[]; sessionId?: string; mode: SendMode; clientId: string }): Promise<SendResult> => {
+      const r = await request<any>(`/api/agents/${enc(agent)}/messages`, { body: { model: 'hermes-agent', messages: chatMessages(o.messages), mode: o.mode, client_id: o.clientId, ...(o.sessionId ? { session_id: o.sessionId } : {}) } });
+      return { message: parseQueued(r.message), runId: typeof r.run_id === 'string' ? r.run_id : undefined, sessionId: typeof r.session_id === 'string' ? r.session_id : undefined };
+    },
+    queue: async (agent: string, session?: string): Promise<QueueState> => parseQueue(await request<any>(`/api/agents/${enc(agent)}/queue${session ? '?session_id=' + enc(session) : ''}`)),
+    resumeQueue: async (agent: string, session?: string): Promise<QueueState> => parseQueue(await request<any>(`/api/agents/${enc(agent)}/queue/resume${session ? '?session_id=' + enc(session) : ''}`, { body: {} })),
+    cancelQueued: (agent: string, id: string, session?: string) => request<any>(`/api/agents/${enc(agent)}/queue/${enc(id)}${session ? '?session_id=' + enc(session) : ''}`, { method: 'DELETE' }),
 
     /** Streams a file to the agent's disk with progress (XHR: fetch has no upload progress). */
     uploadFile: (agent: string, file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<FileRef> => new Promise((resolve, reject) => {

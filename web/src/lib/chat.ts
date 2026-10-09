@@ -2,7 +2,7 @@ import type { FileRef } from './files';
 
 export interface UiImage { dataUrl: string }
 export interface ToolStep { name: string; args?: string; result?: string; ok?: boolean }
-export interface UiMessage { role: 'user' | 'assistant' | 'system'; content: string; images?: UiImage[]; reasoning?: string; error?: boolean; tools?: ToolStep[]; ts?: number }
+export interface UiMessage { role: 'user' | 'assistant' | 'system'; content: string; images?: UiImage[]; reasoning?: string; error?: boolean; tools?: ToolStep[]; ts?: number; interrupted?: boolean }
 
 /** One message from the hub's normalised history (already stripped of tool JSON, control tags and hidden rows). */
 export function fromHistory(m: any): UiMessage | null {

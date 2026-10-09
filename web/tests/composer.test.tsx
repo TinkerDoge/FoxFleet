@@ -56,7 +56,7 @@ describe('composer drafts across navigation', () => {
     expect(host.querySelector('.att.file')?.textContent).toContain('notes.txt');
     expect(host.querySelector('progress')).toBeNull();
     await act(() => host.querySelector<HTMLButtonElement>('.send')!.click());
-    expect(onSend).toHaveBeenCalledWith('Please read these notes', [], [uploaded]);
+    expect(onSend).toHaveBeenCalledWith('Please read these notes', [], [uploaded], 'queue');
     await show('nova'); await show('atlas');
     expect(editor().value).toBe(''); expect(host.querySelector('.att')).toBeNull();
   });

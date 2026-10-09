@@ -158,3 +158,12 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .older{align-self:center}.msg.grouped{margin-top:-6px}.msg-time{display:block;font-size:11px;margin-top:4px}
 .tools{background:var(--surface-alt);border-radius:var(--radius-control);padding:6px 12px;margin-bottom:8px;font-size:13px;color:var(--text-muted)}.tools summary{cursor:pointer}.tools ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}.tools li{display:flex;flex-direction:column;gap:2px}.tools li.bad b::after{content:' ⚠';color:var(--danger)}.tools code{font-size:12px;word-break:break-all}
 .suggest{max-height:min(46vh,380px);overflow:auto}.suggest .grp{position:sticky;top:0;background:var(--surface);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint,var(--text-muted));padding:6px 12px 2px;pointer-events:none}.suggest li.off{opacity:.55}.suggest em{font-style:normal;color:var(--text-muted);font-weight:400}
+
+/* Chat controls: send mode, queued messages */
+.composer select.mode{align-self:center;max-width:9.5rem;background:var(--surface-alt);color:var(--text);border:1px solid var(--hairline);border-radius:var(--radius-control);padding:6px 8px;font:inherit;font-size:.85rem}
+.send.stop{background:var(--surface-alt);color:var(--text);border:1px solid var(--hairline)}
+.queue{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.queue .msg.queued .bubble{opacity:.78;border:1px dashed var(--hairline)}
+.queue .msg.queued small{display:block;margin-top:4px}
+.queue .queue-paused{text-align:center}
+.interrupted{display:block;margin-top:4px;font-style:italic}

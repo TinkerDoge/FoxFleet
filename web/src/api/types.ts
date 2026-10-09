@@ -12,7 +12,7 @@ export interface AgentSummary {
   id: string; name: string; displayName?: string; kind: string; description?: string;
   online: boolean; chatReady: boolean; capabilities?: Partial<Capabilities>;
 }
-export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean }
+export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean; busy?: ('queue' | 'steer' | 'interrupt')[]; nativeRuns?: boolean }
 export interface SessionInfo { id: string; title?: string; updated?: number; preview?: string; messages?: number; pinned?: boolean }
 export interface SessionPage { sessions: SessionInfo[]; total: number }
 export interface HistoryPage { messages: import('../lib/chat').UiMessage[]; hasMore: boolean }

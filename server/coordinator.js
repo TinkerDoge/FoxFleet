@@ -56,6 +56,7 @@ export async function coordinator(file, { runs, now = () => Date.now(), stopWait
     if (it.finishedOnce) return; it.finishedOnce = true;
     const key = keyOf(it.scope, it.agent, r.session || it.session), s = slot(key); if (s.active === r) s.active = null;
     set(it, { state: state === 'done' ? 'done' : state === 'stopped' ? 'interrupted' : 'failed', ...(state === 'error' ? { error: r.link?.error || 'The reply failed' } : {}) });
+    for (const x of items) if (x.run === r.id && x.state === 'guidance_accepted') set(x, { state: 'done', note: 'run_ended' }); // accepted guidance is final only in the sense that the run is over; unused text returns below
     // guidance the agent accepted but never used comes back once, as the next message
     for (const [n, text] of (r.link?.pendingSteer ?? []).entries()) {
       const pid = `ps_${r.id}_${n}`; if (items.some((x) => x.id === pid)) continue;

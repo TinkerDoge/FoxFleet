@@ -11,3 +11,8 @@ export const clearSaved = (agent: string) => safe(() => localStorage.removeItem(
 export const lastAgent = () => safe(() => localStorage.getItem(LAST) || undefined, undefined);
 export const rememberAgent = (agent: string) => safe(() => localStorage.setItem(LAST, agent), undefined);
 export const forgetAll = () => safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('foxfleet.chat.') || k === LAST) localStorage.removeItem(k); }, undefined);
+
+// The send mode (Steer / Queue / Interrupt & send) is remembered per conversation. Wiped with the chat state on sign-out.
+const MODE = (agent: string, session?: string) => `foxfleet.chat.mode.${agent}:${session ?? ''}`;
+export const loadMode = (agent: string, session?: string): string | undefined => safe(() => localStorage.getItem(MODE(agent, session)) || undefined, undefined);
+export const saveMode = (agent: string, session: string | undefined, mode: string) => safe(() => localStorage.setItem(MODE(agent, session), mode), undefined);
