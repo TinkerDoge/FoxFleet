@@ -80,6 +80,9 @@ class ChatState {
         resetStream(); error = null
     }
 
+    /** Retry: forget everything from the last user message on; it is sent again. */
+    fun dropAfterLastUser() { val i = messages.indexOfLast { it.role == "user" }; if (i >= 0) messages = messages.take(i) }
+
     fun beginOlder() { loadingOlder = true }
     fun prepend(older: List<UiMessage>, hasMore: Boolean) {
         keyBase -= older.size; messages = older + messages; hasOlder = hasMore; olderOffset += PAGE; loadingOlder = false

@@ -2679,6 +2679,105 @@
           }
         }
       }
+    },
+    "/api/agents/{name}/commands": {
+      "get": {
+        "operationId": "listCommands",
+        "summary": "Slash commands for this agent. Hermes agents: the full Hermes list (bundled, generated from its command registry; Hermes has no REST endpoint for the live one). Other kinds: empty.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Catalog",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "commands"
+                  ],
+                  "properties": {
+                    "source": {
+                      "type": "string"
+                    },
+                    "commands": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "description",
+                          "category",
+                          "availability"
+                        ],
+                        "properties": {
+                          "name": {
+                            "type": "string"
+                          },
+                          "aliases": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "category": {
+                            "type": "string"
+                          },
+                          "args": {
+                            "type": "string"
+                          },
+                          "subcommands": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "availability": {
+                            "type": "string",
+                            "enum": [
+                              "app",
+                              "chat",
+                              "unavailable"
+                            ],
+                            "description": "app: Foxfleet runs it; chat: sent as a message; unavailable: terminal/platform only"
+                          },
+                          "app": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {

@@ -123,6 +123,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (p === '/api/media-proxy') return /^https:/.test(url.searchParams.get('url') || '') ? json(res, 403, { error: 'That address is not allowed' }) : json(res, 400, { error: 'Only https images can be proxied' });
     if (p === '/api/agents') return json(res, 200, { agents: agentsOut() });
     if (p === '/api/history/settings') { if (m === 'PUT') { const b = await body(req); retention = b.retentionDays; } return json(res, 200, { retentionDays: retention }); }
+    if (/^\/api\/agents\/[^/]+\/commands$/.test(p)) return json(res, 200, { source: 'none', commands: [] });
     if (/^\/api\/agents\/[^/]+\/runs$/.test(p)) return json(res, 200, { runs: [] });
     if (p === '/api/agent-kinds') return json(res, 200, { kinds });
     if (p === '/api/connections' && m === 'GET') return json(res, 200, { connections: saved });

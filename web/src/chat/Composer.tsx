@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import type { AgentSummary } from '../api/types';
-import { commandSuggestions, localCommandFor, type LocalCommand, type Suggestion } from '../lib/commands';
+import { commandSuggestions, parseLocal, unavailableReason, type LocalCommand, type Suggestion } from '../lib/commands';
 import { downscaleImage, isImageFile } from '../lib/images';
 import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
 import { estimatedBytes, HUB_BODY_LIMIT, type UiImage, type UiMessage } from '../lib/chat';
@@ -16,7 +16,7 @@ let nextId = 1;
 
 export function Composer(props: {
   client: Client; agent: AgentSummary; history: UiMessage[]; streaming: boolean; skills: string[]; draftKey: string;
-  onSend: (text: string, images: UiImage[], files: FileRef[]) => void; onStop: () => void; onLocal: (c: LocalCommand) => void;
+  onSend: (text: string, images: UiImage[], files: FileRef[]) => void; onStop: () => void; onLocal: (c: LocalCommand, args?: string) => void;
 }) {
   const { client, agent, streaming, skills } = props;
   const caps = agent.capabilities ?? {};
@@ -57,13 +57,15 @@ export function Composer(props: {
   const canSend = !streaming && !uploading && !tooBig && (text.trim().length > 0 || images.length > 0 || fileRefs.some((f) => f.ref));
 
   function submit() {
-    const local = localCommandFor(text);
-    if (local) { setText(''); props.onLocal(local); return; }
+    const isHermes = agent.kind === 'hermes', local = parseLocal(text, isHermes);
+    if (local) { setText(''); props.onLocal(local.cmd, local.args); return; }
+    const blocked = isHermes ? unavailableReason(text) : undefined;
+    if (blocked) { setNote(`${text.trim().split(/\s/)[0]}: ${blocked}`); return; }
     if (!canSend) return;
     props.onSend(text.trim(), images.map((i) => ({ dataUrl: i.dataUrl })), fileRefs.flatMap((f) => (f.ref ? [f.ref] : [])));
     setText(''); setPending([]); setNote(null); setMenu(false);
   }
-  function pick(s: Suggestion) { if (s.local) { setText(''); props.onLocal(s.local); } else { setText(s.insert); ta.current?.focus(); } setMenu(false); }
+  function pick(s: Suggestion) { if (s.availability === 'unavailable') { setNote(`${s.label}: ${s.reason ?? 'Not available remotely'}`); } else if (s.local && s.local !== 'title') { setText(''); props.onLocal(s.local); } else { setText(s.insert); ta.current?.focus(); } setMenu(false); }
   function key(e: KeyboardEvent) {
     if (suggestions.length && menu) {
       if (e.key === 'ArrowDown') { e.preventDefault(); setSel((s) => (s + 1) % suggestions.length); return; }
@@ -89,7 +91,7 @@ export function Composer(props: {
       onDrop={(e) => { e.preventDefault(); setDrag(false); route(Array.from(e.dataTransfer?.files ?? [])); }}>
       {menu && suggestions.length > 0 && (
         <ul class="suggest" role="listbox" aria-label={t('chat.commands')}>
-          {suggestions.map((s, i) => <li key={s.label} role="option" aria-selected={i === sel} class={i === sel ? 'on' : ''} onMouseDown={(e) => { e.preventDefault(); pick(s); }}><b>{s.label}</b><small>{s.hint}</small></li>)}
+          {suggestions.map((s, i) => <>{s.group && s.group !== suggestions[i - 1]?.group && <li role="presentation" class="grp">{s.group}</li>}<li key={s.label} role="option" aria-selected={i === sel} aria-disabled={s.availability === 'unavailable' ? 'true' : undefined} class={`${i === sel ? 'on' : ''}${s.availability === 'unavailable' ? ' off' : ''}`} onMouseDown={(e) => { e.preventDefault(); pick(s); }}><b>{s.label}{s.args && <em> {s.args}</em>}</b><small>{s.hint}</small></li></>)}
         </ul>
       )}
       {pending.length > 0 && (
@@ -124,7 +126,7 @@ export function Composer(props: {
         {SR && caps.voice !== false && !text.trim() && !streaming && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
         {streaming
           ? <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>
-          : <button class="send" aria-label={t('chat.send')} disabled={!canSend && !localCommandFor(text)} onClick={submit}>↑</button>}
+          : <button class="send" aria-label={t('chat.send')} disabled={!canSend && !parseLocal(text, agent.kind === 'hermes')} onClick={submit}>↑</button>}
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

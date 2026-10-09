@@ -17,6 +17,7 @@ import { runRegistry } from './runs.js';
 import { historyStore, newSessionId, validSessionId } from './history.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
+import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
@@ -102,6 +103,8 @@ const sse = (res, text, headers = {}) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] })}\n\ndata: [DONE]\n\n`);
 };
+// Bundled Hermes slash-command catalog (generated from hermes-agent's COMMAND_REGISTRY by design/tools/gen-hermes-commands.py).
+const HERMES_COMMANDS = JSON.parse(readFileSync(new URL('./hermes-commands.json', import.meta.url), 'utf8'));
 const scopeOf = (ctx) => ctx?.auth?.user?.id ?? 'local';
 async function streamResponse(req, res, getResponse, timeoutMs, headers, failureMessage = 'Agent request failed') {
   const abort = new AbortController(), onClose = () => { if (!res.writableEnded) abort.abort(); };
@@ -394,6 +397,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // Hermes agents: the full slash-command list (bundled; Hermes has no REST endpoint for its live registry). Other kinds: none.
+          return sendJson(res, 200, kindOf(m) === 'hermes' ? { source: 'bundled', commands: HERMES_COMMANDS.commands } : { source: 'none', commands: [] });
+        }
         if (route === 'runs') { // resumable chat runs: list, follow from a cursor, stop. A run outlives its client connection.
           const scope = scopeOf(ctx);
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { runs: runs.list(scope, m.name, url.searchParams.get('session_id') || undefined) });

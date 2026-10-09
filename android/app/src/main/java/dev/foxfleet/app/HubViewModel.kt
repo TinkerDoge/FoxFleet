@@ -267,6 +267,13 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     fun newChat(agent: String) { detach(agent); chatFor(agent).newConversation() }
 
+    /** /retry: drop the last assistant reply and send the last user message again. */
+    fun retry(agent: String) {
+        val state = chatFor(agent); if (state.streaming) return
+        val last = state.messages.lastOrNull { it.role == "user" } ?: return
+        state.dropAfterLastUser(); send(agent, last.content, last.images)
+    }
+
     private var restoredOnce = false
     /** After a process restart, open straight into the chat that was open (and its running reply) instead of the fleet list. */
     private fun restoreLastChat() {

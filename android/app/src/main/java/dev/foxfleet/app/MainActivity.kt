@@ -159,7 +159,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 sessionsLoading = vm.sessionsLoading[agent.name] == true, historyError = vm.historyError,
                 onRefreshSessions = { vm.loadSessions(agent.name) }, onLoadMoreSessions = { vm.loadSessions(agent.name, more = true) },
                 onRenameSession = { id, t -> vm.renameSession(agent.name, id, t) }, onDeleteSession = { vm.deleteSession(agent.name, it) },
-                onLoadOlder = { vm.loadOlder(agent.name) },
+                onLoadOlder = { vm.loadOlder(agent.name) }, onRetry = { vm.retry(agent.name) },
                 skills = vm.skills[agent.name].orEmpty(),
                 onAvatarLongPress = { vm.avatarTarget = it },
                 httpClient = vm.api.httpClient,

@@ -91,3 +91,13 @@ test('Hermes sessions through the hub: list rows, paged messages are normalised'
   const m = await (await call('/api/agents/fixture/sessions/sess-1/messages?limit=100')).json(); assert.equal(m.messages.length, 4); assert.equal(m.has_more, false);
   const q = mock.requests.filter((r) => /messages$/.test(r.path)).at(-1).query; assert.equal(q.get('limit'), '100'); assert.equal(q.get('order'), 'latest');
 });
+
+test('slash-command catalog: full Hermes list for Hermes agents, nothing for other kinds', async (t) => {
+  const mock = await mockHermes(t), { call } = await setup(t, [mock.connection]);
+  const r = await (await call('/api/agents/fixture/commands')).json(); assert.equal(r.source, 'bundled'); assert.ok(r.commands.length > 90);
+  const by = Object.fromEntries(r.commands.map((c) => [c.name, c]));
+  assert.equal(by.new.availability, 'app'); assert.equal(by.clear.availability, 'unavailable'); assert.match(by.clear.reason, /erminal/); assert.equal(by.model.availability, 'chat'); assert.match(by.compress.args, /here/); assert.ok(by.compress.aliases.includes('compact'));
+  assert.ok(r.commands.every((c) => c.name && c.description && c.category && ['app', 'chat', 'unavailable'].includes(c.availability)));
+  assert.equal((await call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'm', apiKey: 'k' })).status, 201);
+  assert.deepEqual(await (await call('/api/agents/glm/commands')).json(), { source: 'none', commands: [] });
+});

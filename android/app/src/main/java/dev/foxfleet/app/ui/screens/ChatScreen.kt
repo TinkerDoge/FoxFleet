@@ -121,7 +121,9 @@ import dev.foxfleet.app.data.FileMarker
 import dev.foxfleet.app.media.ImageEncoder
 import dev.foxfleet.app.ui.chat.LocalCommand
 import dev.foxfleet.app.ui.chat.MediaRef
+import dev.foxfleet.app.ui.chat.HermesCatalog
 import dev.foxfleet.app.ui.chat.commandSuggestions
+import dev.foxfleet.app.ui.chat.parseLocal
 import dev.foxfleet.app.ui.chat.extractMedia
 import dev.foxfleet.app.ui.chat.localCommandFor
 import dev.foxfleet.app.ui.components.MediaViewer
@@ -175,6 +177,7 @@ fun ChatScreen(
     onDeleteSession: (String) -> Unit = {},
     onLoadOlder: () -> Unit = {},
     historyOpen: Boolean = false,
+    onRetry: () -> Unit = {},
     initialInput: String = "",
     skills: List<String> = emptyList(),
     onAvatarLongPress: (String) -> Unit = {},
@@ -249,11 +252,13 @@ fun ChatScreen(
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
-                onLocal = { cmd ->
+                onLocal = { cmd, args ->
                     when (cmd) {
                         LocalCommand.New -> onNewChat()
                         LocalCommand.Sessions -> history = true
                         LocalCommand.Stop -> onStop()
+                        LocalCommand.Retry -> onRetry()
+                        LocalCommand.Title -> state.sessionId?.let { onRenameSession(it, args) }
                     }
                 },
             )
@@ -448,7 +453,7 @@ private fun Composer(
     onStop: () -> Unit,
     initialInput: String,
     initialAttachments: List<ImageAttachment>,
-    onLocal: (LocalCommand) -> Unit,
+    onLocal: (LocalCommand, String) -> Unit,
     allowImages: Boolean = true,
     onUploadFile: (suspend (Uri, (Float) -> Unit) -> FileRef)? = null,
     initialFiles: List<FileRef> = emptyList(),
@@ -512,7 +517,10 @@ private fun Composer(
     val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !streaming && encoding == 0 && uploads.isEmpty()
     fun send() {
         if (!canSend) return
-        localCommandFor(input)?.takeIf { attachments.isEmpty() && files.isEmpty() }?.let { onLocal(it); input = ""; return }
+        if (attachments.isEmpty() && files.isEmpty()) {
+            parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
+            HermesCatalog.unavailableReason(input).takeIf { agentCommands }?.let { note = "${input.trim().substringBefore(' ')}: $it"; return }
+        }
         val t = FileMarker.compose(input.trim(), files); val imgs = attachments
         input = ""; attachments = emptyList(); files = emptyList(); voice.stop()
         haptic(HapticFeedbackType.Confirm); onSend(t, imgs)
@@ -524,14 +532,17 @@ private fun Composer(
                 Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(c.surface)
                     .heightIn(max = 260.dp).verticalScroll(rememberScrollState()).padding(vertical = 4.dp),
             ) {
-                suggestions.forEach { s ->
+                suggestions.forEachIndexed { i, s ->
+                    if (s.group.isNotEmpty() && s.group != suggestions.getOrNull(i - 1)?.group)
+                        Text(s.group.uppercase(), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(start = 16.dp, top = 8.dp, bottom = 2.dp))
                     Row(
                         Modifier.fillMaxWidth().clickable {
-                            if (s.local != null) { onLocal(s.local); input = "" } else input = s.insert
+                            if (s.availability == "unavailable") note = "${s.label}: ${s.reason.ifEmpty { "Not available remotely" }}"
+                            else if (s.local != null && s.local != LocalCommand.Title) { onLocal(s.local, ""); input = "" } else input = s.insert
                         }.padding(horizontal = 16.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(s.label, style = MaterialTheme.typography.bodyLarge, color = c.accent)
+                        Text(s.label + if (s.args.isNotEmpty()) " " + s.args else "", style = MaterialTheme.typography.bodyLarge, color = if (s.availability == "unavailable") c.textFaint else c.accent, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.widthIn(max = 190.dp))
                         Spacer(Modifier.width(12.dp))
                         Text(s.hint, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }

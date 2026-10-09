@@ -4,7 +4,7 @@ import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
-import { chatOf, loadAgent, loadOlder, newChat, restore, send, stop, useChat } from './store';
+import { chatOf, loadAgent, loadOlder, newChat, renameSession, restore, retryLast, send, stop, useChat } from './store';
 import { Sessions } from './Sessions';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
@@ -27,7 +27,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   useEffect(() => { const el = scroller.current; if (!el) return; if (before.current) { el.scrollTop += el.scrollHeight - before.current; before.current = 0; } else if (stick.current) el.scrollTop = el.scrollHeight; }, [c.messages, c.streamText, c.streamReasoning, c.tool, agent.name]);
   useEffect(() => { stick.current = true; }, [c.session]); // a freshly opened conversation starts at the bottom
   const older = () => { const el = scroller.current; if (el && c.hasOlder && !c.loadingOlder) { before.current = el.scrollHeight; void loadOlder(client, agent.name, onAuthLost); } };
-  const local = (cmd: LocalCommand) => { if (cmd === 'new') newChat(agent.name); else if (cmd === 'stop') stop(agent.name, client); else setSessionsOpen(true); };
+  const local = (cmd: LocalCommand, args = '') => { if (cmd === 'new') newChat(agent.name); else if (cmd === 'stop') stop(agent.name, client); else if (cmd === 'retry') void retryLast(client, agent.name, onAuthLost); else if (cmd === 'title') { if (c.session) void renameSession(client, agent.name, c.session, args).catch(() => {}); } else setSessionsOpen(true); };
   const last = c.messages[c.messages.length - 1];
   // Screen readers get one announcement when a reply starts and one when it ends, never a token-by-token flood.
   const announce = c.streaming ? t('a11y.replying', { agent: agent.displayName || agent.name }) : last?.role === 'assistant' ? t('a11y.replied', { agent: agent.displayName || agent.name, text: last.content.replace(/\s+/g, ' ').slice(0, 300) }) : '';

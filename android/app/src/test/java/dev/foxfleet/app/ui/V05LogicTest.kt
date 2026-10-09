@@ -84,7 +84,7 @@ class V05LogicTest {
     }
 
     @Test fun nonHermesAgentsOnlyGetLocalCommands() {
-        assertTrue(commandSuggestions("/", emptyList(), agentCommands = true).any { it.label == "/usage" })
+        assertTrue(commandSuggestions("/", emptyList(), limit = 500, agentCommands = true).any { it.label == "/usage" })
         assertEquals(listOf("/new", "/sessions", "/stop"), commandSuggestions("/", emptyList(), agentCommands = false).map { it.label })
     }
 

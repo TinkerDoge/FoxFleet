@@ -1,14 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { commandSuggestions, localCommandFor } from '../src/lib/commands';
+import { BUNDLED_CATALOG, commandSuggestions, localCommandFor, parseLocal, unavailableReason } from '../src/lib/commands';
 import { composeWithFiles, humanSize, splitFiles } from '../src/lib/files';
 import { chatMessages } from '../src/lib/chat';
 
 const skills = ['review', 'research', 'deploy-notes', 'translate'];
 describe('command autocomplete', () => {
-  it('offers commands and skills on "/"', () => {
-    const l = commandSuggestions('/', skills, 20).map((s) => s.label);
-    expect(l).toContain('/new'); expect(l).toContain('/review'); expect(commandSuggestions('/', skills).length).toBe(8);
-    expect(commandSuggestions('/re', skills).map((s) => s.label)).toEqual(['/reasoning', '/review', '/research']);
+  it('offers the full Hermes catalog on "/", grouped, with skills', () => {
+    const all = commandSuggestions('/', skills, 500); const l = all.map((s) => s.label);
+    expect(BUNDLED_CATALOG.commands.length).toBeGreaterThan(90); expect(all.length).toBeGreaterThan(90);
+    for (const n of ['/new', '/compress', '/model', '/reasoning', '/skills', '/bg', '/review']) expect(l, n).toContain(n);
+    expect(new Set(all.map((s) => s.group)).size).toBeGreaterThan(3); expect(commandSuggestions('/', skills).length).toBe(12);
+    expect(all.find((s) => s.label === '/model')).toMatchObject({ group: 'Configuration', availability: 'chat' }); expect(all.find((s) => s.label === '/new')).toMatchObject({ local: 'new', availability: 'app' });
+  });
+  it('shows args hints, aliases, and flags terminal-only commands as not available remotely', () => {
+    const all = commandSuggestions('/', [], 500); expect(all.find((s) => s.label === '/reset')?.local).toBe('new'); expect(all.find((s) => s.label === '/compress')?.args).toMatch(/here/);
+    const clear = all.find((s) => s.label === '/clear')!; expect(clear.availability).toBe('unavailable'); expect(clear.hint).toMatch(/Terminal|terminal/); expect(unavailableReason('/clear')).toBeTruthy(); expect(unavailableReason('/new')).toBeUndefined(); expect(unavailableReason('hello')).toBeUndefined();
+    const idx = (n: string) => all.findIndex((s) => s.label === n); expect(idx('/model')).toBeLessThan(idx('/clear') + 100); expect(all.filter((s) => s.group === 'Session' && s.availability !== 'unavailable').length).toBeGreaterThan(0);
+  });
+  it('filters by prefix, including aliases', () => {
+    expect(commandSuggestions('/re', skills, 50).map((s) => s.label)).toEqual(expect.arrayContaining(['/reasoning', '/retry', '/reset', '/review', '/research']));
+    expect(commandSuggestions('/comp', [], 20).map((s) => s.label)).toEqual(expect.arrayContaining(['/compress', '/compact']));
   });
   it('offers skills on "#" with prefix matches first', () => {
     expect(commandSuggestions('#re', skills).map((s) => s.label)).toEqual(['#review', '#research']);
@@ -17,11 +28,18 @@ describe('command autocomplete', () => {
   it('only triggers for the first word', () => {
     expect(commandSuggestions('hello', skills)).toEqual([]); expect(commandSuggestions('/new now', skills)).toEqual([]); expect(commandSuggestions('', skills)).toEqual([]);
   });
-  it('non-Hermes kinds only get local commands', () => {
-    expect(commandSuggestions('/', [], 8, false).map((s) => s.label)).toEqual(['/new', '/sessions', '/stop']);
+  it('non-Hermes agents never see Hermes commands or skills', () => {
+    expect(commandSuggestions('/', [], 50, false).map((s) => s.label)).toEqual(['/new', '/sessions', '/stop']);
+    expect(commandSuggestions('/mo', ['model-x'], 50, false)).toEqual([]); expect(commandSuggestions('#mo', ['model-x'], 50, false)).toEqual([]); expect(parseLocal('/retry', false)).toBeUndefined();
   });
-  it('detects exact local commands', () => {
-    expect(localCommandFor(' /new ')).toBe('new'); expect(localCommandFor('/stop')).toBe('stop'); expect(localCommandFor('/newer')).toBeUndefined(); expect(localCommandFor('/usage')).toBeUndefined();
+  it('detects commands Foxfleet runs itself, with arguments only where they make sense', () => {
+    expect(localCommandFor(' /new ')).toBe('new'); expect(localCommandFor('/stop')).toBe('stop'); expect(localCommandFor('/history')).toBe('sessions'); expect(localCommandFor('/retry')).toBe('retry');
+    expect(parseLocal('/title Weekly plan')).toEqual({ cmd: 'title', args: 'Weekly plan' }); expect(parseLocal('/title')).toBeUndefined(); expect(parseLocal('/new now')).toBeUndefined();
+    expect(localCommandFor('/newer')).toBeUndefined(); expect(localCommandFor('/usage')).toBeUndefined();
+  });
+  it('a hub-served catalog replaces the bundled one', () => {
+    const cat = { commands: [{ name: 'zap', aliases: [], description: 'Zap it', category: 'Session', args: '<x>', subcommands: [], availability: 'chat' as const }] };
+    expect(commandSuggestions('/', [], 10, true, cat).map((s) => s.label)).toEqual(['/zap']);
   });
 });
 describe('files and chat payload', () => {

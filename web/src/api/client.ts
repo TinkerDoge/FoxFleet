@@ -5,6 +5,7 @@ import type { UiMessage } from '../lib/chat';
 import { chatMessages, fromHistory } from '../lib/chat';
 import type { FileRef } from '../lib/files';
 import { SseParser } from '../lib/sse';
+import { BUNDLED_CATALOG, type Catalog } from '../lib/commands';
 
 type Fetch = typeof fetch;
 export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number }
@@ -166,6 +167,8 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     },
     renameSession: (agent: string, id: string, title: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'PATCH', body: { title } }),
     deleteSession: (agent: string, id: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'DELETE' }),
+    /** Slash-command catalog for this agent (the hub serves the bundled Hermes list for Hermes agents, nothing for others). */
+    commands: async (agent: string): Promise<Catalog> => { try { const r = await request<any>(`/api/agents/${enc(agent)}/commands`); return { source: String(r.source ?? ''), commands: Array.isArray(r.commands) ? r.commands : [] }; } catch (e) { if (e instanceof AuthRequiredError) throw e; return BUNDLED_CATALOG; } },
     historyRetention: async (): Promise<number> => Number((await request<any>('/api/history/settings')).retentionDays),
     setHistoryRetention: (retentionDays: number) => request<unknown>('/api/history/settings', { method: 'PUT', body: { retentionDays } }),
     skills: async (agent: string): Promise<string[]> => { try { const o = await request<any>(`/api/agents/${enc(agent)}/skills`); const a = o.skills ?? o.data ?? []; return [...new Set<string>(a.map((x: any) => (typeof x === 'string' ? x : x?.name)).filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200); } catch (e) { if (e instanceof AuthRequiredError) throw e; return []; } },

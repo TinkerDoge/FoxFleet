@@ -122,3 +122,12 @@ export async function send(client: Client, agent: string, text: string, images: 
     }
   } finally { aborts.delete(agent); runIds.delete(agent); }
 }
+
+/** /retry: drop the last assistant reply (if any) and send the last user message again. */
+export async function retryLast(client: Client, agent: string, onAuthLost: () => void) {
+  const c = chatOf(agent); if (c.streaming) return;
+  const msgs = [...c.messages]; while (msgs.length && msgs[msgs.length - 1].role !== 'user') msgs.pop();
+  const last = msgs.pop(); if (!last) return;
+  patch(agent, { messages: msgs });
+  await send(client, agent, last.content, last.images ?? [], [], onAuthLost);
+}

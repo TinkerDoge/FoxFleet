@@ -24,7 +24,7 @@ cd "$SRC"
 backup_data() { # config.json (+ .bak files), accounts/, users/, inbox.json -> one 0600 tarball
   mkdir -p "$BACKUPS"; chmod 700 "$BACKUPS"
   local out="$BACKUPS/pre-deploy-$(date +%Y%m%d%H%M%S).tar.gz"
-  (cd "$DATA" && tar czf "$out" $(ls -d config.json* accounts users inbox.json 2>/dev/null)); chmod 600 "$out"; echo "$out"
+  (cd "$DATA" && tar czf "$out" $(ls -d config.json* accounts users inbox.json machines.json history.json 2>/dev/null)); chmod 600 "$out"; echo "$out"
 }
 healthy() { for _ in 1 2 3 4 5 6; do sleep 2; curl -fsS "$HEALTH" >/dev/null 2>&1 && return 0; done; return 1; }
 build_web() { [ "${FOXFLEET_SKIP_WEB:-}" = 1 ] && return 0; (cd web && "$NPM" ci --no-audit --no-fund && "$NPM" run build); }
@@ -48,7 +48,7 @@ if [ "${1:-}" = "--rollback" ]; then
   systemctl --user stop "$UNIT" || true
   if [ -n "$LAST" ]; then
     # Keep what the new version wrote aside, then put the pre-deploy state back.
-    (cd "$DATA" && tar czf "$BACKUPS/rolled-back-$(date +%Y%m%d%H%M%S).tar.gz" $(ls -d config.json* accounts users inbox.json 2>/dev/null)) || true
+    (cd "$DATA" && tar czf "$BACKUPS/rolled-back-$(date +%Y%m%d%H%M%S).tar.gz" $(ls -d config.json* accounts users inbox.json machines.json history.json 2>/dev/null)) || true
     (cd "$DATA" && rm -rf accounts users && tar xzf "$LAST")
   fi
   git checkout --detach "$PREV"; build_web || true; systemctl --user start "$UNIT"
