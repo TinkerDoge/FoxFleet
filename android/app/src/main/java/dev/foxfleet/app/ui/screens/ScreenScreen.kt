@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -103,6 +104,8 @@ fun ScreenScreen(
     preview: Boolean = false,
     initialPhase: ScreenPhase = ScreenPhase.Checking,
     initialHandBackAt: Long = 0L,
+    /** Screenshot tests only: a picture of a desktop to show instead of the stand-in (WebView does not render under Robolectric). */
+    previewFrame: android.graphics.Bitmap? = null,
 ) {
     val c = LocalHubColors.current
     val ctx = LocalContext.current
@@ -197,7 +200,7 @@ fun ScreenScreen(
                 .border(3.dp, if (reduce && phase == ScreenPhase.Control) ControlRed else border, RoundedCornerShape(12.dp)),
             contentAlignment = Alignment.Center,
         ) {
-            if (preview) PreviewDesktop()
+            if (preview) { if (previewFrame != null) androidx.compose.foundation.Image(previewFrame.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = androidx.compose.ui.layout.ContentScale.Fit) else PreviewDesktop() }
             else AndroidView(
                 factory = { context ->
                     val loader = WebViewAssetLoader.Builder().addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(context)).build()

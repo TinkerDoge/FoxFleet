@@ -11,5 +11,5 @@ The texts in `TERMS.md`, `PRIVACY.md` and `site/legal/user-agreement.md` are **t
 - [ ] **Hosted URLs**: the apps link to `https://tinkerdoge.github.io/FoxFleet/legal/terms` and `.../privacy`. If the docs move, change `web/src/lib/terms.ts` and `android/.../data/Terms.kt`.
 - [ ] **Hub operators** (including you) need their own privacy information for their users; the project policy covers only the project's apps and docs.
 - [ ] **Trademarks**: confirm the Foxfleet name and logo are yours to use; add trademark guidance if wanted.
-- [ ] **Funding links** in `.github/FUNDING.yml` and the support page are still placeholders.
+- [ ] **Funding links:** none exist yet. When one does, add it to `.github/FUNDING.yml`, the README Support section and the support page.
 - [ ] **Play Store / other stores** (if ever): data-safety forms and a privacy-policy URL pointing at the hosted page.

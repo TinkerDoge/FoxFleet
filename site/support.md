@@ -4,13 +4,7 @@
 
 Foxfleet is free and MIT licensed, and always will be. If it is useful to you, optional tips help fund development time.
 
-::: warning Placeholder links
-No payment accounts exist yet. The repository's `.github/FUNDING.yml` contains placeholders; the buttons below will point to real pages once the maintainer sets them up.
-:::
-
-- GitHub Sponsors: *coming soon* (placeholder)
-- Ko-fi: *coming soon* (placeholder)
-- Other: <https://example.com/support-foxfleet> (placeholder)
+There are no sponsorship accounts yet; this page will link to them if that changes.
 
 Free ways to help: star the repository, report bugs, improve these docs, add a provider ([guide](/agents/write-a-plugin)).
 

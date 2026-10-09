@@ -6,6 +6,8 @@ You need one always-on machine for the **hub** (a small VPS, NAS, mini PC or old
 The Node path below is what the project's CI and the deploy script exercise. The Docker path follows the repository's `Dockerfile` and `compose.yaml`, but **the image build has not been run end to end** by the maintainers yet. If it breaks, [open an issue](https://github.com/TinkerDoge/FoxFleet/issues).
 :::
 
+![Web app: connecting a machine with one command, a pairing code and a QR](/img/web-machines-light.webp)
+
 ## Option A: plain Node (22 or newer)
 
 ```bash

@@ -2,6 +2,8 @@
 
 A Foxfleet hub is one Node process (Node 22 or newer, no `npm install` for the server) plus the built web app. Pick whichever of these fits:
 
+![The web app, dark mode, signed in to a self-hosted hub](/img/web-chat-dark.webp)
+
 | You have | Use |
 | --- | --- |
 | A Linux box you control | [systemd user service](./systemd) with the included deploy script |

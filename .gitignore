@@ -50,3 +50,5 @@ site/hosting/environment.md
 site/project/roadmap.md
 site/public/licenses/
 android/keystore.properties
+design/demo/*.bgra
+__pycache__/

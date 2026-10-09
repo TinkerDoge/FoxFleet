@@ -28,7 +28,11 @@ export default defineConfig({
     ['link', { rel: 'icon', type: 'image/png', href: '/FoxFleet/favicon.png' }],
     ['meta', { name: 'theme-color', content: '#BE4A21' }],
     ['meta', { property: 'og:title', content: 'Foxfleet docs' }],
-    ['meta', { property: 'og:image', content: 'https://tinkerdoge.github.io/FoxFleet/img/web-chat.png' }],
+    ['meta', { property: 'og:image', content: 'https://tinkerdoge.github.io/FoxFleet/img/og.jpg' }],
+    ['meta', { property: 'og:image:width', content: '1280' }],
+    ['meta', { property: 'og:image:height', content: '640' }],
+    ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
+    ['meta', { name: 'twitter:image', content: 'https://tinkerdoge.github.io/FoxFleet/img/og.jpg' }],
   ],
   themeConfig: {
     logo: { light: '/wordmark-light.png', dark: '/wordmark-dark.png', alt: 'Foxfleet' },

@@ -51,10 +51,10 @@ features:
 ## What it looks like
 
 <div class="shots">
-<figure><img src="/img/web-chat.png" alt="Web app chat with Markdown reply"><figcaption>Web: chat with Markdown</figcaption></figure>
-<figure><img src="/img/web-agents.png" alt="Web app, manage agents"><figcaption>Web: manage agents</figcaption></figure>
-<figure><img src="/img/android-chat-dark.png" alt="Android app chat in dark mode"><figcaption>Android: dark mode chat</figcaption></figure>
-<figure><img src="/img/web-screen-takeover.png" alt="Web screen takeover"><figcaption>Web: screen takeover</figcaption></figure>
+<figure><img src="/img/web-chat-light.webp" alt="Foxfleet web app: a chat with a Markdown table, code block and usage chart" loading="lazy"><figcaption>Web: chat with tables, code and images</figcaption></figure>
+<figure><img src="/img/web-machines-light.webp" alt="Web: Connect a machine with command, pairing code, QR and the profiles found" loading="lazy"><figcaption>Web: connect a machine in one command</figcaption></figure>
+<figure><img src="/img/android-trio.webp" alt="Android app: agent list, dark chat and pairing screen" loading="lazy"><figcaption>Android: same design, light and dark</figcaption></figure>
+<figure><img src="/img/web-screen-dark.webp" alt="Web: taking over an agent's desktop with a red border" loading="lazy"><figcaption>Web: screen takeover</figcaption></figure>
 </div>
 
 ## Downloads

@@ -6,6 +6,8 @@ The app is `dev.foxfleet.app` (name **Foxfleet**), minimum Android 10 (API 29), 
 Unit tests and screenshot tests (Roborazzi) pass in development and the APK assembles, but the maintainers have not yet run the current build end to end on a physical device. Release builds are signed with the project's own key (certificate SHA-256 `df97dd3d75119537bce17a868bba08c8b5675c54c01a16a2f6b0fe5d528252df`; verify with `apksigner verify --print-certs`); there is no store listing yet.
 :::
 
+![Android app: agent list, dark-mode chat and the Connect a machine screen](/img/android-trio.webp)
+
 ## Get the APK
 
 <!-- Switch these links back to /releases/latest once a stable (non-pre-release) release exists: /latest skips pre-releases. -->

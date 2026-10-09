@@ -13,7 +13,7 @@
 </p>
 
 <p align="center">
-  <b><a href="https://tinkerdoge.github.io/FoxFleet/">Documentation</a></b> · <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
+  <b><a href="https://tinkerdoge.github.io/FoxFleet/">Documentation</a></b> · <a href="https://github.com/TinkerDoge/FoxFleet/releases">Releases</a> · <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
 </p>
 
 Foxfleet puts the agents you run on your own machines and the chat APIs you pay for in **one calm place**. You run a small hub
@@ -25,7 +25,7 @@ machine addresses never leave the hub.
 > physical devices** and the `foxfleet://connect` deep link, and a **screen-reader pass** of the web app. See [Known limits](#known-limits).
 
 <p align="center">
-  <img src="docs/images/web-chat.png" alt="Web app: chat with a table, code block with copy button and an image" width="820">
+  <img src="docs/images/hero.webp" alt="Foxfleet web app showing a chat with a Markdown table, a code block and a usage chart, next to the Android app in dark mode" width="900">
 </p>
 
 ## Features
@@ -41,25 +41,26 @@ machine addresses never leave the hub.
 - **Installable web app (PWA)** with an app-shell-only service worker and an explicit "new version, reload" prompt. Nothing from `/api` is ever cached.
 - **Shared design.** One `design/tokens.json` generates the web CSS and the Android theme; light/dark, five accents, text size and reduced-motion settings.
 
-<table>
-  <tr>
-    <td><img src="docs/images/android-fleet.png" alt="Android: agent list" width="230"></td>
-    <td><img src="docs/images/android-chat-dark.png" alt="Android: rich chat, dark" width="230"></td>
-    <td><img src="docs/images/android-screen.png" alt="Android: screen takeover, dark" width="230"></td>
-  </tr>
-  <tr><td colspan="3"><sub>Android screenshots are rendered from test fixtures (Roborazzi) with generic agent names.</sub></td></tr>
-</table>
+### Android
+
+<p align="center">
+  <img src="docs/images/android-trio.webp" alt="Android app: the agent list, a dark-mode chat with a photo, table and code, and the Connect a machine screen with its pairing QR code" width="760">
+</p>
+
+### Web
 
 <table>
   <tr>
-    <td><img src="docs/images/web-agents.png" alt="Web: manage agents" width="400"></td>
-    <td><img src="docs/images/web-screen-takeover.png" alt="Web: in control of a remote screen (red border)" width="400"></td>
+    <td><img src="docs/images/web-machines-light.webp" alt="Web: Connect a machine, with the one-line command, pairing code, QR and the three profiles found" width="400"></td>
+    <td><img src="docs/images/web-screen-dark.webp" alt="Web: taking over an agent's desktop; the red border shows you are in control" width="400"></td>
   </tr>
   <tr>
-    <td><img src="docs/images/web-admin-dark.png" alt="Web: Admin with pairing QR, dark" width="400"></td>
-    <td><sub>Web screenshots come from a mock hub with fixture data (<code>web/tools/mock-hub.mjs</code>).</sub></td>
+    <td><img src="docs/images/web-admin-dark.webp" alt="Web: Admin page with pairing QR and invites, dark mode" width="400"></td>
+    <td><img src="docs/images/web-settings-light.webp" alt="Web: settings with theme, accent colour and text size" width="400"></td>
   </tr>
 </table>
+
+<sub>Screenshots are taken from the real apps with demo data (<code>design/tools/make-readme-images.py</code> rebuilds them). The demo hub, agents and chats are made up; the mascot and brand artwork are © Shibe De Doge.</sub>
 
 ## Supported agents
 
@@ -111,7 +112,8 @@ The hub itself has no npm dependencies. For a systemd user service and the updat
 cd android && ./gradlew assembleDebug      # JDK 17, Android SDK 36; APK in app/build/outputs/apk/debug/
 ```
 
-Install the APK, then on the first screen type your hub address, tap **Scan QR**, or open a `foxfleet://connect?hub=https://…` link. In the web app, **Admin → Pair a phone** shows the QR; invite links carry the invite code too. Public hubs must use `https://` (plain `http://` is only offered for local addresses, behind an explicit switch).
+<!-- Switch to /releases/latest once a stable (non-pre-release) release exists. -->
+Download the signed APK from [Releases](https://github.com/TinkerDoge/FoxFleet/releases) (or build it as above), install it, then on the first screen type your hub address, tap **Scan QR**, or open a `foxfleet://connect?hub=https://…` link. In the web app, **Admin → Pair a phone** shows the QR; invite links carry the invite code too. Public hubs must use `https://` (plain `http://` is only offered for local addresses, behind an explicit switch).
 
 ## Connect a computer that runs Hermes
 
@@ -216,13 +218,9 @@ Issues and pull requests are welcome; start with [CONTRIBUTING.md](CONTRIBUTING.
 
 ## Support
 
-Foxfleet is free and MIT licensed. If it saves you time you can chip in; these links are **placeholders** until the maintainer sets up real accounts:
+Foxfleet is free and MIT licensed. There are no sponsorship accounts yet; if you want to support it, the best help is to try it, report what breaks and send pull requests.
 
-- GitHub Sponsors: _coming soon_ (`https://github.com/sponsors/REPLACE_WITH_GITHUB_USERNAME`)
-- Ko-fi: _coming soon_ (`https://ko-fi.com/REPLACE_WITH_KOFI_NAME`)
-- Other: `https://example.com/support-foxfleet`
-
-Stars, bug reports and pull requests help just as much.
+A star helps others find it.
 
 ## Artwork
 

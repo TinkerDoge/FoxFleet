@@ -1,6 +1,3 @@
-# Placeholders: replace with real accounts when the maintainer sets them up. No payment accounts exist yet.
-github: [REPLACE_WITH_GITHUB_USERNAME]
-ko_fi: REPLACE_WITH_KOFI_NAME
-# buy_me_a_coffee: REPLACE_ME
-# liberapay: REPLACE_ME
-custom: ["https://example.com/support-foxfleet"]
+# No sponsorship accounts exist yet. When the maintainer sets one up, add it here, for example:
+# github: [username]
+# ko_fi: name

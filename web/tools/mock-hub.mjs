@@ -7,22 +7,27 @@ import { qrRows } from '../../server/qr.js';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const field = (key, label, type, o = {}) => ({ key, label, type, required: false, writeOnly: false, advanced: false, ...o });
 const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, ...o });
-const REPLY = `Here is a quick summary of the **fleet status**.
+const REPLY = `Here is the **weekly summary** you asked for. Atlas handled most of the load, and Friday was the busiest day.
 
-| Agent | State | Notes |
-|---|---|---|
-| Atlas | online | indexing the docs |
-| Nova | online | idle |
-| Echo | offline | needs a new key |
+| Agent | Tokens | Status |
+|---|---:|---|
+| Atlas | 1.19M | online |
+| Nova | 0.74M | online |
+| Echo | 0.29M | offline |
 
-\`\`\`ts
-export function greet(name: string) {
-  return \`Hello, \${name}!\`;
-}
+I also wrote a small helper so you can rerun it any time:
+
+\`\`\`python
+def weekly_tokens(rows):
+    totals = {}
+    for agent, tokens in rows:
+        totals[agent] = totals.get(agent, 0) + tokens
+    return dict(sorted(totals.items(), key=lambda kv: -kv[1]))
 \`\`\`
 
-- Open the [docs](https://example.com/docs) for setup.
-- A picture: ![chart](/api/agents/atlas/media/chart.png)
+![Tokens per day, last 7 days](/api/agents/atlas/media/chart.png)
+
+Next step: rotate Echo's API key, then I can re-run the report. Want me to open a task for it?
 `;
 
 export function createMock({ dist = path.join(here, '..', 'dist'), delay = Number(process.env.MOCK_DELAY || 25), setupFirst = process.env.MOCK_SETUP === '1' } = {}) {
@@ -41,12 +46,14 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   const sessions = new Map(); // token -> user
   let saved = [
     { name: 'atlas', kind: 'hermes', label: 'Atlas', description: 'Research and code on the workstation', connection: 'machine', hasHost: false },
+    { name: 'coder', kind: 'hermes', label: 'Coder', description: 'Reviews and refactors the repos', connection: 'machine', hasHost: false },
+    { name: 'research', kind: 'hermes', label: 'Research', description: 'Reads papers and summarises them', connection: 'machine', hasHost: false },
     { name: 'nova', kind: 'openrouter', label: 'Nova', hasApiKey: true, model: 'vendor/model-large' },
     { name: 'echo', kind: 'openai', label: 'Echo', hasApiKey: true, model: 'chat-small', hasBaseUrl: true },
   ];
   const users = [{ id: 'u1', username: 'owner1', role: 'owner', disabled: false, created: Date.now() - 9e8 }, { id: 'u2', username: 'guest1', role: 'user', disabled: false, created: Date.now() - 3e8 }];
   const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', pairings = new Map();
-  let machines = [{ id: 'a'.repeat(32), name: 'Workstation', os: 'linux', online: true, paired: true, created: Date.now() - 864e5, lastSeen: Date.now(), profiles: [{ profile: 'default', agent: 'atlas' }] }];
+  let machines = [{ id: 'a'.repeat(32), name: 'Workstation', os: 'linux', online: true, paired: true, created: Date.now() - 864e5, lastSeen: Date.now(), profiles: [{ profile: 'default', agent: 'atlas' }, { profile: 'coder', agent: 'coder' }, { profile: 'research', agent: 'research' }] }];
   const pairingOut = (code, origin) => { const url = `${origin}/c/${code}`; return { code, display: `${code.slice(0, 5)}-${code.slice(5)}`, expires: pairings.get(code).expires, url, link: `foxfleet://pair?hub=${encodeURIComponent(origin)}&code=${code}`, rows: qrRows(url),
     commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${origin}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${origin} --code ${code}` } }; };
   let invites = [{ id: 'i1', created: Date.now() - 3600e3, expires: Date.now() + 70 * 3600e3, used: false }];
@@ -54,7 +61,9 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   let lease = null, screenOn = true;
   const agentsOut = () => saved.map((s) => ({ id: s.name, name: s.name, displayName: s.label || s.name, kind: s.kind, online: s.name !== 'echo', chatReady: true, managementReady: s.kind === 'hermes', description: s.description || '',
     capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true }) : caps({ images: s.name === 'nova', sessions: false }) }));
-  const chatSessions = { atlas: [{ id: 'sess_a1', title: 'Docs indexing' }, { id: 'sess_a2', title: 'Release notes draft' }] };
+  const chatSessions = { atlas: [{ id: 'sess_a1', title: 'Weekly usage summary' }, { id: 'sess_a2', title: 'Release notes draft' }, { id: 'sess_a3', title: 'Docs indexing' }] };
+  const demo = (f) => { const x = path.join(here, '..', '..', 'design', 'demo', f); return fs.existsSync(x) ? x : null; };
+  const DESKTOP = process.env.MOCK_DESKTOP === '1' && demo('desktop.bgra');
   const json = (res, code, o, h = {}) => { res.writeHead(code, { 'content-type': 'application/json', ...h }); res.end(JSON.stringify(o)); };
   const body = (req) => new Promise((r) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch { r({}); } }); });
   const mime = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.png': 'image/png', '.webmanifest': 'application/manifest+json', '.json': 'application/json' };
@@ -119,14 +128,14 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     const a = /^\/api\/agents\/([^/]+)\/(sessions|skills|chat|files|media|screen)(?:\/([^/]+))?(?:\/messages)?$/.exec(p);
     if (a) {
       const [, agent, what, sid] = a;
-      if (what === 'media') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(fs.readFileSync(path.join(dist, 'fox.png'))); }
+      if (what === 'media') { const f = (sid === 'photo.jpg' ? demo('photo.jpg') : demo('chart.png')) || path.join(dist, 'fox.png'); res.writeHead(200, { 'content-type': f.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }); return res.end(fs.readFileSync(f)); }
       if (what === 'skills') return json(res, 200, { skills: ['review', 'research', 'deploy-notes', 'translate'] });
       if (what === 'sessions' && !sid) return json(res, 200, { sessions: chatSessions[agent] || [] });
-      if (what === 'sessions') return json(res, 200, { messages: [{ role: 'user', content: 'Summarise the fleet.' }, { role: 'assistant', content: REPLY }] });
+      if (what === 'sessions') return json(res, 200, { messages: [{ role: 'user', content: 'Can you summarise last week’s agent activity and chart the token usage?' }, { role: 'assistant', content: REPLY }] });
       if (what === 'files') { await body(req); return json(res, 200, { name: url.searchParams.get('name'), path: 'uploads/' + url.searchParams.get('name') }); }
       if (what === 'screen') {
         await body(req).catch(() => {});
-        const view = () => ({ running: screenOn, supported: true, installed: true, geometry: '800x500', blocker: null, lease });
+        const view = () => ({ running: screenOn, supported: true, installed: true, geometry: DESKTOP ? '1280x800' : '800x500', blocker: null, lease });
         if (sid === 'status') return json(res, 200, view());
         if (sid === 'start') { screenOn = true; return json(res, 200, view()); }
         if (sid === 'observe') { const ticket = randomBytes(12).toString('hex'); tickets.add(ticket); setTimeout(() => tickets.delete(ticket), 30000); return json(res, 200, { ticket, expiresInMs: 30000, ...view() }); }
@@ -148,8 +157,9 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   server.on('upgrade', (req, socket) => {
     const u = new URL(req.url, 'http://x'); const t = u.searchParams.get('ticket');
     if (!/^\/api\/agents\/[^/]+\/screen\/ws$/.test(u.pathname) || !t || !tickets.delete(t)) { socket.end('HTTP/1.1 403 Forbidden\r\n\r\n'); return; }
-    const ws = wsAccept(req, socket, req.headers['sec-websocket-protocol'] ? { protocol: 'binary' } : {}); const W = 800, H = 500; let buf = Buffer.alloc(0), stage = 0, dirty = false, asked = false, px = 400, py = 250, typed = '';
+    const ws = wsAccept(req, socket, req.headers['sec-websocket-protocol'] ? { protocol: 'binary' } : {}); const W = DESKTOP ? 1280 : 800, H = DESKTOP ? 800 : 500; let buf = Buffer.alloc(0), stage = 0, dirty = false, asked = false, px = 400, py = 250, typed = '';
     const frame = () => {
+      if (DESKTOP) { const f = Buffer.from(fs.readFileSync(DESKTOP)); for (let y = -9; y <= 9; y++) for (let x = -2; x <= 2; x++) { const o = ((py + y) * W + px + x) * 4; if (o >= 0 && o < f.length - 3) { f[o] = 20; f[o + 1] = 20; f[o + 2] = 20; } } return f; }
       const f = Buffer.alloc(W * H * 4); const put = (x, y, r, g, b) => { if (x < 0 || y < 0 || x >= W || y >= H) return; const o = (y * W + x) * 4; f[o] = b; f[o + 1] = g; f[o + 2] = r; };
       for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) put(x, y, 245 - y / 10, 190 - y / 14, 140 + x / 20);
       const rect = (x0, y0, w, h, r, g, b) => { for (let y = y0; y < y0 + h; y++) for (let x = x0; x < x0 + w; x++) put(x, y, r, g, b); };
