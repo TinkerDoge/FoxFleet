@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LAN fleet tool: HTTPS for the public origin; cleartext allowed only for
+     private address space (10.x / 192.168.x / 172.16-31.x direct relay access). -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>

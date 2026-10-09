@@ -1,0 +1,511 @@
+﻿// Foxfleet relay: secrets stay server-side; importing never opens a listener.
+import http from 'node:http';
+import { readFile, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
+import { Readable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, isChatKind } from './config.js';
+import { hermesClient, upstreamJson, boundedBytes, safeAgentData } from './hermes.js';
+import { artifactRegistry } from './artifacts.js';
+import { scanAvatarPacks } from './avatars.js';
+import { screenRelay } from './screen.js';
+import { inboxStore } from './inbox.js';
+import { mcpHandler, bearer } from './mcp.js';
+import { openaiClient } from './openai.js';
+import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
+import { connectorHub } from './connector.js';
+import { wsAccept } from './ws.js';
+import { qrSvg, qrRows } from './qr.js';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { mkdir } from 'node:fs/promises';
+
+const DIR = path.dirname(fileURLToPath(import.meta.url)), WEB_DIR = path.resolve(process.env.FOXFLEET_WEB_DIR || path.join(DIR, '..', 'web', 'dist'));
+// Strict CSP for the web app: same-origin scripts only (Vite emits no inline script), inline style attributes allowed for layout.
+const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.webmanifest': 'application/manifest+json', '.svg': 'image/svg+xml', '.png': 'image/png', '.webp': 'image/webp', '.jpg': 'image/jpeg', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.webm': 'video/webm', '.mp4': 'video/mp4', '.map': 'application/json' };
+const DEFAULT_AVATAR_DIR = path.join(WEB_DIR, 'avatars');
+// Body limits (see docs/UPLOAD-LIMITS.md). JSON is buffered, so it stays small; files stream.
+//  - JSON default 4 MiB (unchanged). Chat 10 MiB = the Hermes API server's own MAX_REQUEST_BYTES.
+//  - Files 90 MiB, streamed straight into the dashboard's chunked upload (constant hub memory):
+//    under Cloudflare's 100 MB request cap (Free/Pro) with room for multipart framing, and
+//    under Hermes' 100 MiB managed-file cap.
+export const LIMITS = { json: 4 * 1024 * 1024, chat: 10 * 1024 * 1024, transcribe: 12 * 1024 * 1024, file: 90 * 1024 * 1024 };
+const BODY_LIMIT = LIMITS.json, SESSION_AGE = 30 * 24 * 60 * 60 * 1000;
+export const APP_ORIGIN = 'https://appassets.androidplatform.net';
+const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
+const loopback = (host) => ['localhost', '127.0.0.1', '::1'].includes(host);
+const digest = (value) => createHash('sha256').update(value).digest();
+function trustedOriginList(value) {
+  const list = typeof value === 'string' ? value.trim() ? value.split(',').map((item) => item.trim()) : [] : value;
+  if (!Array.isArray(list) || list.length > 16) throw fault(400, 'Invalid trusted origins; configure at most 16 HTTP(S) origins');
+  return new Set(list.map((item) => {
+    if (typeof item !== 'string' || item.length > 2048) throw fault(400, 'Invalid trusted origins');
+    const text = item.trim(); let url;
+    try { url = new URL(text); } catch { throw fault(400, 'Invalid trusted origins'); }
+    if (!/^https?:\/\/[^/?#\\\s]+\/?$/i.test(text) || /[\x00-\x20\x7f@*]/.test(text) || url.username || url.password || url.pathname !== '/' || url.search || url.hash || !validHost(url.hostname.replace(/^\[|\]$/g, '')) || url.port === '0') throw fault(400, 'Invalid trusted origins; use HTTP(S) origins without credentials, paths or wildcards');
+    return url.origin;
+  }));
+}
+function sendJson(res, status, data, headers = {}) {
+  if (res.headersSent || res.destroyed) return;
+  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers }); res.end(JSON.stringify(data));
+}
+async function readJson(req, limit = BODY_LIMIT, allowArray = false) {
+  if (Number(req.headers['content-length']) > limit) { req.resume(); throw fault(413, 'Request body too large'); }
+  let size = 0, chunks = [];
+  for await (const chunk of req) { size += chunk.length; if (size > limit) { req.resume(); throw fault(413, 'Request body too large'); } chunks.push(chunk); }
+  try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); if (!value || (Array.isArray(value) && !allowArray) || typeof value !== 'object') throw new Error(); return value; }
+  catch { throw fault(400, 'Invalid JSON body'); }
+}
+function sessionId(value) { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value)) throw fault(400, 'Invalid session ID'); return value; }
+async function serveStatic(url, res, avatarBase = DEFAULT_AVATAR_DIR) {
+  let name; try { name = decodeURIComponent(url.pathname); } catch { throw fault(400, 'Invalid path'); }
+  if (name === '/') name = '/index.html';
+  const isAvatar = name.startsWith('/avatars/');
+  const root = isAvatar ? avatarBase : WEB_DIR;
+  const relative_name = isAvatar ? name.slice('/avatars'.length) : name;
+  const target = path.resolve(root, '.' + relative_name), relative = path.relative(root, target);
+  if (relative.startsWith('..') || path.isAbsolute(relative) || name.includes('\\') || name.includes('\0')) throw fault(403, 'Forbidden');
+  const send = async (file, spa) => {
+    const data = await readFile(file), ext = path.extname(file);
+    const html = ext === '.html';
+    // Hashed build output is immutable; the shell, service worker and manifest always revalidate (a deploy must be seen at once).
+    const hashed = !isAvatar && /^\/assets\//.test(name) && /-[A-Za-z0-9_-]{8,}\./.test(path.basename(file));
+    const cache = hashed ? 'public, max-age=31536000, immutable' : (html || ['.js', '.webmanifest'].includes(ext)) && !isAvatar ? 'no-cache' : 'public, max-age=300';
+    res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'same-origin', 'Cache-Control': cache, ...(html ? { 'Content-Security-Policy': CSP, 'Permissions-Policy': 'microphone=(self), camera=()', 'X-Frame-Options': 'DENY' } : {}) }); res.end(data);
+  };
+  try { return await send(target, false); } catch {}
+  // SPA fallback: extension-less paths (client routes) get the app shell; missing files stay 404.
+  if (!isAvatar && !path.extname(url.pathname)) { try { return await send(path.join(WEB_DIR, 'index.html'), true); } catch { res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' }); return res.end('The web app is not built. Run "npm run build" in web/ (or use the Docker image).'); } }
+  sendJson(res, 404, { error: 'Not found' });
+}
+function chatBody(data) {
+  if (!Array.isArray(data.messages) || data.messages.length < 1 || data.messages.length > 2000 || !data.messages.every((m) => m && ['user', 'assistant', 'system', 'tool', 'function'].includes(m.role) && (typeof m.content === 'string' || Array.isArray(m.content) || m.content === null))) throw fault(400, 'Invalid chat messages');
+  if (data.model !== undefined && (typeof data.model !== 'string' || data.model.length > 200 || /[\x00-\x1f]/.test(data.model))) throw fault(400, 'Invalid model');
+  if (data.session_id !== undefined) sessionId(data.session_id);
+  return { model: data.model || 'hermes-agent', messages: data.messages, stream: true };
+}
+const safeFileName = (value) => {
+  const base = String(value || '').split(/[\\/]/).pop().normalize('NFC').replace(/[\x00-\x1f\x7f]/g, '').replace(/[^\p{L}\p{N} ._()+-]/gu, '_').replace(/^\.+/, '').slice(-120).trim();
+  return base || 'file';
+};
+const sse = (res, text, headers = {}) => {
+  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers });
+  res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] })}\n\ndata: [DONE]\n\n`);
+};
+async function streamResponse(req, res, getResponse, timeoutMs, headers, failureMessage = 'Agent request failed') {
+  const abort = new AbortController(), onClose = () => { if (!res.writableEnded) abort.abort(); };
+  res.once('close', onClose);
+  const timer = setTimeout(() => abort.abort(), timeoutMs); timer.unref();
+  try {
+    const upstream = await getResponse(abort.signal); clearTimeout(timer);
+    if (!upstream.ok || !upstream.body) { await upstream.body?.cancel(); throw fault([403, 404, 405, 409, 413, 416].includes(upstream.status) ? upstream.status : 502, failureMessage); }
+    if (res.destroyed) { await upstream.body.cancel(); return; }
+    res.writeHead(upstream.status, headers(upstream));
+    await pipeline(Readable.fromWeb(upstream.body), res, { signal: abort.signal });
+  } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
+}
+
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir } = {}) {
+  if (!validHost(host)) throw fault(400, 'Invalid bind host');
+  if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
+  if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 50 || timeoutMs > 120000) throw fault(400, 'Invalid timeout');
+  if (avatarDir !== undefined && (typeof avatarDir !== 'string' || !path.isAbsolute(avatarDir) || avatarDir.includes('\0'))) throw fault(400, 'Invalid avatar directory');
+  const trusted = trustedOriginList(trustedOrigins);
+  const trustedList = trusted, cfgPath = path.resolve(configPath), dataDir = path.dirname(cfgPath), avatarBase = avatarDir ? path.resolve(avatarDir) : DEFAULT_AVATAR_DIR;
+  const accounts = await accountStore(path.join(dataDir, 'accounts'));
+  // Legacy FOXFLEET_PASSWORD bootstraps the first owner ("owner") so existing deployments keep working.
+  if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
+  const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
+  const connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
+  function registryFor(userId, owner) {
+    if (!registries.has(userId)) registries.set(userId, (async () => {
+      const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
+      const up = hermesClient(timeoutMs), reg = { store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
+      reg.mcp = mcpHandler(reg.inbox); return reg;
+    })());
+    return registries.get(userId);
+  }
+  const scoped = (key) => new Proxy({}, { get: (_, prop) => { const t = als.getStore()?.reg?.[key]; if (!t) throw fault(401, 'Login required'); const v = t[prop]; return typeof v === 'function' ? v.bind(t) : v; } });
+  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), mcp = (...a) => als.getStore().reg.mcp(...a);
+  const allRegistries = async () => singleUser ? [await registryFor('local', true)] : Promise.all(accounts.users().map((u) => registryFor(u.id, u.role === 'owner')));
+  await allRegistries(); // fail fast on unreadable saved config
+  const secureRequest = (req) => req.headers['x-forwarded-proto'] === 'https' || trusted.has(`https://${req.headers.host}`);
+  const kindOf = (m) => m.kind || 'hermes';
+  const mcpHits = new Map();
+  async function inboxAgent(req) {
+    const hash = createHash('sha256').update(bearer(req)).digest('hex');
+    for (const reg of await allRegistries()) {
+      const agent = reg.store.all().find((m) => m.kind === 'mcp-inbox' && m.inboxTokenHash.length === hash.length && timingSafeEqual(Buffer.from(m.inboxTokenHash), Buffer.from(hash)));
+      if (!agent) continue;
+      const now = Date.now(), key = createHash('sha1').update(hash).digest('hex'), hit = mcpHits.get(key) || { count: 0, until: now + 60000 };
+      if (hit.until < now) { hit.count = 0; hit.until = now + 60000; }
+      if (++hit.count > 120) throw fault(429, 'Too many requests');
+      mcpHits.set(key, hit); return { agent, reg };
+    }
+    throw fault(401, 'Invalid token');
+  }
+  const newConnectorToken = () => { const id = randomBytes(16).toString('hex'), secret = randomBytes(32).toString('base64url'); return { id, token: `${id}.${secret}`, hash: createHash('sha256').update(secret).digest('hex') }; };
+  const hubOrigin = (req) => `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`;
+  const bootstrapText = (req, token) => { const o = hubOrigin(req); return `Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).\n1. curl -fsSL ${o}/connector.mjs -o foxfleet-connector.mjs\n2. HUB_URL=${o} FOXFLEET_TOKEN=${token} node foxfleet-connector.mjs   (Node 22+; keep it running with systemd, tmux or pm2)\nFull guide: ${o}/connect-agent.md\nThe token is a secret: do not paste it anywhere else.`; };
+  const newInboxToken = () => { const value = randomBytes(32).toString('base64url'); return { value, hash: createHash('sha256').update(value).digest('hex') }; };
+  // The only agent shape clients get: no host, port, URL, profile path or upstream version strings.
+  function agentView(m, p, index) {
+    const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
+    return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
+      description: m.description || '', avatar: m.avatar || null,
+      status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
+      capabilities: capabilitiesOf(m),
+      ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
+      ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
+      checks: Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])) };
+  }
+  function probeAny(m) {
+    if (isChatKind(kindOf(m))) return openai.probe(m);
+    if (kindOf(m) === 'mcp-inbox') { const seen = inbox.lastSeen(m.name); return Promise.resolve({ name: m.name, kind: 'mcp-inbox', label: m.label, online: seen > Date.now() - 24 * 3600 * 1000, chatReady: true, managementReady: false, lastSeen: seen ? new Date(seen).toISOString() : null, checks: { inbox: { ok: true, message: seen ? 'Agent checked in' : 'Waiting for the agent to connect' } }, capabilities: { object: 'foxfleet.bridge', features: { chat_completions: true, mailbox: true, images: false, files: false, screen: false, sessions: true } } }); }
+    if (m.connectorId && !connectors.isOnline(m.connectorId)) return Promise.resolve({ name: m.name, kind: 'hermes', label: m.label, online: false, chatReady: false, managementReady: false, checks: { connector: { ok: false, message: 'Waiting for the connector to dial in' } } });
+    return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.connectorId ? { checks: { connector: { ok: true, message: 'Connector online' }, ...a.checks } } : {}) }));
+  }
+  function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
+  function agentData(m, route, data, originalConnections) { current(m); const safe = safeAgentData(data, [...originalConnections, ...store.all()]); return route === 'skills' && Array.isArray(safe) ? { skills: safe } : safe; }
+  const cookieToken = (req) => req.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith('foxfleet_session='))?.slice('foxfleet_session='.length);
+  const bearerToken = (req) => /^Bearer (\S{1,200})$/i.exec(req.headers.authorization || '')?.[1];
+  const cookieFor = (req, value, maxAge = ACCOUNT_SESSION_AGE / 1000) => `foxfleet_session=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secureRequest(req) ? '; Secure' : ''}`;
+  // Resolve the caller: { user, device, via, rotated? } or null. Bearer (app) wins over cookie (web).
+  async function identify(req) {
+    if (singleUser) return { user: { id: 'local', username: 'local', role: 'owner' }, device: 'local', via: 'single' };
+    const b = bearerToken(req), c = cookieToken(req), token = b || c;
+    const found = token ? await accounts.authenticate(token) : null;
+    return found ? { ...found, via: b ? 'bearer' : 'cookie' } : null;
+  }
+  const clientIp = (req) => req.socket.remoteAddress || '';
+  function authThrottle(req) { const ip = clientIp(req), now = Date.now(), a = authFails.get(ip) || { count: 0, until: now + 60000 }; if (a.until < now) { a.count = 0; a.until = now + 60000; } if (++a.count > 60) throw fault(429, 'Too many requests'); authFails.set(ip, a); if (authFails.size > 5000) authFails.clear(); }
+  const sessionReply = (req, res, auth, user, client, deviceId, token) => sendJson(res, 200, { authenticated: true, user, deviceId, ...(client === 'app' ? { token } : {}) }, client === 'app' ? {} : { 'Set-Cookie': cookieFor(req, token) });
+  function boundary(req, server) {
+    if (typeof req.headers.host !== 'string' || /[\s\/\\@?#]/.test(req.headers.host)) throw fault(403, 'Untrusted host');
+    let authority; try { authority = new URL('http://' + req.headers.host); } catch { throw fault(403, 'Untrusted host'); }
+    const address = req.socket.localAddress?.replace(/^::ffff:/, ''), allowed = new Set([host, address]);
+    if (loopback(address)) { allowed.add('localhost'); allowed.add('127.0.0.1'); allowed.add('::1'); }
+    const requestOrigins = new Set();
+    if (allowed.has(authority.hostname.replace(/^\[|\]$/g, '')) && Number(authority.port || 80) === server.address()?.port) requestOrigins.add(authority.origin);
+    // Only explicit origins may account for a published port or HTTPS proxy.
+    // Forwarded headers never expand the authority or scheme trusted here.
+    for (const scheme of ['http', 'https']) {
+      const candidate = new URL(`${scheme}://${req.headers.host}`).origin;
+      if (trusted.has(candidate)) requestOrigins.add(candidate);
+    }
+    if (!requestOrigins.size) throw fault(403, 'Untrusted host');
+    if (!['GET', 'HEAD'].includes(req.method)) {
+      if (req.headers['sec-fetch-site'] === 'cross-site') throw fault(403, 'Cross-origin request rejected');
+      if (req.headers.origin && !requestOrigins.has(req.headers.origin)) throw fault(403, 'Cross-origin request rejected');
+      const mime = req.headers['content-type'], hasBody = Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding'];
+      const upload = req.method === 'POST' && /^\/api\/agents\/[^/]+\/files$/.test(req.url.split('?')[0]) && /^application\/octet-stream$/i.test(mime || '');
+      if (!upload && (mime || hasBody) && !/^application\/json(?:\s*;|$)/i.test(mime || '')) { req.resume(); throw fault(415, 'Mutations require application/json'); }
+    }
+  }
+  const server = http.createServer((req, res) => als.run({}, async () => {
+    const ctx = als.getStore();
+    try {
+      boundary(req, server);
+      const url = new URL(req.url, 'http://hub');
+      let parts; try { parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { throw fault(400, 'Invalid path'); }
+      if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
+      if (req.method === 'GET' && url.pathname === '/connector.mjs') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'connector', 'foxfleet-connector.mjs'))); }
+      if (req.method === 'GET' && url.pathname === '/connect-agent.md') { res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'docs', 'CONNECT-AGENT.md'))); }
+      const auth = await identify(req); ctx.auth = auth;
+      if (req.method === 'GET' && url.pathname === '/pair') { // owner-only page with the pairing QR (web counterpart of the in-app Admin screen)
+        if (!auth || auth.user.role !== 'owner') { res.writeHead(302, { Location: '/', 'Cache-Control': 'no-store' }); return res.end(); }
+        const hub = hubOrigin(req), link = `foxfleet://connect?hub=${hub}`; let svg = ''; try { svg = qrSvg(link); } catch {}
+        const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'; img-src data:" });
+        return res.end(`<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pair a phone</title><style>body{font:16px system-ui;margin:0;display:grid;place-items:center;min-height:100vh;background:#f6f3ee;color:#2b2723}main{max-width:380px;padding:24px;text-align:center}svg{width:260px;height:260px;border-radius:12px}code{word-break:break-all;font-size:13px}@media(prefers-color-scheme:dark){body{background:#14110f;color:#eee}}a{color:#d9622b}</style><main><h1>Pair a phone</h1><p>Open Foxfleet on your phone, tap <b>Scan QR</b> on the first screen, and point it here.</p>${svg || '<p>Address too long for a QR.</p>'}<p><code>${esc(link)}</code></p><p><a href="/">Back</a></p></main>`);
+      }
+      if (auth) { ctx.reg = await registryFor(auth.user.id, auth.user.role === 'owner'); if (auth.rotated) res.setHeader(auth.via === 'cookie' ? 'Set-Cookie' : 'X-Session-Token', auth.via === 'cookie' ? cookieFor(req, auth.rotated) : auth.rotated); }
+      const originalConnections = auth ? store.all() : [];
+      const body0 = () => readJson(req, 64 * 1024), deviceMeta = (b, client) => ({ name: typeof b.deviceName === 'string' && b.deviceName.trim() ? b.deviceName.trim() : client === 'app' ? 'Android app' : 'Web browser', kind: client, ip: clientIp(req), ua: req.headers['user-agent'] });
+      const clientOf = (b) => b.client === 'app' ? 'app' : 'web';
+      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
+      if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
+        authThrottle(req); const b = await body0();
+        if (singleUser || !accounts.needsSetup()) throw fault(409, 'Setup is already complete');
+        if (setupCode) { const given = Buffer.from(String(b.setupCode ?? '')), want = Buffer.from(setupCode); if (given.length !== want.length || !timingSafeEqual(given, want)) throw fault(403, 'Setup code is wrong'); }
+        const user = await accounts.createUser(b.username, b.password, 'owner'), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
+        return sessionReply(req, res, null, user, clientOf(b), deviceId, token);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/auth/login') {
+        authThrottle(req); const b = await body0(); if (singleUser) throw fault(400, 'Login is not used in single-user mode');
+        const user = await accounts.verify(b.username, b.password, clientIp(req)), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
+        return sessionReply(req, res, null, user, clientOf(b), deviceId, token);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/auth/register') {
+        authThrottle(req); const b = await body0(); if (singleUser) throw fault(403, 'Registration is closed');
+        const user = await accounts.register(b.username, b.password, b.invite), { token, deviceId } = await accounts.createSession(user.id, deviceMeta(b, clientOf(b)));
+        return sessionReply(req, res, null, user, clientOf(b), deviceId, token);
+      }
+      if (req.method === 'POST' && url.pathname === '/api/auth/logout') {
+        if (auth && !singleUser) await accounts.revoke(auth.user.id, auth.device).catch(() => {});
+        return sendJson(res, 200, { authenticated: singleUser }, { 'Set-Cookie': cookieFor(req, '', 0) });
+      }
+      if (url.pathname === '/mcp') {
+        // Bridged agents (Scribe) authenticate with their own per-agent bearer token, not a user session.
+        if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST', 'Cache-Control': 'no-store' }); return res.end(); }
+        const { agent, reg } = await inboxAgent(req); ctx.reg = reg;
+        const body = await readJson(req, 256 * 1024, true), reply = mcp(agent, body);
+        if (!reply) { res.writeHead(202, { 'Cache-Control': 'no-store' }); return res.end(); }
+        return sendJson(res, 200, reply);
+      }
+      if (parts[0] === 'api' && !auth) throw fault(401, 'Login required');
+      if (parts[0] === 'api' && parts[1] === 'auth') {
+        const me = auth.user, route = parts[2];
+        if (req.method === 'POST' && route === 'refresh' && !singleUser) { const fresh = await accounts.rotate(auth.device); return sendJson(res, 200, auth.via === 'cookie' ? { ok: true } : { token: fresh }, auth.via === 'cookie' ? { 'Set-Cookie': cookieFor(req, fresh) } : {}); }
+        if (req.method === 'POST' && route === 'logout-all' && !singleUser) { await accounts.revokeAll(me.id); return sendJson(res, 200, { authenticated: false }, { 'Set-Cookie': cookieFor(req, '', 0) }); }
+        if (req.method === 'GET' && route === 'devices' && parts.length === 3) return sendJson(res, 200, { devices: singleUser ? [] : accounts.devices(me.id, auth.device) });
+        if (req.method === 'DELETE' && route === 'devices' && parts.length === 4) { await accounts.revoke(me.id, parts[3]); return sendJson(res, 200, { ok: true, signedOut: parts[3] === auth.device }); }
+        if (req.method === 'POST' && route === 'password' && !singleUser) { const b = await body0(); await accounts.changePassword(me.id, b.current, b.next, auth.device); return sendJson(res, 200, { ok: true }); }
+        throw fault(404, 'Not found');
+      }
+      if (parts[0] === 'api' && parts[1] === 'admin') {
+        if (auth.user.role !== 'owner') throw fault(403, 'Owner only');
+        const route = parts[2];
+        if (route === 'settings' && req.method === 'GET') return sendJson(res, 200, { registration: accounts.registration() });
+        if (route === 'settings' && req.method === 'PUT') { await accounts.setRegistration((await body0()).registration, auth.user.id); return sendJson(res, 200, { registration: accounts.registration() }); }
+        if (route === 'invites' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { invites: accounts.invites() });
+        if (route === 'pairing' && req.method === 'GET') { const hub = hubOrigin(req), link = `foxfleet://connect?hub=${hub}`; let svg = null; try { svg = qrSvg(link); } catch {} return sendJson(res, 200, { hub, link, svg, rows: qrRows(link) }); }
+        if (route === 'invites' && parts.length === 3 && req.method === 'POST') { const b = await body0(), inv = await accounts.createInvite(auth.user.id, Number(b.ttlHours) || 72); const link = `foxfleet://connect?hub=${hubOrigin(req)}&invite=${inv.code}`; return sendJson(res, 201, { ...inv, link, rows: qrRows(link) }); }
+        if (route === 'users' && parts.length === 4 && req.method === 'PATCH') return sendJson(res, 200, { user: await accounts.setDisabled(auth.user.id, parts[3], Boolean((await body0()).disabled)) });
+        if (route === 'invites' && parts.length === 4 && req.method === 'DELETE') { await accounts.deleteInvite(parts[3]); return sendJson(res, 200, { ok: true }); }
+        if (route === 'users' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { users: accounts.users() });
+        if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); return sendJson(res, 200, { ok: true }); }
+        throw fault(404, 'Not found');
+      }
+      if (req.method === 'GET' && url.pathname === '/api/avatars') {
+        // Rendered avatar packs are discovered at request time; a missing or empty directory is not an error.
+        return sendJson(res, 200, { avatars: await scanAvatarPacks(avatarBase) });
+      }
+      if (url.pathname === '/api/connections') {
+        if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicConnection) });
+        if (req.method === 'POST') {
+          const data = await readJson(req), token = data?.kind === 'mcp-inbox' ? newInboxToken() : null;
+          const wantsConnector = (data?.kind ?? 'hermes') === 'hermes' && (data?.connection ?? (data?.host ? 'direct' : 'connector')) === 'connector', link = wantsConnector ? newConnectorToken() : null;
+          const m = await store.add(token ? { ...data, inboxTokenHash: token.hash } : link ? { ...data, connection: 'connector', connectorId: link.id, connectorTokenHash: link.hash } : data);
+          // Tokens are shown once; only their hashes are stored.
+          return sendJson(res, 201, { connection: publicConnection(m), ...(token ? { inboxToken: token.value, mcpUrl: '/mcp' } : {}), ...(link ? { connectorToken: link.token, bootstrap: bootstrapText(req, link.token) } : {}) });
+        }
+      }
+      if (url.pathname === '/api/agent-kinds' && req.method === 'GET') return sendJson(res, 200, { kinds: kindSpecs() });
+      if (url.pathname === '/api/connections/order' && req.method === 'POST') { const body = await readJson(req); await store.reorder(body?.names); return sendJson(res, 200, { order: store.all().map((m) => m.name) }); }
+      if (url.pathname === '/api/connections/test' && req.method === 'POST') { // Probe a draft without saving; editing drafts inherit saved write-only fields.
+        const data = await readJson(req); let prior; try { prior = data?.name ? store.get(data.name) : undefined; } catch {}
+        if (prior && data.kind && kindOf(prior) !== data.kind) prior = undefined;
+        const hermesDraft = (data?.kind ?? 'hermes') === 'hermes' && !prior && (data?.connection ?? (data?.host ? 'direct' : 'connector')) === 'connector';
+        const draft = validateConnection(data?.kind === 'mcp-inbox' && !prior ? { ...data, inboxTokenHash: '0'.repeat(64) } : hermesDraft ? { ...data, connection: 'connector', connectorId: '0'.repeat(32), connectorTokenHash: '0'.repeat(64) } : data, prior);
+        const result = await probeAny(draft);
+        return sendJson(res, 200, { checks: agentView(draft, result, 0).checks, ok: Boolean(result.chatReady || result.online) });
+      }
+      if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
+        if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicConnection(m) }); }
+        if (parts.length === 3 && req.method === 'DELETE') { { const gone = store.get(parts[2]); if (gone.connectorId) connectors.drop(gone.connectorId); } await store.remove(parts[2]); inbox.drop(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
+        if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') {
+          const prior = store.get(parts[2]);
+          if (kindOf(prior) === 'hermes' && prior.connectorId) { const secret = randomBytes(32).toString('base64url'), token = `${prior.connectorId}.${secret}`; const m = await store.edit(parts[2], { connectorTokenHash: createHash('sha256').update(secret).digest('hex') }); connectors.drop(prior.connectorId); return sendJson(res, 200, { connection: publicConnection(m), connectorToken: token, bootstrap: bootstrapText(req, token) }); }
+          if (prior.kind !== 'mcp-inbox') throw fault(400, 'This agent has no token'); const t = newInboxToken(); const m = await store.edit(parts[2], { inboxTokenHash: t.hash }); return sendJson(res, 200, { connection: publicConnection(m), inboxToken: t.value, mcpUrl: '/mcp' });
+        }
+        if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
+      }
+      if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
+        const agents = await Promise.all(originalConnections.map(async (m, i) => agentView(m, await probeAny(m), i))); originalConnections.forEach(current); return sendJson(res, 200, { agents }); }
+      if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = agentView(m, await probeAny(m), originalConnections.indexOf(m)); current(m); return sendJson(res, 200, { agent: view }); }
+      if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
+        const m = store.get(parts[2]), route = parts[3];
+        if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (isChatKind(kindOf(m))) {
+          if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
+            const payload = chatBody(await readJson(req, LIMITS.chat)); current(m);
+            return await streamResponse(req, res, (signal) => openai.chat(m, payload.messages, signal), Math.max(timeoutMs, 30000), (r) => {
+              if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
+              return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff' };
+            });
+          }
+          throw fault(404, 'Not available for this agent');
+        }
+        if (kindOf(m) === 'mcp-inbox') {
+          if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
+            const data = await readJson(req, LIMITS.json), payload = chatBody(data); current(m);
+            const last = [...payload.messages].reverse().find((x) => x.role === 'user');
+            if (!last) throw fault(400, 'Invalid chat messages');
+            const { thread } = inbox.fromOwner(m.name, data.session_id, last.content), who = m.label || m.name;
+            return sse(res, `📬 Delivered to ${who}'s inbox. The reply will appear in this conversation when ${who} checks in.`, { 'X-Hermes-Session-Id': thread });
+          }
+          if (route === 'sessions' && parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { sessions: inbox.sessions(m.name) });
+          if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, inbox.messages(m.name, sessionId(parts[4])));
+          throw fault(404, 'Not available for this agent');
+        }
+        if (route === 'files' && parts.length === 4 && req.method === 'POST') {
+          const declared = Number(req.headers['content-length']);
+          if (!Number.isFinite(declared) || declared < 1) { req.resume(); throw fault(411, 'Content-Length required'); }
+          if (declared > LIMITS.file) { req.resume(); throw fault(413, `File too large (max ${LIMITS.file / 1024 / 1024} MB)`); }
+          const name = safeFileName(url.searchParams.get('name')), day = new Date().toISOString().slice(0, 10);
+          const target = `${m.uploadDir || '~/foxfleet-uploads'}/${day}/${Date.now().toString(36)}-${name}`;
+          const mime = /^[\w.+-]+\/[\w.+-]+$/.test(url.searchParams.get('type') || '') ? url.searchParams.get('type') : 'application/octet-stream';
+          // Refresh the dashboard session first: a streamed body cannot be replayed after a 401.
+          await upstreamJson(await upstream.dashboard(m, '/api/sessions?limit=1')).catch(() => {});
+          current(m);
+          const boundary = '----foxfleet' + randomBytes(12).toString('hex');
+          const field = (k, v) => `--${boundary}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`;
+          async function* multipart() {
+            yield Buffer.from(field('path', target) + field('overwrite', 'false') + `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="${encodeURIComponent(name)}"\r\nContent-Type: ${mime}\r\n\r\n`);
+            let size = 0;
+            for await (const chunk of req) { size += chunk.length; if (size > LIMITS.file || size > declared) throw fault(413, 'File too large'); yield chunk; }
+            if (size !== declared) throw fault(400, 'Upload was cut short');
+            yield Buffer.from(`\r\n--${boundary}--\r\n`);
+          }
+          const abort = new AbortController(); res.once('close', () => { if (!res.writableEnded) abort.abort(); });
+          const timer = setTimeout(() => abort.abort(), 10 * 60_000); timer.unref();
+          try {
+            const r = await upstream.dashboard(m, '/api/files/upload-stream', { method: 'POST', stream: true, signal: abort.signal, duplex: 'half', headers: { 'Content-Type': `multipart/form-data; boundary=${boundary}` }, body: Readable.from(multipart()) });
+            if (!r.ok) { await r.body?.cancel(); throw fault([403, 409, 413].includes(r.status) ? r.status : 502, r.status === 413 ? 'File too large for the agent' : r.status === 403 ? 'Agent refused the upload path' : 'Agent upload failed'); }
+            const result = await upstreamJson(r); current(m);
+            return sendJson(res, 201, { name, path: typeof result?.path === 'string' ? result.path : target, size: declared, mime });
+          } finally { clearTimeout(timer); }
+        }
+        if (route === 'transcribe' && parts.length === 4 && req.method === 'POST') {
+          const data = await readJson(req, LIMITS.transcribe);
+          if (typeof data.data_url !== 'string' || !/^data:(audio\/[\w.+-]+|video\/webm)(;[\w=.+-]+)*;base64,/.test(data.data_url)) throw fault(400, 'Invalid audio payload');
+          current(m);
+          const r = await upstream.dashboard(m, '/api/audio/transcribe', { method: 'POST', stream: true, signal: AbortSignal.timeout(90_000), headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ data_url: data.data_url, ...(typeof data.mime_type === 'string' && data.mime_type.length < 100 ? { mime_type: data.mime_type } : {}) }) });
+          const result = await upstreamJson(r); current(m);
+          return sendJson(res, 200, { transcript: typeof result?.transcript === 'string' ? result.transcript : '', provider: typeof result?.provider === 'string' ? result.provider : null });
+        }
+        if (route === 'screen' && parts.length === 5) {
+          const action = parts[4];
+          if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
+          if (req.method === 'POST' && ['start', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
+        }
+        if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
+          current(m);
+          return await streamResponse(req, res, (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), timeoutMs, (r) => {
+            current(m);
+            if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
+            return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
+          });
+        }
+        if (route === 'artifacts') {
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { artifacts: artifacts.list(m, url.searchParams.get('session_id')) });
+          if (parts.length === 4 && req.method === 'POST') { const data = await readJson(req), session = sessionId(data.session_id); current(m); const transcript = await upstream.messages(m, session); current(m); return sendJson(res, 201, { artifacts: artifacts.register(m, session, data.paths, transcript) }); }
+          if (parts.length === 6 && parts[5] === 'content' && req.method === 'GET') {
+            const a = artifacts.get(m, parts[4]), download = url.searchParams.get('download') === '1', text = ['text', 'doc', 'code', 'table'].includes(a.kind), range = req.headers.range;
+            if (range && !/^bytes=\d*-\d*$/.test(range)) throw fault(400, 'Invalid byte range');
+            const remote = '/api/fs/download?' + new URLSearchParams({ path: a.path, session_id: a.session_id });
+            const headers = { 'Content-Type': (text ? 'text/plain; charset=utf-8' : a.mime), 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'; img-src data:; media-src 'none'", 'Cross-Origin-Resource-Policy': 'same-origin', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store', 'Content-Disposition': `${download || a.kind === 'binary' ? 'attachment' : 'inline'}; filename*=UTF-8''${encodeURIComponent(a.name)}` };
+            if (text && !download) { const r = await upstream.dashboard(m, remote); if (!r.ok) { await r.body?.cancel(); throw fault([403, 404, 405, 409, 413].includes(r.status) ? r.status : 502, FILE_UNAVAILABLE); } const bytes = await boundedBytes(r, 512 * 1024); current(m); res.writeHead(200, headers); return res.end(bytes); }
+            return await streamResponse(req, res, (signal) => upstream.dashboard(m, remote, { stream: true, signal, headers: { 'Accept-Encoding': 'identity', ...(range ? { Range: range } : {}) } }), timeoutMs, (r) => {
+              current(m);
+              // Native fetch decodes compressed bodies but leaves their wire headers.
+              const encoded = r.headers.has('content-encoding') && r.headers.get('content-encoding').toLowerCase() !== 'identity';
+              if (encoded && (range || r.status === 206)) throw fault(502, 'Compressed artifact ranges are unavailable');
+              const metadata = encoded ? [] : ['content-length', 'content-range', 'accept-ranges'];
+              return { ...headers, ...Object.fromEntries(metadata.filter((key) => r.headers.has(key)).map((key) => [key, r.headers.get(key)])) };
+            }, FILE_UNAVAILABLE);
+          }
+        }
+        if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, agentData(m, route, await upstream.messages(m, sessionId(parts[4])), originalConnections));
+        let remote, opts = {};
+        if (req.method === 'GET' && parts.length === 4) remote = { sessions: '/api/sessions?limit=50', cron: '/api/cron/jobs', skills: '/api/skills', config: '/api/config', profiles: '/api/profiles' }[route];
+        if (req.method === 'GET' && route === 'usage' && parts.length === 4) { const days = url.searchParams.get('days') || '30'; if (!/^\d{1,3}$/.test(days) || Number(days) < 1 || Number(days) > 365) throw fault(400, 'Invalid usage period'); remote = '/api/analytics/usage?days=' + days; }
+        if (req.method === 'GET' && route === 'sessions' && parts.length === 5 && parts[4] === 'search') { const q = url.searchParams.get('q') || ''; if (q.length > 500) throw fault(400, 'Search too long'); remote = '/api/sessions/search?q=' + encodeURIComponent(q); }
+        if (req.method === 'GET' && route === 'logs' && parts.length === 4) { const tail = url.searchParams.get('tail') || '100', level = url.searchParams.get('level') || ''; if (!/^\d{1,4}$/.test(tail) || Number(tail) > 1000 || !['', 'debug', 'info', 'warning', 'warn', 'error', 'critical'].includes(level)) throw fault(400, 'Invalid log filter'); remote = '/api/logs?' + new URLSearchParams({ tail, level }); }
+        if (req.method === 'POST' && route === 'skills' && parts.length === 5 && parts[4] === 'toggle') { const data = await readJson(req); current(m); if (!identifier(data.name) || typeof data.enabled !== 'boolean') throw fault(400, 'Invalid skill toggle'); remote = '/api/skills/toggle'; opts = { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: data.name, enabled: data.enabled }) }; }
+        if (req.method === 'POST' && route === 'cron' && parts.length === 6) { if (!identifier(parts[4]) || !['pause', 'resume', 'trigger'].includes(parts[5])) throw fault(400, 'Invalid cron action'); remote = `/api/cron/jobs/${encodeURIComponent(parts[4])}/${parts[5]}`; opts.method = 'POST'; }
+        if (remote) return sendJson(res, 200, agentData(m, route, await upstreamJson(await upstream.dashboard(m, remote, opts)), originalConnections));
+      }
+      if (parts[0] === 'api') throw fault(404, 'Not found');
+      if (req.method !== 'GET') throw fault(405, 'Method not allowed');
+      return await serveStatic(url, res, avatarBase);
+    } catch (error) {
+      if (res.headersSent) { if (!res.destroyed) res.destroy(); return; }
+      sendJson(res, error.safe ? error.status : 500, { error: error.safe ? error.message : 'Hub request failed' }, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
+    }
+  }));
+  // Whole-request timeout must cover a 90 MB upload on a slow phone link; headers stay strict.
+  server.requestTimeout = 10 * 60_000; server.headersTimeout = 10000;
+  server.on('upgrade', (req, socket, head) => {
+    const deny = (status, text) => { if (!socket.destroyed) socket.end(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); };
+    socket.on('error', () => socket.destroy());
+    (async () => {
+      const url = new URL(req.url, 'http://hub'), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      if (req.headers.upgrade?.toLowerCase() !== 'websocket') return deny(404, 'Not Found');
+      boundary(req, server);
+      if (url.pathname === '/connector') { // Agent dials out: credential is the per-agent token in the subprotocol list.
+        authThrottle(req);
+        const token = String(req.headers['sec-websocket-protocol'] || '').split(',').map((v) => v.trim()).find((v) => /^[0-9a-f]{32}\.[\w-]{20,100}$/.test(v));
+        if (!token) return deny(401, 'Unauthorized');
+        const [id, secret] = token.split('.'), hash = createHash('sha256').update(secret).digest('hex');
+        for (const reg of await allRegistries()) {
+          const m = reg.store.all().find((c) => c.connectorId === id); if (!m) continue;
+          if (m.connectorTokenHash.length !== hash.length || !timingSafeEqual(Buffer.from(m.connectorTokenHash), Buffer.from(hash))) break;
+          return void connectors.attach(id, wsAccept(req, socket, { protocol: 'foxfleet.v1' }));
+        }
+        return deny(401, 'Unauthorized');
+      }
+      if (!(parts.length === 5 && parts[0] === 'api' && parts[1] === 'agents' && parts[3] === 'screen' && parts[4] === 'ws')) return deny(404, 'Not Found');
+      // A browser always sends Origin on a WebSocket upgrade: it must be this hub, or the Android
+      // app's bundled noVNC page (WebViewAssetLoader origin). That page cannot carry the session
+      // credential cross-site, so for it the single-use ticket (minted by an authenticated
+      // POST .../screen/observe, 30 s, bound to this agent) is the credential.
+      const origin = req.headers.origin, fromHub = origin && (trusted.has(origin) || origin === `http://${req.headers.host}`);
+      if (!fromHub && origin !== APP_ORIGIN) return deny(403, 'Forbidden');
+      let regs;
+      if (fromHub) { const auth = await identify(req); if (!auth) return deny(401, 'Unauthorized'); regs = [await registryFor(auth.user.id, auth.user.role === 'owner')]; } else regs = await allRegistries();
+      for (const reg of regs) {
+        let m; try { m = reg.store.get(parts[2]); } catch { continue; }
+        let ticket; try { ticket = reg.screens.consume(url.searchParams.get('ticket'), m.name); } catch { continue; }
+        return reg.screens.proxy(req, socket, head, ticket);
+      }
+      return deny(403, 'Forbidden');
+    })().catch((error) => deny(error.status === 401 ? 401 : error.status === 404 ? 404 : 403, error.status === 401 ? 'Unauthorized' : error.status === 404 ? 'Not Found' : 'Forbidden'));
+  });
+  server.on('close', () => { authFails.clear(); connectors.closeAll(); for (const p of registries.values()) p.then((r) => { r.upstream.clear(); r.artifacts.clear(); r.screens.clear(); }); });
+  // Upgraded sockets (screen proxy, gateway client) are not HTTP connections; end them on close.
+  const originalClose = server.close;
+  server.close = function (...args) { connectors.closeAll(); for (const p of registries.values()) p.then((r) => r.screens.clear()); return originalClose.apply(this, args); };
+  // A caller cannot bypass the LAN-password rule by rebinding a loopback-created hub.
+  const originalListen = server.listen;
+  server.listen = function (...args) {
+    const callback = typeof args.at(-1) === 'function' ? args.pop() : undefined, first = args.shift();
+    let options;
+    if (first && typeof first === 'object' && !Array.isArray(first)) {
+      if (args.length || ['fd', 'path', 'handle'].some((key) => key in first) || !('port' in first)) throw fault(400, 'Unsupported listener options; use a TCP port');
+      options = { ...first, host: first.host ?? host };
+    } else {
+      options = { port: first, host };
+      if (typeof args[0] === 'string') options.host = args.shift();
+      else if (args.length && args[0] == null) args.shift();
+      if (typeof args[0] === 'number') options.backlog = args.shift();
+      if (args.some((arg) => arg != null)) throw fault(400, 'Unsupported listener arguments');
+    }
+    if (typeof options.port === 'string' && /^\d+$/.test(options.port)) options.port = Number(options.port);
+    if (!Number.isInteger(options.port) || options.port < 0 || options.port > 65535) throw fault(400, 'Invalid listener port');
+    if (!validHost(options.host)) throw fault(400, 'Invalid bind host');
+    if (!loopback(options.host) && singleUser) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
+    return originalListen.call(this, options, ...(callback ? [callback] : []));
+  };
+  server.setupCode = setupCode; server.accounts = accounts;
+  return server;
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const port = Number(process.env.FOXFLEET_PORT || process.env.PORT || 3080), host = process.env.FOXFLEET_HOST || '127.0.0.1';
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw fault(400, 'Invalid relay port');
+    const server = await createHub({ host });
+    server.on('error', () => { console.error('Foxfleet could not start'); process.exitCode = 1; });
+    server.listen(port, host, () => { console.log(`Foxfleet listening on ${host}:${port}`); if (server.setupCode) console.log(`First-run setup code (needed to create the owner account): ${server.setupCode}`); });
+    const shutdown = () => { server.close(); server.closeIdleConnections(); };
+    process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
+  } catch (error) { console.error(error.safe ? error.message : 'Foxfleet could not start'); process.exitCode = 1; }
+}

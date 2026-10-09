@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Foxfleet roadmap</title>
+<!-- ============ EDIT ME: everything on the page comes from this JSON block ============ -->
+<script type="application/json" id="data">
+{
+  "updated": "2026-10-09",
+  "version": "0.1.0-alpha",
+  "overview": [
+    "Foxfleet is a self-hosted hub plus a web app and an Android app for talking to all your AI agents from one calm place. Free, MIT licensed.",
+    "Phone app (Kotlin/Compose) and web app (Preact) → your hub (zero-dependency Node server, per-user accounts and secrets) → agents: Hermes machines through an outbound connector, API-key chat providers, and MCP-inbox agents.",
+    "The hub keeps every address and key; clients only see names, status and capabilities."
+  ],
+  "timeline": [
+    {
+      "v": "pre-rename 0.1",
+      "what": "Web Mission Control: hub relays chat, sessions, skills, cron, files and logs for Hermes agents; owner password; zero dependencies."
+    },
+    {
+      "v": "pre-rename 0.2",
+      "what": "Android app: calm light/dark look, agents list, streaming chat, drawer with sessions, settings, shared-element and predictive-back motion."
+    },
+    {
+      "v": "pre-rename 0.3",
+      "what": "Markdown replies, send images, media viewer, slash commands and skills, voice input, custom avatars."
+    },
+    {
+      "v": "pre-rename 0.4",
+      "what": "File attach (90 MB streamed), agent desktop screen with takeover and hand-back, Scribe inbox over MCP, OpenAI-compatible bridge, brand set."
+    },
+    {
+      "v": "pre-rename 0.5",
+      "what": "Data-driven agent registry and in-app agent management, write-only secrets, privacy contract (no hosts, IPs or URLs to clients), wooden-fox brand."
+    },
+    {
+      "v": "pre-rename 1.0-alpha1",
+      "what": "Plugin core and config v3 (OpenRouter, Z.ai, OpenCode, Grok), multi-user accounts and login gate, first-launch hub address, multi-hub, reverse Hermes connector."
+    },
+    {
+      "v": "pre-rename 1.0-alpha2",
+      "what": "Screen takeover through the connector, QR pairing, owner Admin screen (registration, invites, people), real hosts scrubbed from the repo, v1 deploy script, this page."
+    },
+    {
+      "v": "Foxfleet 0.1.0-alpha",
+      "what": "New name and clean open-source repo (MIT), package dev.foxfleet.app, foxfleet:// links, shared design tokens, web rebuild started (Preact + Vite + TypeScript): first-launch hub address and sign-in/setup/join, hub serves the built app with SPA fallback and CSP."
+    }
+  ],
+  "board": [
+    {
+      "id": "d1",
+      "col": "Done",
+      "text": "Plugin core, config v3, API-key chat providers"
+    },
+    {
+      "id": "d2",
+      "col": "Done",
+      "text": "Accounts, login gate, devices, lockout, rotating tokens"
+    },
+    {
+      "id": "d3",
+      "col": "Done",
+      "text": "Reverse Hermes connector incl. screen takeover tunnel"
+    },
+    {
+      "id": "d4",
+      "col": "Done",
+      "text": "QR pairing and in-app Admin (Android)"
+    },
+    {
+      "id": "d5",
+      "col": "Done",
+      "text": "Rename to Foxfleet, clean repo, hosts and personas scrubbed"
+    },
+    {
+      "id": "d6",
+      "col": "Done",
+      "text": "Design tokens generating web CSS and Android theme"
+    },
+    {
+      "id": "d7",
+      "col": "Done",
+      "text": "Web: scaffold, router, typed API client, hub address + sign-in/setup/join"
+    },
+    {
+      "id": "d8",
+      "col": "Done",
+      "text": "Hub serves web/dist (SPA fallback, CSP, cache headers)"
+    },
+    {
+      "id": "p1",
+      "col": "In progress",
+      "text": "Web: agents list, schema-driven add/edit, connector bootstrap"
+    },
+    {
+      "id": "p2",
+      "col": "In progress",
+      "text": "Device test of the Android app under the new id"
+    },
+    {
+      "id": "n1",
+      "col": "Next",
+      "text": "Web: chat (streaming, Markdown + DOMPurify, / and # commands)"
+    },
+    {
+      "id": "n2",
+      "col": "Next",
+      "text": "Web: images, files, voice, media viewer"
+    },
+    {
+      "id": "n3",
+      "col": "Next",
+      "text": "Web: screen takeover (noVNC)"
+    },
+    {
+      "id": "n4",
+      "col": "Next",
+      "text": "Web: Admin (registration, invites, people, pairing QR), devices, settings"
+    },
+    {
+      "id": "n5",
+      "col": "Next",
+      "text": "OpenAPI spec and shared contract tests (server, web, Android)"
+    },
+    {
+      "id": "n6",
+      "col": "Next",
+      "text": "PWA service worker, accessibility pass, axe checks"
+    },
+    {
+      "id": "n7",
+      "col": "Next",
+      "text": "Cut over the maintainer's own hub (see MIGRATING.md)"
+    },
+    {
+      "id": "l1",
+      "col": "Later",
+      "text": "TOTP two-factor"
+    },
+    {
+      "id": "l2",
+      "col": "Later",
+      "text": "Trusted-proxy header so rate limits see real client IPs"
+    },
+    {
+      "id": "l3",
+      "col": "Later",
+      "text": "Web push (needs a hub push channel)"
+    },
+    {
+      "id": "l4",
+      "col": "Later",
+      "text": "Codex and Claude Code providers"
+    },
+    {
+      "id": "l5",
+      "col": "Later",
+      "text": "Signed releases, Docker image on GHCR, store listing"
+    }
+  ],
+  "limits": [
+    "The web app currently has sign-in, setup, join and an agents list only; chat, admin and settings are still on the Android app.",
+    "Rate limits key on the socket IP; behind a proxy every client shares one bucket (per-username lockout still works).",
+    "Web app talks to the hub on its own origin; a hub on another origin would need CORS (not implemented).",
+    "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",
+    "Google code scanner needs Play services; without it the user types the address.",
+    "Z.ai Coding Plan keys are for supported coding tools only; the app warns and defaults to the general endpoint.",
+    "Android builds are debug-signed; no release keystore yet.",
+    "AI-generated brand art: copyright protection may be limited."
+  ],
+  "providers": [
+    {
+      "name": "Hermes",
+      "auth": "Connector token (or direct host)",
+      "status": "Ready"
+    },
+    {
+      "name": "Scribe (MCP inbox)",
+      "auth": "Bearer token, outbound from Scribe",
+      "status": "Ready"
+    },
+    {
+      "name": "OpenAI-compatible",
+      "auth": "API key",
+      "status": "Ready"
+    },
+    {
+      "name": "OpenRouter",
+      "auth": "API key",
+      "status": "Ready"
+    },
+    {
+      "name": "Z.ai (GLM)",
+      "auth": "API key (general or Coding Plan)",
+      "status": "Ready"
+    },
+    {
+      "name": "OpenCode",
+      "auth": "API key",
+      "status": "Beta"
+    },
+    {
+      "name": "Grok (xAI)",
+      "auth": "API key",
+      "status": "Ready"
+    },
+    {
+      "name": "Codex",
+      "auth": "Host login",
+      "status": "Later"
+    },
+    {
+      "name": "Claude Code",
+      "auth": "Host login",
+      "status": "Skipped"
+    }
+  ],
+  "deploy": [
+    "Read MIGRATING.md if you are moving an old AgentsHub install; otherwise start with INSTALL.md.",
+    "Copy deploy/deploy.local.env.example to deploy/deploy.local.env (gitignored) and fill in this host's paths.",
+    "Run deploy/deploy.sh: it backs up data, runs hub tests, builds the web app, restarts, checks health, and rolls back on failure.",
+    "First run: create the owner with the setup code from the log (or FOXFLEET_PASSWORD once, then remove it).",
+    "Set FOXFLEET_TRUSTED_ORIGINS to your public https origin (tunnel or proxy).",
+    "Admin → Pair a phone, scan the QR on each phone, install the APK.",
+    "Re-add Hermes agents as connectors if you want no open ports (direct ones keep working)."
+  ],
+  "links": [
+    {
+      "title": "Install",
+      "file": "INSTALL.md"
+    },
+    {
+      "title": "Architecture",
+      "file": "ARCHITECTURE.md"
+    },
+    {
+      "title": "Connect an agent",
+      "file": "CONNECT-AGENT.md"
+    },
+    {
+      "title": "Migrating from AgentsHub",
+      "file": "../MIGRATING.md"
+    },
+    {
+      "title": "README",
+      "file": "../README.md"
+    },
+    {
+      "title": "Security policy",
+      "file": "../SECURITY.md"
+    }
+  ]
+}
+</script>
+<!-- ============ end of editable data ============ -->
+<style>
+:root{--bg:#f6f3ee;--card:#fff;--text:#2b2723;--muted:#7a7168;--line:#e7e1d8;--accent:#d9622b;--accent-soft:#fbe9df;--ok:#3d8b5a}
+@media (prefers-color-scheme:dark){:root{--bg:#14110f;--card:#1d1916;--text:#eee8e1;--muted:#a1978c;--line:#2e2924;--accent:#f0824e;--accent-soft:#3a2418;--ok:#6cc08a}}
+:root[data-theme=light]{--bg:#f6f3ee;--card:#fff;--text:#2b2723;--muted:#7a7168;--line:#e7e1d8;--accent:#d9622b;--accent-soft:#fbe9df;--ok:#3d8b5a}
+:root[data-theme=dark]{--bg:#14110f;--card:#1d1916;--text:#eee8e1;--muted:#a1978c;--line:#2e2924;--accent:#f0824e;--accent-soft:#3a2418;--ok:#6cc08a}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+main{max-width:1060px;margin:0 auto;padding:20px 16px 64px}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+h1{font-size:1.6rem;margin:0;flex:1 1 auto}h1 b{color:var(--accent)}h2{font-size:1.1rem;margin:32px 0 10px}
+.pill{font-size:.8rem;padding:2px 10px;border-radius:99px;background:var(--accent-soft);color:var(--accent);white-space:nowrap}
+button{font:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:10px;padding:6px 12px;cursor:pointer}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px}
+.muted{color:var(--muted)}p{margin:.4em 0}
+.timeline{list-style:none;margin:0;padding:0;border-left:2px solid var(--line)}
+.timeline li{position:relative;padding:0 0 14px 18px}.timeline li:before{content:"";position:absolute;left:-7px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--card);border:2px solid var(--accent)}
+.timeline li:last-child:before{background:var(--accent)}.timeline b{color:var(--accent)}
+.board{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.col h3{margin:0 0 8px;font-size:.95rem;display:flex;justify-content:space-between}.col h3 span{color:var(--muted);font-weight:400}
+.item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line)}.item:first-of-type{border-top:0}
+.item input{margin-top:5px;width:18px;height:18px;accent-color:var(--accent);flex:none}.item label{flex:1}.item input:checked+label{color:var(--muted);text-decoration:line-through}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-top:1px solid var(--line);vertical-align:top}th{font-size:.8rem;color:var(--muted);font-weight:500;border-top:0}
+.s-Ready{color:var(--ok)}.s-Beta{color:var(--accent)}.s-Later,.s-Skipped{color:var(--muted)}
+ul.plain,ol{margin:0;padding-left:20px}li+li{margin-top:6px}
+a{color:var(--accent)}code,pre{font:.85rem ui-monospace,Menlo,monospace;background:var(--accent-soft);border-radius:6px;padding:1px 5px}pre{padding:10px;overflow:auto;white-space:pre-wrap}
+.bar{height:8px;background:var(--line);border-radius:9px;overflow:hidden;margin:8px 0}.bar i{display:block;height:100%;background:var(--accent);width:0}
+@media (max-width:520px){h1{font-size:1.35rem}th:nth-child(2),td:nth-child(2){display:none}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Fox<b>fleet</b> <span class="muted" style="font-weight:400;font-size:1rem">roadmap</span></h1><span class="pill" id="ver"></span><button id="theme" aria-label="Toggle light or dark">Theme</button></header>
+<p class="muted" id="updated"></p>
+
+<h2>Overview</h2><div class="card" id="overview"></div>
+<h2>Version timeline</h2><ol class="timeline" id="timeline"></ol>
+
+<h2>Status board</h2>
+<div class="card"><div id="progress" class="muted"></div><div class="bar"><i id="barfill"></i></div><button id="reset">Reset ticks to the file's defaults</button></div>
+<div class="board" id="board" style="margin-top:12px"></div>
+
+<h2>Open items and known limitations</h2><div class="card"><ul class="plain" id="limits"></ul></div>
+<h2>Providers and plugins</h2><div class="card"><table><thead><tr><th>Provider</th><th>Auth</th><th>Status</th></tr></thead><tbody id="providers"></tbody></table></div>
+<h2>Deploy checklist</h2><div class="card" id="deploy"></div>
+<h2>Docs</h2><div class="card"><ul class="plain" id="links"></ul></div>
+
+<h2>How to use and update this page</h2>
+<div class="card">
+<p>This is one file with no dependencies. Open it in any browser (even from disk) on a phone or desktop.</p>
+<ul class="plain">
+<li><b>Ticking a box</b> is saved in this browser only (localStorage). It does not change the file.</li>
+<li><b>Updating the project:</b> edit the JSON block at the top of <code>roadmap.html</code> (the part marked EDIT ME). Change <code>version</code> and <code>updated</code>, add a <code>timeline</code> entry per release, and move board items between columns by changing their <code>col</code> (Done, In progress, Next, Later). Give a new item a unique <code>id</code>.</li>
+<li>Items already ticked on a phone keep their tick if the <code>id</code> stays the same. Use the reset button to start from the file again.</li>
+<li>Keep the copy in <code>projects/Foxfleet/docs/</code> as the source of truth and copy it to the artifacts folder after editing.</li>
+</ul>
+</div>
+</main>
+<script>
+(()=>{
+const D=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const KEY='foxfleet-roadmap:v1';let ticks={};try{ticks=JSON.parse(localStorage.getItem(KEY)||'{}')}catch{}
+const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(ticks))}catch{}};
+const isOn=i=>i.id in ticks?ticks[i.id]:i.col==='Done';
+$('ver').textContent='v'+D.version;$('updated').textContent='Last updated '+D.updated;
+$('overview').innerHTML=D.overview.map(t=>'<p>'+esc(t)+'</p>').join('');
+$('timeline').innerHTML=D.timeline.map(t=>'<li><b>'+esc(t.v)+'</b> '+esc(t.what)+'</li>').join('');
+$('limits').innerHTML=D.limits.map(t=>'<li>'+esc(t)+'</li>').join('');
+$('providers').innerHTML=D.providers.map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+esc(p.auth)+'</td><td class="s-'+esc(p.status)+'">'+esc(p.status)+'</td></tr>').join('');
+$('deploy').innerHTML='<ol>'+D.deploy.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ol>';
+const pre='';
+$('links').innerHTML=D.links.map(l=>'<li><a href="'+pre+encodeURI(l.file)+'">'+esc(l.title)+'</a></li>').join('');
+const cols=['Done','In progress','Next','Later'];
+function draw(){
+  $('board').innerHTML=cols.map(c=>{const items=D.board.filter(i=>i.col===c);return '<section class="card col"><h3>'+c+'<span>'+items.filter(isOn).length+'/'+items.length+'</span></h3>'+items.map(i=>'<div class="item"><input type="checkbox" id="c-'+esc(i.id)+'" data-id="'+esc(i.id)+'"'+(isOn(i)?' checked':'')+'><label for="c-'+esc(i.id)+'">'+esc(i.text)+'</label></div>').join('')+'</section>'}).join('');
+  const all=D.board.length,on=D.board.filter(isOn).length;$('progress').textContent=on+' of '+all+' items ticked';$('barfill').style.width=(all?on*100/all:0)+'%';
+}
+$('board').addEventListener('change',e=>{const id=e.target.dataset?.id;if(!id)return;ticks[id]=e.target.checked;save();draw()});
+$('reset').onclick=()=>{ticks={};save();draw()};
+$('theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=dark?'light':'dark'};
+draw();
+})();
+</script>
+</body>
+</html>

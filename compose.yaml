@@ -1,0 +1,16 @@
+services:
+  foxfleet:
+    build: .
+    ports:
+      - "127.0.0.1:3080:3080"   # publish through a reverse proxy or tunnel, not directly
+    environment:
+      # The public origin people will type into the app (https), comma-separated for several.
+      FOXFLEET_TRUSTED_ORIGINS: ${FOXFLEET_TRUSTED_ORIGINS:-http://localhost:3080,http://127.0.0.1:3080}
+      # Optional first-owner password; otherwise read the setup code from `docker compose logs foxfleet`.
+      FOXFLEET_PASSWORD: ${FOXFLEET_PASSWORD:-}
+    volumes:
+      - foxfleet-data:/data
+    restart: unless-stopped
+
+volumes:
+  foxfleet-data:

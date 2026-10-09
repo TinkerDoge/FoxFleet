@@ -1,0 +1,3 @@
+[allowlist]
+description = "RFC 6455 sample WebSocket key used in tests; not a secret"
+regexes = ['''dGhlIHNhbXBsZSBub25jZQ==''']

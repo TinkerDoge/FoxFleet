@@ -1,0 +1,16 @@
+{
+  "name": "foxfleet",
+  "version": "0.1.0-alpha",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "Foxfleet: one calm place for all your AI agents (hub server, web app, Android app).",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node --test server/test/*.test.js",
+    "tokens": "node design/tools/gen-tokens.mjs",
+    "web:build": "npm --prefix web ci && npm --prefix web run build",
+    "web:test": "npm --prefix web test"
+  }
+}

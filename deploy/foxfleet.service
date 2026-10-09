@@ -1,0 +1,25 @@
+# systemd user unit:  ~/.config/systemd/user/foxfleet.service
+#   systemctl --user daemon-reload && systemctl --user enable --now foxfleet
+#   loginctl enable-linger $USER      # keep it running when you're logged out
+[Unit]
+Description=Foxfleet hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/foxfleet
+EnvironmentFile=-%h/.config/foxfleet/env
+Environment=FOXFLEET_CONFIG=%h/.local/share/foxfleet/config.json
+Environment=PORT=3080
+ExecStart=/usr/bin/env node server/index.js
+Restart=on-failure
+RestartSec=3
+# Hardening (user units honour these where the kernel allows)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/.local/share/foxfleet
+
+[Install]
+WantedBy=default.target

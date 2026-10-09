@@ -1,0 +1,95 @@
+<Rive version="1" kind="fragment">
+    <Artboard defaultStateMachineId="0:7" styleId="0:5" width="240" height="120" name="ThinkingDots" id="0:2">
+        <LayoutComponentStyle name="Artboard Style" id="0:5"/>
+        <Shape x="60" y="60" name="Dot1" id="0:20">
+            <Ellipse originX="0.5" originY="0.5" width="28" height="28" name="Path"/>
+            <Fill name="Fill"><SolidColor colorValue="FF9B968F" name="Color"/></Fill>
+        </Shape>
+        <Shape x="120" y="60" name="Dot2" id="0:21">
+            <Ellipse originX="0.5" originY="0.5" width="28" height="28" name="Path"/>
+            <Fill name="Fill"><SolidColor colorValue="FF9B968F" name="Color"/></Fill>
+        </Shape>
+        <Shape x="180" y="60" name="Dot3" id="0:22">
+            <Ellipse originX="0.5" originY="0.5" width="28" height="28" name="Path"/>
+            <Fill name="Fill"><SolidColor colorValue="FF9B968F" name="Color"/></Fill>
+        </Shape>
+        <StateMachine name="State Machine 1" id="0:7">
+            <StateMachineLayer name="Layer 1" id="0:8">
+                <AnyState x="200" y="-120"/>
+                <ExitState x="400" y="-120"/>
+                <EntryState>
+                    <StateTransition stateToId="0:12"/>
+                </EntryState>
+                <AnimationState x="200" animationId="0:6" id="0:12"/>
+            </StateMachineLayer>
+        </StateMachine>
+        <LinearAnimation loopValue="1" duration="72" name="Pulse" id="0:6">
+            <KeyedObject objectId="0:20">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="18"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="36"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="18"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="36"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="18"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="36"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:21">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="12"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="30"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="48"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="12"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="30"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="48"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="12"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="30"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="48"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+            </KeyedObject>
+            <KeyedObject objectId="0:22">
+                <KeyedProperty propertyKey="18">
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="24"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="42"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="60"/>
+                    <KeyFrameDouble value="0.3" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="16">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="24"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="42"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="60"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+                <KeyedProperty propertyKey="17">
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="0"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="24"/>
+                    <KeyFrameDouble value="1.25" interpolationType="2" frame="42"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="60"/>
+                    <KeyFrameDouble value="1.0" interpolationType="2" frame="72"/>
+                </KeyedProperty>
+            </KeyedObject>
+        </LinearAnimation>
+    </Artboard>
+</Rive>

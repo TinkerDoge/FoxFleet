@@ -1,0 +1,1 @@
+﻿{"description":"Foxfleet hub server","engines":{"node":">=22"},"name":"foxfleet-relay","scripts":{"start":"node index.js","test":"node --test test/*.test.js"},"type":"module","version":"0.1.0-alpha"}
