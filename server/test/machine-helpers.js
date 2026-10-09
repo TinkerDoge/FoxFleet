@@ -23,8 +23,11 @@ export function runConnector(t, args, { hermes, configDir, env = {} } = {}) {
   const p = spawn(process.execPath, ['--experimental-websocket', CONNECTOR, ...args], { env: { ...process.env, FOXFLEET_CONFIG_DIR: configDir, FOXFLEET_HERMES_HOME: hermes, FOXFLEET_ALLOW_INSECURE_HUB: '1', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', (c) => { out += c; });
   t.after(() => p.kill());
-  return { p, get out() { return out; }, done: new Promise((r) => p.on('exit', (code) => r(code))) };
+  return { p, get out() { return out; }, done: new Promise((r) => p.on('close', (code) => r(code))) };
 }
 export const tmpDir = (prefix = 'ff-cfg-') => mkdtemp(path.join(os.tmpdir(), prefix));
 export const readJson = async (f) => JSON.parse(await readFile(f, 'utf8'));
 export async function waitFor(fn, { tries = 60, ms = 150 } = {}) { for (let i = 0; i < tries; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, ms)); } return null; }
+
+/** Child output arrives asynchronously: wait (with a timeout) for a line instead of asserting on it the moment some other signal is seen. Returns the matching output or null. */
+export const waitOut = (run, re, opts = { tries: 100, ms: 100 }) => waitFor(async () => (re.test(run.out) ? run.out : null), opts);

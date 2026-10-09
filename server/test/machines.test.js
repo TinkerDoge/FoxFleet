@@ -7,7 +7,7 @@ import path from 'node:path';
 import { mockHermes } from './fixtures.js';
 import { createHub } from '../index.js';
 import { machineStore, normalizeCode, validCode, CODE_TTL_MS } from '../machines.js';
-import { fakeHermesHome, runConnector, tmpDir, readJson, waitFor } from './machine-helpers.js';
+import { fakeHermesHome, runConnector, tmpDir, readJson, waitFor, waitOut } from './machine-helpers.js';
 import { discoverProfiles, parseEnv, yamlScalars, hermesRoot, serviceSpec, chosen } from '../../connector/foxfleet-connector.mjs';
 
 async function hub(t, options = {}) {
@@ -75,7 +75,7 @@ test('one connector, three profiles, one socket: pair, discover, register, route
   const agents = await waitFor(async () => { const a = (await h.json('/api/agents')).agents; return a.length === 3 && a.every((x) => x.chatReady) ? a : null; });
   assert.ok(agents, run.out + JSON.stringify((await h.json('/api/agents')).agents.map((a) => [a.name, a.status])));
   assert.deepEqual(agents.map((a) => a.name).sort(), ['coder', 'default', 'research']); assert.ok(agents.every((a) => a.kind === 'hermes' && a.capabilities.screen));
-  assert.match(run.out, /Sharing 3 profile/); assert.doesNotMatch(JSON.stringify(agents), /127\.0\.0\.1|:\d{4,5}|machineId|api-secret|dashboard-secret/);
+  assert.ok(await waitOut(run, /Sharing 3 profile/), `connector never logged "Sharing 3 profile":\n${run.out}`); assert.doesNotMatch(JSON.stringify(agents), /127\.0\.0\.1|:\d{4,5}|machineId|api-secret|dashboard-secret/);
   // per-agent routing over the single socket, including different ports for research
   for (const n of ['default', 'coder', 'research']) { const s = await h.json(`/api/agents/${n}/sessions`); assert.equal(s.sessions[0].id, 'sess-1'); }
   const dashHits = (m, p) => m.requests.filter((r) => r.service === 'dashboard' && r.query?.get('profile') === p).length;
