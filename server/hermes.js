@@ -7,7 +7,7 @@ export async function boundedBytes(response, limit = 4 * 1024 * 1024) {
   return Buffer.concat(chunks, size);
 }
 export async function upstreamJson(response) {
-  if (!response.ok) { await response.body?.cancel(); throw fault([400, 401, 403, 404, 409, 413, 429].includes(response.status) ? response.status : 502, 'Agent request failed'); }
+  if (!response.ok) { await response.body?.cancel(); /* An upstream 401 means the AGENT refused the hub's credentials. It must never reach the client as 401: clients read that as "your login expired" (phone: sign-in screen, web: reload loop). */ throw fault(response.status === 401 ? 502 : [400, 403, 404, 409, 413, 429].includes(response.status) ? response.status : 502, response.status === 401 ? 'The agent did not accept the hub\'s credentials. Check the profile on that computer (foxfleet-connector doctor)' : 'Agent request failed'); }
   try { return JSON.parse((await boundedBytes(response)).toString('utf8')); }
   catch (e) { if (e.safe) throw e; throw fault(502, 'Invalid agent response'); }
 }

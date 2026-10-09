@@ -90,6 +90,11 @@ class HubApi(private val store: SettingsStore) {
         }.getOrNull() ?: raw.take(250)
     }
 
+    private suspend fun sessionStillValid(): Boolean = try {
+        val c = client.newCall(Request.Builder().url(base().newBuilder().encodedPath("/api/auth").build()).build()); c.timeout().timeout(10, TimeUnit.SECONDS)
+        await(c).use { r -> r.isSuccessful && runCatching { json.parseToJsonElement(r.body?.string().orEmpty()).jsonObject.bool("authenticated") == true }.getOrDefault(false) }
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+
     private suspend fun request(path: String, method: String = "GET", body: String? = null, timeoutSec: Long = 30, query: Map<String, String> = emptyMap(), plain401: Boolean = false): JsonObject {
         val url = base().newBuilder().encodedPath(path).apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }.build()
         val builder = Request.Builder().url(url).method(method, body?.toRequestBody(jsonMedia))
@@ -97,7 +102,11 @@ class HubApi(private val store: SettingsStore) {
         call.timeout().timeout(timeoutSec, TimeUnit.SECONDS)
         val response = await(call)
         response.use {
-            if (it.code == 401 && !plain401) throw AuthRequiredException()
+            if (it.code == 401 && !plain401) {
+                // A 401 from one agent's route is that agent refusing the hub, not the user's login ending: only sign out when the hub says so.
+                if (path.startsWith("/api/agents/") && sessionStillValid()) throw HubApiException(502, errorBody(it).ifEmpty { "The agent did not accept the hub's credentials" })
+                throw AuthRequiredException()
+            }
             if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Request failed (${it.code})" })
             val contentType = it.header("Content-Type") ?: ""
             if (!contentType.contains("application/json")) throw HubApiException(0, "Invalid response from the relay")

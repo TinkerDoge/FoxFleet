@@ -121,3 +121,14 @@ test('connector refuses a plain-http non-local hub and a missing code', async (t
   assert.equal(await r.done, 1); assert.match(r.out, /Refusing plain http/);
   const r2 = runConnector(t, ['run'], { configDir: dir }); assert.equal(await r2.done, 1); assert.match(r2.out, /not paired yet/);
 });
+
+test('a non-default profile whose Hermes answers 401 is a 502 for that agent, never a 401 that signs the user out (phone re-login / web reload loop)', async (t) => {
+  const main = await mockHermes(t, { rejectProfile: 'coder' }), root = await fakeHermesHome(t, main), h = await hub(t), cfgDir = await tmpDir();
+  const pairing = await (await h.call('/api/machines/pairing', {})).json();
+  const pr = runConnector(t, ['pair', '--hub', h.base, '--code', pairing.display, '--name', 'Workstation', '--all', '--no-run', '--dashboard-port', String(main.connection.dashboardPort)], { hermes: root, configDir: cfgDir }); assert.equal(await pr.done, 0, pr.out);
+  runConnector(t, ['run'], { hermes: root, configDir: cfgDir });
+  const agents = await waitFor(async () => { const a = (await h.json('/api/agents')).agents; return a.length === 3 && a.every((x) => x.chatReady) ? a : null; }); assert.ok(agents);
+  const res = await h.call('/api/agents/coder/sessions'); assert.equal(res.status, 502); assert.match((await res.json()).error, /did not accept/);
+  assert.equal((await h.call('/api/agents/default/sessions')).status, 200); assert.equal((await h.call('/api/agents/research/sessions')).status, 200);
+  assert.equal((await h.call('/api/auth')).status, 200, 'the hub login is still valid'); assert.equal((await h.call('/api/agents')).status, 200);
+});

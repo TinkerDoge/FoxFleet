@@ -33,6 +33,9 @@ export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => vo
 export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000 }: ClientOptions = {}) {
+  async function sessionStillValid(): Promise<boolean> {
+    try { const r = await f(base + '/api/auth', { credentials: 'same-origin' }); if (!r.ok) return false; return (await r.json())?.authenticated === true; } catch { return false; }
+  }
   async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal } = {}): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -51,7 +54,11 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     if (text) { try { data = JSON.parse(text); } catch { data = null; } }
     if (res.ok) return data as T;
     const message = String(data?.error?.message ?? data?.error ?? data?.detail ?? res.statusText ?? 'Request failed');
-    if (res.status === 401 && !init.plain401) throw new AuthRequiredError(message);
+    if (res.status === 401 && !init.plain401) {
+      // A 401 from one agent's route is that agent refusing the hub, not the user's login ending. Only sign out when the hub itself says so.
+      if (path.startsWith('/api/agents/') && await sessionStillValid()) throw new ApiError(502, message);
+      throw new AuthRequiredError(message);
+    }
     if (res.status === 429) throw new RateLimitedError(message, Number(res.headers.get('retry-after')) || Number(data?.retryAfter) || 60);
     throw new ApiError(res.status, message);
   }

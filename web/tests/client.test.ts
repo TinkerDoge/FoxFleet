@@ -14,6 +14,12 @@ describe('api client', () => {
     await expect(client(reply(200, { hello: 'world' }) as any).authInfo()).rejects.toMatchObject({ code: 'not_hub' });
     expect((await client(reply(200, { required: true, authenticated: true, registration: 'weird', user: { id: '1', username: 'a', role: 'owner' } }) as any).authInfo())).toMatchObject({ registration: 'closed', user: { role: 'owner' } });
   });
+  it('a 401 from ONE agent route while the hub login is still valid is an agent error, not a sign-out (non-default profile bug)', async () => {
+    const f = (async (url: string) => String(url).endsWith('/api/auth') ? new Response(JSON.stringify({ required: true, authenticated: true }), { status: 200 }) : new Response(JSON.stringify({ error: 'agent said no' }), { status: 401 })) as any;
+    const e: any = await client(f).sessions('coder').catch((x: any) => x); expect(e).toBeInstanceOf(ApiError); expect(e).not.toBeInstanceOf(AuthRequiredError); expect(e.status).toBe(502);
+    const gone = (async (url: string) => new Response(JSON.stringify({ error: 'Login required' }), { status: 401 })) as any;
+    await expect(client(gone).sessions('coder')).rejects.toBeInstanceOf(AuthRequiredError);
+  });
   it('maps 401 to AuthRequiredError except on plain auth calls', async () => {
     await expect(client(reply(401, { error: 'Login required' }) as any).agents()).rejects.toBeInstanceOf(AuthRequiredError);
     const e: any = await client(reply(401, { error: 'Invalid username or password' }) as any).login('a', 'b').catch((x: any) => x);

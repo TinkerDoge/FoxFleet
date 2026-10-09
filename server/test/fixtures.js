@@ -17,6 +17,7 @@ export async function mockHermes(t, options = {}) {
     if (!options.noAuth && !(cookieNumber >= 1 && cookieNumber <= logins)) return json(res, 401, { error: 'private secret' });
     if (options.expireOnce && logins === 1 && !expired) { expired = true; return json(res, 401, {}); }
     await options.beforeDashboardResponse?.(req, u);
+    if (options.rejectProfile && u.searchParams.get('profile') === options.rejectProfile && u.pathname.startsWith('/api/sessions')) return json(res, 401, { error: 'profile token rejected' });
     if (u.pathname === '/api/sessions') return json(res, 200, { sessions: [{ id: 'sess-1', title: 'real session' }] });
     if (u.pathname === '/api/sessions/search') return json(res, 200, { sessions: u.searchParams.get('q') === 'missing' ? [] : [{ id: 'sess-1' }] });
     if (/^\/api\/sessions\/[^/]+\/messages$/.test(u.pathname)) return json(res, options.noDashboardMessages ? 404 : 200, { messages: options.messages || [{ role: 'assistant', content: 'Files: `/outputs/result.png` and /outputs/report.html and /outputs/icon.svg and /outputs/notes.txt and /outputs/movie.mp4 and /outputs/archive.bin and /outputs/.env and /outputs/../secret.txt. /outputs/notes.txt.backup [Report](outputs/Launch plan.md)' }] });
