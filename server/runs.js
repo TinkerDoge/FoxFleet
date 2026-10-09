@@ -27,13 +27,13 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
         let m; while ((m = /\r?\n\r?\n/.exec(buf))) { const ev = buf.slice(0, m.index); buf = buf.slice(m.index + m[0].length); if (ev.trim()) push(r, ev.replace(/\r\n/g, '\n')); }
       }
       if (buf.trim()) push(r, buf.replace(/\r\n/g, '\n'));
-      finish(r, 'done');
+      finish(r, r.link?.terminal === 'stopped' ? 'stopped' : r.link?.terminal === 'failed' ? 'error' : 'done');
     } catch { finish(r, r.abort.signal.aborted && r.stopped ? 'stopped' : 'error'); }
   }
 
   return {
     /** Opens the upstream stream (errors before any byte is sent propagate as normal HTTP errors) and returns the run. */
-    async start({ scope, agent, session, open, timeoutMs, check, onFinish }) {
+    async start({ scope, agent, session, open, timeoutMs, check, onFinish, link }) {
       sweep();
       if ([...runs.values()].filter((r) => r.scope === scope && !r.done).length >= maxActive) throw fault(429, 'Too many chats running at once; wait for one to finish or stop it');
       const abort = new AbortController(), opener = setTimeout(() => abort.abort(), timeoutMs); opener.unref?.();
@@ -41,14 +41,29 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
       try { up = await open(abort.signal); } finally { clearTimeout(opener); }
       if (!up.ok || !up.body) { await up.body?.cancel(); throw fault([403, 404, 405, 409, 413, 416].includes(up.status) ? up.status : 502, 'Agent request failed'); }
       const headers = check(up);
-      const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', done: false, stopped: false, started: now(), finished: 0, log: [], text: '', onFinish, next: 1, bytes: 0, subs: new Set() };
+      const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', link: link || null, stopping: false, done: false, stopped: false, started: now(), finished: 0, log: [], text: '', onFinish, next: 1, bytes: 0, subs: new Set() };
       r.timer = setTimeout(() => { abort.abort(); }, maxRunMs); r.timer.unref?.();
       runs.set(r.id, r); void pump(r, up.body); return r;
     },
     get(scope, agent, id) { sweep(); const r = runs.get(id); if (!r || r.scope !== scope || r.agent !== agent) throw fault(404, 'That run is gone (finished runs are kept for a few minutes)'); return r; },
     list(scope, agent, session) { sweep(); return [...runs.values()].filter((r) => r.scope === scope && r.agent === agent && (!session || r.session === session)).map((r) => this.view(r)); },
-    view: (r) => ({ id: r.id, session_id: r.session, state: r.state, started: r.started, events: r.next - 1 }),
+    view: (r) => ({ id: r.id, session_id: r.session, state: r.done ? r.state : r.stopping ? 'stopping' : 'running', started: r.started, events: r.next - 1, ...(r.link?.runId ? { native: true } : {}) }),
     stop(r) { if (!r.done) { r.stopped = true; r.abort.abort(); } },
+    /**
+     * Explicit Stop that reports the truth: resolves true only once the run has really ended.
+     * Native runs ask the agent to stop (link.stop) and wait for its terminal event ("stopping" meanwhile); other runs abort the
+     * transport. A failed or unconfirmed stop returns false and the run keeps going: callers must not start a second writer.
+     */
+    async stopAndWait(r, waitMs = 15_000) {
+      if (r.done) return true;
+      const wait = () => new Promise((res) => { const t = setTimeout(() => { r.subs.delete(check); res(); }, waitMs); const check = () => { if (r.done) { clearTimeout(t); r.subs.delete(check); res(); } }; r.subs.add(check); check(); });
+      if (r.link?.stop) {
+        r.stopping = true;
+        try { await r.link.stop(); } catch { r.stopping = false; return false; }
+        await wait(); if (!r.done) r.stopping = false; return r.done;
+      }
+      r.stopping = true; r.stopped = true; r.abort.abort(); await wait(); if (!r.done) { r.stopping = false; r.stopped = false; } return r.done;
+    },
     /** Streams the run's events after cursor `after` to the client and follows it live. Client disconnect only detaches. */
     attach(req, res, r, after = 0) {
       res.writeHead(200, { ...SSE_HEADERS, ...r.headers, 'X-Foxfleet-Run': r.id });

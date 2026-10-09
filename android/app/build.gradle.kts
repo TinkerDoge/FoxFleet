@@ -15,8 +15,8 @@ android {
         applicationId = "dev.foxfleet.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 6
-        versionName = "0.2.1-alpha"
+        versionCode = 7
+        versionName = "0.3.0-alpha"
     }
 
     // Release signing. The keystore is NEVER in the repository. Provide it either through environment variables

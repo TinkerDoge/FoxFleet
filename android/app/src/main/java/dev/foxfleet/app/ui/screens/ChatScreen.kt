@@ -124,6 +124,9 @@ import dev.foxfleet.app.ui.chat.MediaRef
 import dev.foxfleet.app.ui.chat.HermesCatalog
 import dev.foxfleet.app.ui.chat.commandSuggestions
 import dev.foxfleet.app.ui.chat.parseLocal
+import dev.foxfleet.app.ui.chat.parseHub
+import dev.foxfleet.app.ui.chat.CommandDef
+import androidx.compose.ui.draw.alpha
 import dev.foxfleet.app.ui.chat.extractMedia
 import dev.foxfleet.app.ui.chat.localCommandFor
 import dev.foxfleet.app.ui.components.MediaViewer
@@ -178,6 +181,16 @@ fun ChatScreen(
     onLoadOlder: () -> Unit = {},
     historyOpen: Boolean = false,
     onRetry: () -> Unit = {},
+    /** Send mode while the agent works, and the hub's queue controls. */
+    mode: String = "queue",
+    onMode: (String) -> Unit = {},
+    onResumeQueue: () -> Unit = {},
+    onCancelQueued: (String) -> Unit = {},
+    /** Native Hermes sessions: answer a question/approval card; model picker and profile busy setting. Null for every other agent. */
+    onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)? = null,
+    nativeControls: NativeControls? = null,
+    commandDefs: List<CommandDef>? = null,
+    onSendMode: ((String, List<ImageAttachment>, String) -> Unit)? = null,
     initialInput: String = "",
     skills: List<String> = emptyList(),
     onAvatarLongPress: (String) -> Unit = {},
@@ -194,6 +207,7 @@ fun ChatScreen(
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
+    var controlsOpen by remember { mutableStateOf(false) }
     LaunchedEffect(drawer.currentValue) { if (drawer.currentValue == DrawerValue.Open) onDrawerOpened() }
 
     ModalNavigationDrawer(
@@ -241,14 +255,17 @@ fun ChatScreen(
                     else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 }
                 if (onOpenScreen != null) SoftIconButton(ScreenGlyph, "Agent's screen", onOpenScreen)
+                if (nativeControls != null) Text("Controls", style = MaterialTheme.typography.labelLarge, color = c.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat controls") { controlsOpen = true }.padding(horizontal = 10.dp, vertical = 8.dp))
                 if (agent.capabilities.sessions) Text("History", style = MaterialTheme.typography.labelLarge, color = c.accent,
                     modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat history") { history = true }.padding(horizontal = 10.dp, vertical = 8.dp))
                 SoftIconButton(Icons.Filled.Add, "New chat", onNewChat)
             }
             Hairline()
-            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder) { viewing = it }
+            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest) { viewing = it }
             Composer(
-                agent.name, state.streaming, skills, onSend, onStop, initialInput, initialAttachments,
+                agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, mode = mode, onMode = onMode, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
@@ -264,6 +281,7 @@ fun ChatScreen(
             )
         }
     }
+    if (controlsOpen && nativeControls != null) NativeControlsDialog(nativeControls, state.sessionId != null, state.streaming) { controlsOpen = false }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
         viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
@@ -286,7 +304,7 @@ private fun DrawerRow(a: AgentStatus, selected: Boolean, unread: Boolean, onClic
 }
 
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -315,6 +333,30 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             item(key = "error") {
                 Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted,
                     modifier = Modifier.animateItem().clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).padding(12.dp))
+            }
+        }
+        // Newest at the bottom: what the hub still holds for this chat sits under the reply that is streaming.
+        if (state.halted && state.queue.any { it.state == "queued" }) item(key = "q-paused") {
+            Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
+                Text("Queue paused", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                Text("Resume queue", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onResumeQueue() }.padding(10.dp))
+            }
+        }
+        // cards for what the agent is waiting on sit at the very bottom, where the eye is
+        if (onAnswerRequest != null && state.requests.isNotEmpty()) items(state.requests.size, key = { "req-" + state.requests[it].id }) { i -> RequestCard(state.requests[i], agentName, onAnswerRequest) }
+        val waiting = state.queue.asReversed()
+        items(waiting.size, key = { "q-" + waiting[it].id }) { i ->
+            val q = waiting[i]
+            Column(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
+                Text(q.text, style = MaterialTheme.typography.bodyLarge, color = c.text,
+                    modifier = Modifier.alpha(0.78f).clip(RoundedCornerShape(16.dp)).background(c.surfaceAlt).padding(horizontal = 12.dp, vertical = 8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(queueItemLabel(q), style = MaterialTheme.typography.labelSmall, color = c.textFaint)
+                    if (q.state == "queued" || q.state == "awaiting_stop") {
+                        if (state.canCancel) Text("Take back", style = MaterialTheme.typography.labelSmall, color = c.accent, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { onCancelQueued(q.id) }.padding(8.dp))
+                        else Text("Hermes holds this message; it cannot be taken back from here", style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(start = 8.dp))
+                    } else if (q.state == "rejected" || q.state == "failed") Text("Dismiss", style = MaterialTheme.typography.labelSmall, color = c.accent, modifier = Modifier.clip(RoundedCornerShape(8.dp)).clickable { onCancelQueued(q.id) }.padding(8.dp))
+                }
             }
         }
         if (state.streaming) item(key = "stream") {
@@ -444,12 +486,19 @@ private fun MediaCard(ref: MediaRef, onClick: () -> Unit) {
     }
 }
 
+/** Honest names for the send modes. */
+internal fun modeLabel(mode: String) = when (mode) { "steer" -> "Steer"; "interrupt" -> "Interrupt & send"; else -> "Queue" }
+internal fun queueStateLabel(state: String) = when (state) {
+    "queued" -> "Queued"; "awaiting_stop" -> "Waiting for the reply to stop"; "sending" -> "Sending…"
+    "guidance_accepted" -> "Guidance accepted (not confirmed used yet)"; "failed" -> "Not sent"; else -> state
+}
+
 @Composable
 private fun Composer(
     agentName: String,
     streaming: Boolean,
     skills: List<String>,
-    onSend: (String, List<ImageAttachment>) -> Unit,
+    onSend: (String, List<ImageAttachment>, String) -> Unit,
     onStop: () -> Unit,
     initialInput: String,
     initialAttachments: List<ImageAttachment>,
@@ -459,6 +508,12 @@ private fun Composer(
     initialFiles: List<FileRef> = emptyList(),
     placeholder: String? = null,
     agentCommands: Boolean = true,
+    modes: List<String> = listOf("queue"),
+    native: Boolean = false,
+    mode: String = "queue",
+    onMode: (String) -> Unit = {},
+    defs: List<CommandDef>? = null,
+    waiting: Int = 0,
 ) {
     val c = LocalHubColors.current
     val ctx = LocalContext.current
@@ -513,17 +568,25 @@ private fun Composer(
     LaunchedEffect(voice.error) { voice.error?.let { note = it } }
     LaunchedEffect(note) { if (note != null) { delay(2500); note = null } }
 
-    val suggestions = remember(input, skills, agentCommands) { commandSuggestions(input, skills, agentCommands = agentCommands) }
-    val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && !streaming && encoding == 0 && uploads.isEmpty()
+    val suggestions = remember(input, skills, agentCommands, defs) { commandSuggestions(input, skills, limit = 60, agentCommands = agentCommands, defs = defs) }
+    val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && encoding == 0 && uploads.isEmpty()
     fun send() {
         if (!canSend) return
         if (attachments.isEmpty() && files.isEmpty()) {
             parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
+            parseHub(input, defs ?: HermesCatalog.defs)?.takeIf { agentCommands || it.cmd != "steer" }?.let { h ->
+                if (!h.def.executable) { note = "/${h.def.name}: ${h.def.disabledReason.ifEmpty { "Not available for this agent" }}"; return }
+                when (h.cmd) {
+                    "busy" -> { if (h.args.isEmpty() || h.args == "status") note = "Send mode: ${modeLabel(mode, native)}" + if (waiting > 0) " · $waiting waiting" else "" else if (h.args in modes) onMode(h.args) else note = "/busy ${h.args}: ${modes.joinToString(" | ")} | status"; input = ""; return }
+                    "queue" -> if (h.args.isNotEmpty() && !Regex("^(list|rm|clear|edit|move)\\b").containsMatchIn(h.args)) { input = ""; onSend(h.args.removePrefix("add ").trim(), emptyList(), "queue"); return } else { note = "/queue <message>"; return }
+                    "steer" -> if (h.args.isNotEmpty()) { input = ""; onSend(h.args, emptyList(), "steer"); return } else { note = "/steer <guidance>"; return }
+                }
+            }
             HermesCatalog.unavailableReason(input).takeIf { agentCommands }?.let { note = "${input.trim().substringBefore(' ')}: $it"; return }
         }
         val t = FileMarker.compose(input.trim(), files); val imgs = attachments
         input = ""; attachments = emptyList(); files = emptyList(); voice.stop()
-        haptic(HapticFeedbackType.Confirm); onSend(t, imgs)
+        haptic(HapticFeedbackType.Confirm); onSend(t, imgs, mode)
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -620,7 +683,7 @@ private fun Composer(
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
-                val showMic = !streaming && input.isBlank() && attachments.isEmpty() && files.isEmpty()
+                val showMic = input.isBlank() && attachments.isEmpty() && files.isEmpty()
                 if (showMic) {
                     val pulse by animateFloatAsState(if (voice.listening && !reduce) 1f + 0.25f * voice.level else 1f, label = "mic")
                     val src = remember { MutableInteractionSource() }
@@ -638,26 +701,28 @@ private fun Composer(
                         contentAlignment = Alignment.Center,
                     ) { MicGlyph(if (voice.listening) c.onAccent else c.textMuted) }
                 } else {
+                    if (streaming && modes.size > 1) {
+                        // Small send-mode selector: tap to cycle through what this agent supports. Native: a live redirect Hermes may refuse; other agents: stop, then send.
+                        Text(modeLabel(mode, native), style = MaterialTheme.typography.labelMedium, color = c.textMuted,
+                            modifier = Modifier.clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt)
+                                .clickable(onClickLabel = "Change send mode") { onMode(modes[(modes.indexOf(mode) + 1) % modes.size]) }.padding(horizontal = 10.dp, vertical = 8.dp))
+                    }
+                    if (streaming) {
+                        val stopSrc = remember { MutableInteractionSource() }
+                        Box(
+                            Modifier.size(40.dp).pressScale(stopSrc, 0.88f).clip(CircleShape).background(c.surfaceAlt)
+                                .clickable(interactionSource = stopSrc, indication = null, onClickLabel = "Stop") { onStop() },
+                            contentAlignment = Alignment.Center,
+                        ) { Box(Modifier.size(14.dp).clip(RoundedCornerShape(3.dp)).background(c.text)) }
+                    }
                     val src = remember { MutableInteractionSource() }
-                    val active = streaming || canSend
+                    val active = canSend
                     Box(
                         Modifier.size(40.dp).pressScale(src, 0.88f).clip(CircleShape)
                             .background(if (active) c.accent else c.surfaceAlt)
-                            .clickable(interactionSource = src, indication = null, enabled = active) { if (streaming) onStop() else send() },
+                            .clickable(interactionSource = src, indication = null, enabled = active, onClickLabel = if (streaming) "Send (${modeLabel(mode, native)})" else "Send") { send() },
                         contentAlignment = Alignment.Center,
-                    ) {
-                        AnimatedContent(
-                            targetState = streaming,
-                            transitionSpec = {
-                                (scaleIn(spring(Spring.DampingRatioMediumBouncy, Spring.StiffnessMedium), initialScale = 0.4f) + fadeIn()) togetherWith
-                                    (scaleOut(targetScale = 0.4f) + fadeOut())
-                            },
-                            label = "send-stop",
-                        ) { s ->
-                            if (s) Box(Modifier.size(14.dp).clip(RoundedCornerShape(3.dp)).background(c.onAccent))
-                            else Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (active) c.onAccent else c.textFaint, modifier = Modifier.size(18.dp))
-                        }
-                    }
+                    ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (active) c.onAccent else c.textFaint, modifier = Modifier.size(18.dp)) }
                 }
             }
         }

@@ -31,3 +31,31 @@ Next: [Attachments and voice](./attachments), [Commands](./commands).
 - **Slash commands.** Type `/` for the list. Hermes agents show the full Hermes catalog, grouped, with argument hints. Commands marked *app* run in Foxfleet (`/new`, `/history`, `/stop`, `/retry`, `/title`), *chat* commands are sent to the agent as text, and commands that need a terminal or a messaging platform are shown greyed out as not available remotely. Other agent kinds only show the app commands and their skills.
 
 - **Drafts.** On the web, text you have typed but not sent is kept per chat and restored after switching chats, reloading or closing the browser (text only, stored in your browser for your account, deleted when you send, start a new chat, delete the session or sign out).
+
+## Sending while the agent works
+
+The message box stays usable while a reply is streaming: **Send** and **Stop** are both there, with a small **send mode** next to them. It only offers what the agent can really do, and it remembers your choice per conversation.
+
+| Mode | What happens |
+| --- | --- |
+| **Queue** | Your message waits and is sent after the current reply, in order. Works for every chat agent. |
+| **Steer** | Adds guidance to the reply in progress, which keeps working. Only for Hermes with native run controls. "Guidance accepted" means Hermes took it, not that it has used it yet; if it never did, the text comes back once as a queued message. |
+| **Interrupt & send** | Stops the reply, waits until it has really stopped, then sends your message as a new turn in the same chat. Over HTTP this is *stop, then start*, not Telegram's live redirect. The default for Hermes. If the stop fails, your message stays waiting with an error and nothing runs twice. |
+
+Pressing **Stop** alone stops the reply, keeps what was written (marked *Interrupted*) and pauses the queue until you press **Resume queue** or send something new. Messages in the queue survive a reload, a second device and a hub restart (after a restart the queue stays paused until you resume it). You can take a queued message back.
+
+Typing `/` opens the command list; choosing a command opens its choices (`/busy ` lists queue, steer, interrupt, status). `/queue <text>`, `/steer <text>` and `/stop` work as in Hermes, `/q` and `/s` are aliases. Commands the agent cannot run are shown greyed out with the reason.
+
+::: warning Not verified against a live Hermes yet
+Native runs (`/v1/runs`) and steering follow the Hermes documentation and were tested against a fake server. Until you have tried them on your own Hermes, treat Steer and Interrupt & send as experimental.
+:::
+
+## Hermes native sessions: questions, approvals, models
+
+When the agent's machine has the Hermes checkout (see [Hermes](../agents/hermes.md)), the chat gains a few things. They appear only for those agents; for every other agent nothing changes.
+
+- **Question and approval cards.** When Hermes needs an answer it shows a card under the reply. Answer once; the card goes away. If the agent cancels the question the card disappears, and after a reload or on another device the card is still there while the question is open. An approval offers *Allow once* and *Deny*. Anything else Hermes could ask (passwords, secrets) is declined for you right away instead of leaving the agent waiting.
+- **What Hermes did with your message.** A message sent while it works shows Hermes's own answer: *started*, *queued*, *accepted as guidance*, *switched to it* or *did not accept it*. A queued message cannot be taken back, because Hermes holds the queue; the button says so.
+- **Send modes.** *Queue* lets it finish first. *Steer* gives guidance to the reply in progress. *Redirect* asks Hermes to switch to your message now; Hermes can refuse, and you see its answer. (With other agents the third mode is *Interrupt & send*: it stops the reply, waits until it has really stopped, then sends.)
+- **Chat controls.** *Model for this chat* changes the model of this conversation only. *Hermes default for messages sent while it works* is a setting of the whole Hermes profile (it also affects the terminal and messaging apps), so it sits behind a warning and a confirmation. The **/busy** command in the composer is different: it only chooses what this app asks for.
+- **Tools.** The tools used during a reply are listed under the status line.

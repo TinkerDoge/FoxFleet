@@ -158,3 +158,28 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .older{align-self:center}.msg.grouped{margin-top:-6px}.msg-time{display:block;font-size:11px;margin-top:4px}
 .tools{background:var(--surface-alt);border-radius:var(--radius-control);padding:6px 12px;margin-bottom:8px;font-size:13px;color:var(--text-muted)}.tools summary{cursor:pointer}.tools ul{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:6px}.tools li{display:flex;flex-direction:column;gap:2px}.tools li.bad b::after{content:' ⚠';color:var(--danger)}.tools code{font-size:12px;word-break:break-all}
 .suggest{max-height:min(46vh,380px);overflow:auto}.suggest .grp{position:sticky;top:0;background:var(--surface);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--text-faint,var(--text-muted));padding:6px 12px 2px;pointer-events:none}.suggest li.off{opacity:.55}.suggest em{font-style:normal;color:var(--text-muted);font-weight:400}
+
+/* Chat controls: send mode, queued messages */
+.composer select.mode{align-self:center;max-width:9.5rem;background:var(--surface-alt);color:var(--text);border:1px solid var(--hairline);border-radius:var(--radius-control);padding:6px 8px;font:inherit;font-size:.85rem}
+.send.stop{background:var(--surface-alt);color:var(--text);border:1px solid var(--hairline)}
+.queue{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:6px}
+.queue .msg.queued .bubble{opacity:.78;border:1px dashed var(--hairline)}
+.queue .msg.queued small{display:block;margin-top:4px}
+.queue .queue-paused{text-align:center}
+.interrupted{display:block;margin-top:4px;font-style:italic}
+.composer .bar{flex-wrap:wrap}.composer .bar textarea{flex:1 1 9rem;min-width:9rem}
+
+/* Native Hermes sessions: question/approval cards, chat controls, tool list */
+.requests{display:flex;flex-direction:column;gap:10px;margin:8px 0}
+.card.request{border-color:var(--accent);display:flex;flex-direction:column;gap:8px}
+.card.request fieldset{border:0;padding:0;margin:0;display:flex;flex-direction:column;gap:6px}.card.request legend{font-weight:500;margin-bottom:4px}
+.card.request .choice{display:flex;gap:8px;align-items:center;cursor:pointer}.card.request .choice input{accent-color:var(--accent)}
+.card.request .other{font:inherit;color:var(--text);background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-control);padding:8px 10px}
+.card.request pre.cmd{margin:0;padding:8px 10px;background:var(--surface-alt);border-radius:var(--radius-control);overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:.85rem}
+.controls{position:relative}.controls .popover{position:absolute;right:0;top:100%;z-index:20;width:min(340px,86vw);display:flex;flex-direction:column;gap:8px;box-shadow:0 8px 28px rgba(0,0,0,.18)}
+.controls .popover h3{margin:0;font-size:.95rem}.controls .popover select{flex:1;min-width:0;font:inherit;padding:8px;border-radius:var(--radius-control);border:1px solid var(--hairline);background:var(--surface);color:var(--text)}
+.controls .warn{margin:0;padding:8px 10px;border-radius:var(--radius-control);background:color-mix(in srgb,var(--accent) 12%,var(--surface));font-size:.85rem}
+.tools{font-size:.85rem;color:var(--text-muted)}.tools ul{margin:4px 0 0;padding-left:18px;list-style:none}
+@media (prefers-reduced-motion:reduce){.controls .popover{transition:none}}
+@media (max-width:640px){.controls .popover{position:fixed;left:12px;right:12px;top:72px;width:auto;max-height:70vh;overflow:auto}}
+.btn[disabled]{opacity:.5;cursor:not-allowed}

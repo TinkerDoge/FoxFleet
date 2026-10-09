@@ -38,13 +38,14 @@ export function connectorHub() {
     return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port })));
   }
   return {
+    ui: (id) => links.get(id)?.ui ?? null,
     drop: (id) => links.get(id)?.close(),
     isOnline: (id) => links.has(id),
     lastSeen: (id) => links.get(id)?.seen ?? null,
     async attach(connectorId, ws, hooks = {}) {
       links.get(connectorId)?.close(); // a new connection replaces the old one
       const link = { streams: new Map(), seen: Date.now(), servers: [], agents: new Set(), send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
-        close() { for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
+        close() { for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
       // Profiles the machine exposes: one pair of loopback forwarders each, replaced wholesale on every `profiles` frame.
       link.expose = async (names) => {
         const want = new Set(names);
@@ -54,9 +55,24 @@ export function connectorHub() {
           link.servers.push({ ...dash, agent: a }, { ...api, agent: a }); link.agents.add(a); tunnelPorts.set(`${connectorId}:${a}`, { dashboard: dash.port, api: api.port });
         }
       };
+      // Native Hermes UI gateway, reached through the connector's allowlist (see connector `ui-call`). One call = one frame out, one frame back.
+      link.uiPending = new Map(); link.uiListeners = new Set(); link.uiCaps = {};
+      link.ui = {
+        caps: (agent) => link.uiCaps[agent] ?? null,
+        call(agent, op, params = {}, timeoutMs = 35_000) {
+          return new Promise((resolve, reject) => {
+            const id = randomBytes(6).toString('hex'), timer = setTimeout(() => { link.uiPending.delete(id); reject(Object.assign(new Error('The machine did not answer in time'), { code: 'timeout' })); }, timeoutMs);
+            link.uiPending.set(id, { resolve, reject, timer, agent }); link.send({ t: 'ui-call', id, agent, op, params });
+          });
+        },
+        subscribe(fn) { link.uiListeners.add(fn); return () => link.uiListeners.delete(fn); },
+      };
       links.set(connectorId, link);
       ws.on('message', (text) => {
         link.seen = Date.now(); let m; try { m = JSON.parse(text); } catch { return; }
+        if (m.t === 'ui-caps') { link.uiCaps = m.caps && typeof m.caps === 'object' ? m.caps : {}; return; }
+        if (m.t === 'ui-ev') { for (const fn of link.uiListeners) { try { fn(m.agent, m.ev); } catch { /* listener bugs must not break the tunnel */ } } return; }
+        if (m.t === 'ui-res') { const p = link.uiPending.get(m.id); if (!p) return; link.uiPending.delete(m.id); clearTimeout(p.timer); if (m.ok) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'failed').slice(0, 300)), { code: m.code || 'error', ...(m.rpc !== undefined ? { rpc: m.rpc } : {}) })); return; }
         if (m.t === 'profiles') { Promise.resolve(hooks.onProfiles?.(m, link)).then((reply) => reply && link.send({ t: 'registered', ...reply })).catch(() => link.send({ t: 'registered', agents: [], error: 'sync failed' })); return; }
         const s = link.streams.get(m.id);
         if (s?.ws) {

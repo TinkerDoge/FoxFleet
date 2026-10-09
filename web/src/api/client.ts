@@ -12,8 +12,25 @@ export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: numbe
 
 /** Typed hub client. Cookie session (HttpOnly, set by the hub), so no token handling in JS. */
 
-export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void }
-export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'done' | 'error' | 'stopped'; started: number; events: number }
+export type SendMode = 'queue' | 'steer' | 'interrupt';
+/** What Hermes itself answered to a message sent while it worked. Shown as received, never predicted. */
+export type Ack = 'streaming' | 'queued' | 'steered' | 'redirected' | 'rejected';
+export interface QueuedMessage { id: string; state: string; mode: SendMode; text: string; error?: string; note?: string; runId?: string; ack?: Ack }
+/** A question or approval the agent is waiting on. Answered once, by id. */
+export interface OpenRequest { id: string; kind: 'clarify' | 'approval'; questions: { id: string; question: string; choices: string[]; multi: boolean }[]; command?: string; description?: string }
+export interface QueueState { items: QueuedMessage[]; recent: QueuedMessage[]; halted: boolean; activeRun: string | null; modes: SendMode[]; openRequests: OpenRequest[]; canCancel: boolean }
+export interface SendResult { message: QueuedMessage; runId?: string; sessionId?: string }
+const MODES: SendMode[] = ['queue', 'steer', 'interrupt'];
+const ACKS = ['streaming', 'queued', 'steered', 'redirected', 'rejected'];
+/** Only the two kinds the app can answer become cards; anything else is ignored (the hub already declined it upstream, so nothing waits). */
+export const parseRequest = (r: any): OpenRequest | null => {
+  const kind = r?.kind; if ((kind !== 'clarify' && kind !== 'approval') || typeof r?.request_id !== 'string' || !/^[\w.:-]{1,100}$/.test(r.request_id)) return null;
+  return { id: r.request_id, kind, questions: (Array.isArray(r.questions) ? r.questions : []).slice(0, 6).map((q: any, i: number) => ({ id: String(q?.id ?? `q${i}`), question: String(q?.question ?? '').slice(0, 2000), choices: (Array.isArray(q?.choices) ? q.choices : []).map(String).slice(0, 50), multi: q?.multi_select === true })), ...(r.command ? { command: String(r.command) } : {}), ...(r.description ? { description: String(r.description) } : {}) };
+};
+export const parseQueued = (m: any): QueuedMessage => ({ id: String(m?.id ?? ''), state: String(m?.state ?? 'queued'), mode: MODES.includes(m?.mode) ? m.mode : 'queue', text: String(m?.text ?? ''), ...(m?.error ? { error: String(m.error) } : {}), ...(m?.note ? { note: String(m.note) } : {}), ...(m?.run_id ? { runId: String(m.run_id) } : {}), ...(ACKS.includes(m?.ack) ? { ack: m.ack as Ack } : {}) });
+export const parseQueue = (r: any): QueueState => ({ items: (Array.isArray(r?.items) ? r.items : []).map(parseQueued), recent: (Array.isArray(r?.recent) ? r.recent : []).map(parseQueued), halted: r?.halted === true, activeRun: typeof r?.active_run === 'string' ? r.active_run : null, modes: (Array.isArray(r?.modes) ? r.modes : []).filter((m: unknown): m is SendMode => MODES.includes(m as SendMode)), openRequests: (Array.isArray(r?.open_requests) ? r.open_requests : []).map(parseRequest).filter((x: OpenRequest | null): x is OpenRequest => !!x), canCancel: r?.can_cancel !== false });
+export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
+export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000 }: ClientOptions = {}) {
   async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal } = {}): Promise<T> {
@@ -71,7 +88,10 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
         if (e.id && Number(e.id) > last) { last = Number(e.id); progressed = true; }
         if (e.data === '[DONE]') { finished = true; return false; }
         if (e.event === 'foxfleet.gap') { opts.onGap?.(); return true; }
-        if (e.event === 'foxfleet.run') { finished = true; return false; } // the run was stopped or failed on the hub
+        if (e.event === 'foxfleet.run') { try { const st = JSON.parse(e.data)?.state; if (typeof st === 'string') opts.onRunState?.(st); } catch { /* state is optional */ } finished = true; return false; } // the run was stopped or failed on the hub
+        if (e.event === 'foxfleet.request') { try { const r = parseRequest(JSON.parse(e.data)); if (r) opts.onRequest?.(r); } catch { /* ignore a malformed card */ } return true; }
+        if (e.event === 'foxfleet.request_closed') { try { const v = JSON.parse(e.data); if (typeof v?.request_id === 'string') opts.onRequestClosed?.(v.request_id, String(v.reason ?? 'closed')); } catch { /* ignore */ } return true; }
+        if (e.event === 'foxfleet.ack') { try { const v = JSON.parse(e.data); if (ACKS.includes(v?.ack)) opts.onAck?.(String(v.message_id), v.ack); } catch { /* ignore */ } return true; }
         if (e.event === 'error') throw fail();
         let v: any; try { v = JSON.parse(e.data); } catch { return true; }
         if (!v || typeof v !== 'object') return true;
@@ -193,6 +213,23 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     runs: async (agent: string, session?: string): Promise<RunInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/runs${session ? '?session_id=' + enc(session) : ''}`)).runs ?? []) as RunInfo[],
     /** The explicit Stop button: cancels the agent run itself (just closing the page never does). */
     stopRun: (agent: string, run: string) => request<any>(`/api/agents/${enc(agent)}/runs/${enc(run)}/stop`, { body: {} }),
+    /** Send while the agent may be replying. The hub stores and acknowledges it first; mode says what to do if it is busy. */
+    sendMessage: async (agent: string, o: { messages: UiMessage[]; sessionId?: string; mode: SendMode; clientId: string }): Promise<SendResult> => {
+      const r = await request<any>(`/api/agents/${enc(agent)}/messages`, { body: { model: 'hermes-agent', messages: chatMessages(o.messages), mode: o.mode, client_id: o.clientId, ...(o.sessionId ? { session_id: o.sessionId } : {}) } });
+      return { message: parseQueued(r.message), runId: typeof r.run_id === 'string' ? r.run_id : undefined, sessionId: typeof r.session_id === 'string' ? r.session_id : undefined };
+    },
+    queue: async (agent: string, session?: string): Promise<QueueState> => parseQueue(await request<any>(`/api/agents/${enc(agent)}/queue${session ? '?session_id=' + enc(session) : ''}`)),
+    resumeQueue: async (agent: string, session?: string): Promise<QueueState> => parseQueue(await request<any>(`/api/agents/${enc(agent)}/queue/resume${session ? '?session_id=' + enc(session) : ''}`, { body: {} })),
+    /** Answer an open question or approval, once, by its id. A 404 means it is already closed (answered elsewhere or cancelled). */
+    answerRequest: (agent: string, session: string, id: string, result: Record<string, unknown>) => request<any>(`/api/agents/${enc(agent)}/native/sessions/${enc(session)}/requests/${enc(id)}`, { body: { result } }),
+    /** Models the agent's profile offers (native sessions). */
+    models: async (agent: string): Promise<{ providers: { slug: string; name: string; models: string[]; current?: boolean }[]; current?: string }> => { const r = await request<any>(`/api/agents/${enc(agent)}/native/models`); return { providers: (Array.isArray(r?.providers) ? r.providers : []).map((p: any) => ({ slug: String(p?.slug ?? ''), name: String(p?.name ?? p?.slug ?? ''), models: (Array.isArray(p?.models) ? p.models : []).map(String), ...(p?.current === true ? { current: true } : {}) })), ...(typeof r?.current === 'string' ? { current: r.current } : {}) }; },
+    /** Session-scoped model change: this conversation only, never the profile default. */
+    setModel: (agent: string, session: string, model: string) => request<any>(`/api/agents/${enc(agent)}/native/sessions/${enc(session)}/model`, { body: { model } }),
+    /** The profile-wide "messages sent while it works" default of the agent. Changing it affects every chat of that profile. */
+    profileBusy: async (agent: string): Promise<string> => String((await request<any>(`/api/agents/${enc(agent)}/native/busy`)).mode ?? ''),
+    setProfileBusy: (agent: string, mode: SendMode) => request<any>(`/api/agents/${enc(agent)}/native/busy`, { body: { mode, confirm: true } }),
+    cancelQueued: (agent: string, id: string, session?: string) => request<any>(`/api/agents/${enc(agent)}/queue/${enc(id)}${session ? '?session_id=' + enc(session) : ''}`, { method: 'DELETE' }),
 
     /** Streams a file to the agent's disk with progress (XHR: fetch has no upload progress). */
     uploadFile: (agent: string, file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<FileRef> => new Promise((resolve, reject) => {

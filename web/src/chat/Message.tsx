@@ -55,6 +55,7 @@ export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia
       <Tools m={m} />
       {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
       {m.content && <Markdown text={m.content} onMedia={onMedia} />}
+      {m.interrupted && <small class="interrupted muted">{t('chat.interrupted')}</small>}
       <Time ts={m.ts} />
     </div>
   );

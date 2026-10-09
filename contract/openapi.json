@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.2.1-alpha",
+    "version": "0.3.0-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -1870,7 +1870,8 @@
             },
             "description": ""
           }
-        ]
+        ],
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
       }
     },
     "/api/agents/{name}/files": {
@@ -2499,7 +2500,7 @@
     "/api/agents/{name}/runs/{id}/stop": {
       "post": {
         "operationId": "stopRun",
-        "summary": "The only thing that cancels the agent: an explicit Stop. Closing the app or tab does not.",
+        "summary": "Stop the run. Resolves once termination is confirmed (confirmed=true) or reports the truth when it is not (confirmed=false, the run keeps going). Halts queue draining.",
         "tags": [
           "agents"
         ],
@@ -2561,6 +2562,7 @@
                           "type": "string",
                           "enum": [
                             "running",
+                            "stopping",
                             "done",
                             "error",
                             "stopped"
@@ -2573,6 +2575,9 @@
                           "type": "integer"
                         }
                       }
+                    },
+                    "confirmed": {
+                      "type": "boolean"
                     }
                   }
                 }
@@ -2761,8 +2766,42 @@
                           },
                           "reason": {
                             "type": "string"
+                          },
+                          "handler": {
+                            "type": "string",
+                            "description": "hub:stop|hub:queue|hub:steer|hub:busy|app:*|chat|none"
+                          },
+                          "busy": {
+                            "type": "string",
+                            "enum": [
+                              "control",
+                              "detach",
+                              "queue",
+                              "none"
+                            ]
+                          },
+                          "executable": {
+                            "type": "boolean"
+                          },
+                          "disabledReason": {
+                            "type": "string"
+                          },
+                          "verified": {
+                            "type": "boolean"
+                          },
+                          "unavailableSubcommands": {
+                            "type": "object",
+                            "additionalProperties": {
+                              "type": "string"
+                            }
                           }
                         }
+                      }
+                    },
+                    "busy": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
                       }
                     }
                   }
@@ -2777,6 +2816,978 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      }
+    },
+    "/api/agents/{name}/messages": {
+      "post": {
+        "operationId": "sendMessage",
+        "summary": "Send a message even while the agent is replying. Persisted and acknowledged first; follow the reply with /runs/{id}/events. client_id makes retries idempotent.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "messages"
+                ],
+                "properties": {
+                  "messages": {
+                    "type": "array",
+                    "items": {
+                      "type": "object"
+                    }
+                  },
+                  "session_id": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ],
+                    "default": "queue"
+                  },
+                  "client_id": {
+                    "type": "string",
+                    "pattern": "^[\\w.:-]{8,100}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    },
+                    "run_id": {
+                      "type": "string"
+                    },
+                    "session_id": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "200": {
+            "description": "Duplicate client_id: the stored message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
+      }
+    },
+    "/api/agents/{name}/queue": {
+      "get": {
+        "operationId": "getQueue",
+        "summary": "The persisted message queue of one conversation",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "For a native-capable Hermes agent (capabilities.nativeUi) the hub routes this to the native session server-side: same shapes, the reply is followed as a run, and extra SSE events foxfleet.request / foxfleet.request_closed / foxfleet.ack carry cards and Hermes acknowledgements."
+      }
+    },
+    "/api/agents/{name}/queue/resume": {
+      "post": {
+        "operationId": "resumeQueue",
+        "summary": "Resume automatic queue draining after Stop or a hub restart",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/QueueState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/queue/{id}": {
+      "delete": {
+        "operationId": "cancelQueued",
+        "summary": "Remove a message that is still waiting in the queue",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native": {
+      "get": {
+        "operationId": "getNative",
+        "summary": "Native Hermes UI gateway: is it available for this agent (Hermes through a connected machine)",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeCapabilities"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions": {
+      "post": {
+        "operationId": "createNativeSession",
+        "summary": "Create a native session",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/attach": {
+      "post": {
+        "operationId": "attachNativeSession",
+        "summary": "Attach to the live owner (never starts another agent); restores partial answer, queued prompts and open requests",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NativeSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/messages": {
+      "get": {
+        "operationId": "listNativeMessages",
+        "summary": "Journaled messages of a session",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendNativeMessage",
+        "summary": "Send a message (auto, queue, steer, interrupt); the response carries the upstream acknowledgement",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "202": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string"
+                  },
+                  "mode": {
+                    "type": "string",
+                    "enum": [
+                      "auto",
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ]
+                  },
+                  "client_id": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/interrupt": {
+      "post": {
+        "operationId": "interruptNativeSession",
+        "summary": "Interrupt the running turn",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/events": {
+      "get": {
+        "operationId": "nativeEvents",
+        "summary": "SSE stream foxfleet.native/1 (turn.start, message.delta, reasoning, tool.start/progress/end, turn.end, ack, request.open, request.cancel, request.answered, status, owner.down, link). `after` or Last-Event-ID resumes from a hub cursor; foxfleet.gap means refetch state.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/requests/{rid}": {
+      "post": {
+        "operationId": "answerNativeRequest",
+        "summary": "Answer an approval or clarification once, by request id",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "rid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/sessions/{sid}/model": {
+      "post": {
+        "operationId": "setNativeModel",
+        "summary": "Switch the model for this session only",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "sid",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/models": {
+      "get": {
+        "operationId": "nativeModels",
+        "summary": "Provider and model choices from the live Hermes picker",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/commands": {
+      "get": {
+        "operationId": "nativeCommands",
+        "summary": "Slash commands from the live Hermes registry",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ok"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/native/busy": {
+      "get": {
+        "summary": "The Hermes PROFILE-wide default for messages sent while it works (display.busy_input_mode)",
+        "responses": {
+          "200": {
+            "description": "{mode, scope:'profile'}"
+          }
+        },
+        "tags": [
+          "native"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "operationId": "nativeBusyGet"
+      },
+      "post": {
+        "summary": "Change the profile default. Affects every chat of the profile; requires confirm:true",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "mode",
+                  "confirm"
+                ],
+                "properties": {
+                  "mode": {
+                    "enum": [
+                      "queue",
+                      "steer",
+                      "interrupt"
+                    ]
+                  },
+                  "confirm": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "{mode, scope:'profile'}"
+          },
+          "400": {
+            "description": "missing confirmation or invalid mode"
+          }
+        },
+        "tags": [
+          "native"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "operationId": "nativeBusySet"
       }
     }
   },
@@ -3254,6 +4265,26 @@
           },
           "mailbox": {
             "type": "boolean"
+          },
+          "busy": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "queue",
+                "steer",
+                "interrupt"
+              ]
+            },
+            "description": "Send modes this agent supports while it is replying"
+          },
+          "nativeRuns": {
+            "type": "boolean",
+            "description": "Hermes advertises native run controls (run_submission, run_events_sse, run_steer, run_stop)"
+          },
+          "nativeUi": {
+            "type": "boolean",
+            "description": "The machine connector can drive a native Hermes UI gateway for this profile (preferred over /v1/runs and chat completions)"
           }
         }
       },
@@ -3531,6 +4562,320 @@
             "type": "number"
           }
         }
+      },
+      "QueuedMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "state",
+          "mode",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "awaiting_stop",
+              "cancelled",
+              "done",
+              "failed",
+              "guidance_accepted",
+              "interrupted",
+              "queued",
+              "rejected",
+              "running",
+              "sending",
+              "uncertain"
+            ]
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "queue",
+              "steer",
+              "interrupt"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "error": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "note": {
+            "type": "string",
+            "description": "e.g. accepted_not_consumed, stop_failed, unused_guidance, steer_rejected_run_ended"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "ack": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "streaming",
+              "queued",
+              "steered",
+              "redirected",
+              "rejected",
+              null
+            ],
+            "description": "What Hermes itself answered (native sessions). Shown as received, never predicted; null until it answered."
+          }
+        }
+      },
+      "QueueState": {
+        "type": "object",
+        "required": [
+          "items",
+          "halted"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedMessage"
+            }
+          },
+          "recent": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueuedMessage"
+            }
+          },
+          "halted": {
+            "type": "boolean",
+            "description": "Automatic draining is paused (after Stop or a hub restart) until resume or a new message"
+          },
+          "active_run": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "open_requests": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OpenRequest"
+            },
+            "description": "Native sessions: cards that are still open, so a reload or a second device shows them again"
+          },
+          "can_cancel": {
+            "type": "boolean",
+            "description": "False when the agent keeps the queue itself (Hermes): DELETE /queue/{id} answers 409"
+          }
+        }
+      },
+      "NativeCapabilities": {
+        "type": "object",
+        "required": [
+          "native"
+        ],
+        "properties": {
+          "native": {
+            "type": "boolean"
+          },
+          "protocol": {
+            "type": "string"
+          },
+          "modes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "queue",
+                "steer",
+                "interrupt"
+              ]
+            }
+          },
+          "contract": {
+            "type": "string",
+            "description": "foxfleet.native/1"
+          }
+        }
+      },
+      "NativeMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "session_id",
+          "mode",
+          "state",
+          "text"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "mode": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "sending",
+              "acked",
+              "rejected",
+              "failed",
+              "uncertain"
+            ]
+          },
+          "ack": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What Hermes answered: streaming, queued, steered, redirected, rejected or reconciled. Never predicted."
+          },
+          "text": {
+            "type": "string"
+          },
+          "created": {
+            "type": "integer"
+          },
+          "note": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string"
+          }
+        }
+      },
+      "NativeSnapshot": {
+        "type": "object",
+        "required": [
+          "v",
+          "contract",
+          "session_id",
+          "running",
+          "open_requests",
+          "queued",
+          "cursor"
+        ],
+        "properties": {
+          "v": {
+            "type": "integer"
+          },
+          "contract": {
+            "type": "string"
+          },
+          "session_id": {
+            "type": "string"
+          },
+          "running": {
+            "type": "boolean"
+          },
+          "turn_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "inflight": {
+            "type": [
+              "object",
+              "null"
+            ]
+          },
+          "queued": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "open_requests": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "messages": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "cursor": {
+            "type": "integer"
+          },
+          "epoch": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "OpenRequest": {
+        "type": "object",
+        "required": [
+          "request_id",
+          "kind"
+        ],
+        "properties": {
+          "request_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "clarify",
+              "approval"
+            ]
+          },
+          "questions": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "question": {
+                  "type": "string"
+                },
+                "choices": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "multi_select": {
+                  "type": "boolean"
+                }
+              }
+            }
+          },
+          "command": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string"
+          }
+        },
+        "description": "A question or approval the agent waits on. Answer once with POST /api/agents/{name}/native/sessions/{sid}/requests/{rid}. Other request kinds are declined upstream and never listed."
       }
     }
   }

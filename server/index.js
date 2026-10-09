@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, isChatKind } from './config.js';
+import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, isChatKind, CHAT_KINDS } from './config.js';
 import { hermesClient, upstreamJson, boundedBytes, safeAgentData } from './hermes.js';
 import { artifactRegistry } from './artifacts.js';
 import { scanAvatarPacks } from './avatars.js';
@@ -14,6 +14,11 @@ import { screenRelay } from './screen.js';
 import { inboxStore } from './inbox.js';
 import { mcpHandler, bearer } from './mcp.js';
 import { runRegistry } from './runs.js';
+import { coordinator } from './coordinator.js';
+import { nativeFeatures, busyModes, nativeRun, nativeControl } from './hermes-runs.js';
+import { nativeHub } from './hermes-ui.js';
+import { nativeFacade, viewOf } from './native-facade.js';
+import { catalogFor } from './commands.js';
 import { historyStore, newSessionId, validSessionId } from './history.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
@@ -28,6 +33,7 @@ import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
 
+const CHAT_KINDS_LIST = CHAT_KINDS;
 const DIR = path.dirname(fileURLToPath(import.meta.url)), WEB_DIR = path.resolve(process.env.FOXFLEET_WEB_DIR || path.join(DIR, '..', 'web', 'dist'));
 // Strict CSP for the web app: same-origin scripts only (Vite emits no inline script), inline style attributes allowed for layout.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -132,13 +138,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const runs = runRegistry(), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(), facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
       const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
-      reg.mcp = mcpHandler(reg.inbox); return reg;
+      reg.mcp = mcpHandler(reg.inbox); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
     })());
     return registries.get(userId);
   }
@@ -193,12 +199,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   const newInboxToken = () => { const value = randomBytes(32).toString('base64url'); return { value, hash: createHash('sha256').update(value).digest('hex') }; };
   // The only agent shape clients get: no host, port, URL, profile path or upstream version strings.
+  // Negotiation order: native UI gateway (through the machine connector) > HTTP /v1/runs > /v1/chat/completions.
+  const nativeUi = (m) => Boolean(kindOf(m) === 'hermes' && m.machineId && connectors.ui(m.machineId)?.caps(m.profile)?.native);
   function agentView(m, p, index) {
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: capabilitiesOf(m),
+      capabilities: { ...capabilitiesOf(m), busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       checks: Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])) };
@@ -210,6 +218,42 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
   function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
+  // Which native run controls this Hermes profile advertises (GET /v1/capabilities), cached briefly. Chat kinds have none.
+  const nativeCache = new Map();
+  async function nativeFor(m) {
+    if (kindOf(m) !== 'hermes') return null;
+    const k = JSON.stringify([m.name, m.profile, m.machineId]), hit = nativeCache.get(k); if (hit && Date.now() - hit.at < 30_000) return hit.native;
+    let native = { runs: false, steer: false, stop: false, status: false };
+    try { const r = await upstream.api(m, '/v1/capabilities'); if (r.ok) { const d = await r.json(); if (d?.object === 'hermes.api_server.capabilities' && d.features && typeof d.features === 'object') native = nativeFeatures({ features: d.features }); } else await r.body?.cancel(); } catch { /* older Hermes or unreachable: no native controls */ }
+    nativeCache.set(k, { at: Date.now(), native }); return native;
+  }
+  // How the coordinator starts a reply. It runs later (queue drain, interrupt), outside the request: use the captured registry, never the scoped proxies.
+  function launcher(m, ctx, native) {
+    const reg = ctx.reg, scope = scopeOf(ctx);
+    return { async launch(item, { rebuild }) {
+      const isChat = isChatKind(kindOf(m)), hist = reg.history;
+      if (isChat) {
+        const sid = validSessionId(item.session) ? item.session : newSessionId();
+        let messages = item.body?.messages;
+        if (rebuild || !messages) { const past = hist.messages(m.name, sid, { limit: 200, offset: 0 })?.messages ?? []; messages = [...past.filter((x) => x.role === 'user' || x.role === 'assistant').map((x) => ({ role: x.role, content: typeof x.content === 'string' ? x.content : x.text ?? '' })), item.message]; }
+        return runs.start({ scope, agent: m.name, session: sid, open: (signal) => openai.chat(m, messages, signal), timeoutMs: Math.max(timeoutMs, 30000),
+          check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { 'X-Hermes-Session-Id': sid }; },
+          onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, item.text, r.text); } });
+      }
+      const link = {};
+      if (native?.runs) {
+        const content = item.message.content, input = typeof content === 'string' ? content : [{ role: 'user', content }];
+        const ctrl = nativeControl({ api: reg.upstream.api, m, link }); link.steer = ctrl.steer; link.stop = ctrl.stop;
+        return runs.start({ scope, agent: m.name, session: item.session || undefined, link, timeoutMs, onFinish: undefined,
+          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: item.session || undefined, idempotencyKey: item.id, link, signal }),
+          check: (r) => ({ ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }) });
+      }
+      const messages = rebuild || !item.body ? [item.message] : item.body.messages; // older Hermes keeps its own transcript by session id
+      return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,
+        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: item.body?.model || 'hermes-agent', messages, stream: true }) }),
+        check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }; } });
+    } };
+  }
   function agentData(m, route, data, originalConnections) { current(m); const safe = safeAgentData(data, [...originalConnections, ...store.all()]); return route === 'skills' && Array.isArray(safe) ? { skills: safe } : safe; }
   const cookieToken = (req) => req.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith('foxfleet_session='))?.slice('foxfleet_session='.length);
   const bearerToken = (req) => /^Bearer (\S{1,200})$/i.exec(req.headers.authorization || '')?.[1];
@@ -397,14 +441,77 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
-        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // Hermes agents: the full slash-command list (bundled; Hermes has no REST endpoint for its live registry). Other kinds: none.
-          return sendJson(res, 200, kindOf(m) === 'hermes' ? { source: 'bundled', commands: HERMES_COMMANDS.commands } : { source: 'none', commands: [] });
+        if (route === 'native') { // native Hermes UI gateway (see hermes-ui.js): sessions, journaled sends, shared event stream, approvals/clarifications
+          if (kindOf(m) !== 'hermes' || !nativeUi(m)) { if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { native: false }); throw fault(409, 'This agent has no native Hermes gateway; use the standard chat'); }
+          const nat = ctx.reg.native, scope = scopeOf(ctx), mid = m.machineId, prof = m.profile, sidOf = (v) => { if (!/^[\w.:-]{1,120}$/.test(v ?? '')) throw fault(400, 'Invalid session'); return v; };
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, nat.capabilities(mid, prof));
+          if (parts.length === 5 && parts[4] === 'sessions' && req.method === 'POST') { await readJson(req); return sendJson(res, 201, await nat.create(scope, mid, prof)); }
+          if (parts.length === 5 && parts[4] === 'busy') { // PROFILE-wide Hermes setting (display.busy_input_mode): read freely, change only on explicit confirmation
+            if (req.method === 'GET') return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, 'status')), scope: 'profile' });
+            if (req.method === 'POST') { const b = await readJson(req); if (b.confirm !== true) throw fault(400, 'This changes how every chat of this Hermes profile treats messages sent while it works; confirm to continue'); if (!['queue', 'steer', 'interrupt'].includes(b.mode)) throw fault(400, 'Invalid mode'); return sendJson(res, 200, { ...(await nat.busy(scope, mid, prof, b.mode)), scope: 'profile' }); }
+          }
+          if (parts.length === 5 && parts[4] === 'commands' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'catalog'); return sendJson(res, 200, { source: 'agent', pairs: (r.pairs ?? []).slice(0, 500) }); }
+          if (parts.length === 5 && parts[4] === 'models' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'models', { refresh: url.searchParams.get('refresh') === '1' }); return sendJson(res, 200, { providers: (r.providers ?? []).map((pr) => ({ slug: String(pr.slug), name: String(pr.name ?? pr.slug), current: pr.is_current === true, models: (pr.models ?? []).map((x) => (typeof x === 'string' ? x : x?.id ?? x?.name)).filter(Boolean).slice(0, 300).map(String) })).slice(0, 60) }); }
+          if (parts.length === 7 && parts[4] === 'sessions') {
+            const sid = sidOf(parts[5]), what = parts[6];
+            if (what === 'attach' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await nat.attach(scope, mid, prof, sid)); }
+            if (what === 'messages' && req.method === 'POST') { const b = await readJson(req, LIMITS.chat); if (b.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(b.client_id))) throw fault(400, 'Invalid client_id'); const r = await nat.send(scope, mid, prof, sid, { text: b.text, mode: typeof b.mode === 'string' ? b.mode : 'auto', clientId: b.client_id }); return sendJson(res, r.duplicate ? 200 : 202, r); }
+            if (what === 'messages' && req.method === 'GET') return sendJson(res, 200, { messages: nat.list(scope, prof, sid) });
+            if (what === 'interrupt' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await nat.interrupt(scope, mid, prof, sid)); }
+            if (what === 'model' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.setModel(scope, mid, prof, sid, b.model)); }
+            if (what === 'events' && req.method === 'GET') { // SSE: hub cursor, replay + live, any number of viewers
+              const after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0), n = Number.isInteger(after) && after > 0 ? after : 0;
+              res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+              const write = (e) => res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
+              const f = nat.follow(scope, mid, prof, sid, n, write); if (f.truncated) res.write(`event: foxfleet.gap\ndata: ${JSON.stringify({ cursor: f.cursor })}\n\n`); for (const e of f.events) write(e);
+              const ka = setInterval(() => res.write(': keep-alive\n\n'), 15_000); ka.unref?.(); res.once('close', () => { clearInterval(ka); f.unsubscribe(); }); return;
+            }
+          }
+          if (parts.length === 8 && parts[4] === 'sessions' && parts[6] === 'requests' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.respond(scope, mid, prof, sidOf(parts[5]), parts[7], { result: b.result, error: b.error })); }
+          throw fault(404, 'Not found');
+        }
+        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // per-agent catalog: Hermes' full list (bundled; Hermes has no REST endpoint for its live registry) marked with what THIS agent can run
+          const native = await nativeFor(m), modes = nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native });
+          return sendJson(res, 200, { source: kindOf(m) === 'hermes' ? 'bundled' : 'local', busy: modes, ...(nativeUi(m) ? { native: true } : {}), commands: catalogFor({ kind: kindOf(m), bundled: HERMES_COMMANDS.commands, modes }) });
+        }
+        if (route === 'queue' && nativeUi(m)) { // native sessions: Hermes holds the queue; the hub only reports what it was told and what Hermes still has
+          const session = url.searchParams.get('session_id') || '';
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, await facade.queue(ctx.reg.native, { scope: scopeOf(ctx), m, session }));
+          if (parts.length === 5 && parts[4] === 'resume' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await facade.queue(ctx.reg.native, { scope: scopeOf(ctx), m, session })); }
+          if (parts.length === 5 && req.method === 'DELETE') throw fault(409, 'Hermes owns this queue: a queued message cannot be taken back from here');
+          throw fault(404, 'Not found');
+        }
+        if (route === 'queue' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) { // the hub-side message queue of one conversation
+          const scope = scopeOf(ctx), session = url.searchParams.get('session_id') || '', native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { ...ctx.reg.coord.list(scope, m.name, session), modes });
+          if (parts.length === 5 && parts[4] === 'resume' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, { ...(await ctx.reg.coord.resume(launcher(m, ctx, native), scope, m.name, session)), modes }); }
+          if (parts.length === 5 && req.method === 'DELETE') return sendJson(res, 200, { message: await ctx.reg.coord.cancel(scope, m.name, session, parts[4]) });
+          throw fault(404, 'Not found');
+        }
+        if (route === 'messages' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
+          const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id });
+          return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
+        }
+        if (route === 'messages' && parts.length === 4 && req.method === 'POST' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) {
+          // Send while the agent may be busy. Persisted + acknowledged first; follow the reply through /runs/{id}/events.
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+          const native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
+          const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const mode = typeof data.mode === 'string' ? data.mode : 'queue';
+          if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
+          const result = await ctx.reg.coord.submit(launcher(m, ctx, native), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode, text, message: { role: 'user', content: lastUser.content }, body: payload, clientId: data.client_id, modes });
+          return sendJson(res, result.duplicate ? 200 : 202, result);
         }
         if (route === 'runs') { // resumable chat runs: list, follow from a cursor, stop. A run outlives its client connection.
           const scope = scopeOf(ctx);
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { runs: runs.list(scope, m.name, url.searchParams.get('session_id') || undefined) });
           if (parts.length === 6 && parts[5] === 'events' && req.method === 'GET') { const r = runs.get(scope, m.name, parts[4]), after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0); return runs.attach(req, res, r, Number.isInteger(after) && after > 0 ? after : 0); }
-          if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') { await readJson(req); const r = runs.get(scope, m.name, parts[4]); runs.stop(r); return sendJson(res, 200, { run: runs.view(r) }); }
+          if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') { await readJson(req); const r = runs.get(scope, m.name, parts[4]); const confirmed = await ctx.reg.coord.stop(scope, m.name, r.session || '', r); return sendJson(res, 200, { run: runs.view(r), confirmed }); }
           throw fault(404, 'Not found');
         }
         if (isChatKind(kindOf(m))) {
@@ -412,11 +519,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
             const sid = validSessionId(data.session_id) ? data.session_id : newSessionId(), hist = ctx.reg.history;
             const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: sid, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
-              if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-              return { 'X-Hermes-Session-Id': sid };
-            }, onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, userText, r.text); } });
-            return runs.attach(req, res, run);
+            const res1 = await ctx.reg.coord.submit(launcher(m, ctx, null), { scope: scopeOf(ctx), agent: m.name, session: sid, mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
+            return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
           }
           if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
             if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
@@ -479,15 +583,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
           if (req.method === 'POST' && ['start', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
         }
+        if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
+          const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: userText || '(attachment)', mode: 'auto', idleOnly: true });
+          if (!r.run) throw fault(409, 'Hermes did not start a reply for this message; check the conversation');
+          return runs.attach(req, res, r.run);
+        }
         if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
           current(m);
-          const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, timeoutMs, open: (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), check: (r) => {
-            current(m);
-            if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-            return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
-          } });
-          return runs.attach(req, res, run);
+          const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const res1 = await ctx.reg.coord.submit(launcher(m, ctx, await nativeFor(m)), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
+          return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
         }
         if (route === 'artifacts') {
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { artifacts: artifacts.list(m, url.searchParams.get('session_id')) });
@@ -571,6 +679,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     })().catch((error) => deny(error.status === 401 ? 401 : error.status === 404 ? 404 : 403, error.status === 401 ? 'Unauthorized' : error.status === 404 ? 'Not Found' : 'Forbidden'));
   });
   server.on('close', () => { authFails.clear(); connectors.closeAll(); for (const p of registries.values()) p.then((r) => { r.upstream.clear(); r.artifacts.clear(); r.screens.clear(); }); });
+  server.connectors = connectors; // test seam: native UI calls go through the machine connector
   // Upgraded sockets (screen proxy, gateway client) are not HTTP connections; end them on close.
   const originalClose = server.close;
   server.close = function (...args) { connectors.closeAll(); for (const p of registries.values()) p.then((r) => r.screens.clear()); return originalClose.apply(this, args); };

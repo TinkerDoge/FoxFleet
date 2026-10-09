@@ -52,8 +52,9 @@ export async function mockHermes(t, options = {}) {
     if (route === '/v1/capabilities') {
       if (options.hangApi) return;
       if (options.redirectApi) { res.writeHead(302, { Location: options.redirectApi }); return res.end(); }
-      return json(res, options.apiStatus || (options.legacy ? 404 : 200), options.malformedCapabilities ? { features: 'invalid' } : { object: 'hermes.api_server.capabilities', features: { chat_completions: !options.noChat, session_messages: true } });
+      return json(res, options.apiStatus || (options.legacy ? 404 : 200), options.malformedCapabilities ? { features: 'invalid' } : { object: 'hermes.api_server.capabilities', features: { chat_completions: !options.noChat, session_messages: true, ...options.features } });
     }
+    if (options.apiRoute && await options.apiRoute(req, res, route, u)) return; // tests plug in a fake Hermes /v1/runs here
     if (route === '/v1/models') return json(res, 200, { object: 'list', data: [{ id: 'hermes-agent', object: 'model' }] });
     if (/^\/api\/sessions\/[^/]+\/messages$/.test(route)) return json(res, 200, { messages: [{ role: 'assistant', content: '/outputs/result.png' }] });
     if (route === '/v1/chat/completions') {

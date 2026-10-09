@@ -47,7 +47,7 @@ describe('persistent drafts', () => {
     await show('atlas', 's1'); await type('send me'); flushDrafts(); expect(stored()).toHaveLength(1);
     await type('send me now');
     await act(() => { host.querySelector<HTMLButtonElement>('.send')!.click(); });
-    expect(onSend).toHaveBeenCalledWith('send me now', [], []); expect(editor().value).toBe(''); expect(stored()).toHaveLength(0);
+    expect(onSend).toHaveBeenCalledWith('send me now', [], [], 'queue'); expect(editor().value).toBe(''); expect(stored()).toHaveLength(0);
     await act(() => { vi.advanceTimersByTime(1000); }); expect(stored()).toHaveLength(0);
   });
 

@@ -150,7 +150,11 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             ChatScreen(
                 agent = agent, agents = vm.agents, state = vm.chatFor(agent.name),
                 sessions = vm.sessions[agent.name].orEmpty(), unread = { vm.chatFor(it).unread },
-                onSend = { t, imgs -> vm.send(agent.name, t, imgs) }, onStop = { vm.stop(agent.name) },
+                onSend = { t, imgs -> vm.send(agent.name, t, imgs) }, onSendMode = { t, imgs, mode -> vm.send(agent.name, t, imgs, mode) }, onStop = { vm.stop(agent.name) },
+                mode = vm.sendModes[agent.name] ?: vm.sendMode(agent), onMode = { vm.setSendMode(agent.name, it) },
+                commandDefs = vm.commandDefs[agent.name], onResumeQueue = { vm.resumeQueue(agent.name) }, onCancelQueued = { vm.cancelQueued(agent.name, it) },
+                onAnswerRequest = if (agent.capabilities.nativeUi) { id, result -> vm.answerRequest(agent.name, id, result) } else null,
+                nativeControls = if (agent.capabilities.nativeUi) vm.nativeControls(agent.name) else null,
                 onBack = { vm.back() }, onNewChat = { vm.newChat(agent.name) },
                 onSwitchAgent = { vm.navigate(Route.Chat(it.name)) },
                 onOpenSession = { vm.openSession(agent.name, it) },
