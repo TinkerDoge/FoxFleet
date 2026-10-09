@@ -8,14 +8,26 @@ name: release
 on:
   push:
     tags: ['v*']
-permissions: { contents: write }
+permissions: {}   # nothing by default; each job asks for what it needs
+# Only people with write access to the repository can push a tag and therefore publish a release.
 jobs:
   release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # only this job may create the release
     env:
       HAS_SIGNING: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
+      - name: Find the release notes for this tag
+        id: notes
+        run: |
+          set -eu
+          F="RELEASE_NOTES_${GITHUB_REF_NAME#v}.md"
+          if [ ! -f "$F" ]; then echo "::error::$F is missing. Add release notes for $GITHUB_REF_NAME before tagging."; exit 1; fi
+          echo "file=$F" >> "$GITHUB_OUTPUT"
+          # -alpha / -beta / -rc (any tag containing a hyphen) is a pre-release
+          case "$GITHUB_REF_NAME" in *-*) echo "pre=true" >> "$GITHUB_OUTPUT";; *) echo "pre=false" >> "$GITHUB_OUTPUT";; esac
       - uses: actions/setup-node@v4
         with: { node-version: 22, cache: npm, cache-dependency-path: web/package-lock.json }
       - name: Test the hub
@@ -60,9 +72,9 @@ jobs:
         run: sha256sum *.tar.gz *.apk > SHA256SUMS 2>/dev/null || sha256sum *.tar.gz > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
-          prerelease: true
+          prerelease: ${{ steps.notes.outputs.pre == 'true' }}
           generate_release_notes: true
-          body_path: RELEASE_NOTES_0.1.0-alpha.md
+          body_path: ${{ steps.notes.outputs.file }}
           files: |
             out/*.tar.gz
             out/*.apk

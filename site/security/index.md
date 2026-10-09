@@ -36,7 +36,7 @@ Foxfleet holds API keys and can drive agents (and desktops) on your machines. It
 
 - Rate limits key on the socket address; behind a proxy or tunnel all clients share one bucket (per-username lockout still works). No trusted-proxy setting yet.
 - **TOTP two-factor is not implemented** (a slot exists).
-- Android alpha builds are signed with the project's own release key (see the release notes for its fingerprint) but are not on any store; no minification yet.
+- Android alpha builds are signed with the project's own release key (certificate SHA-256 `df97dd3d75119537bce17a868bba08c8b5675c54c01a16a2f6b0fe5d528252df` for 0.1.0-alpha; the release notes explain how to check it with `apksigner`) but are not on any store; no minification yet.
 - No audit log of admin actions.
 - Secrets at rest are protected by file permissions, not encrypted.
 

@@ -10,7 +10,27 @@
 | `foxfleet-server-0.1.0-alpha.tar.gz` | The hub: `server/`, `connector/`, the built web app, `deploy/` files, licence and docs |
 | `SHA256SUMS` | Checksums for the files above |
 
-Verify before you install: `sha256sum -c SHA256SUMS`. The APK's signing certificate SHA-256 fingerprint is printed in the release description by the maintainer; check it with `apksigner verify --print-certs foxfleet-0.1.0-alpha.apk`.
+## Verify the download
+
+1. Put the files in one folder and check the hashes (every line should say `OK`):
+
+   ```bash
+   sha256sum -c SHA256SUMS
+   ```
+
+2. Check the APK's signing certificate (Android build-tools `apksigner`):
+
+   ```bash
+   apksigner verify --print-certs foxfleet-0.1.0-alpha.apk
+   ```
+
+   The line `Signer #1 certificate SHA-256 digest` must be exactly:
+
+   ```text
+   df97dd3d75119537bce17a868bba08c8b5675c54c01a16a2f6b0fe5d528252df
+   ```
+
+   If it differs, do not install the APK.
 
 ## Quick start (5 minutes)
 
