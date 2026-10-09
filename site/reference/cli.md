@@ -8,13 +8,20 @@ New in 0.2.1-alpha. It is covered by automated tests (including `doctor` and `up
 
 ## Install
 
-From a release (checksum-verified, writes only under your home folder, no root):
+Pin the installer to a **release tag**, not to the `main` branch, so you run exactly the script that was released and the version you chose (replace the tag with the release you want; see [Releases](https://github.com/TinkerDoge/FoxFleet/releases)):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/TinkerDoge/FoxFleet/main/deploy/install.sh | sh
+TAG=v0.2.1-alpha
+curl -fsSL "https://raw.githubusercontent.com/TinkerDoge/FoxFleet/$TAG/deploy/install.sh" -o install.sh
+less install.sh                      # it is short; read it
+FOXFLEET_VERSION="${TAG#v}" sh install.sh
 ```
 
-This unpacks the release into `~/.local/share/foxfleet-app/<version>/`, points `current` at it and links `~/.local/bin/foxfleet`. Add `~/.local/bin` to your `PATH` if it is not there. Options (environment): `FOXFLEET_VERSION`, `FOXFLEET_APPS_DIR`, `FOXFLEET_BIN_DIR`. Inspect the script first if you prefer; it is short.
+Piping straight into `sh` works too (`curl -fsSL …/$TAG/deploy/install.sh | FOXFLEET_VERSION=… sh`), but downloading first lets you read it. The script writes only under your home folder, needs no root, unpacks to `~/.local/share/foxfleet-app/<version>/`, points `current` at it and links `~/.local/bin/foxfleet`. Add `~/.local/bin` to your `PATH` if it is not there. Without `FOXFLEET_VERSION` it installs the newest release including pre-releases. Options (environment): `FOXFLEET_VERSION`, `FOXFLEET_APPS_DIR`, `FOXFLEET_BIN_DIR`.
+
+::: warning What the checksum check does and does not protect
+The installer and `foxfleet update` verify the tarball against the `SHA256SUMS` file **from the same GitHub release**. That catches a corrupted or truncated download and a mismatched asset. It does **not** protect against a compromised release or maintainer account, because an attacker who can replace the tarball can replace `SHA256SUMS` too, and the server tarball is not signed. Only the Android APK carries a signature (see [Security](/security/)). For a stricter check, compare the SHA-256 with a value the maintainers published somewhere else (for example the release notes or a signed tag) before you run `update`.
+:::
 
 Already run from a git checkout or a Docker image? Run it directly: `node server/bin/foxfleet doctor` (or `docker compose exec foxfleet node server/bin/foxfleet doctor`). `update` only manages installer-style folders; git checkouts use `deploy/deploy.sh`.
 

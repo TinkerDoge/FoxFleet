@@ -1,6 +1,7 @@
 #!/bin/sh
 # Foxfleet installer: puts the `foxfleet` command on your PATH from a release tarball (checksum-verified).
-#   curl -fsSL https://raw.githubusercontent.com/TinkerDoge/FoxFleet/main/deploy/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/TinkerDoge/FoxFleet/<release-tag>/deploy/install.sh -o install.sh && sh install.sh
+# Use a release tag (not main) in that URL, and read the script first. The SHA256SUMS check guards against corruption, not against a compromised release (the tarball is unsigned).
 # Read it first if you like; it only writes under your home folder and never needs root.
 # Options (environment):
 #   FOXFLEET_VERSION   release to install, e.g. 0.2.1-alpha            (default: the newest release, pre-releases included)
