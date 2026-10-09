@@ -1,5 +1,10 @@
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AgentSummary, AuthInfo, Registration } from './types';
+import type { AgentSummary, AuthInfo, Registration, SessionInfo } from './types';
+import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
+import type { UiMessage } from '../lib/chat';
+import { chatMessages } from '../lib/chat';
+import type { FileRef } from '../lib/files';
+import { SseParser } from '../lib/sse';
 
 type Fetch = typeof fetch;
 export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number }
@@ -43,6 +48,74 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     register: (username: string, password: string, invite: string) => request<unknown>('/api/auth/register', { body: { username, password, invite, client: 'web' }, plain401: true }),
     logout: () => request<unknown>('/api/auth/logout', { method: 'POST', body: {}, plain401: true }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
+
+    // ---- agent registry (owner) ----
+    agentKinds: async (): Promise<AgentKind[]> => parseKinds(await request('/api/agent-kinds')),
+    savedAgents: async (): Promise<SavedAgent[]> => ((await request<any>('/api/connections')).connections ?? []).map(parseSaved),
+    addAgent: async (fields: object): Promise<SaveResult> => { const o = await request<any>('/api/connections', { body: fields }); return { agent: parseSaved(o.connection), inboxToken: o.inboxToken, bootstrap: o.bootstrap }; },
+    editAgent: async (name: string, fields: object): Promise<SaveResult> => ({ agent: parseSaved((await request<any>('/api/connections/' + enc(name), { method: 'PUT', body: fields })).connection) }),
+    deleteAgent: (name: string) => request<unknown>('/api/connections/' + enc(name), { method: 'DELETE' }),
+    reorderAgents: (names: string[]) => request<unknown>('/api/connections/order', { body: { names } }),
+    testAgent: async (fields: object): Promise<TestResult> => parseTest(await request('/api/connections/test', { body: fields })),
+    /** New connector bootstrap (the old token stops working at once) or, for inbox agents, a new MCP token. */
+    newToken: async (name: string): Promise<{ bootstrap?: string; inboxToken?: string }> => { const o = await request<any>('/api/connections/' + enc(name) + '/token', { body: {} }); return { bootstrap: o.bootstrap, inboxToken: o.inboxToken }; },
+
+    // ---- sessions and skills ----
+    sessions: async (agent: string): Promise<SessionInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions`)).sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined })),
+    messages: async (agent: string, id: string): Promise<UiMessage[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions/${enc(id)}/messages`)).messages ?? []).map((m: any) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: contentText(m.content) })),
+    skills: async (agent: string): Promise<string[]> => { try { const o = await request<any>(`/api/agents/${enc(agent)}/skills`); const a = o.skills ?? o.data ?? []; return [...new Set<string>(a.map((x: any) => (typeof x === 'string' ? x : x?.name)).filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200); } catch (e) { if (e instanceof AuthRequiredError) throw e; return []; } },
+
+    /** Streams a reply. Callbacks fire as SSE events arrive; resolves with the session id. */
+    chat: async (agent: string, history: UiMessage[], opts: { sessionId?: string; signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void }): Promise<string | undefined> => {
+      let res: Response;
+      try {
+        res = await f(`${base}/api/agents/${enc(agent)}/chat`, { method: 'POST', credentials: 'same-origin', signal: opts.signal, headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: 'hermes-agent', stream: true, ...(opts.sessionId ? { session_id: opts.sessionId } : {}), messages: chatMessages(history) }) });
+      } catch (e) { if ((e as Error).name === 'AbortError') throw e; throw new NetworkError(); }
+      if (res.status === 401) throw new AuthRequiredError();
+      if (!res.ok) { let m = 'Chat failed'; try { const d = await res.json(); m = String(d?.error?.message ?? d?.error ?? m); } catch { /* keep default */ } throw new ApiError(res.status, m); }
+      if (!(res.headers.get('content-type') ?? '').includes('text/event-stream') || !res.body) throw new ApiError(0, 'Invalid reply stream');
+      const sid = res.headers.get('x-hermes-session-id') ?? undefined;
+      if (sid && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(sid)) opts.onSession(sid);
+      const fail = () => new ApiError(0, 'The agent reply failed. Check the agent and try again.');
+      const parser = new SseParser((e) => {
+        if (e.data === '[DONE]') return false;
+        if (e.event === 'error') throw fail();
+        let v: any; try { v = JSON.parse(e.data); } catch { return true; }
+        if (!v || typeof v !== 'object') return true;
+        if ('error' in v) throw fail();
+        if (e.event === 'hermes.tool.progress') { opts.onTool(String(v.tool ?? v.name ?? 'tool')); return true; }
+        for (const c of Array.isArray(v.choices) ? v.choices : []) {
+          const d = c?.delta; if (!d) continue;
+          if (typeof d.content === 'string' && d.content) opts.onContent(d.content);
+          if (typeof d.reasoning_content === 'string' && d.reasoning_content) opts.onReasoning(d.reasoning_content);
+        }
+        return true;
+      });
+      const reader = res.body.getReader(), dec = new TextDecoder(); let more = true;
+      while (more) { const { done, value } = await reader.read(); if (done) break; more = parser.push(dec.decode(value, { stream: true })); }
+      if (!more) await reader.cancel().catch(() => {}); else parser.end();
+      return sid;
+    },
+
+    /** Streams a file to the agent's disk with progress (XHR: fetch has no upload progress). */
+    uploadFile: (agent: string, file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<FileRef> => new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', `${base}/api/agents/${enc(agent)}/files?name=${enc(file.name)}${file.type ? `&type=${enc(file.type)}` : ''}`);
+      x.setRequestHeader('Content-Type', 'application/octet-stream'); x.withCredentials = true;
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.min(1, e.loaded / e.total));
+      x.onerror = () => reject(new NetworkError()); x.onabort = () => reject(new DOMException('Aborted', 'AbortError'));
+      x.onload = () => {
+        let d: any = null; try { d = JSON.parse(x.responseText); } catch { /* not json */ }
+        if (x.status === 401) return reject(new AuthRequiredError());
+        if (x.status >= 200 && x.status < 300 && typeof d?.path === 'string') return resolve({ name: String(d.name ?? file.name), path: d.path, size: file.size });
+        reject(new ApiError(x.status, String(d?.error?.message ?? d?.error ?? `Upload failed (${x.status})`)));
+      };
+      signal?.addEventListener('abort', () => x.abort());
+      x.send(file);
+    }),
   };
 }
+const enc = encodeURIComponent;
+function contentText(c: unknown): string { if (typeof c === 'string') return c; if (Array.isArray(c)) return c.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join(''); return ''; }
 export type Client = ReturnType<typeof createClient>;

@@ -9,5 +9,7 @@ export interface AuthInfo {
 }
 export interface AgentSummary {
   id: string; name: string; displayName?: string; kind: string; description?: string;
-  online: boolean; chatReady: boolean; capabilities?: Record<string, boolean>;
+  online: boolean; chatReady: boolean; capabilities?: Partial<Capabilities>;
 }
+export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean }
+export interface SessionInfo { id: string; title?: string }
