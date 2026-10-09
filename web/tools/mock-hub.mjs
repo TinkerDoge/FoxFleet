@@ -61,7 +61,14 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   let lease = null, screenOn = true;
   const agentsOut = () => saved.map((s) => ({ id: s.name, name: s.name, displayName: s.label || s.name, kind: s.kind, online: s.name !== 'echo', chatReady: true, managementReady: s.kind === 'hermes', description: s.description || '',
     capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true }) : caps({ images: s.name === 'nova', sessions: false }) }));
-  const chatSessions = { atlas: [{ id: 'sess_a1', title: 'Weekly usage summary' }, { id: 'sess_a2', title: 'Release notes draft' }, { id: 'sess_a3', title: 'Docs indexing' }] };
+  let retention = 90;
+  const H = 3600_000, T0 = Date.now();
+  const chatSessions = { atlas: [
+    { id: 'sess_a1', title: 'Weekly usage summary', updated: T0 - 0.4 * H, messages: 6, preview: 'Atlas handled most of the load, and the cheap model took the rest.' },
+    { id: 'sess_a2', title: 'Release notes draft', updated: T0 - 5 * H, messages: 12, preview: 'Draft is ready: highlights, upgrade notes and the known limits.' },
+    { id: 'sess_a3', title: 'Docs indexing', updated: T0 - 30 * H, messages: 4, preview: 'Re-indexed 212 pages; 3 broken links were fixed.' },
+    { id: 'sess_a4', title: 'Backup check', updated: T0 - 4 * 24 * H, messages: 8, preview: 'Last nightly backup finished in 41 s, 118 MB.' },
+  ] };
   const demo = (f) => { const x = path.join(here, '..', '..', 'design', 'demo', f); return fs.existsSync(x) ? x : null; };
   const DESKTOP = process.env.MOCK_DESKTOP === '1' && demo('desktop.bgra');
   const json = (res, code, o, h = {}) => { res.writeHead(code, { 'content-type': 'application/json', ...h }); res.end(JSON.stringify(o)); };
@@ -115,6 +122,9 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (us && m === 'PATCH') { const b = await body(req), u = users.find((x) => x.id === us[1]); if (!u) return json(res, 404, { error: 'Unknown user' }); if (u.role === 'owner') return json(res, 400, { error: 'The owner cannot be disabled' }); u.disabled = Boolean(b.disabled); return json(res, 200, { user: publicUser(u) }); }
     if (p === '/api/media-proxy') return /^https:/.test(url.searchParams.get('url') || '') ? json(res, 403, { error: 'That address is not allowed' }) : json(res, 400, { error: 'Only https images can be proxied' });
     if (p === '/api/agents') return json(res, 200, { agents: agentsOut() });
+    if (p === '/api/history/settings') { if (m === 'PUT') { const b = await body(req); retention = b.retentionDays; } return json(res, 200, { retentionDays: retention }); }
+    if (/^\/api\/agents\/[^/]+\/commands$/.test(p)) return json(res, 200, { source: 'none', commands: [] });
+    if (/^\/api\/agents\/[^/]+\/runs$/.test(p)) return json(res, 200, { runs: [] });
     if (p === '/api/agent-kinds') return json(res, 200, { kinds });
     if (p === '/api/connections' && m === 'GET') return json(res, 200, { connections: saved });
     if (p === '/api/connections' && m === 'POST') { const b = await body(req); const c = { name: b.name, kind: b.kind, label: b.label || '', hasApiKey: !!b.apiKey }; saved.push(c);
@@ -130,8 +140,12 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
       const [, agent, what, sid] = a;
       if (what === 'media') { const f = (sid === 'photo.jpg' ? demo('photo.jpg') : demo('chart.png')) || path.join(dist, 'fox.png'); res.writeHead(200, { 'content-type': f.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }); return res.end(fs.readFileSync(f)); }
       if (what === 'skills') return json(res, 200, { skills: ['review', 'research', 'deploy-notes', 'translate'] });
-      if (what === 'sessions' && !sid) return json(res, 200, { sessions: chatSessions[agent] || [] });
-      if (what === 'sessions') return json(res, 200, { messages: [{ role: 'user', content: 'Can you summarise last week’s agent activity and chart the token usage?' }, { role: 'assistant', content: REPLY }] });
+      if (what === 'sessions' && !sid) { const all = chatSessions[agent] || [], off = Number(url.searchParams.get('offset') || 0), lim = Number(url.searchParams.get('limit') || 30); return json(res, 200, { sessions: all.slice(off, off + lim), total: all.length }); }
+      if (what === 'sessions' && (m === 'PATCH' || m === 'DELETE')) { await body(req).catch(() => {}); return json(res, 200, m === 'PATCH' ? { id: sid, title: 'renamed' } : { ok: true }); }
+      if (what === 'sessions') return json(res, 200, { has_more: false, messages: [
+        { role: 'user', content: 'Can you summarise last week’s agent activity and chart the token usage?', ts: T0 - 0.5 * H },
+        { role: 'assistant', content: REPLY, reasoning: 'The user wants a summary and a chart. Pull usage, then format a table.', tools: [{ name: 'usage_report', args: 'days: 7', result: '3 agents, 41 chats, 1.2M tokens', ok: true }, { name: 'render_chart', args: 'kind: bar', result: 'saved chart.png', ok: true }], ts: T0 - 0.45 * H },
+      ] });
       if (what === 'files') { await body(req); return json(res, 200, { name: url.searchParams.get('name'), path: 'uploads/' + url.searchParams.get('name') }); }
       if (what === 'screen') {
         await body(req).catch(() => {});

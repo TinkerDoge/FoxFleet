@@ -1,7 +1,18 @@
 import type { FileRef } from './files';
 
 export interface UiImage { dataUrl: string }
-export interface UiMessage { role: 'user' | 'assistant' | 'system'; content: string; images?: UiImage[]; reasoning?: string; error?: boolean }
+export interface ToolStep { name: string; args?: string; result?: string; ok?: boolean }
+export interface UiMessage { role: 'user' | 'assistant' | 'system'; content: string; images?: UiImage[]; reasoning?: string; error?: boolean; tools?: ToolStep[]; ts?: number }
+
+/** One message from the hub's normalised history (already stripped of tool JSON, control tags and hidden rows). */
+export function fromHistory(m: any): UiMessage | null {
+  if (!m || (m.role !== 'user' && m.role !== 'assistant')) return null;
+  const images = Array.isArray(m.images) ? m.images.filter((u: unknown): u is string => typeof u === 'string').map((dataUrl: string) => ({ dataUrl })) : [];
+  const tools: ToolStep[] = Array.isArray(m.tools) ? m.tools.filter((x: any) => x && typeof x.name === 'string').map((x: any) => ({ name: String(x.name), ...(typeof x.args === 'string' ? { args: x.args } : {}), ...(typeof x.result === 'string' ? { result: x.result } : {}), ...(typeof x.ok === 'boolean' ? { ok: x.ok } : {}) })) : [];
+  const content = typeof m.content === 'string' ? m.content : '';
+  if (!content && !images.length && !tools.length && !m.reasoning) return null;
+  return { role: m.role, content, ...(images.length ? { images } : {}), ...(typeof m.reasoning === 'string' && m.reasoning ? { reasoning: m.reasoning } : {}), ...(tools.length ? { tools } : {}), ...(Number(m.ts) ? { ts: Number(m.ts) } : {}) };
+}
 
 /**
  * OpenAI-style messages for the hub. Only the newest user turn carries image bytes; older images collapse to "[image]"

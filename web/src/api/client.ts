@@ -1,15 +1,20 @@
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, Shareable } from './types';
+import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, SessionPage, HistoryPage, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
 import type { UiMessage } from '../lib/chat';
-import { chatMessages } from '../lib/chat';
+import { chatMessages, fromHistory } from '../lib/chat';
 import type { FileRef } from '../lib/files';
 import { SseParser } from '../lib/sse';
+import { BUNDLED_CATALOG, type Catalog } from '../lib/commands';
 
 type Fetch = typeof fetch;
 export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number }
 
 /** Typed hub client. Cookie session (HttpOnly, set by the hub), so no token handling in JS. */
+
+export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void }
+export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'done' | 'error' | 'stopped'; started: number; events: number }
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000 }: ClientOptions = {}) {
   async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal } = {}): Promise<T> {
     const ctrl = new AbortController();
@@ -42,6 +47,57 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     user: o?.user && typeof o.user.username === 'string' ? { id: String(o.user.id ?? ''), username: o.user.username, role: o.user.role === 'owner' ? 'owner' : 'user' } : undefined,
     };
   };
+  async function openEvents(agent: string, run: string, after: number, signal?: AbortSignal): Promise<Response> {
+    let res: Response;
+    try { res = await f(`${base}/api/agents/${enc(agent)}/runs/${enc(run)}/events?after=${after}`, { credentials: 'same-origin', signal }); }
+    catch (e) { if ((e as Error).name === 'AbortError') throw e; throw new NetworkError(); }
+    if (res.status === 401) throw new AuthRequiredError();
+    if (!res.ok) throw new ApiError(res.status, 'That reply is no longer available');
+    return res;
+  }
+  /** Reads one SSE response; if the connection breaks (not an abort) before [DONE], reconnects to the run from the last event id. */
+  async function pump(agent: string, first: Response, opts: StreamOpts, knownRun?: string, from = 0): Promise<string | undefined> {
+    let res = first, run = knownRun, last = from, sid: string | undefined, attempts = 0;
+    for (;;) {
+      if (res.status === 401) throw new AuthRequiredError();
+      if (!res.ok) { let m = 'Chat failed'; try { const d = await res.json(); m = String(d?.error?.message ?? d?.error ?? m); } catch { /* keep default */ } throw new ApiError(res.status, m); }
+      if (!(res.headers.get('content-type') ?? '').includes('text/event-stream') || !res.body) throw new ApiError(0, 'Invalid reply stream');
+      sid = res.headers.get('x-hermes-session-id') ?? sid;
+      if (sid && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(sid)) opts.onSession(sid);
+      const r = res.headers.get('x-foxfleet-run'); if (r && r !== run) { run = r; opts.onRun?.(r); }
+      const fail = () => new ApiError(0, 'The agent reply failed. Check the agent and try again.');
+      let finished = false, progressed = false;
+      const parser = new SseParser((e) => {
+        if (e.id && Number(e.id) > last) { last = Number(e.id); progressed = true; }
+        if (e.data === '[DONE]') { finished = true; return false; }
+        if (e.event === 'foxfleet.gap') { opts.onGap?.(); return true; }
+        if (e.event === 'foxfleet.run') { finished = true; return false; } // the run was stopped or failed on the hub
+        if (e.event === 'error') throw fail();
+        let v: any; try { v = JSON.parse(e.data); } catch { return true; }
+        if (!v || typeof v !== 'object') return true;
+        if ('error' in v) throw fail();
+        if (e.event === 'hermes.tool.progress') { opts.onTool(String(v.tool ?? v.name ?? 'tool')); return true; }
+        for (const c of Array.isArray(v.choices) ? v.choices : []) {
+          const d = c?.delta; if (!d) continue;
+          if (typeof d.content === 'string' && d.content) opts.onContent(d.content);
+          if (typeof d.reasoning_content === 'string' && d.reasoning_content) opts.onReasoning(d.reasoning_content);
+        }
+        return true;
+      });
+      const reader = res.body.getReader(), dec = new TextDecoder(); let more = true;
+      try {
+        while (more) { const { done, value } = await reader.read(); if (done) break; more = parser.push(dec.decode(value, { stream: true })); }
+        if (!more) await reader.cancel().catch(() => {}); else parser.end();
+      } catch (e) { if ((e as Error).name === 'AbortError' || e instanceof ApiError) throw e; /* connection dropped: fall through and resume */ }
+      if (finished || !run) return sid;
+      if (progressed) attempts = 0;
+      if (++attempts > 8) throw new NetworkError();
+      await sleep(Math.min(500 * 2 ** (attempts - 1), 8000), opts.signal);
+      try { res = await openEvents(agent, run, last, opts.signal); }
+      catch (e) { if (e instanceof ApiError) return sid; /* the run expired on the hub: keep what we have */ if ((e as Error).name === 'AbortError') throw e; continue; }
+    }
+  }
+
   return {
     authInfo: async () => normalize(await request('/api/auth', { plain401: true })),
     login: (username: string, password: string) => request<unknown>('/api/auth/login', { body: { username, password, client: 'web' }, plain401: true }),
@@ -98,42 +154,45 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     rotateMachine: (id: string) => request<Pairing>('/api/machines/' + enc(id) + '/token', { body: {} }),
 
     // ---- sessions and skills ----
-    sessions: async (agent: string): Promise<SessionInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions`)).sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined })),
-    messages: async (agent: string, id: string): Promise<UiMessage[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions/${enc(id)}/messages`)).messages ?? []).map((m: any) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: contentText(m.content) })),
+    sessions: async (agent: string, o: { limit?: number; offset?: number; q?: string } = {}): Promise<SessionPage> => {
+      const q = new URLSearchParams({ limit: String(o.limit ?? 30), offset: String(o.offset ?? 0), ...(o.q ? { q: o.q } : {}) });
+      const r = await request<any>(`/api/agents/${enc(agent)}/sessions?${q}`);
+      const sessions: SessionInfo[] = (r.sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined, ...(Number(s.updated) ? { updated: Number(s.updated) } : {}), ...(typeof s.preview === 'string' && s.preview ? { preview: s.preview } : {}), ...(Number.isInteger(s.messages) ? { messages: s.messages } : {}), ...(s.pinned ? { pinned: true } : {}) }));
+      return { sessions, total: Number.isInteger(r.total) ? r.total : sessions.length };
+    },
+    /** One page of a conversation, newest first by page (offset counts back from the end); messages inside a page are chronological. */
+    messages: async (agent: string, id: string, o: { limit?: number; offset?: number } = {}): Promise<HistoryPage> => {
+      const r = await request<any>(`/api/agents/${enc(agent)}/sessions/${enc(id)}/messages?limit=${o.limit ?? 80}&offset=${o.offset ?? 0}`);
+      return { messages: (r.messages ?? []).map(fromHistory).filter((m: UiMessage | null): m is UiMessage => !!m), hasMore: r.has_more === true };
+    },
+    renameSession: (agent: string, id: string, title: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'PATCH', body: { title } }),
+    deleteSession: (agent: string, id: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'DELETE' }),
+    /** Slash-command catalog for this agent (the hub serves the bundled Hermes list for Hermes agents, nothing for others). */
+    commands: async (agent: string): Promise<Catalog> => { try { const r = await request<any>(`/api/agents/${enc(agent)}/commands`); return { source: String(r.source ?? ''), commands: Array.isArray(r.commands) ? r.commands : [] }; } catch (e) { if (e instanceof AuthRequiredError) throw e; return BUNDLED_CATALOG; } },
+    historyRetention: async (): Promise<number> => Number((await request<any>('/api/history/settings')).retentionDays),
+    setHistoryRetention: (retentionDays: number) => request<unknown>('/api/history/settings', { method: 'PUT', body: { retentionDays } }),
     skills: async (agent: string): Promise<string[]> => { try { const o = await request<any>(`/api/agents/${enc(agent)}/skills`); const a = o.skills ?? o.data ?? []; return [...new Set<string>(a.map((x: any) => (typeof x === 'string' ? x : x?.name)).filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200); } catch (e) { if (e instanceof AuthRequiredError) throw e; return []; } },
 
-    /** Streams a reply. Callbacks fire as SSE events arrive; resolves with the session id. */
-    chat: async (agent: string, history: UiMessage[], opts: { sessionId?: string; signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void }): Promise<string | undefined> => {
+    /**
+     * Streams a reply. The hub keeps the agent run alive if this connection drops, so a broken stream is resumed from the
+     * last event id (a few tries with backoff) instead of ending the chat. Resolves with the session id.
+     */
+    chat: async (agent: string, history: UiMessage[], opts: StreamOpts & { sessionId?: string }): Promise<string | undefined> => {
       let res: Response;
       try {
         res = await f(`${base}/api/agents/${enc(agent)}/chat`, { method: 'POST', credentials: 'same-origin', signal: opts.signal, headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: 'hermes-agent', stream: true, ...(opts.sessionId ? { session_id: opts.sessionId } : {}), messages: chatMessages(history) }) });
       } catch (e) { if ((e as Error).name === 'AbortError') throw e; throw new NetworkError(); }
-      if (res.status === 401) throw new AuthRequiredError();
-      if (!res.ok) { let m = 'Chat failed'; try { const d = await res.json(); m = String(d?.error?.message ?? d?.error ?? m); } catch { /* keep default */ } throw new ApiError(res.status, m); }
-      if (!(res.headers.get('content-type') ?? '').includes('text/event-stream') || !res.body) throw new ApiError(0, 'Invalid reply stream');
-      const sid = res.headers.get('x-hermes-session-id') ?? undefined;
-      if (sid && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(sid)) opts.onSession(sid);
-      const fail = () => new ApiError(0, 'The agent reply failed. Check the agent and try again.');
-      const parser = new SseParser((e) => {
-        if (e.data === '[DONE]') return false;
-        if (e.event === 'error') throw fail();
-        let v: any; try { v = JSON.parse(e.data); } catch { return true; }
-        if (!v || typeof v !== 'object') return true;
-        if ('error' in v) throw fail();
-        if (e.event === 'hermes.tool.progress') { opts.onTool(String(v.tool ?? v.name ?? 'tool')); return true; }
-        for (const c of Array.isArray(v.choices) ? v.choices : []) {
-          const d = c?.delta; if (!d) continue;
-          if (typeof d.content === 'string' && d.content) opts.onContent(d.content);
-          if (typeof d.reasoning_content === 'string' && d.reasoning_content) opts.onReasoning(d.reasoning_content);
-        }
-        return true;
-      });
-      const reader = res.body.getReader(), dec = new TextDecoder(); let more = true;
-      while (more) { const { done, value } = await reader.read(); if (done) break; more = parser.push(dec.decode(value, { stream: true })); }
-      if (!more) await reader.cancel().catch(() => {}); else parser.end();
-      return sid;
+      return pump(agent, res, opts);
     },
+    /** Reattaches to a run (after a reload or a dropped connection) and replays it from the start (after = 0) or a cursor. */
+    follow: async (agent: string, run: string, after: number, opts: StreamOpts): Promise<string | undefined> => {
+      const res = await openEvents(agent, run, after, opts.signal);
+      return pump(agent, res, opts, run, after);
+    },
+    runs: async (agent: string, session?: string): Promise<RunInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/runs${session ? '?session_id=' + enc(session) : ''}`)).runs ?? []) as RunInfo[],
+    /** The explicit Stop button: cancels the agent run itself (just closing the page never does). */
+    stopRun: (agent: string, run: string) => request<any>(`/api/agents/${enc(agent)}/runs/${enc(run)}/stop`, { body: {} }),
 
     /** Streams a file to the agent's disk with progress (XHR: fetch has no upload progress). */
     uploadFile: (agent: string, file: File, onProgress: (fraction: number) => void, signal?: AbortSignal): Promise<FileRef> => new Promise((resolve, reject) => {
@@ -155,5 +214,4 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
 }
 const enc = encodeURIComponent;
 const shareable = (o: any): Shareable => ({ link: String(o?.link ?? ''), hub: o?.hub, id: o?.id, expires: Number(o?.expires) || undefined, rows: Array.isArray(o?.rows) ? o.rows.map(String) : null });
-function contentText(c: unknown): string { if (typeof c === 'string') return c; if (Array.isArray(c)) return c.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join(''); return ''; }
 export type Client = ReturnType<typeof createClient>;

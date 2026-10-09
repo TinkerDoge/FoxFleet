@@ -71,7 +71,7 @@ test('openai-compatible agents chat through the hub and never expose their key',
   const chat = await request('/api/agents/GLM/chat', { messages: [{ role: 'user', content: 'hello' }] }, 'POST');
   assert.equal(chat.status, 200); assert.match(await chat.text(), /hi from glm/);
   assert.equal(JSON.parse(seen.at(-1).body).model, 'glm-5.3'); assert.equal(JSON.parse(seen.at(-1).body).stream, true);
-  assert.equal((await request('/api/agents/GLM/sessions')).status, 404);
+  await new Promise((r) => setTimeout(r, 50)); assert.equal((await request('/api/agents/GLM/sessions')).status, 200); // hub-side history (see history.test.js)
   assert.equal((await request('/api/connections/GLM', { kind: 'hermes' }, 'PUT')).status, 400);
   assert.equal((await request('/api/connections', { name: 'bad', kind: 'webhook' }, 'POST')).status, 400);
 });

@@ -21,23 +21,41 @@ export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaIt
   return <div class="md" ref={ref} onClick={click} />;
 }
 
-export function Message({ m, onMedia }: { m: UiMessage; onMedia: (m: MediaItem) => void }) {
+import { clock } from '../lib/time';
+
+function Tools({ m }: { m: UiMessage }) {
+  if (!m.tools?.length) return null;
+  const failed = m.tools.filter((x) => x.ok === false).length;
+  return (
+    <details class="tools">
+      <summary>{t(m.tools.length === 1 ? 'chat.toolsOne' : 'chat.toolsMany', { n: m.tools.length })}{failed ? ` · ${t('chat.toolsFailed', { n: failed })}` : ''}</summary>
+      <ul>{m.tools.map((x, i) => <li key={i} class={x.ok === false ? 'bad' : ''}><b>{x.name}</b>{x.args && <code>{x.args}</code>}{x.result && <span class="muted">{x.result}</span>}</li>)}</ul>
+    </details>
+  );
+}
+const Time = ({ ts }: { ts?: number }) => (ts ? <time class="msg-time muted" dateTime={new Date(ts).toISOString()}>{clock(ts)}</time> : null);
+
+export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean }) {
   if (m.role === 'user') {
     const { text, files } = splitFiles(m.content);
     return (
-      <div class="msg user">
+      <div class={`msg user${grouped ? ' grouped' : ''}`}>
         <div class="bubble">
           {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
           {text && <p class="user-text">{text}</p>}
+          <Time ts={m.ts} />
           {files.map((f, i) => <div class="chip" key={i}><span aria-hidden="true">📎</span><span class="chip-name">{f.path.split('/').pop()}</span><small>{f.size}</small></div>)}
         </div>
       </div>
     );
   }
   return (
-    <div class={`msg assistant${m.error ? ' err' : ''}`}>
+    <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}`}>
       {m.reasoning && <details class="reasoning"><summary>{t('chat.reasoning')}</summary><div class="md plain">{m.reasoning}</div></details>}
-      <Markdown text={m.content} onMedia={onMedia} />
+      <Tools m={m} />
+      {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
+      {m.content && <Markdown text={m.content} onMedia={onMedia} />}
+      <Time ts={m.ts} />
     </div>
   );
 }

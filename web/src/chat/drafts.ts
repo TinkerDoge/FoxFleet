@@ -17,6 +17,8 @@ const notify = () => subscribers.forEach((fn) => fn());
 const abortUploads = (draft?: Draft) => draft?.pending.forEach((p) => { if (p.kind === 'file') p.abort.abort(); });
 
 export function discardDraft(key: string) { abortUploads(drafts.get(key)); drafts.delete(key); notify(); }
+/** A new chat gets its session id mid-conversation: text typed meanwhile follows the chat instead of being orphaned under the old key (never overwrites an existing draft). */
+export function moveDraft(from: string, to: string) { const d = drafts.get(from); if (!d || from === to || drafts.has(to)) return; drafts.delete(from); drafts.set(to, d); notify(); }
 export function resetDrafts() { generation++; drafts.forEach(abortUploads); drafts.clear(); notify(); }
 
 export function useDraft(key: string): [Draft, (update: Update) => void] {

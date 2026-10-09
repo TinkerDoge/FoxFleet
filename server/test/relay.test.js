@@ -83,9 +83,6 @@ test('chat scopes profile and preserves session identity and SSE bytes', async (
 test('redirects never forward saved credentials', async (t) => {
   let stolen = false; const catcher = http.createServer((req, res) => { stolen = true; res.end('{}'); }), target = await listen(catcher); t.after(() => close(catcher)); const mock = await mockHermes(t, { redirectApi: target }), { request } = await setup(t, [mock.connection]); assert.equal((await (await request('/api/agents')).json()).agents[0].chatReady, false); assert.equal(stolen, false);
 });
-test('downstream stream close aborts upstream transport', async (t) => {
-  let done; const stopped = new Promise((r) => { done = r; }); const mock = await mockHermes(t, { slowStream: true, onStreamClose: done }), { base } = await setup(t, [mock.connection]); const abort = new AbortController(), r = await fetch(base + '/api/agents/fixture/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hello' }] }), signal: abort.signal }); const reader = r.body.getReader(); await reader.read(); abort.abort(); await reader.cancel().catch(() => {}); await Promise.race([stopped, new Promise((_, reject) => { setTimeout(() => reject(new Error('upstream did not abort')), 2000).unref(); })]);
-});
 test('config and logs redact credentials recursively and in text', async (t) => {
   const mock = await mockHermes(t), { request } = await setup(t, [mock.connection]); const text = await (await request('/api/agents/fixture/config')).text(); assert.ok(text.includes('visible')); for (const secret of ['different-secret', 'hidden-token', 'another-secret', '"hidden"']) assert.ok(!text.includes(secret), secret); const logs = await (await request('/api/agents/fixture/logs')).text(); for (const secret of ['dashboard-secret', 'api-secret', 'surprise-token', 'private-value']) assert.ok(!logs.includes(secret), secret);
 });

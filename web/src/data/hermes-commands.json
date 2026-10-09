@@ -1,0 +1,1208 @@
+{
+ "source": "hermes_cli/commands.py COMMAND_REGISTRY",
+ "count": 103,
+ "commands": [
+  {
+   "name": "start",
+   "aliases": [],
+   "description": "Acknowledge platform start pings without a reply",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "new",
+   "aliases": [
+    "reset"
+   ],
+   "description": "Start a new session (fresh session ID + history)",
+   "category": "Session",
+   "args": "[name]",
+   "subcommands": [],
+   "availability": "app",
+   "app": "new"
+  },
+  {
+   "name": "topic",
+   "aliases": [],
+   "description": "Enable or inspect Telegram DM topic sessions",
+   "category": "Session",
+   "args": "[off|help|session-id]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "clear",
+   "aliases": [],
+   "description": "Clear screen and start a new session",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "redraw",
+   "aliases": [],
+   "description": "Force a full UI repaint (recovers from terminal drift)",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "history",
+   "aliases": [],
+   "description": "Show conversation history",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "app",
+   "app": "history"
+  },
+  {
+   "name": "save",
+   "aliases": [],
+   "description": "Export the current conversation (bare /save shows usage)",
+   "category": "Session",
+   "args": "<json|md|html> [filename] [redact]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "retry",
+   "aliases": [],
+   "description": "Retry the last message (resend to agent)",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "app",
+   "app": "retry"
+  },
+  {
+   "name": "prompt",
+   "aliases": [
+    "compose"
+   ],
+   "description": "Compose your next prompt in $EDITOR (markdown), then send it",
+   "category": "Session",
+   "args": "[initial text]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "undo",
+   "aliases": [],
+   "description": "Back up N user turns and re-prompt (default 1)",
+   "category": "Session",
+   "args": "[N]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "title",
+   "aliases": [],
+   "description": "Set a title for the current session",
+   "category": "Session",
+   "args": "[name]",
+   "subcommands": [],
+   "availability": "app",
+   "app": "title"
+  },
+  {
+   "name": "handoff",
+   "aliases": [],
+   "description": "Hand off this session to a messaging platform (Telegram, Discord, etc.)",
+   "category": "Session",
+   "args": "<platform>",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "branch",
+   "aliases": [
+    "fork"
+   ],
+   "description": "Branch the current session (new thread on Discord/Telegram/Slack/Matrix; --here stays here)",
+   "category": "Session",
+   "args": "[--here] [name]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "worktree",
+   "aliases": [],
+   "description": "Show, list, create, or prune isolated git worktrees",
+   "category": "Session",
+   "args": "[new [name]|list|prune [--dry-run]]",
+   "subcommands": [
+    "new",
+    "list",
+    "prune"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "compress",
+   "aliases": [
+    "compact"
+   ],
+   "description": "Compress conversation context (add 'here [N]' to keep recent N turns; --preview shows what would happen)",
+   "category": "Session",
+   "args": "[here [N] | focus topic | --preview|--dry-run]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "rollback",
+   "aliases": [],
+   "description": "List or restore filesystem checkpoints (restores keep your hand-edits; --all overrides)",
+   "category": "Session",
+   "args": "[number] [--all]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "snapshot",
+   "aliases": [
+    "snap"
+   ],
+   "description": "Create or restore state snapshots of Hermes config/state",
+   "category": "Session",
+   "args": "[create|restore <id>|prune]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "export",
+   "aliases": [],
+   "description": "Export a profile (config, skills, theme) to a shareable archive",
+   "category": "Configuration",
+   "args": "[profile] [-o output.tar.gz]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "import",
+   "aliases": [],
+   "description": "Import a shared profile archive as a new profile",
+   "category": "Configuration",
+   "args": "<archive.tar.gz> [--name <name>]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "stop",
+   "aliases": [],
+   "description": "Kill all running background processes",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "app",
+   "app": "stop"
+  },
+  {
+   "name": "pause",
+   "aliases": [],
+   "description": "Pause new work globally (emergency stop); '/pause off' resumes",
+   "category": "Session",
+   "args": "[reason | off]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "approve",
+   "aliases": [],
+   "description": "Approve a pending dangerous command",
+   "category": "Session",
+   "args": "[session|always]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "deny",
+   "aliases": [],
+   "description": "Deny a pending dangerous command (optionally with a reason)",
+   "category": "Session",
+   "args": "[all] [reason]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "bg",
+   "aliases": [],
+   "description": "Run a prompt in a separate background session",
+   "category": "Session",
+   "args": "<prompt>",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "btw",
+   "aliases": [],
+   "description": "Ask a side question about the current conversation without interrupting it",
+   "category": "Session",
+   "args": "<question>",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "agents",
+   "aliases": [
+    "tasks"
+   ],
+   "description": "Show active agents and running tasks",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "journey",
+   "aliases": [
+    "learning",
+    "memory-graph"
+   ],
+   "description": "Open the learning journey timeline",
+   "category": "Session",
+   "args": "[list|delete <id>|edit <id>]",
+   "subcommands": [
+    "list",
+    "delete",
+    "edit"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "queue",
+   "aliases": [
+    "q"
+   ],
+   "description": "Queue a prompt for the next turn, or list/edit/rm/move/clear queued prompts",
+   "category": "Session",
+   "args": "[<prompt>|list|edit N <prompt>|rm N|move A B|clear]",
+   "subcommands": [
+    "list",
+    "edit",
+    "rm",
+    "move",
+    "clear",
+    "add"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "steer",
+   "aliases": [
+    "s"
+   ],
+   "description": "Inject a message after the next tool call without interrupting",
+   "category": "Session",
+   "args": "<prompt>",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "goal",
+   "aliases": [],
+   "description": "Set a standing goal Hermes works on across turns until achieved",
+   "category": "Session",
+   "args": "[text | -- <text> | draft <text> | show | gate add <cmd> | pause | resume | clear | status | wait <pid> | unwait]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "heartbeat",
+   "aliases": [
+    "hb"
+   ],
+   "description": "Set a recurring prompt that re-enters this session when idle",
+   "category": "Session",
+   "args": "[every <interval> <prompt> | status | pause | resume | clear]",
+   "subcommands": [
+    "status",
+    "pause",
+    "resume",
+    "clear"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "refine",
+   "aliases": [],
+   "description": "Review this conversation now and save lessons to memory/skills",
+   "category": "Session",
+   "args": "[focus instructions]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "review",
+   "aliases": [],
+   "description": "Spawn an independent subagent to review the work just discussed (PR, code, docs)",
+   "category": "Session",
+   "args": "[review instructions]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "loop",
+   "aliases": [
+    "proactive"
+   ],
+   "description": "Re-run a prompt on a recurring interval in this session",
+   "category": "Session",
+   "args": "[interval] <prompt> [--times N] [--until <condition>] | status | pause | resume | stop",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "plan",
+   "aliases": [],
+   "description": "Write a markdown implementation plan to .hermes/plans/ without executing anything",
+   "category": "Session",
+   "args": "[task]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "initiate-setup",
+   "aliases": [
+    "initiate_setup"
+   ],
+   "description": "Run the first-run setup: learn about you and set Hermes up around you",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "moa",
+   "aliases": [],
+   "description": "Run one prompt through the default Mixture of Agents preset, then restore your model",
+   "category": "Session",
+   "args": "<prompt>",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "subgoal",
+   "aliases": [],
+   "description": "Add or manage extra criteria on the active goal",
+   "category": "Session",
+   "args": "[text | remove N | clear]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "status",
+   "aliases": [],
+   "description": "Show session, model, token, and context info",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "egress",
+   "aliases": [],
+   "description": "Show Docker egress proxy status",
+   "category": "Session",
+   "args": "[status]",
+   "subcommands": [
+    "status"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "context",
+   "aliases": [
+    "ctx"
+   ],
+   "description": "Show detailed context window view with usage gauge, category breakdown, compression stats, and throughput",
+   "category": "Session",
+   "args": "[all]",
+   "subcommands": [
+    "all"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "whoami",
+   "aliases": [],
+   "description": "Show your slash command access (admin / user)",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "profile",
+   "aliases": [],
+   "description": "Show active profile name and home directory",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "sethome",
+   "aliases": [
+    "set-home"
+   ],
+   "description": "Set this chat as the home channel",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "resume",
+   "aliases": [],
+   "description": "Resume a previously-named session",
+   "category": "Session",
+   "args": "[name]",
+   "subcommands": [],
+   "availability": "app",
+   "app": "history"
+  },
+  {
+   "name": "sessions",
+   "aliases": [],
+   "description": "Browse and resume previous sessions",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "app",
+   "app": "history"
+  },
+  {
+   "name": "config",
+   "aliases": [],
+   "description": "Show current configuration",
+   "category": "Configuration",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "model",
+   "aliases": [],
+   "description": "Switch model (session-scoped; --global to persist)",
+   "category": "Configuration",
+   "args": "[model] [--provider name] [--reasoning level] [--global|--session] [--refresh]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "codex-runtime",
+   "aliases": [
+    "codex_runtime"
+   ],
+   "description": "Toggle codex app-server runtime for OpenAI/Codex models",
+   "category": "Configuration",
+   "args": "[auto|codex_app_server]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "personality",
+   "aliases": [],
+   "description": "Set a predefined personality",
+   "category": "Configuration",
+   "args": "[name]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "statusbar",
+   "aliases": [
+    "sb"
+   ],
+   "description": "Toggle the context/model status bar",
+   "category": "Configuration",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "battery",
+   "aliases": [],
+   "description": "Toggle a color-coded battery indicator in the status bar",
+   "category": "Configuration",
+   "args": "[on|off|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "timestamps",
+   "aliases": [
+    "ts"
+   ],
+   "description": "Toggle [HH:MM] timestamps on messages and /history",
+   "category": "Configuration",
+   "args": "[on|off|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "diff",
+   "aliases": [],
+   "description": "Show git changes in the working directory",
+   "category": "Info",
+   "args": "[staged|all|session] [--stat] [path...]",
+   "subcommands": [
+    "staged",
+    "all",
+    "session"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "verbose",
+   "aliases": [],
+   "description": "Cycle tool progress display: off -> new -> all -> verbose",
+   "category": "Configuration",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Needs a terminal"
+  },
+  {
+   "name": "focus",
+   "aliases": [],
+   "description": "Toggle focus view — show only your prompt and the final response",
+   "category": "Configuration",
+   "args": "[on|off|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "footer",
+   "aliases": [],
+   "description": "Toggle gateway runtime-metadata footer on final replies",
+   "category": "Configuration",
+   "args": "[on|off|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Needs a terminal"
+  },
+  {
+   "name": "yolo",
+   "aliases": [],
+   "description": "Toggle YOLO mode (skip all dangerous command approvals)",
+   "category": "Configuration",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "approvals",
+   "aliases": [],
+   "description": "Show or set the persistent dangerous-command approval mode",
+   "category": "Configuration",
+   "args": "[manual|smart|off]",
+   "subcommands": [
+    "manual",
+    "smart",
+    "off"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "reasoning",
+   "aliases": [],
+   "description": "Manage reasoning effort and display",
+   "category": "Configuration",
+   "args": "[level|show|hide|full|clamp] [--global]",
+   "subcommands": [
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+    "xhigh",
+    "max",
+    "ultra",
+    "show",
+    "hide",
+    "on",
+    "off",
+    "full",
+    "clamp",
+    "--global"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "fast",
+   "aliases": [],
+   "description": "Fast mode — OpenAI Priority Processing / Anthropic Fast Mode (normal/fast/auto/cold)",
+   "category": "Configuration",
+   "args": "[normal|fast|auto|cold|status] [--global]",
+   "subcommands": [
+    "normal",
+    "fast",
+    "auto",
+    "cold",
+    "status",
+    "on",
+    "off",
+    "--global"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "skin",
+   "aliases": [],
+   "description": "Show or change the display skin/theme",
+   "category": "Configuration",
+   "args": "[name]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "indicator",
+   "aliases": [],
+   "description": "Pick the TUI busy-indicator style",
+   "category": "Configuration",
+   "args": "[]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "voice",
+   "aliases": [],
+   "description": "Toggle voice mode",
+   "category": "Configuration",
+   "args": "[on|off|tts|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "tts",
+    "status"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "wake",
+   "aliases": [],
+   "description": "Toggle the 'Hey Hermes' wake word listener",
+   "category": "Configuration",
+   "args": "[on|off|status]",
+   "subcommands": [
+    "on",
+    "off",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "busy",
+   "aliases": [],
+   "description": "Control how messages behave while Hermes is working",
+   "category": "Configuration",
+   "args": "[queue|steer|interrupt|status]",
+   "subcommands": [
+    "queue",
+    "steer",
+    "interrupt",
+    "status"
+   ],
+   "availability": "unavailable",
+   "reason": "Needs a terminal"
+  },
+  {
+   "name": "tools",
+   "aliases": [],
+   "description": "Manage tools: /tools [list|disable|enable] [name...]",
+   "category": "Tools & Skills",
+   "args": "[list|disable|enable] [name...]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "toolsets",
+   "aliases": [],
+   "description": "List available toolsets",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "skills",
+   "aliases": [],
+   "description": "Search, install, inspect, or manage skills",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [
+    "search",
+    "browse",
+    "inspect",
+    "install",
+    "audit",
+    "pending",
+    "approve",
+    "reject",
+    "diff",
+    "approval"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "memory",
+   "aliases": [],
+   "description": "Review pending memory writes / toggle the approval gate",
+   "category": "Tools & Skills",
+   "args": "[pending|approve|reject|approval] [id|on|off]",
+   "subcommands": [
+    "pending",
+    "approve",
+    "reject",
+    "approval"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "bundles",
+   "aliases": [],
+   "description": "List skill bundles (aliases /<name> for multiple skills)",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "pet",
+   "aliases": [],
+   "description": "Toggle or adopt a petdex mascot (/pet, /pet list, /pet <slug>)",
+   "category": "Tools & Skills",
+   "args": "[toggle|list|scale <n>|<slug>]",
+   "subcommands": [
+    "toggle",
+    "list",
+    "scale",
+    "off"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "hatch",
+   "aliases": [
+    "generate-pet"
+   ],
+   "description": "Generate a new petdex pet from a description",
+   "category": "Tools & Skills",
+   "args": "[description]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "learn",
+   "aliases": [],
+   "description": "Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)",
+   "category": "Tools & Skills",
+   "args": "<what to learn from>",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "init",
+   "aliases": [],
+   "description": "Generate or update AGENTS.md project instructions from a repo scan",
+   "category": "Tools & Skills",
+   "args": "[notes]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "cron",
+   "aliases": [],
+   "description": "Manage scheduled tasks",
+   "category": "Tools & Skills",
+   "args": "[subcommand]",
+   "subcommands": [
+    "list",
+    "add",
+    "create",
+    "edit",
+    "pause",
+    "resume",
+    "run",
+    "remove"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "suggestions",
+   "aliases": [
+    "suggest"
+   ],
+   "description": "Review suggested automations (accept/dismiss)",
+   "category": "Tools & Skills",
+   "args": "[accept|dismiss N | catalog]",
+   "subcommands": [
+    "accept",
+    "dismiss",
+    "catalog",
+    "clear"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "blueprint",
+   "aliases": [
+    "bp"
+   ],
+   "description": "Set up an automation from a blueprint template",
+   "category": "Tools & Skills",
+   "args": "[name] [slot=value ...]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "curator",
+   "aliases": [],
+   "description": "Background skill maintenance (status, run, pin, archive, list-archived)",
+   "category": "Tools & Skills",
+   "args": "[subcommand]",
+   "subcommands": [
+    "status",
+    "run",
+    "pause",
+    "resume",
+    "pin",
+    "unpin",
+    "restore",
+    "list-archived"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "kanban",
+   "aliases": [],
+   "description": "Multi-profile collaboration board (tasks, links, comments)",
+   "category": "Tools & Skills",
+   "args": "[subcommand]",
+   "subcommands": [
+    "init",
+    "boards",
+    "create",
+    "list",
+    "ls",
+    "show",
+    "assign",
+    "reclaim",
+    "reassign",
+    "diagnostics",
+    "diag",
+    "link",
+    "unlink",
+    "claim",
+    "comment",
+    "complete",
+    "edit",
+    "block",
+    "unblock",
+    "archive",
+    "tail",
+    "dispatch",
+    "stats",
+    "notify-subscribe",
+    "notify-list",
+    "notify-unsubscribe",
+    "log",
+    "runs",
+    "heartbeat",
+    "assignees",
+    "context",
+    "specify",
+    "gc"
+   ],
+   "availability": "chat"
+  },
+  {
+   "name": "reload",
+   "aliases": [],
+   "description": "Reload .env variables into the running session",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "reload-mcp",
+   "aliases": [
+    "reload_mcp"
+   ],
+   "description": "Reload MCP servers from config",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "reload-skills",
+   "aliases": [
+    "reload_skills"
+   ],
+   "description": "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "browser",
+   "aliases": [],
+   "description": "Connect browser tools to your live Chromium-family browser via CDP, or switch to Browser Use mode",
+   "category": "Tools & Skills",
+   "args": "[connect|disconnect|status|use]",
+   "subcommands": [
+    "connect",
+    "disconnect",
+    "status",
+    "use"
+   ],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "plugins",
+   "aliases": [],
+   "description": "List installed plugins and their status",
+   "category": "Tools & Skills",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "commands",
+   "aliases": [],
+   "description": "Browse all commands and skills (paginated)",
+   "category": "Info",
+   "args": "[page]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "help",
+   "aliases": [],
+   "description": "Show available commands (/help skills lists skill commands, /help <text> filters)",
+   "category": "Info",
+   "args": "[skills|<filter>]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "palette",
+   "aliases": [],
+   "description": "Open the fuzzy command palette (also Ctrl+P)",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "restart",
+   "aliases": [],
+   "description": "Gracefully restart the gateway after draining active runs",
+   "category": "Session",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "usage",
+   "aliases": [],
+   "description": "Show token usage and rate limits; `reset` redeems a banked Codex limit reset",
+   "category": "Info",
+   "args": "[reset [--force]]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "subscription",
+   "aliases": [
+    "upgrade"
+   ],
+   "description": "View your Nous plan and change it in the browser",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "login",
+   "aliases": [],
+   "description": "Sign in with a Nous account (keeps your connectors)",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "topup",
+   "aliases": [],
+   "description": "Show your Nous balance and manage billing on the portal",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "insights",
+   "aliases": [],
+   "description": "Show usage insights and analytics",
+   "category": "Info",
+   "args": "[days]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "platforms",
+   "aliases": [
+    "gateway"
+   ],
+   "description": "Show gateway/messaging platform status",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "platform",
+   "aliases": [],
+   "description": "Pause, resume, or list a failing gateway platform",
+   "category": "Info",
+   "args": "<pause|resume|list> [name]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Only for messaging platforms"
+  },
+  {
+   "name": "copy",
+   "aliases": [],
+   "description": "Copy the last assistant response to clipboard",
+   "category": "Info",
+   "args": "[number]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "paste",
+   "aliases": [],
+   "description": "Attach clipboard image from your clipboard",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "image",
+   "aliases": [],
+   "description": "Attach a local image file for your next prompt",
+   "category": "Info",
+   "args": "<path>",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  },
+  {
+   "name": "update",
+   "aliases": [],
+   "description": "Update Hermes Agent to the latest version",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Needs a terminal"
+  },
+  {
+   "name": "version",
+   "aliases": [
+    "v"
+   ],
+   "description": "Show Hermes Agent version",
+   "category": "Info",
+   "args": "",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "debug",
+   "aliases": [],
+   "description": "Upload debug report (system info + logs) and get shareable links",
+   "category": "Info",
+   "args": "[nous|local]",
+   "subcommands": [],
+   "availability": "chat"
+  },
+  {
+   "name": "quit",
+   "aliases": [
+    "exit"
+   ],
+   "description": "Exit the CLI (use --delete to also remove session history)",
+   "category": "Exit",
+   "args": "[--delete]",
+   "subcommands": [],
+   "availability": "unavailable",
+   "reason": "Terminal only"
+  }
+ ]
+}

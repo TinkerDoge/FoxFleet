@@ -9,11 +9,11 @@
 <script type="application/json" id="data">
 {
   "updated": "2026-10-09",
-  "version": "0.2.0-alpha",
+  "version": "0.2.1-alpha",
   "releasedVersion": "0.2.0-alpha",
   "overview": [
     "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
-    "The latest public downloads are 0.2.0-alpha, including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
+    "The latest public downloads are 0.2.0-alpha (0.2.1-alpha is built and awaiting release: resumable chats, history, Hermes commands and the foxfleet CLI), including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
     "API-provider keys stay on the hub; paired Hermes dashboard passwords and chat API keys stay on the agent machine."
   ],
   "timeline": [
@@ -27,6 +27,46 @@
     }
   ],
   "board": [
+    {
+      "id": "fx1",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.2.1-alpha",
+      "text": "Chats survive closing the app or browser",
+      "detail": "The hub keeps the agent run going without the client, buffers events and lets the app or browser resume where it left off."
+    },
+    {
+      "id": "fx2",
+      "col": "Done",
+      "area": "Android",
+      "release": "0.2.1-alpha",
+      "text": "Chat history for every agent",
+      "detail": "History sheet (web and Android) lists past sessions with title, time and preview; open, rename, delete, load more. API-key agents get hub-side history with a retention setting."
+    },
+    {
+      "id": "fx3",
+      "col": "Done",
+      "area": "Web",
+      "release": "0.2.1-alpha",
+      "text": "Old conversations look like live ones",
+      "detail": "History is normalised on the hub (tool steps, reasoning, images, control tags) and rendered with the same Markdown pipeline."
+    },
+    {
+      "id": "fx4",
+      "col": "Done",
+      "area": "Agents",
+      "release": "0.2.1-alpha",
+      "text": "All Hermes slash commands",
+      "detail": "103 commands generated from the Hermes registry, grouped, with args hints and a flag for what works remotely."
+    },
+    {
+      "id": "fx5",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.2.1-alpha",
+      "text": "foxfleet command-line tool",
+      "detail": "doctor, update with checksum and rollback, backup/restore, users, invites, config, connector helpers and an installer script."
+    },
     {
       "id": "n8",
       "col": "Next",

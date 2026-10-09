@@ -58,8 +58,8 @@ export function hermesClient(timeoutMs = 5000) {
     const prefix = m.profile === 'default' ? '' : `/p/${encodeURIComponent(m.profile)}`;
     return call(m, 'api', prefix + route, { ...opts, headers: { ...opts.headers, ...(m.apiServerKey ? { Authorization: `Bearer ${m.apiServerKey}` } : {}) } });
   }
-  async function messages(m, session) {
-    const route = `/api/sessions/${encodeURIComponent(session)}/messages?inline_images=false`;
+  async function messages(m, session, page) {
+    const route = `/api/sessions/${encodeURIComponent(session)}/messages?inline_images=false` + (page ? `&limit=${page.limit}&offset=${page.offset}&order=latest` : '');
     let response;
     try { response = await dashboard(m, route); if (response.ok) { const data = await upstreamJson(response); return { messages: validMessages(data) }; } await response.body?.cancel(); }
     catch { /* API has independent authentication and may provide history without a dashboard. */ }

@@ -9,24 +9,26 @@ package dev.foxfleet.app.data
  */
 class SseParser(private val onEvent: (SseEvent) -> Boolean, private val limit: Int = 1024 * 1024) {
 
-    class SseEvent(val event: String, val data: String)
+    class SseEvent(val event: String, val data: String, val id: String? = null)
 
     private var buffer = ""
     private var event = "message"
     private var data = mutableListOf<String>()
     private var size = 0
+    private var id: String? = null
     private var stopped = false
 
     val isStopped: Boolean get() = stopped
 
     private fun dispatch(): Boolean {
         if (data.isNotEmpty()) {
-            val e = SseEvent(event, data.joinToString("\n"))
+            val e = SseEvent(event, data.joinToString("\n"), id)
             if (!onEvent(e)) stopped = true
         }
         event = "message"
         data = mutableListOf()
         size = 0
+        id = null
         return !stopped
     }
 
@@ -37,6 +39,7 @@ class SseParser(private val onEvent: (SseEvent) -> Boolean, private val limit: I
         val field = if (colon < 0) value else value.substring(0, colon)
         var content = if (colon < 0) "" else value.substring(colon + 1)
         if (content.startsWith(" ")) content = content.substring(1)
+        if (field == "id") id = content
         if (field == "event") event = content.ifEmpty { "message" }
         if (field == "data") {
             size += content.length

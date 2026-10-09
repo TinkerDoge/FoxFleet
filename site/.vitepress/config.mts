@@ -117,6 +117,7 @@ export default defineConfig({
         { text: 'REST API', link: '/reference/api' },
         { text: 'Connector protocol', link: '/reference/connector-protocol' },
         { text: 'config.json (v3)', link: '/reference/config-json' },
+        { text: 'foxfleet CLI', link: '/reference/cli' },
         { text: 'Error codes', link: '/reference/errors' },
         { text: 'Environment variables', link: '/hosting/environment' },
       ] }],

@@ -76,7 +76,7 @@ class V03LogicTest {
         val skills = listOf("github-pr-workflow", "gaming-news", "render")
         assertTrue(commandSuggestions("/", skills).any { it.label == "/new" })
         assertEquals(listOf("/new"), commandSuggestions("/ne", skills).map { it.label })
-        assertTrue(commandSuggestions("/g", skills).map { it.label }.containsAll(listOf("/github-pr-workflow", "/gaming-news")))
+        assertTrue(commandSuggestions("/g", skills, limit = 100).map { it.label }.containsAll(listOf("/github-pr-workflow", "/gaming-news")))
         assertEquals("#gaming-news", commandSuggestions("#gam", skills).first().label)
         assertTrue(commandSuggestions("#news", skills).any { it.label == "#gaming-news" })
         assertTrue(commandSuggestions("/new chat", skills).isEmpty())

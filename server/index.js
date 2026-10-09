@@ -13,7 +13,11 @@ import { scanAvatarPacks } from './avatars.js';
 import { screenRelay } from './screen.js';
 import { inboxStore } from './inbox.js';
 import { mcpHandler, bearer } from './mcp.js';
+import { runRegistry } from './runs.js';
+import { historyStore, newSessionId, validSessionId } from './history.js';
+import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
+import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
@@ -62,6 +66,7 @@ async function readJson(req, limit = BODY_LIMIT, allowArray = false) {
   try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); if (!value || (Array.isArray(value) && !allowArray) || typeof value !== 'object') throw new Error(); return value; }
   catch { throw fault(400, 'Invalid JSON body'); }
 }
+const pageInt = (v, lo, hi, d) => { const n = Number(v ?? d); return Number.isInteger(n) ? Math.min(Math.max(n, lo), hi) : d; };
 function sessionId(value) { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value)) throw fault(400, 'Invalid session ID'); return value; }
 async function serveStatic(url, res, avatarBase = DEFAULT_AVATAR_DIR) {
   let name; try { name = decodeURIComponent(url.pathname); } catch { throw fault(400, 'Invalid path'); }
@@ -98,6 +103,9 @@ const sse = (res, text, headers = {}) => {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers });
   res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] })}\n\ndata: [DONE]\n\n`);
 };
+// Bundled Hermes slash-command catalog (generated from hermes-agent's COMMAND_REGISTRY by design/tools/gen-hermes-commands.py).
+const HERMES_COMMANDS = JSON.parse(readFileSync(new URL('./hermes-commands.json', import.meta.url), 'utf8'));
+const scopeOf = (ctx) => ctx?.auth?.user?.id ?? 'local';
 async function streamResponse(req, res, getResponse, timeoutMs, headers, failureMessage = 'Agent request failed') {
   const abort = new AbortController(), onClose = () => { if (!res.writableEnded) abort.abort(); };
   res.once('close', onClose);
@@ -124,18 +132,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
-      const up = hermesClient(timeoutMs), reg = { store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
+      const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
       reg.mcp = mcpHandler(reg.inbox); return reg;
     })());
     return registries.get(userId);
   }
   const scoped = (key) => new Proxy({}, { get: (_, prop) => { const t = als.getStore()?.reg?.[key]; if (!t) throw fault(401, 'Login required'); const v = t[prop]; return typeof v === 'function' ? v.bind(t) : v; } });
-  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), mcp = (...a) => als.getStore().reg.mcp(...a);
+  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), history = scoped('history'), mcp = (...a) => als.getStore().reg.mcp(...a);
   const allRegistries = async () => singleUser ? [await registryFor('local', true)] : Promise.all(accounts.users().map((u) => registryFor(u.id, u.role === 'owner')));
   await allRegistries(); // fail fast on unreadable saved config
   const secureRequest = (req) => req.headers['x-forwarded-proto'] === 'https' || trusted.has(`https://${req.headers.host}`);
@@ -379,19 +387,42 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
+      if (url.pathname === '/api/history/settings' && ['GET', 'PUT'].includes(req.method)) { // how long the hub keeps chat history for API-key agents (this user only)
+        if (req.method === 'PUT') { const b = await readJson(req, 1024); await history.setRetention(b.retentionDays); }
+        return sendJson(res, 200, { retentionDays: history.retentionDays });
+      }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
         const agents = await Promise.all(originalConnections.map(async (m, i) => agentView(m, await probeAny(m), i))); originalConnections.forEach(current); return sendJson(res, 200, { agents }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = agentView(m, await probeAny(m), originalConnections.indexOf(m)); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (route === 'commands' && parts.length === 4 && req.method === 'GET') { // Hermes agents: the full slash-command list (bundled; Hermes has no REST endpoint for its live registry). Other kinds: none.
+          return sendJson(res, 200, kindOf(m) === 'hermes' ? { source: 'bundled', commands: HERMES_COMMANDS.commands } : { source: 'none', commands: [] });
+        }
+        if (route === 'runs') { // resumable chat runs: list, follow from a cursor, stop. A run outlives its client connection.
+          const scope = scopeOf(ctx);
+          if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { runs: runs.list(scope, m.name, url.searchParams.get('session_id') || undefined) });
+          if (parts.length === 6 && parts[5] === 'events' && req.method === 'GET') { const r = runs.get(scope, m.name, parts[4]), after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0); return runs.attach(req, res, r, Number.isInteger(after) && after > 0 ? after : 0); }
+          if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') { await readJson(req); const r = runs.get(scope, m.name, parts[4]); runs.stop(r); return sendJson(res, 200, { run: runs.view(r) }); }
+          throw fault(404, 'Not found');
+        }
         if (isChatKind(kindOf(m))) {
           if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
-            const payload = chatBody(await readJson(req, LIMITS.chat)); current(m);
-            return await streamResponse(req, res, (signal) => openai.chat(m, payload.messages, signal), Math.max(timeoutMs, 30000), (r) => {
+            const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
+            const sid = validSessionId(data.session_id) ? data.session_id : newSessionId(), hist = ctx.reg.history;
+            const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+            const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: sid, open: (signal) => openai.chat(m, payload.messages, signal), timeoutMs: Math.max(timeoutMs, 30000), check: (r) => {
               if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-              return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff' };
-            });
+              return { 'X-Hermes-Session-Id': sid };
+            }, onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, userText, r.text); } });
+            return runs.attach(req, res, run);
+          }
+          if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
+            if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
+            if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }));
+            if (parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); return sendJson(res, 200, await history.rename(m.name, sessionId(parts[4]), b.title)); }
+            if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); return sendJson(res, 200, { ok: true }); }
           }
           throw fault(404, 'Not available for this agent');
         }
@@ -451,11 +482,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
           current(m);
-          return await streamResponse(req, res, (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), timeoutMs, (r) => {
+          const run = await runs.start({ scope: scopeOf(ctx), agent: m.name, session: data.session_id, timeoutMs, open: (signal) => upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(data.session_id ? { 'X-Hermes-Session-Id': data.session_id } : {}) }, body: JSON.stringify(payload) }), check: (r) => {
             current(m);
             if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream');
-            return { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
-          });
+            return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) };
+          } });
+          return runs.attach(req, res, run);
         }
         if (route === 'artifacts') {
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { artifacts: artifacts.list(m, url.searchParams.get('session_id')) });
@@ -476,7 +508,17 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             }, FILE_UNAVAILABLE);
           }
         }
-        if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, agentData(m, route, await upstream.messages(m, sessionId(parts[4])), originalConnections));
+        if (route === 'sessions' && parts.length === 4 && req.method === 'GET') {
+          const limit = pageInt(url.searchParams.get('limit'), 1, 100, 30), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), q = (url.searchParams.get('q') || '').slice(0, 200);
+          const data = await upstreamJson(await upstream.dashboard(m, q ? '/api/sessions/search?q=' + encodeURIComponent(q) : `/api/sessions?limit=${limit}&offset=${offset}&order=recent`)), rows = Array.isArray(data?.sessions) ? data.sessions : Array.isArray(data) ? data : [];
+          return sendJson(res, 200, agentData(m, route, { sessions: rows.filter((r) => r?.id != null).map(sessionRow), total: Number.isInteger(data?.total) ? data.total : rows.length, limit, offset }, originalConnections));
+        }
+        if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
+          const limit = pageInt(url.searchParams.get('limit'), 1, 200, 80), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), raw = (await upstream.messages(m, sessionId(parts[4]), { limit, offset })).messages;
+          return sendJson(res, 200, agentData(m, route, { messages: normalizeTranscript(raw), offset, limit, has_more: raw.length >= limit }, originalConnections));
+        }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); return sendJson(res, 200, { ok: true }); }
         let remote, opts = {};
         if (req.method === 'GET' && parts.length === 4) remote = { sessions: '/api/sessions?limit=50', cron: '/api/cron/jobs', skills: '/api/skills', config: '/api/config', profiles: '/api/profiles' }[route];
         if (req.method === 'GET' && route === 'usage' && parts.length === 4) { const days = url.searchParams.get('days') || '30'; if (!/^\d{1,3}$/.test(days) || Number(days) < 1 || Number(days) > 365) throw fault(400, 'Invalid usage period'); remote = '/api/analytics/usage?days=' + days; }

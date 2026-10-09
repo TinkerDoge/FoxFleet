@@ -82,6 +82,10 @@ The site is built with VitePress. Its output bundles the packages below (all res
 
 Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-it and friends) are not shipped in the output.
 
+## Hermes command catalog
+
+`server/hermes-commands.json` (and its copies in `web/src/data/` and `android/app/src/main/resources/`) lists the slash commands of Hermes Agent (https://github.com/NousResearch/hermes-agent, `hermes_cli/commands.py`, commit 1744a19, MIT License, Copyright (c) 2025 Nous Research). Command names, argument hints and descriptions are copied from there; the availability fields are Foxfleet's own. Regenerate with `design/tools/gen-hermes-commands.py`. Licence text: `LICENSES/Hermes-MIT.txt`.
+
 ## Fonts
 
 Nunito (SIL OFL 1.1) is used only to render the wordmark PNGs at design time (`design/tools/make-wordmarks.py`); the font file is not included.

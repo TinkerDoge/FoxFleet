@@ -216,5 +216,19 @@
   "machines.done": "Done",
   "machines.copy": "Copy",
   "machines.cancel": "Close",
-  "machines.trouble": "Having trouble? See the troubleshooting guide in the docs."
+  "machines.trouble": "Having trouble? See the troubleshooting guide in the docs.",
+  "chat.history": "History",
+  "chat.historyFailed": "That didn't work. Try again.",
+  "chat.refresh": "Refresh",
+  "chat.rename": "Rename",
+  "chat.delete": "Delete",
+  "chat.deleteConfirm": "Delete this conversation?",
+  "chat.untitled": "Untitled chat",
+  "chat.loadMore": "Load more",
+  "chat.loadOlder": "Load earlier messages",
+  "chat.toolsOne": "Used 1 tool",
+  "chat.toolsMany": "Used {n} tools",
+  "chat.toolsFailed": "{n} failed",
+  "common.close": "Close",
+  "common.save": "Save"
 }

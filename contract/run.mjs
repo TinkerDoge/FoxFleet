@@ -38,6 +38,8 @@ export async function runContract(base, { fetchImpl = fetch, username = 'owner1'
   if (!list.connections.some((c) => c.name === 'contract-chat')) throw new Error('created connection is not listed');
   if (JSON.stringify(list).includes('api.example.com') || JSON.stringify(list).includes('"apiKey"')) throw new Error('listConnections leaked an address or secret');
   await call('updateConnection', '/api/connections/contract-chat', { method: 'PUT', body: { model: 'm2' } });
+  await call('getHistorySettings', '/api/history/settings'); await call('setHistorySettings', '/api/history/settings', { method: 'PUT', body: { retentionDays: 30 } });
+  await call('listSessions', '/api/agents/contract-chat/sessions?limit=10'); await call('listRuns', '/api/agents/contract-chat/runs'); await call('listCommands', '/api/agents/contract-chat/commands');
   await call('createConnection', '/api/connections', { method: 'POST', status: 201, body: { kind: 'openai', name: 'contract-two', baseUrl: 'https://api.example.com/v1', model: 'm', apiKey: 'k' } });
   await call('reorderConnections', '/api/connections/order', { method: 'POST', body: { names: ['contract-two', 'contract-chat'] } });
   await call('listAgents', '/api/agents');

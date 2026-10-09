@@ -13,6 +13,7 @@ import { Settings } from '../admin/Settings';
 import { ScreenView } from '../screen/ScreenView';
 import { loadHub, setTheme } from '../state';
 import { navigate, useRoute } from '../router';
+import { forgetAll, lastAgent } from '../lib/persist';
 import { t } from '../i18n/t';
 
 /** The signed-in frame: agent list + chat on desktop (sidebar), drawer on phones. */
@@ -29,9 +30,9 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const load = () => { setError(null); client.agents().then(setAgents).catch((e) => { if (e instanceof AuthRequiredError) lost(); else setError(t('home.failed')); }); };
   useEffect(load, []);
   useEffect(() => { const id = setInterval(() => client.agents().then(setAgents).catch(() => {}), 30000); return () => clearInterval(id); }, []);
-  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } lost(); }
+  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); lost(); }
   const PAGES = ['manage', 'admin', 'account', 'settings'];
-  const selected = !PAGES.includes(route.name) ? agents?.find((a) => a.name === route.params.get('agent')) ?? agents?.[0] : undefined;
+  const selected = !PAGES.includes(route.name) ? agents?.find((a) => a.name === (route.params.get('agent') ?? lastAgent())) ?? agents?.[0] : undefined;
   const go = () => setOpen(false);
   return (
     <div class={`shell${open ? ' drawer-open' : ''}`}>
@@ -73,7 +74,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
           <div class="empty-home"><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}
         {route.name === 'screen' && selected && <ScreenView key={selected.name} client={client} agent={selected} onAuthLost={lost} onClose={() => navigate('chat', { agent: selected.name })} />}
-        {route.name !== 'screen' && !PAGES.includes(route.name) && selected && <ChatView key={selected.name} client={client} agent={selected} onAuthLost={lost} />}
+        {route.name !== 'screen' && !PAGES.includes(route.name) && selected && <ChatView key={selected.name} client={client} agent={selected} onAuthLost={lost} session={route.params.get('session') ?? undefined} />}
       </main>
     </div>
   );
