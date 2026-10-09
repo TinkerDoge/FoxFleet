@@ -1,0 +1,397 @@
+#!/usr/bin/env node
+// foxfleet: quick admin for a Foxfleet hub. Node 22+, no dependencies.
+//   foxfleet doctor | update | status | start|stop|restart|logs | setup | user | invite | backup | restore | config | connector | version | completion
+// Run `foxfleet help` for the details. Exit codes: 0 ok, 1 problems found / failed, 2 usage error, 3 not supported for this install, 10 update available (update --check).
+import fs from 'node:fs';
+import os from 'node:os';
+import net from 'node:net';
+import path from 'node:path';
+import http from 'node:http';
+import crypto from 'node:crypto';
+import readline from 'node:readline';
+import { spawn, spawnSync } from 'node:child_process';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const HERE = path.dirname(fs.realpathSync(fileURLToPath(import.meta.url)));
+const SERVER_DIR = path.resolve(HERE, '..'), APP = path.resolve(SERVER_DIR, '..');
+const PKG = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8'));
+export const VERSION = PKG.version;
+
+// ---------- output ----------
+const argv = process.argv.slice(2);
+const FLAG_VALUES = new Set(['url', 'username', 'password', 'version', 'lines', 'ttl', 'to', 'from', 'name', 'hub', 'code', 'profiles', 'hermes-home', 'dashboard-port', 'role', 'timeout', 'out']);
+function parseArgs(list) {
+  const _ = [], flags = {};
+  for (let i = 0; i < list.length; i++) {
+    const a = list[i];
+    if (a === '--') { _.push(...list.slice(i + 1)); break; }
+    if (a.startsWith('--')) { const [k, v] = a.slice(2).split(/=(.*)/s); if (v !== undefined) flags[k] = v; else if (k.startsWith('no-')) flags[k.slice(3)] = false; else if (FLAG_VALUES.has(k) && list[i + 1] !== undefined && !list[i + 1].startsWith('--')) flags[k] = list[++i]; else flags[k] = true; }
+    else _.push(a);
+  }
+  return { _, flags };
+}
+const { _: pos, flags } = parseArgs(argv);
+const JSON_OUT = Boolean(flags.json), TTY = process.stdout.isTTY && !process.env.NO_COLOR && !JSON_OUT;
+const paint = (n, s) => (TTY ? `\x1b[${n}m${s}\x1b[0m` : s);
+const green = (s) => paint(32, s), red = (s) => paint(31, s), yellow = (s) => paint(33, s), dim = (s) => paint(2, s), bold = (s) => paint(1, s);
+class Fail extends Error { constructor(message, code = 1, fix) { super(message); this.code = code; this.fix = fix; } }
+const say = (...a) => { if (!JSON_OUT) console.log(...a); };
+const result = (obj) => { if (JSON_OUT) console.log(JSON.stringify(obj, null, 2)); };
+
+// ---------- environment ----------
+export function parseEnvFile(text) {
+  const out = {};
+  for (const line of text.split('\n')) { const m = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/.exec(line); if (m && !line.trim().startsWith('#')) out[m[1]] = m[2].replace(/^(['"])(.*)\1$/, '$2'); }
+  return out;
+}
+const HOME = os.homedir();
+const ENV_FILE = process.env.FOXFLEET_ENV_FILE || path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'foxfleet', 'env');
+const fileEnv = (() => { try { return parseEnvFile(fs.readFileSync(ENV_FILE, 'utf8')); } catch { return {}; } })();
+const cfg = (k, d) => process.env[k] ?? fileEnv[k] ?? d;
+const DATA = path.resolve(cfg('FOXFLEET_DATA') || (cfg('FOXFLEET_CONFIG') ? path.dirname(cfg('FOXFLEET_CONFIG')) : path.join(process.env.XDG_DATA_HOME || path.join(HOME, '.local', 'share'), 'foxfleet')));
+const CONFIG_JSON = cfg('FOXFLEET_CONFIG') || path.join(DATA, 'config.json');
+const BACKUPS = cfg('FOXFLEET_BACKUPS') || path.join(DATA, 'backups');
+const UNIT = cfg('FOXFLEET_UNIT', 'foxfleet');
+const PORT = Number(cfg('FOXFLEET_PORT') || cfg('PORT') || 3080), HOST = cfg('FOXFLEET_HOST', '127.0.0.1');
+const LOCAL_URL = (flags.url && flags.url !== true ? String(flags.url) : cfg('FOXFLEET_URL')) || `http://127.0.0.1:${PORT}`;
+const RELEASES_API = (cfg('FOXFLEET_RELEASES_API') || 'https://api.github.com/repos/TinkerDoge/FoxFleet').replace(/\/$/, '');
+const DATA_FILES = ['config.json', 'config.json.bak', 'accounts', 'users', 'inbox.json', 'machines.json', 'history.json'];
+const APPS_DIR = cfg('FOXFLEET_APPS_DIR') || path.join(path.dirname(DATA), 'foxfleet-app'); // versioned installs live here (install.sh); `current` points at the active one
+
+// ---------- helpers ----------
+const has = (cmd) => spawnSync('sh', ['-c', `command -v ${cmd}`], { stdio: 'ignore' }).status === 0;
+const run = (cmd, args, opts = {}) => spawnSync(cmd, args, { encoding: 'utf8', ...opts });
+const systemd = () => has('systemctl') && run('systemctl', ['--user', 'cat', UNIT]).status === 0;
+const unitState = () => run('systemctl', ['--user', 'is-active', UNIT]).stdout.trim() || 'unknown';
+async function get(url, { timeout = 4000, headers } = {}) {
+  try { const r = await fetch(url, { signal: AbortSignal.timeout(timeout), redirect: 'manual', headers }); return { ok: r.ok, status: r.status, text: await r.text(), headers: r.headers }; }
+  catch (e) { return { ok: false, status: 0, text: '', error: e.cause?.code || e.name || 'error' }; }
+}
+const healthy = async (url = LOCAL_URL) => { const r = await get(url + '/health'); try { return r.ok && JSON.parse(r.text).ok === true; } catch { return false; } };
+const portFree = (port, host = '127.0.0.1') => new Promise((res) => { const s = net.createServer(); s.once('error', () => res(false)); s.listen(port, host, () => s.close(() => res(true))); });
+const sha256File = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+const semver = (v) => { const m = /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/.exec(v ?? ''); return m ? { n: [+m[1], +m[2], +m[3]], pre: m[4] ?? '' } : null; };
+export function compareVersions(a, b) { const x = semver(a), y = semver(b); if (!x || !y) return 0; for (let i = 0; i < 3; i++) if (x.n[i] !== y.n[i]) return x.n[i] < y.n[i] ? -1 : 1; if (x.pre === y.pre) return 0; if (!x.pre) return 1; if (!y.pre) return -1; return x.pre < y.pre ? -1 : 1; }
+const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 129600 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} d`; };
+async function ask(q, { secret = false } = {}) {
+  if (!process.stdin.isTTY) throw new Fail(`${q.trim()} is required (pass it as a flag or environment variable; no terminal to ask on)`, 2);
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: true });
+  if (secret) rl._writeToOutput = (s) => { if (s.includes(q)) rl.output.write(q); };
+  return new Promise((res) => rl.question(q, (a) => { rl.close(); if (secret) console.log(); res(a); }));
+}
+async function readSecret(flagName, envName, prompt) {
+  if (flags[flagName] && flags[flagName] !== true) return String(flags[flagName]);
+  if (process.env[envName]) return process.env[envName];
+  if (flags['password-stdin']) { let s = ''; for await (const c of process.stdin) s += c; return s.replace(/\r?\n$/, ''); }
+  return ask(prompt, { secret: true });
+}
+async function accountsApi() { // direct file access to the accounts store: only safe while the hub is stopped
+  const { accountStore } = await import(pathToFileURL(path.join(SERVER_DIR, 'accounts.js')).href);
+  return accountStore(path.join(DATA, 'accounts'));
+}
+/** Runs fn with the hub stopped (the hub keeps accounts in memory and would overwrite our change), then starts it again. */
+async function withHubStopped(fn) {
+  const wasUp = await healthy(`http://127.0.0.1:${PORT}`), viaSystemd = systemd() && unitState() === 'active';
+  if (viaSystemd) { say(dim(`Stopping ${UNIT} while the accounts file changes…`)); run('systemctl', ['--user', 'stop', UNIT]); }
+  else if (wasUp && !flags.force) throw new Fail('The hub is running outside systemd. Stop it first (it would overwrite this change), or pass --force if you know it is safe.', 1);
+  try { return await fn(); }
+  finally { if (viaSystemd) { run('systemctl', ['--user', 'start', UNIT]); say(dim(`Started ${UNIT} again.`)); } }
+}
+
+// ---------- doctor ----------
+export async function doctorChecks() {
+  const out = []; const add = (id, status, message, fix) => out.push({ id, status, message, ...(fix ? { fix } : {}) });
+  const major = Number(process.versions.node.split('.')[0]);
+  major >= 22 ? add('node', 'ok', `Node ${process.versions.node}`) : add('node', 'fail', `Node ${process.versions.node} is too old (needs 22+)`, 'Install Node 22 or newer (https://nodejs.org or your package manager)');
+  fs.existsSync(path.join(APP, 'web', 'dist', 'index.html')) ? add('web', 'ok', 'web/dist is present (the browser app is served)') : add('web', 'warn', 'web/dist is missing: the browser app will not load (the API and the phone app still work)', 'Use a release tarball, or run: cd web && npm ci && npm run build');
+  // data dir
+  try {
+    const st = fs.statSync(DATA); fs.accessSync(DATA, fs.constants.W_OK);
+    add('data', 'ok', `data dir ${DATA} is writable`);
+    if (st.mode & 0o077) add('data-perms', 'warn', `data dir is readable by other users (mode ${(st.mode & 0o777).toString(8)})`, `chmod 700 ${DATA}`);
+    else add('data-perms', 'ok', 'data dir is private (700)');
+    try { const f = fs.statfsSync(DATA), free = f.bavail * f.bsize; free < 50e6 ? add('disk', 'fail', `only ${(free / 1e6).toFixed(0)} MB free`, 'Free some disk space') : free < 500e6 ? add('disk', 'warn', `${(free / 1e6).toFixed(0)} MB free`, 'Free some disk space soon') : add('disk', 'ok', `${(free / 1e9).toFixed(1)} GB free`); } catch { /* statfs unsupported */ }
+  } catch { add('data', fs.existsSync(DATA) ? 'fail' : 'warn', fs.existsSync(DATA) ? `data dir ${DATA} is not writable` : `data dir ${DATA} does not exist yet (created on first start)`, fs.existsSync(DATA) ? `chown -R "$USER" ${DATA}` : 'Start the hub once: foxfleet start'); }
+  // config + accounts
+  try { if (fs.existsSync(CONFIG_JSON)) { const c = JSON.parse(fs.readFileSync(CONFIG_JSON, 'utf8')); add('config', Array.isArray(c.machines ?? []) ? 'ok' : 'fail', Array.isArray(c.machines ?? []) ? `config.json is valid (${(c.machines ?? []).length} agents)` : 'config.json: "machines" must be a list', 'Restore the last backup: foxfleet restore, or fix the file (config.json.bak is the previous save)'); } else add('config', 'ok', 'no config.json yet (no agents added)'); }
+  catch { add('config', 'fail', 'config.json is not valid JSON', `Restore config.json.bak or a backup: foxfleet restore`); }
+  try { const uf = path.join(DATA, 'accounts', 'users.json'); if (fs.existsSync(uf)) { const u = JSON.parse(fs.readFileSync(uf, 'utf8')).users ?? []; add('accounts', u.some((x) => x.role === 'owner') ? 'ok' : 'fail', u.some((x) => x.role === 'owner') ? `accounts: ${u.length} user(s), owner present` : 'accounts exist but there is no owner', 'foxfleet setup --username NAME'); } else add('accounts', 'warn', 'no owner account yet: the first visitor with the setup code becomes the owner', 'foxfleet setup --show-code   (or: foxfleet setup --username NAME)'); }
+  catch { add('accounts', 'fail', 'accounts/users.json is unreadable', 'Restore from a backup: foxfleet restore'); }
+  // network
+  const up = await healthy(`http://127.0.0.1:${PORT}`);
+  if (up) add('hub', 'ok', `hub answers on 127.0.0.1:${PORT}`);
+  else { const free = await portFree(PORT); free ? add('hub', 'warn', `nothing is listening on port ${PORT}: the hub is not running`, 'foxfleet start') : add('hub', 'fail', `port ${PORT} is in use but it is not a Foxfleet hub`, `Pick another port: foxfleet config set FOXFLEET_PORT 3081 && foxfleet restart`); }
+  const nonLoop = !['127.0.0.1', 'localhost', '::1'].includes(HOST);
+  add('bind', nonLoop ? 'warn' : 'ok', nonLoop ? `bound to ${HOST}: reachable from your network` : `bound to ${HOST} (this computer only; put a proxy or tunnel in front for other devices)`, nonLoop ? 'Prefer 127.0.0.1 behind a reverse proxy or tunnel: foxfleet config set FOXFLEET_HOST 127.0.0.1' : undefined);
+  const trusted = cfg('FOXFLEET_TRUSTED_ORIGINS'), pub = (flags.url && flags.url !== true ? flags.url : cfg('FOXFLEET_PUBLIC_URL'));
+  if (trusted) { const bad = trusted.split(',').map((x) => x.trim()).filter((x) => x && !/^https?:\/\/[^/\s]+$/.test(x)); bad.length ? add('origins', 'fail', `FOXFLEET_TRUSTED_ORIGINS has invalid entries: ${bad.join(', ')} (use https://host with no path)`, 'foxfleet config set FOXFLEET_TRUSTED_ORIGINS https://your-hub.example') : add('origins', 'ok', `FOXFLEET_TRUSTED_ORIGINS is set (${trusted.split(',').length} origin(s))`); }
+  else add('origins', pub || nonLoop ? 'warn' : 'ok', pub || nonLoop ? 'FOXFLEET_TRUSTED_ORIGINS is not set: browsers using your public address will be refused' : 'FOXFLEET_TRUSTED_ORIGINS not needed for local use', pub || nonLoop ? `foxfleet config set FOXFLEET_TRUSTED_ORIGINS ${pub || 'https://your-hub.example'}` : undefined);
+  if (pub) {
+    const r = await get(String(pub).replace(/\/$/, '') + '/health', { timeout: 6000 });
+    r.ok ? add('public', 'ok', `public address answers (HTTP ${r.status})`) : add('public', 'fail', `public address did not answer${r.status ? ` (HTTP ${r.status})` : r.error ? ` (${r.error})` : ''}`, 'Check the tunnel/reverse proxy and DNS; the hub itself is fine if the local check above is ok');
+  }
+  if (up) { // does a WebSocket upgrade get through (connector and screen takeover need it)?
+    const target = new URL(pub ? String(pub) : `http://127.0.0.1:${PORT}`);
+    const status = await new Promise((res) => {
+      const req = (target.protocol === 'https:' ? import('node:https') : Promise.resolve(http)).then((m) => { const r = m.request({ host: target.hostname, port: target.port || (target.protocol === 'https:' ? 443 : 80), path: '/connector', headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Version': '13', 'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64') }, timeout: 5000 }); r.on('upgrade', (resp, sock) => { sock.destroy(); res(resp.statusCode); }); r.on('response', (resp) => { resp.resume(); res(resp.statusCode); }); r.on('error', () => res(0)); r.on('timeout', () => { r.destroy(); res(0); }); r.end(); });
+      void req;
+    });
+    status === 101 || [400, 401, 403, 404].includes(status) ? add('websocket', 'ok', `WebSocket route answered (HTTP ${status}): the connector and screen takeover can connect`) : add('websocket', 'warn', status ? `WebSocket upgrade got HTTP ${status}` : 'WebSocket upgrade did not answer', 'If you use a reverse proxy, enable WebSocket upgrades (see the hosting docs: Reverse proxy)');
+  }
+  // systemd
+  if (has('systemctl')) {
+    if (systemd()) {
+      const st = unitState(); add('service', st === 'active' ? 'ok' : 'warn', `systemd user unit ${UNIT}: ${st}`, st === 'active' ? undefined : `foxfleet start   (logs: foxfleet logs)`);
+      const en = run('systemctl', ['--user', 'is-enabled', UNIT]).stdout.trim(); en === 'enabled' ? add('enabled', 'ok', 'starts at login/boot') : add('enabled', 'warn', `unit is ${en || 'not enabled'}`, `systemctl --user enable ${UNIT}`);
+      const lg = run('loginctl', ['show-user', os.userInfo().username, '-p', 'Linger']).stdout; /Linger=yes/.test(lg) ? add('linger', 'ok', 'lingering is on (survives logout)') : add('linger', 'warn', 'lingering is off: the hub stops when you log out', `loginctl enable-linger ${os.userInfo().username}`);
+    } else add('service', 'warn', `no systemd user unit named ${UNIT}`, 'cp deploy/foxfleet.service ~/.config/systemd/user/ && systemctl --user enable --now foxfleet   (or run in the foreground: foxfleet start --foreground)');
+  }
+  // connector
+  const connCfg = path.join(process.env.FOXFLEET_CONFIG_DIR || path.join(process.env.XDG_CONFIG_HOME || path.join(HOME, '.config'), 'foxfleet'), 'connector.json');
+  if (fs.existsSync(connCfg)) { const r = run(process.execPath, [path.join(APP, 'connector', 'foxfleet-connector.mjs'), 'status'], { timeout: 8000 }); add('connector', r.status === 0 ? 'ok' : 'warn', `connector on this computer: ${(r.stdout || r.stderr).trim().split('\n')[0] || 'no status'}`, r.status === 0 ? undefined : 'foxfleet connector status'); }
+  // backups + version
+  try { const b = fs.readdirSync(BACKUPS).filter((f) => f.endsWith('.tar.gz')).map((f) => fs.statSync(path.join(BACKUPS, f)).mtimeMs).sort((a, b2) => b2 - a); b.length ? (Date.now() - b[0] > 14 * 864e5 ? add('backup', 'warn', `last backup is ${ago(b[0])} old`, 'foxfleet backup') : add('backup', 'ok', `last backup ${ago(b[0])} ago`)) : add('backup', 'warn', 'no backups yet', 'foxfleet backup'); } catch { add('backup', 'warn', 'no backups yet', 'foxfleet backup'); }
+  if (!flags.offline) {
+    const rel = await latestRelease({ timeout: 4000 }).catch(() => null);
+    if (!rel) add('version', 'ok', `version ${VERSION} (could not check for a newer release: offline?)`);
+    else compareVersions(VERSION, rel.version) < 0 ? add('version', 'warn', `version ${VERSION}; ${rel.version} is available`, 'foxfleet update') : add('version', 'ok', `version ${VERSION} is the latest`);
+  }
+  return out;
+}
+async function cmdDoctor() {
+  const checks = await doctorChecks(), worst = checks.some((c) => c.status === 'fail') ? 'fail' : checks.some((c) => c.status === 'warn') ? 'warn' : 'ok';
+  result({ version: VERSION, status: worst, checks });
+  for (const c of checks) { say(`${c.status === 'ok' ? green('ok  ') : c.status === 'warn' ? yellow('warn') : red('FAIL')}  ${c.message}`); if (c.fix && c.status !== 'ok') say(dim(`      fix: ${c.fix}`)); }
+  say(worst === 'ok' ? green('\nAll good.') : worst === 'warn' ? yellow('\nWorks, with things to look at.') : red('\nProblems found.'));
+  return worst === 'fail' ? 1 : 0;
+}
+
+// ---------- releases and update ----------
+async function listReleases(opts = {}) {
+  const r = await get(`${RELEASES_API}/releases?per_page=30`, { timeout: opts.timeout ?? 10000, headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'foxfleet-cli' } });
+  if (!r.ok) throw new Fail(`Could not read the releases list (${r.status || r.error || 'no answer'})`, 1, 'Check your internet connection, or set FOXFLEET_RELEASES_API');
+  let list; try { list = JSON.parse(r.text); } catch { throw new Fail('The releases list was not valid JSON'); }
+  return list.filter((x) => x && !x.draft && semver(x.tag_name)).map((x) => ({ version: x.tag_name.replace(/^v/, ''), tag: x.tag_name, prerelease: Boolean(x.prerelease), assets: x.assets ?? [] }))
+    .sort((a, b) => compareVersions(b.version, a.version));
+}
+async function latestRelease(opts = {}) { const all = await listReleases(opts); return (flags.stable ? all.filter((r) => !r.prerelease) : all)[0] ?? null; }
+async function download(url, dest) { const r = await fetch(url, { signal: AbortSignal.timeout(300000), headers: { 'User-Agent': 'foxfleet-cli' } }); if (!r.ok) throw new Fail(`Download failed (${r.status}): ${url.split('?')[0].split('/').pop()}`); fs.writeFileSync(dest, Buffer.from(await r.arrayBuffer())); }
+export function checksumFor(sums, file) { for (const line of sums.split('\n')) { const m = /^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$/.exec(line); if (m && path.basename(m[2]) === file) return m[1].toLowerCase(); } return null; }
+
+async function cmdUpdate() {
+  const rels = await listReleases(); const pool = flags.stable ? rels.filter((r) => !r.prerelease) : rels;
+  const target = flags.version && flags.version !== true ? rels.find((r) => r.version === String(flags.version).replace(/^v/, '')) : pool[0];
+  if (!target) throw new Fail(flags.version ? `No release ${flags.version}` : 'No releases found', 1);
+  const cmp = compareVersions(VERSION, target.version), newer = cmp < 0;
+  if (flags.check) { result({ current: VERSION, latest: target.version, updateAvailable: newer }); say(newer ? `Update available: ${VERSION} → ${bold(target.version)}${target.prerelease ? ' (pre-release)' : ''}` : `Up to date (${VERSION}).`); return newer ? 10 : 0; }
+  if (!newer && !flags.version) { result({ current: VERSION, latest: target.version, updated: false }); say(`Already on the latest (${VERSION}).`); return 0; }
+  const tarName = `foxfleet-server-${target.version}.tar.gz`, tarAsset = target.assets.find((a) => a.name === tarName), sumsAsset = target.assets.find((a) => a.name === 'SHA256SUMS');
+  if (!tarAsset || !sumsAsset) throw new Fail(`Release ${target.tag} has no ${!tarAsset ? tarName : 'SHA256SUMS'} attached`, 1, 'The maintainer may still be uploading it; try again later');
+  const installedUnderApps = path.dirname(fs.realpathSync(APP)) === fs.realpathSync(fs.existsSync(APPS_DIR) ? APPS_DIR : path.dirname(APP)) && fs.existsSync(APPS_DIR);
+  const plan = [`download ${tarName} + SHA256SUMS`, 'verify the SHA-256', `back up ${DATA} → ${BACKUPS}`, `unpack to ${path.join(APPS_DIR, target.version)}`, 'switch the "current" link', systemd() ? `restart ${UNIT}` : 'restart the hub (you run it yourself: foxfleet restart)', 'health-check; roll back automatically if it fails'];
+  if (flags['dry-run']) { result({ current: VERSION, target: target.version, plan, installedUnderApps }); say(`Dry run: ${VERSION} → ${target.version}\n` + plan.map((p) => `  - ${p}`).join('\n')); if (!installedUnderApps) say(yellow(`\nNote: this copy is not under ${APPS_DIR}/<version> (git checkout or manual unpack), so a real update would refuse. Use deploy/deploy.sh, or reinstall with deploy/install.sh.`)); return 0; }
+  if (!installedUnderApps) throw new Fail(`This copy of Foxfleet is not managed by the installer (${APP}).`, 3, 'Git checkout: use deploy/deploy.sh.  Otherwise reinstall with deploy/install.sh, which sets up versioned folders.');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'foxfleet-update-')); let rollback = null;
+  try {
+    say(`Downloading ${target.version}…`); const tarFile = path.join(tmp, tarName), sumsFile = path.join(tmp, 'SHA256SUMS');
+    await download(sumsAsset.browser_download_url, sumsFile); await download(tarAsset.browser_download_url, tarFile);
+    const want = checksumFor(fs.readFileSync(sumsFile, 'utf8'), tarName); if (!want) throw new Fail(`SHA256SUMS does not list ${tarName}`);
+    if (sha256File(tarFile) !== want) throw new Fail('Checksum mismatch: the download is corrupt or has been tampered with. Nothing was changed.');
+    say(green('Checksum verified.'));
+    const backup = await makeBackup('pre-update'); say(`Backed up data → ${backup}`);
+    const dest = path.join(APPS_DIR, target.version), stage = dest + '.new'; fs.rmSync(stage, { recursive: true, force: true }); fs.mkdirSync(stage, { recursive: true });
+    const x = run('tar', ['-xzf', tarFile, '-C', stage, '--strip-components=1']); if (x.status !== 0) throw new Fail('Could not unpack the release (is tar installed?)');
+    if (!fs.existsSync(path.join(stage, 'server', 'index.js'))) throw new Fail('The release does not look like a Foxfleet server tarball');
+    fs.rmSync(dest, { recursive: true, force: true }); fs.renameSync(stage, dest);
+    const link = path.join(APPS_DIR, 'current'), prev = fs.existsSync(link) ? fs.realpathSync(link) : null;
+    const swap = (to) => { const t = link + '.tmp'; fs.rmSync(t, { force: true }); fs.symlinkSync(to, t); fs.renameSync(t, link); };
+    rollback = () => { if (prev) swap(prev); };
+    swap(dest); say(`Switched to ${target.version}.`);
+    const restarted = systemd() ? (run('systemctl', ['--user', 'restart', UNIT]).status === 0) : false;
+    if (!restarted && systemd()) throw new Fail('Could not restart the service');
+    let ok = !systemd() && !(await healthy(`http://127.0.0.1:${PORT}`)) ? null : false;
+    if (ok === null) { say(yellow('The hub is not managed by systemd here: restart it yourself (foxfleet restart) to run the new version.')); result({ updated: true, from: VERSION, to: target.version, healthy: null, backup }); return 0; }
+    for (let i = 0; i < 8 && !ok; i++) { await new Promise((r) => setTimeout(r, flags['health-wait'] ? Number(flags['health-wait']) : 1500)); ok = await healthy(`http://127.0.0.1:${PORT}`); }
+    if (!ok) { say(red('The new version did not become healthy: rolling back.')); rollback(); if (systemd()) run('systemctl', ['--user', 'restart', UNIT]); await restoreBackup(backup, { quiet: true }); if (systemd()) run('systemctl', ['--user', 'restart', UNIT]); throw new Fail(`Update to ${target.version} failed its health check and was rolled back to ${VERSION}.`, 1, 'See: foxfleet logs'); }
+    result({ updated: true, from: VERSION, to: target.version, healthy: true, backup }); say(green(`Updated ${VERSION} → ${target.version}. The hub is healthy.`)); return 0;
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+}
+
+// ---------- backup / restore ----------
+async function makeBackup(prefix = 'backup', to) {
+  fs.mkdirSync(BACKUPS, { recursive: true, mode: 0o700 });
+  const out = to || path.join(BACKUPS, `${prefix}-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)}.tar.gz`), names = DATA_FILES.filter((f) => fs.existsSync(path.join(DATA, f)));
+  if (!names.length) throw new Fail('Nothing to back up yet (no data files in ' + DATA + ')', 1);
+  const r = run('tar', ['-czf', out, '-C', DATA, ...names]); if (r.status !== 0) throw new Fail('tar failed: ' + r.stderr.trim());
+  fs.chmodSync(out, 0o600); return out;
+}
+async function restoreBackup(file, { quiet } = {}) {
+  if (!fs.existsSync(file)) throw new Fail(`No such backup: ${file}`, 2);
+  const list = run('tar', ['-tzf', file]); if (list.status !== 0) throw new Fail('That file is not a readable backup');
+  const bad = list.stdout.split('\n').filter(Boolean).filter((e) => e.startsWith('/') || e.split('/').includes('..') || !DATA_FILES.includes(e.split('/')[0].replace(/\/$/, '')));
+  if (bad.length) throw new Fail(`The backup contains unexpected paths (${bad[0]}); refusing to restore`);
+  for (const f of ['accounts', 'users']) fs.rmSync(path.join(DATA, f), { recursive: true, force: true });
+  const r = run('tar', ['-xzf', file, '-C', DATA]); if (r.status !== 0) throw new Fail('Could not unpack the backup'); if (!quiet) say(green(`Restored ${path.basename(file)} into ${DATA}`));
+}
+async function cmdBackup() { const out = await makeBackup('backup', flags.to && flags.to !== true ? path.resolve(String(flags.to)) : undefined); result({ backup: out }); say(`Backup written: ${out}  ${dim('(0600; contains password hashes and agent keys: keep it private)')}`); return 0; }
+async function cmdRestore() {
+  let file = pos[1]; if (!file) { const l = fs.existsSync(BACKUPS) ? fs.readdirSync(BACKUPS).filter((f) => f.endsWith('.tar.gz')).sort().reverse() : []; if (!l.length) throw new Fail('No backups found. Give a file: foxfleet restore FILE', 2); file = path.join(BACKUPS, l[0]); say(`Using the newest backup: ${l[0]}`); }
+  file = path.resolve(file);
+  if (!flags.yes && !flags.force) { if (!process.stdin.isTTY) throw new Fail('Restore replaces the current accounts and config. Pass --yes to confirm.', 2); const a = await ask(`Replace the current data in ${DATA} with ${path.basename(file)}? [y/N] `); if (!/^y/i.test(a)) return 1; }
+  return withHubStopped(async () => { const safe = await makeBackup('pre-restore').catch(() => null); await restoreBackup(file); if (safe) say(dim(`The previous state was saved as ${safe}`)); result({ restored: file, previous: safe }); return 0; });
+}
+
+// ---------- service control ----------
+async function cmdService(name) {
+  if (name === 'start' && (flags.foreground || !systemd())) {
+    if (!flags.foreground) say(dim(`No systemd unit named ${UNIT}: running in the foreground (Ctrl+C stops it).`));
+    const child = spawn(process.execPath, [path.join(SERVER_DIR, 'index.js')], { stdio: 'inherit', env: { ...process.env, ...fileEnv, FOXFLEET_CONFIG: CONFIG_JSON } });
+    return new Promise((res) => child.on('exit', (c) => res(c ?? 0)));
+  }
+  if (!has('systemctl') || !systemd()) throw new Fail(`There is no systemd user unit named ${UNIT}.`, 3, name === 'stop' || name === 'restart' ? 'Stop the hub with Ctrl+C where it runs, then: foxfleet start --foreground' : 'Install the unit: cp deploy/foxfleet.service ~/.config/systemd/user/ && systemctl --user enable --now foxfleet');
+  const r = run('systemctl', ['--user', name, UNIT], { stdio: 'inherit' }); if (r.status !== 0) throw new Fail(`systemctl ${name} failed`);
+  if (name !== 'stop') { let ok = false; for (let i = 0; i < 8 && !ok; i++) { await new Promise((x) => setTimeout(x, 800)); ok = await healthy(`http://127.0.0.1:${PORT}`); } result({ action: name, healthy: ok }); say(ok ? green(`${name}: hub is healthy`) : yellow(`${name}: the hub did not answer yet (foxfleet logs)`)); return ok ? 0 : 1; }
+  result({ action: name }); say('Stopped.'); return 0;
+}
+async function cmdLogs() {
+  if (!has('journalctl') || !systemd()) throw new Fail('No systemd unit to read logs from. Run `foxfleet start --foreground` to see the output directly.', 3);
+  const a = ['--user', '-u', UNIT, '--no-pager', '-n', String(flags.lines && flags.lines !== true ? flags.lines : 100)]; if (flags.follow || flags.f) a.push('-f');
+  return spawnSync('journalctl', a, { stdio: 'inherit' }).status ?? 0;
+}
+async function cmdStatus() {
+  const up = await healthy(`http://127.0.0.1:${PORT}`); let users = null, machines = null;
+  try { users = JSON.parse(fs.readFileSync(path.join(DATA, 'accounts', 'users.json'), 'utf8')).users.length; } catch { /* none yet */ }
+  try { machines = JSON.parse(fs.readFileSync(path.join(DATA, 'machines.json'), 'utf8')).machines?.length ?? null; } catch { /* none */ }
+  const s = { version: VERSION, running: up, port: PORT, bind: HOST, service: has('systemctl') && systemd() ? unitState() : 'none', data: DATA, users, machines };
+  result(s); say(`${bold('Foxfleet')} ${VERSION}\n  hub:     ${up ? green('running') : red('not running')} (127.0.0.1:${PORT}, bind ${HOST})\n  service: ${s.service}\n  data:    ${DATA}\n  users:   ${users ?? '0 (not set up)'}   machines: ${machines ?? 0}`);
+  return up ? 0 : 1;
+}
+
+// ---------- setup, users, invites ----------
+async function cmdSetup() {
+  const acc = await accountsApi();
+  if (flags['show-code']) {
+    const code = cfg('FOXFLEET_SETUP_CODE'); if (code) { result({ setupCode: code }); say(`Setup code (from FOXFLEET_SETUP_CODE): ${bold(code)}`); return 0; }
+    if (has('journalctl') && systemd()) { const l = run('journalctl', ['--user', '-u', UNIT, '--no-pager', '-n', '400', '-o', 'cat']).stdout.split('\n').filter((x) => x.includes('First-run setup code')).pop(); const m = l && /code[^:]*:\s*(\S+)/.exec(l); if (m) { result({ setupCode: m[1] }); say(`Setup code: ${bold(m[1])}   ${dim('(type it on the first-run page in the app or browser)')}`); return 0; } }
+    throw new Fail(acc.needsSetup() ? 'No setup code found in the logs. Set your own: foxfleet config set FOXFLEET_SETUP_CODE <something-long> && foxfleet restart' : 'The owner already exists: no setup code is needed.', 1);
+  }
+  if (!acc.needsSetup()) { result({ setup: 'done' }); say('An owner account already exists. Add people with: foxfleet user add NAME   or   foxfleet invite create'); return 0; }
+  const username = flags.username && flags.username !== true ? String(flags.username) : cfg('FOXFLEET_OWNER') || (await ask('Owner username: '));
+  const password = await readSecret('password', 'FOXFLEET_PASSWORD', 'Owner password (12+ characters): ');
+  return withHubStopped(async () => { const a2 = await accountsApi(); const u = await a2.createUser(username, password, 'owner', { terms: flags['accept-terms'] ? { accepted: true } : null }); result({ owner: u.username }); say(green(`Owner "${u.username}" created.`)); return 0; });
+}
+async function cmdUser() {
+  const sub = pos[1], acc = await accountsApi();
+  if (sub === 'list') { const list = acc.users(); result({ users: list }); say(list.length ? list.map((u) => `${u.username.padEnd(20)} ${u.role}${u.disabled ? red('  disabled') : ''}`).join('\n') : 'No users yet.'); return 0; }
+  const owner = acc.users().find((u) => u.role === 'owner');
+  if (sub === 'add') {
+    const name = pos[2]; if (!name) throw new Fail('Usage: foxfleet user add NAME [--password-stdin | FOXFLEET_PASSWORD=...]', 2); const password = await readSecret('password', 'FOXFLEET_PASSWORD', `Password for ${name}: `);
+    return withHubStopped(async () => { const a = await accountsApi(); const u = await a.createUser(name, password, flags.role === 'owner' ? 'owner' : 'user', { terms: null }); result({ user: u.username, role: u.role }); say(green(`Created ${u.role} "${u.username}".`)); return 0; });
+  }
+  if (['disable', 'enable', 'reset-password'].includes(sub)) {
+    const name = pos[2]; if (!name) throw new Fail(`Usage: foxfleet user ${sub} NAME`, 2); const u = acc.users().find((x) => x.username === name); if (!u) throw new Fail(`No user named "${name}"`, 1, 'foxfleet user list');
+    if (sub === 'reset-password') { const password = await readSecret('password', 'FOXFLEET_PASSWORD', `New password for ${name}: `); return withHubStopped(async () => { const a = await accountsApi(); await a.resetPassword(u.id, password); result({ user: name, reset: true }); say(green(`Password changed for "${name}"; they are signed out everywhere.`)); return 0; }); }
+    if (!owner) throw new Fail('There is no owner account yet', 1);
+    return withHubStopped(async () => { const a = await accountsApi(); await a.setDisabled(owner.id, u.id, sub === 'disable'); result({ user: name, disabled: sub === 'disable' }); say(green(`${sub === 'disable' ? 'Disabled' : 'Enabled'} "${name}".`)); return 0; });
+  }
+  throw new Fail('Usage: foxfleet user list | add NAME | disable NAME | enable NAME | reset-password NAME', 2);
+}
+async function cmdInvite() {
+  if (pos[1] !== 'create') throw new Fail('Usage: foxfleet invite create [--ttl HOURS] [--url https://your-hub]', 2);
+  const acc = await accountsApi(), owner = acc.users().find((u) => u.role === 'owner'); if (!owner) throw new Fail('Create the owner first: foxfleet setup', 1);
+  return withHubStopped(async () => {
+    const a = await accountsApi(), i = await a.createInvite(owner.id, Number(flags.ttl) || 72), base = String((flags.url && flags.url !== true ? flags.url : cfg('FOXFLEET_PUBLIC_URL')) || '').replace(/\/$/, '');
+    const link = base ? `${base}/#/join?invite=${encodeURIComponent(i.code)}` : null;
+    result({ code: i.code, expires: i.expires, link }); say(`Invite code: ${bold(i.code)}   (expires ${new Date(i.expires).toISOString().slice(0, 16).replace('T', ' ')} UTC, single use)`); if (link) say(`Link: ${link}`); else say(dim('Add --url https://your-hub (or FOXFLEET_PUBLIC_URL) to print a ready-to-send link. Registration must be set to "invite" in Admin.')); return 0;
+  });
+}
+
+// ---------- config ----------
+function setEnvKey(key, value) {
+  fs.mkdirSync(path.dirname(ENV_FILE), { recursive: true, mode: 0o700 });
+  const lines = fs.existsSync(ENV_FILE) ? fs.readFileSync(ENV_FILE, 'utf8').split('\n') : []; let done = false;
+  const next = lines.map((l) => (new RegExp(`^\\s*(export\\s+)?${key}\\s*=`).test(l) ? (done = true, `${key}=${value}`) : l));
+  if (!done) { if (next.length && next[next.length - 1] === '') next.pop(); next.push(`${key}=${value}`, ''); }
+  fs.writeFileSync(ENV_FILE, next.join('\n'), { mode: 0o600 });
+}
+const SECRET_KEYS = /PASSWORD|SECRET|TOKEN|KEY|CODE/i;
+async function cmdConfig() {
+  const sub = pos[1];
+  if (sub === 'path') { const p = { env: ENV_FILE, data: DATA, config: CONFIG_JSON, backups: BACKUPS, app: APP }; result(p); say(Object.entries(p).map(([k, v]) => `${k.padEnd(8)} ${v}`).join('\n')); return 0; }
+  if (sub === 'get') { const k = pos[2]; if (!k) { const all = Object.fromEntries(Object.entries(fileEnv).map(([a, b]) => [a, SECRET_KEYS.test(a) ? '(set)' : b])); result({ env: all }); say(Object.entries(all).map(([a, b]) => `${a}=${b}`).join('\n') || `No settings in ${ENV_FILE}`); return 0; } const v = cfg(k); if (v === undefined) throw new Fail(`${k} is not set`, 1); result({ [k]: SECRET_KEYS.test(k) && !flags.reveal ? '(set)' : v }); say(SECRET_KEYS.test(k) && !flags.reveal ? '(set; --reveal to print)' : v); return 0; }
+  if (sub === 'set') { const [k, v] = [pos[2], pos[3]]; if (!/^[A-Z][A-Z0-9_]*$/.test(k ?? '') || v === undefined) throw new Fail('Usage: foxfleet config set KEY VALUE   (KEY like FOXFLEET_PORT)', 2); if (/[\n\r]/.test(v)) throw new Fail('Value cannot contain newlines', 2); setEnvKey(k, v); result({ set: k }); say(`${k} saved in ${ENV_FILE}. ${dim('Restart to apply: foxfleet restart')}`); return 0; }
+  throw new Fail('Usage: foxfleet config get [KEY] | set KEY VALUE | path', 2);
+}
+
+// ---------- connector ----------
+async function cmdConnector() {
+  const map = { pair: 'pair', 'install-service': 'install-service', status: 'status', rescan: 'run', uninstall: 'uninstall-service', unpair: 'unpair', profiles: 'profiles' };
+  const sub = pos[1]; const conn = path.join(APP, 'connector', 'foxfleet-connector.mjs');
+  if (!sub || !map[sub]) throw new Fail('Usage: foxfleet connector pair --hub URL --code CODE | install-service | status | rescan | uninstall | unpair | profiles', 2);
+  if (!fs.existsSync(conn)) throw new Fail('The connector is not part of this install', 3);
+  const raw = argv.slice(argv.indexOf(sub) + 1).filter((a) => a !== '--json');
+  if (sub === 'rescan') { // a running connector re-reads profiles on its interval; `profiles` shows what it finds right now
+    const r = spawnSync(process.execPath, [conn, 'profiles', ...raw], { stdio: 'inherit' }); if (!flags['no-restart'] && has('systemctl') && run('systemctl', ['--user', 'is-active', 'foxfleet-connector']).stdout.trim() === 'active') { run('systemctl', ['--user', 'restart', 'foxfleet-connector']); say(green('Connector restarted: it will register new or removed profiles now.')); }
+    return r.status ?? 0;
+  }
+  return spawnSync(process.execPath, [conn, map[sub], ...raw], { stdio: 'inherit' }).status ?? 0;
+}
+
+// ---------- completion, help ----------
+const COMMANDS = ['doctor', 'update', 'status', 'start', 'stop', 'restart', 'logs', 'setup', 'user', 'invite', 'backup', 'restore', 'config', 'connector', 'version', 'completion', 'help'];
+function cmdCompletion() {
+  const sh = pos[1];
+  if (sh === 'bash') { console.log(`# bash completion for foxfleet: eval "$(foxfleet completion bash)"\n_foxfleet() { local cur="\${COMP_WORDS[COMP_CWORD]}" prev="\${COMP_WORDS[COMP_CWORD-1]}"\n  case "$prev" in user) COMPREPLY=($(compgen -W "list add disable enable reset-password" -- "$cur")); return;; invite) COMPREPLY=($(compgen -W "create" -- "$cur")); return;; config) COMPREPLY=($(compgen -W "get set path" -- "$cur")); return;; connector) COMPREPLY=($(compgen -W "pair install-service status rescan uninstall unpair profiles" -- "$cur")); return;; completion) COMPREPLY=($(compgen -W "bash zsh" -- "$cur")); return;; esac\n  if [ "$COMP_CWORD" -eq 1 ]; then COMPREPLY=($(compgen -W "${COMMANDS.join(' ')}" -- "$cur")); else COMPREPLY=($(compgen -W "--json --yes --dry-run --check --version --foreground --follow --lines --url --offline --stable" -- "$cur")); fi; }\ncomplete -F _foxfleet foxfleet`); return 0; }
+  if (sh === 'zsh') { console.log(`#compdef foxfleet\n# zsh completion: foxfleet completion zsh > "\${fpath[1]}/_foxfleet"  (or: eval "$(foxfleet completion zsh)")\n_foxfleet() {\n  local -a cmds; cmds=(${COMMANDS.map((c) => `'${c}'`).join(' ')})\n  if (( CURRENT == 2 )); then _describe 'command' cmds; return; fi\n  case "$words[2]" in\n    user) _values 'subcommand' list add disable enable reset-password;;\n    invite) _values 'subcommand' create;;\n    config) _values 'subcommand' get set path;;\n    connector) _values 'subcommand' pair install-service status rescan uninstall unpair profiles;;\n    completion) _values 'shell' bash zsh;;\n    *) _arguments '--json[machine-readable output]' '--yes[do not ask]' '--dry-run[show the plan only]';;\n  esac\n}\ncompdef _foxfleet foxfleet`); return 0; }
+  throw new Fail('Usage: foxfleet completion bash|zsh', 2);
+}
+const HELP = `${bold('foxfleet')} ${VERSION}: admin for your Foxfleet hub
+
+  doctor                 check Node, data dir, config, port, proxy settings, WebSocket, service, backups, version; prints fixes
+  update [--check|--dry-run|--version X|--stable]
+                         check GitHub for a release, verify its SHA256SUMS, back up, swap, restart, health-check, roll back on failure
+  status                 is the hub running; users and machines
+  start|stop|restart     systemd user unit (start --foreground runs it in this terminal)
+  logs [--follow] [--lines N]
+  setup [--show-code | --username NAME]    first run: reveal the setup code, or create the owner here
+  user list|add NAME|disable NAME|enable NAME|reset-password NAME
+  invite create [--ttl HOURS] [--url https://your-hub]
+  backup [--to FILE]     restore [FILE] [--yes]
+  config get [KEY] | set KEY VALUE | path     (the env file read by the systemd unit)
+  connector pair|install-service|status|rescan|uninstall   (this computer's Hermes connector)
+  version                completion bash|zsh
+
+Flags: --json (machine-readable), --yes, --no-color via NO_COLOR. Passwords never go on the command line: use the prompt, --password-stdin or FOXFLEET_PASSWORD.
+Exit codes: 0 ok, 1 failed or problems found, 2 usage error, 3 not supported for this install, 10 update available (update --check).`;
+
+// ---------- main ----------
+export async function main() {
+  const cmd = pos[0] ?? 'help';
+  try {
+    let code = 0;
+    switch (cmd) {
+      case 'doctor': code = await cmdDoctor(); break;
+      case 'update': code = await cmdUpdate(); break;
+      case 'status': code = await cmdStatus(); break;
+      case 'start': case 'stop': case 'restart': code = await cmdService(cmd); break;
+      case 'logs': code = await cmdLogs(); break;
+      case 'setup': code = await cmdSetup(); break;
+      case 'user': code = await cmdUser(); break;
+      case 'invite': code = await cmdInvite(); break;
+      case 'backup': code = await cmdBackup(); break;
+      case 'restore': code = await cmdRestore(); break;
+      case 'config': code = await cmdConfig(); break;
+      case 'connector': code = await cmdConnector(); break;
+      case 'completion': code = cmdCompletion(); break;
+      case 'version': case '--version': case '-v': result({ version: VERSION, node: process.versions.node }); say(`foxfleet ${VERSION}`); break;
+      case 'help': case '--help': case '-h': say(HELP); break;
+      default: throw new Fail(`Unknown command "${cmd}". Try: foxfleet help`, 2);
+    }
+    process.exitCode = code;
+  } catch (e) {
+    const known = e instanceof Fail, message = known ? e.message : (e?.safe ? e.message : `Unexpected error: ${e?.message ?? e}`);
+    if (JSON_OUT) console.log(JSON.stringify({ error: message, ...(e.fix ? { fix: e.fix } : {}) })); else { console.error(red('error: ') + message); if (e.fix) console.error(dim('fix: ' + e.fix)); }
+    process.exitCode = known ? e.code : 1;
+  }
+}
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) await main();

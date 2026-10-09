@@ -35,3 +35,8 @@ docker run --rm -v foxfleet_foxfleet-data:/data -v "$PWD":/out alpine tar czf /o
 ```
 
 (The volume is named `<compose project>_foxfleet-data`; check with `docker volume ls`.)
+
+
+## From the command line
+
+`foxfleet backup` writes a private tarball of everything that matters; `foxfleet restore FILE --yes` puts it back (saving the current state first). See the [CLI reference](/reference/cli).

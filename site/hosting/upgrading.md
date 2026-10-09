@@ -1,5 +1,17 @@
 # Upgrading and rollback
 
+## With the `foxfleet` command (installer installs)
+
+If you installed with `deploy/install.sh` (see the [CLI reference](/reference/cli)):
+
+```bash
+foxfleet update --check       # exit 10 when a newer release exists
+foxfleet update --dry-run     # show the plan
+foxfleet update               # verify checksum, back up, swap, restart, health-check, roll back on failure
+```
+
+Updating never deletes the old version folder, so you can also point `current` back by hand. Git checkouts and Docker use the sections below.
+
 ## With the deploy script (systemd installs)
 
 `deploy/deploy.sh` runs **on the hub host**. Site-specific values come from the environment or a gitignored `deploy/deploy.local.env` (copy `deploy.local.env.example`):

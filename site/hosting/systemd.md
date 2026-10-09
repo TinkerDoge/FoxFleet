@@ -51,3 +51,8 @@ curl -fsS http://127.0.0.1:3080/health        # {"ok":true}
 ```
 
 Updating: [Upgrading and rollback](./upgrading).
+
+
+## The `foxfleet` command
+
+`foxfleet start|stop|restart|logs|status|doctor` wrap the unit above and `foxfleet config set` edits its environment file. See the [CLI reference](/reference/cli).

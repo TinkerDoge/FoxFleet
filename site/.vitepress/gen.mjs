@@ -74,6 +74,7 @@ const ENV = {
   FOXFLEET_PASSWORD: ['Creates the first owner (`owner`) from this password if no account exists yet. Remove it after first sign-in.', 'unset', 'hub'],
   FOXFLEET_SETUP_CODE: ['Fixes the first-run setup code instead of a random one. Only relevant on non-loopback binds.', 'random, printed to the log', 'hub'],
   FOXFLEET_WEB_DIR: ['Directory with the built web app (also where avatar packs are looked up).', '`web/dist`', 'hub'],
+  FOXFLEET_HISTORY_DAYS: ['Default retention (days) of hub-stored chat history for API-key agents; `0` keeps nothing. Owners can change it in the app (`PUT /api/history/settings`).', '`90`', 'hub'],
   FOXFLEET_HUB: ['Hub address for `pair` (same as `--hub`).', 'required for `pair`', 'connector'],
   FOXFLEET_CODE: ['Pairing code for `pair` (same as `--code`).', 'required for `pair`', 'connector'],
   FOXFLEET_ALLOW_INSECURE_HUB: ['Allow plain `http://` to a non-loopback hub. Trusted LAN only.', 'unset', 'connector'],

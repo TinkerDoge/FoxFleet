@@ -144,6 +144,8 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
       u.disabled = Boolean(disabled); if (u.disabled) for (const [sid, s] of sessions) if (s.userId === id) sessions.delete(sid);
       await persist.users(); await persist.devices(); return publicUser(u);
     },
+    /** Admin recovery (the `foxfleet user reset-password` CLI, run on the hub host while the hub is stopped): new password, every session of that user signed out. */
+    async resetPassword(id, next) { const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); checkPassword(next); u.pass = await hashPassword(next); await persist.users(); for (const [sid, ss] of sessions) if (ss.userId === id) sessions.delete(sid); await persist.devices(); return publicUser(u); },
     async removeUser(ownerId, id) { if (users.get(ownerId)?.role !== 'owner') throw fault(403, 'Owner only'); const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); if (u.role === 'owner') throw fault(400, 'The owner cannot be removed'); users.delete(id); for (const [sid, s] of sessions) if (s.userId === id) sessions.delete(sid); await persist.users(); await persist.devices(); },
   };
   return api;
