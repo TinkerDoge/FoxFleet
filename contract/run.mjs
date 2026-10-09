@@ -52,6 +52,15 @@ export async function runContract(base, { fetchImpl = fetch, username = 'owner1'
   await call('deleteInvite', `/api/admin/invites/${invites.invites[0].id}`, { method: 'DELETE' });
   const users = await call('listUsers', '/api/admin/users'); if (!users.users.some((u) => u.role === 'owner')) throw new Error('owner missing from users');
   await call('patchUser', `/api/admin/users/${users.users[0].id}`, { method: 'PATCH', body: { disabled: false }, status: 200 }).catch((e) => { if (!/got 400/.test(String(e))) throw e; });
+  await call('listMachines', '/api/machines');
+  const pair = await call('createMachinePairing', '/api/machines/pairing', { method: 'POST', status: 201, body: {} });
+  await call('getMachinePairing', `/api/machines/pairing?code=${pair.code}`);
+  const redeemed = await call('redeemPairing', '/api/machines/redeem', { method: 'POST', auth: false, body: { code: pair.code, name: 'contract machine', os: 'linux' } });
+  if (!/^[0-9a-f]{32}\./.test(redeemed.token)) throw new Error('redeem must return a machine token');
+  await call('redeemPairing', '/api/machines/redeem', { method: 'POST', auth: false, body: { code: pair.code }, status: 403 }); // single use
+  await call('renameMachine', `/api/machines/${redeemed.machineId}`, { method: 'PATCH', body: { name: 'contract machine 2' } });
+  await call('rotateMachineToken', `/api/machines/${redeemed.machineId}/token`, { method: 'POST', status: 201, body: {} });
+  await call('deleteMachine', `/api/machines/${redeemed.machineId}`, { method: 'DELETE' });
   await call('listDevices', '/api/auth/devices');
   await call('mediaProxy', '/api/media-proxy?url=' + encodeURIComponent('http://insecure.example.com/a.png'), { status: 400 });
   await call('listAgents', '/api/agents', { status: 401, auth: false });

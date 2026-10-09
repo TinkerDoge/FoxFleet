@@ -29,7 +29,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   const kinds = [
     { kind: 'hermes', label: 'Hermes agent', summary: 'An agent on your own machine. It connects out to the hub; no open ports.', planned: false, auth: ['token'], warnings: [], fields: [
       field('name', 'ID', 'text', { required: true }), field('label', 'Display name', 'text'), field('description', 'Description', 'text'),
-      field('connection', 'Connection', 'enum', { options: ['connector', 'direct'], default: 'connector', help: 'Connector is outbound-only and needs no public address.' }),
+      field('connection', 'Connection', 'enum', { options: ['direct'], default: 'direct', help: 'Advanced: the hub dials the agent. Use Connect a machine for the normal outbound-only setup.' }),
       field('host', 'Address', 'text', { required: true, writeOnly: true, advanced: true, when: { connection: 'direct' } }), field('port', 'Port', 'port', { advanced: true, when: { connection: 'direct' } }),
       field('apiKey', 'API key', 'secret', { writeOnly: true, advanced: true })] },
     { kind: 'openai', label: 'OpenAI-compatible', summary: 'Any chat API that speaks the OpenAI format.', planned: false, auth: ['api_key'], warnings: [], fields: [
@@ -40,11 +40,15 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   let setupDone = !setupFirst, registration = 'invite';
   const sessions = new Map(); // token -> user
   let saved = [
-    { name: 'atlas', kind: 'hermes', label: 'Atlas', description: 'Research and code on the workstation', connection: 'connector', hasHost: false, hasApiKey: true },
+    { name: 'atlas', kind: 'hermes', label: 'Atlas', description: 'Research and code on the workstation', connection: 'machine', hasHost: false },
     { name: 'nova', kind: 'openrouter', label: 'Nova', hasApiKey: true, model: 'vendor/model-large' },
     { name: 'echo', kind: 'openai', label: 'Echo', hasApiKey: true, model: 'chat-small', hasBaseUrl: true },
   ];
   const users = [{ id: 'u1', username: 'owner1', role: 'owner', disabled: false, created: Date.now() - 9e8 }, { id: 'u2', username: 'guest1', role: 'user', disabled: false, created: Date.now() - 3e8 }];
+  const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', pairings = new Map();
+  let machines = [{ id: 'a'.repeat(32), name: 'Workstation', os: 'linux', online: true, paired: true, created: Date.now() - 864e5, lastSeen: Date.now(), profiles: [{ profile: 'default', agent: 'atlas' }] }];
+  const pairingOut = (code, origin) => { const url = `${origin}/c/${code}`; return { code, display: `${code.slice(0, 5)}-${code.slice(5)}`, expires: pairings.get(code).expires, url, link: `foxfleet://pair?hub=${encodeURIComponent(origin)}&code=${code}`, rows: qrRows(url),
+    commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${origin}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${origin} --code ${code}` } }; };
   let invites = [{ id: 'i1', created: Date.now() - 3600e3, expires: Date.now() + 70 * 3600e3, used: false }];
   const devices = [{ id: 'd1', name: 'Desktop browser', kind: 'web', created: Date.now() - 5e8, lastSeen: Date.now() - 1000 }, { id: 'd2', name: 'Phone', kind: 'app', created: Date.now() - 4e8, lastSeen: Date.now() - 36e5 }, { id: 'd3', name: 'Laptop', kind: 'web', created: Date.now() - 2e8, lastSeen: Date.now() - 86400e3 }];
   let lease = null, screenOn = true;
@@ -72,6 +76,12 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (p === '/api/auth/login' && m === 'POST') { const b = await body(req); if (b.password === 'wrong wrong wrong') return json(res, 401, { error: 'Wrong username or password' }); return session(b); }
     if (p === '/api/auth/register' && m === 'POST') { await body(req); return session({}); }
     if (p === '/api/auth/logout') { sessions.delete(tokenOf(req)); return json(res, 200, { authenticated: false }, { 'set-cookie': 'foxfleet_session=; Path=/; Max-Age=0' }); }
+    if (p === '/api/machines/redeem' && m === 'POST') { const b = await body(req), code = String(b.code || '').toUpperCase().replace(/[\s-]/g, ''), pr = pairings.get(code);
+      if (!pr || pr.used || pr.expires < Date.now()) return json(res, 403, { error: 'That pairing code is wrong, already used or expired' });
+      pr.used = true; const mc = { id: randomBytes(16).toString('hex'), name: pr.machineId ? machines.find((x) => x.id === pr.machineId)?.name ?? 'My machine' : String(b.name || 'My machine'), os: 'linux', online: true, paired: true, created: Date.now(), lastSeen: Date.now(), profiles: [] };
+      if (pr.machineId) { const old = machines.find((x) => x.id === pr.machineId); if (old) { old.online = true; pr.result = old.id; return json(res, 200, { machineId: old.id, token: old.id + '.' + randomBytes(24).toString('base64url'), name: old.name }); } }
+      machines.push(mc); pr.result = mc.id; setTimeout(() => { mc.profiles = ['default', 'coder', 'sumi'].map((n) => ({ profile: n, agent: n })); }, Number(process.env.MOCK_PROFILE_DELAY || 1500));
+      return json(res, 200, { machineId: mc.id, token: mc.id + '.' + randomBytes(24).toString('base64url'), name: mc.name }); }
     if (!user) return json(res, 401, { error: 'Login required' });
     if (p === '/api/auth/logout-all') { sessions.clear(); return json(res, 200, { authenticated: false }); }
     if (p === '/api/auth/devices' && m === 'GET') return json(res, 200, { devices: devices.map((d, i) => ({ ...d, current: i === 0 })) });
@@ -79,6 +89,14 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (dv && m === 'DELETE') { const i = devices.findIndex((d) => d.id === dv[1]); if (i < 0) return json(res, 404, { error: 'Unknown device' }); devices.splice(i, 1); return json(res, 200, { ok: true, signedOut: false }); }
     if (p === '/api/auth/password') { const b = await body(req); return b.current === 'correct horse battery' ? json(res, 200, { ok: true }) : json(res, 403, { error: 'Current password is wrong' }); }
     if (p === '/api/admin/settings') { if (m === 'PUT') registration = (await body(req)).registration; return json(res, 200, { registration }); }
+    if (p === '/api/machines' && m === 'GET') return json(res, 200, { machines });
+    if (p === '/api/machines/pairing' && m === 'POST') { const b = await body(req); let code = ''; for (const x of randomBytes(10)) code += ALPHA[x % ALPHA.length]; pairings.set(code, { expires: Date.now() + 15 * 60e3, used: false, machineId: b.machineId || null, result: null }); return json(res, 201, pairingOut(code, 'https://hub.example.com')); }
+    if (p === '/api/machines/pairing' && m === 'GET') { const pr = pairings.get(String(url.searchParams.get('code') || '').toUpperCase().replace(/[\s-]/g, '')); if (!pr) return json(res, 404, { error: 'Unknown pairing code' }); if (pr.result) return json(res, 200, { state: 'paired', machine: machines.find((x) => x.id === pr.result) }); return json(res, 200, { state: pr.expires < Date.now() ? 'expired' : 'waiting', expires: pr.expires }); }
+    { const mm = /^\/api\/machines\/([0-9a-f]{32})(\/token)?$/.exec(p);
+      if (mm) { const mc = machines.find((x) => x.id === mm[1]); if (!mc) return json(res, 404, { error: 'Machine not found' });
+        if (mm[2] && m === 'POST') { mc.online = false; let code = ''; for (const x of randomBytes(10)) code += ALPHA[x % ALPHA.length]; pairings.set(code, { expires: Date.now() + 15 * 60e3, used: false, machineId: mc.id, result: null }); return json(res, 201, pairingOut(code, 'https://hub.example.com')); }
+        if (m === 'PATCH') { const b = await body(req); mc.name = String(b.name); return json(res, 200, { machine: mc }); }
+        if (m === 'DELETE') { machines = machines.filter((x) => x !== mc); return json(res, 200, { ok: true }); } } }
     if (p === '/api/admin/pairing') return json(res, 200, { hub: 'https://hub.example.com', link: 'foxfleet://connect?hub=https://hub.example.com', svg: null, rows: qrRows('foxfleet://connect?hub=https://hub.example.com') });
     if (p === '/api/admin/invites' && m === 'GET') return json(res, 200, { invites });
     if (p === '/api/admin/invites' && m === 'POST') { await body(req); const i = { id: randomBytes(4).toString('hex'), created: Date.now(), expires: Date.now() + 72 * 3600e3, used: false }; invites.push(i); return json(res, 201, { id: i.id, expires: i.expires, link: `foxfleet://connect?hub=https://hub.example.com&invite=EXAMPLE${i.id}`, rows: qrRows(`foxfleet://connect?hub=https://hub.example.com&invite=EXAMPLE${i.id}`) }); }
@@ -90,8 +108,8 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (p === '/api/agents') return json(res, 200, { agents: agentsOut() });
     if (p === '/api/agent-kinds') return json(res, 200, { kinds });
     if (p === '/api/connections' && m === 'GET') return json(res, 200, { connections: saved });
-    if (p === '/api/connections' && m === 'POST') { const b = await body(req); const c = { name: b.name, kind: b.kind, label: b.label || '', hasApiKey: !!b.apiKey, ...(b.kind === 'hermes' && (!b.connection || b.connection === 'connector') ? { connection: 'connector' } : {}) }; saved.push(c);
-      return json(res, 201, { connection: c, ...(b.kind === 'hermes' ? { bootstrap: `Connect this machine to my Foxfleet hub.\n\n1. Download foxfleet-connector.mjs from the hub's /connector.mjs.\n2. Run: HUB_URL="$HUB" FOXFLEET_TOKEN=fft_EXAMPLE_TOKEN_SHOWN_ONCE node foxfleet-connector.mjs\n\nIt only makes an outbound connection; no ports to open.` } : {}) }); }
+    if (p === '/api/connections' && m === 'POST') { const b = await body(req); const c = { name: b.name, kind: b.kind, label: b.label || '', hasApiKey: !!b.apiKey }; saved.push(c);
+      return json(res, 201, { connection: c }); }
     if (p === '/api/connections/order') { const { names } = await body(req); saved = names.map((n) => saved.find((s) => s.name === n)).filter(Boolean); return json(res, 200, { order: saved.map((s) => s.name) }); }
     if (p === '/api/connections/test') { await body(req); await new Promise((r) => setTimeout(r, 200)); return json(res, 200, { ok: true, checks: { api: { ok: true, message: 'Reachable' }, connector: { ok: true, message: 'Connected' } } }); }
     const c = /^\/api\/connections\/([^/]+)(\/token)?$/.exec(p);

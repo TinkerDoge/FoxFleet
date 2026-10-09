@@ -4,6 +4,7 @@ import { ApiError, AuthRequiredError, NetworkError } from '../api/errors';
 import { ErrorLine, Field, PrimaryButton, TextButton } from '../components/ui';
 import { CHECK_LABELS, isEnum, isSecret, moved, payload, scrubAddresses, validate, visible, type AgentKind, type Form, type KindField, type SavedAgent, type TestResult } from '../lib/registry';
 import { t } from '../i18n/t';
+import { Machines } from './Machines';
 
 const fail = (e: unknown) => (e instanceof NetworkError ? t('error.network') : e instanceof ApiError ? scrubAddresses(e.message) : t('error.generic'));
 
@@ -22,6 +23,7 @@ export function Manage({ client, onChanged, onAuthLost }: { client: Client; onCh
     <div class="page">
       <header class="page-head"><h1>{t('manage.title')}</h1><button class="btn primary inline" onClick={() => setEditing({})}>{t('manage.add')}</button></header>
       <ErrorLine message={error} />
+      <Machines client={client} onChanged={refresh} onAuthLost={onAuthLost} />
       {list === null && !error && <p class="muted">{t('home.loading')}</p>}
       {list?.length === 0 && <div class="card"><p class="muted">{t('manage.empty')}</p></div>}
       {list && list.length > 0 && (
@@ -32,7 +34,7 @@ export function Manage({ client, onChanged, onAuthLost }: { client: Client; onCh
               <button class="icon-btn" aria-label={t('manage.moveUp')} disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
               <button class="icon-btn" aria-label={t('manage.moveDown')} disabled={i === list.length - 1} onClick={() => move(i, 1)}>↓</button>
               <button class="btn text" onClick={() => setEditing({ saved: a, kind: kinds.find((k) => k.kind === a.kind) })}>{t('manage.edit')}</button>
-              <button class="btn text danger" onClick={() => remove(a)}>{t('manage.remove')}</button>
+              {a.values.connection === 'machine' ? <small class="muted">{t('manage.fromMachine')}</small> : <button class="btn text danger" onClick={() => remove(a)}>{t('manage.remove')}</button>}
             </li>
           ))}
         </ul>
@@ -63,11 +65,10 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
   const doSave = () => guard('save', async () => {
     const r = editing ? await client.editAgent(saved!.name, payload(kind, form, true)) : await client.addAgent(payload(kind, form, false));
     await onSaved();
-    if (r.bootstrap) setSecret({ title: t('manage.bootstrapTitle'), text: r.bootstrap });
-    else if (r.inboxToken) setSecret({ title: t('manage.inboxTitle'), text: r.inboxToken });
+    if (r.inboxToken) setSecret({ title: t('manage.inboxTitle'), text: r.inboxToken });
     else onClose();
   });
-  const newToken = () => guard('token', async () => { const r = await client.newToken(saved!.name); const text = r.bootstrap ?? r.inboxToken; if (text) setSecret({ title: r.bootstrap ? t('manage.bootstrapTitle') : t('manage.inboxTitle'), text }); });
+  const newToken = () => guard('token', async () => { const r = await client.newToken(saved!.name); if (r.inboxToken) setSecret({ title: t('manage.inboxTitle'), text: r.inboxToken }); });
   if (secret) {
     return (
       <div class="page"><header class="page-head"><h1>{secret.title}</h1></header>
@@ -94,7 +95,7 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
           <PrimaryButton busy={busy === 'save'} disabled={Boolean(problem) || busy !== null}>{busy === 'save' ? t('manage.saving') : t('manage.save')}</PrimaryButton>
         </div>
         {problem && <p class="muted small">{problem}</p>}
-        {editing && (kind.kind === 'mcp-inbox' || form.connection === 'connector') && <TextButton onClick={newToken}>{t('manage.newToken')}</TextButton>}
+        {editing && kind.kind === 'mcp-inbox' && <TextButton onClick={newToken}>{t('manage.newToken')}</TextButton>}
       </form>
     </div>
   );

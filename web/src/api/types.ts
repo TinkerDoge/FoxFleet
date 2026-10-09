@@ -18,5 +18,9 @@ export interface Device { id: string; name: string; kind: string; created: numbe
 export interface AdminUser { id: string; username: string; role: 'owner' | 'user'; disabled: boolean }
 export interface Invite { id: string; created?: number; expires: number; used: boolean }
 export interface Shareable { link: string; hub?: string; id?: string; expires?: number; rows: string[] | null }
+export interface MachineProfile { profile: string; agent: string }
+export interface Machine { id: string; name: string; os: string; online: boolean; paired: boolean; created: number; lastSeen: number | null; profiles: MachineProfile[] }
+export interface Pairing { code: string; display: string; expires: number; url: string; link: string; rows: string[] | null; commands: { sh: string; powershell: string; node: string } }
+export type PairingState = { state: 'waiting' | 'expired' } | { state: 'paired'; machine?: Machine };
 export interface ScreenStatus { running: boolean; supported: boolean; blocker: string | null; lease: { holder: string; epoch: number } | null }
 export interface ScreenTicket { ticket: string; expiresInMs: number }

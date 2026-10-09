@@ -5,18 +5,18 @@ import { moved, parseKinds, parseSaved, payload, scrubAddresses, validate } from
 import { SseParser } from '../src/lib/sse';
 
 const kinds = parseKinds({ kinds: [{ kind: 'hermes', label: 'Hermes', summary: 's', fields: [
-  { key: 'name', label: 'ID', type: 'text', required: true }, { key: 'connection', label: 'Connection', type: 'enum', options: ['connector', 'direct'], default: 'connector' },
+  { key: 'name', label: 'ID', type: 'text', required: true }, { key: 'connection', label: 'Connection', type: 'enum', options: ['relay', 'direct'], default: 'relay' },
   { key: 'host', label: 'Host', type: 'text', required: true, writeOnly: true, when: { connection: 'direct' } }, { key: 'port', label: 'Port', type: 'port', when: { connection: 'direct' } },
   { key: 'apiKey', label: 'Key', type: 'secret', writeOnly: true, required: true }, { key: 'description', label: 'Description', type: 'text' }] }] });
 const k = kinds[0];
 
 describe('schema-driven agent forms', () => {
   it('hides conditional fields and omits them from the payload', () => {
-    expect(payload(k, { name: 'atlas', apiKey: 'k' }, false)).toEqual({ kind: 'hermes', name: 'atlas', connection: 'connector', apiKey: 'k' });
+    expect(payload(k, { name: 'atlas', apiKey: 'k' }, false)).toEqual({ kind: 'hermes', name: 'atlas', connection: 'relay', apiKey: 'k' });
     expect(payload(k, { name: 'a', connection: 'direct', host: 'h', port: '8642', apiKey: 'k' }, false)).toMatchObject({ host: 'h', port: 8642 });
   });
   it('edit keeps blank write-only fields (omitted) and clears blank plain ones', () => {
-    const p = payload(k, { name: 'atlas', connection: 'connector', apiKey: '', description: '' }, true);
+    const p = payload(k, { name: 'atlas', connection: 'relay', apiKey: '', description: '' }, true);
     expect(p).not.toHaveProperty('apiKey'); expect(p).not.toHaveProperty('name'); expect(p.description).toBe('');
   });
   it('validates required, ids and ports; a saved secret satisfies required on edit', () => {

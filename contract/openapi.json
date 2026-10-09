@@ -21,6 +21,353 @@
   }
  ],
  "paths": {
+ "/api/machines": {
+  "get": {
+   "operationId": "listMachines",
+   "summary": "Connected machines (computers running the connector) and their profiles.",
+   "tags": [
+    "machines"
+   ],
+   "responses": {
+    "200": {
+     "description": "OK",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "machines"
+        ],
+        "properties": {
+         "machines": {
+          "type": "array",
+          "items": {
+           "$ref": "#/components/schemas/Machine"
+          }
+         }
+        }
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  }
+ },
+ "/api/machines/pairing": {
+  "post": {
+   "operationId": "createMachinePairing",
+   "summary": "Create a 15-minute, single-use pairing code for connecting a machine (or re-pairing one with machineId).",
+   "tags": [
+    "machines"
+   ],
+   "requestBody": {
+    "required": true,
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "properties": {
+        "machineId": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "responses": {
+    "201": {
+     "description": "Pairing code and one-line commands",
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Pairing"
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    },
+    "404": {
+     "$ref": "#/components/responses/Error"
+    },
+    "429": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  },
+  "get": {
+   "operationId": "getMachinePairing",
+   "summary": "Live status of a pairing code: waiting, paired (with the machine and its profiles) or expired.",
+   "tags": [
+    "machines"
+   ],
+   "parameters": [
+    {
+     "name": "code",
+     "in": "query",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "responses": {
+    "200": {
+     "description": "OK",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "state"
+        ],
+        "properties": {
+         "state": {
+          "enum": [
+           "waiting",
+           "paired",
+           "expired"
+          ]
+         },
+         "expires": {
+          "type": "number"
+         },
+         "machine": {
+          "$ref": "#/components/schemas/Machine"
+         }
+        }
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    },
+    "404": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  }
+ },
+ "/api/machines/redeem": {
+  "post": {
+   "operationId": "redeemPairing",
+   "summary": "Called by the connector (no login): exchanges a pairing code once for a machine token.",
+   "tags": [
+    "machines"
+   ],
+   "security": [],
+   "requestBody": {
+    "required": true,
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "required": [
+        "code"
+       ],
+       "properties": {
+        "code": {
+         "type": "string"
+        },
+        "name": {
+         "type": "string"
+        },
+        "os": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "responses": {
+    "200": {
+     "description": "OK",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "machineId",
+         "token",
+         "name"
+        ],
+        "properties": {
+         "machineId": {
+          "type": "string"
+         },
+         "token": {
+          "type": "string"
+         },
+         "name": {
+          "type": "string"
+         },
+         "hub": {
+          "type": "string"
+         }
+        }
+       }
+      }
+     }
+    },
+    "403": {
+     "$ref": "#/components/responses/Error"
+    },
+    "429": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  }
+ },
+ "/api/machines/{id}": {
+  "patch": {
+   "operationId": "renameMachine",
+   "summary": "Rename a machine.",
+   "tags": [
+    "machines"
+   ],
+   "parameters": [
+    {
+     "name": "id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "requestBody": {
+    "required": true,
+    "content": {
+     "application/json": {
+      "schema": {
+       "type": "object",
+       "required": [
+        "name"
+       ],
+       "properties": {
+        "name": {
+         "type": "string"
+        }
+       }
+      }
+     }
+    }
+   },
+   "responses": {
+    "200": {
+     "description": "OK",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "machine"
+        ],
+        "properties": {
+         "machine": {
+          "$ref": "#/components/schemas/Machine"
+         }
+        }
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    },
+    "404": {
+     "$ref": "#/components/responses/Error"
+    },
+    "409": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  },
+  "delete": {
+   "operationId": "deleteMachine",
+   "summary": "Revoke a machine: its token stops working, it disconnects and its agents are removed.",
+   "tags": [
+    "machines"
+   ],
+   "parameters": [
+    {
+     "name": "id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "responses": {
+    "200": {
+     "description": "OK",
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "ok": {
+          "type": "boolean"
+         }
+        }
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    },
+    "404": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  }
+ },
+ "/api/machines/{id}/token": {
+  "post": {
+   "operationId": "rotateMachineToken",
+   "summary": "Rotate: the current token dies now; the returned pairing code re-pairs the same machine (agents stay).",
+   "tags": [
+    "machines"
+   ],
+   "parameters": [
+    {
+     "name": "id",
+     "in": "path",
+     "required": true,
+     "schema": {
+      "type": "string"
+     }
+    }
+   ],
+   "responses": {
+    "201": {
+     "description": "New pairing code",
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/Pairing"
+       }
+      }
+     }
+    },
+    "401": {
+     "$ref": "#/components/responses/Error"
+    },
+    "404": {
+     "$ref": "#/components/responses/Error"
+    }
+   }
+  }
+ },
   "/health": {
    "get": {
     "operationId": "health",
@@ -1773,6 +2120,120 @@
    }
   },
   "schemas": {
+ "Machine": {
+  "type": "object",
+  "required": [
+   "id",
+   "name",
+   "paired",
+   "profiles"
+  ],
+  "properties": {
+   "id": {
+    "type": "string"
+   },
+   "name": {
+    "type": "string"
+   },
+   "os": {
+    "enum": [
+     "linux",
+     "darwin",
+     "win32",
+     "other"
+    ]
+   },
+   "online": {
+    "type": "boolean"
+   },
+   "paired": {
+    "type": "boolean"
+   },
+   "created": {
+    "type": "number"
+   },
+   "lastSeen": {
+    "type": [
+     "number",
+     "null"
+    ]
+   },
+   "profiles": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "required": [
+      "profile",
+      "agent"
+     ],
+     "properties": {
+      "profile": {
+       "type": "string"
+      },
+      "agent": {
+       "type": "string"
+      }
+     }
+    }
+   }
+  }
+ },
+ "Pairing": {
+  "type": "object",
+  "required": [
+   "code",
+   "display",
+   "expires",
+   "url",
+   "link",
+   "commands"
+  ],
+  "properties": {
+   "code": {
+    "type": "string"
+   },
+   "display": {
+    "type": "string"
+   },
+   "expires": {
+    "type": "number"
+   },
+   "url": {
+    "type": "string"
+   },
+   "link": {
+    "type": "string"
+   },
+   "rows": {
+    "type": [
+     "array",
+     "null"
+    ],
+    "items": {
+     "type": "string"
+    }
+   },
+   "commands": {
+    "type": "object",
+    "required": [
+     "sh",
+     "powershell",
+     "node"
+    ],
+    "properties": {
+     "sh": {
+      "type": "string"
+     },
+     "powershell": {
+      "type": "string"
+     },
+     "node": {
+      "type": "string"
+     }
+    }
+   }
+  }
+ },
    "Ok": {
     "type": "object",
     "required": [

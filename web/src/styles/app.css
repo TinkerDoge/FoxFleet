@@ -144,3 +144,6 @@ html[data-motion="reduce"] .shimmer{background:none;color:var(--text-muted)}
 @media (forced-colors:active){.chip-btn.on,.swatch.on{outline:3px solid Highlight}.send{border:1px solid ButtonText}}
 @media (max-width:760px){.sidebar{visibility:hidden;transition:transform var(--motion-base),visibility 0s linear var(--motion-base)}.drawer-open .sidebar{visibility:visible;transition-delay:0s}.screen{height:calc(100dvh - 49px)}}
 .update-banner{position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:60;display:flex;gap:12px;align-items:center;background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-card);padding:10px 14px;box-shadow:0 12px 40px #0004}
+.pair-grid{display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start}.pair-grid figure{margin:0;display:grid;gap:6px;justify-items:center}.pair-grid .stack{flex:1;min-width:200px}
+.code{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:24px;letter-spacing:.12em}.status-line{min-height:28px;padding:6px 0}
+pre.secret.small{font-size:12px;white-space:pre-wrap;word-break:break-all}

@@ -7,7 +7,7 @@ export interface AgentKind { kind: string; label: string; summary: string; plann
 export interface SavedAgent { name: string; kind: string; values: Record<string, string>; saved: string[] }
 export interface CheckResult { ok: boolean; message: string }
 export interface TestResult { ok: boolean; checks: [string, CheckResult][] }
-export interface SaveResult { agent: SavedAgent; inboxToken?: string; bootstrap?: string }
+export interface SaveResult { agent: SavedAgent; inboxToken?: string }
 export type Form = Record<string, string>;
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);

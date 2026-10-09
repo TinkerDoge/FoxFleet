@@ -1,5 +1,5 @@
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AdminUser, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, Shareable } from './types';
+import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
 import type { UiMessage } from '../lib/chat';
 import { chatMessages } from '../lib/chat';
@@ -81,13 +81,21 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     // ---- agent registry (owner) ----
     agentKinds: async (): Promise<AgentKind[]> => parseKinds(await request('/api/agent-kinds')),
     savedAgents: async (): Promise<SavedAgent[]> => ((await request<any>('/api/connections')).connections ?? []).map(parseSaved),
-    addAgent: async (fields: object): Promise<SaveResult> => { const o = await request<any>('/api/connections', { body: fields }); return { agent: parseSaved(o.connection), inboxToken: o.inboxToken, bootstrap: o.bootstrap }; },
+    addAgent: async (fields: object): Promise<SaveResult> => { const o = await request<any>('/api/connections', { body: fields }); return { agent: parseSaved(o.connection), inboxToken: o.inboxToken }; },
     editAgent: async (name: string, fields: object): Promise<SaveResult> => ({ agent: parseSaved((await request<any>('/api/connections/' + enc(name), { method: 'PUT', body: fields })).connection) }),
     deleteAgent: (name: string) => request<unknown>('/api/connections/' + enc(name), { method: 'DELETE' }),
     reorderAgents: (names: string[]) => request<unknown>('/api/connections/order', { body: { names } }),
     testAgent: async (fields: object): Promise<TestResult> => parseTest(await request('/api/connections/test', { body: fields })),
-    /** New connector bootstrap (the old token stops working at once) or, for inbox agents, a new MCP token. */
-    newToken: async (name: string): Promise<{ bootstrap?: string; inboxToken?: string }> => { const o = await request<any>('/api/connections/' + enc(name) + '/token', { body: {} }); return { bootstrap: o.bootstrap, inboxToken: o.inboxToken }; },
+    /** A new MCP token for an inbox agent (the old one stops working at once). */
+    newToken: async (name: string): Promise<{ inboxToken?: string }> => { const o = await request<any>('/api/connections/' + enc(name) + '/token', { body: {} }); return { inboxToken: o.inboxToken }; },
+
+    // ---- machines: one connector per computer, paired with a short-lived code ----
+    machines: async (): Promise<Machine[]> => ((await request<{ machines?: Machine[] }>('/api/machines')).machines ?? []),
+    createPairing: (machineId?: string) => request<Pairing>('/api/machines/pairing', { body: machineId ? { machineId } : {} }),
+    pairingStatus: async (code: string): Promise<PairingState> => { const o = await request<any>('/api/machines/pairing?code=' + enc(code)); return o.state === 'paired' ? { state: 'paired', machine: o.machine } : { state: o.state === 'expired' ? 'expired' : 'waiting' }; },
+    renameMachine: (id: string, name: string) => request<unknown>('/api/machines/' + enc(id), { method: 'PATCH', body: { name } }),
+    revokeMachine: (id: string) => request<unknown>('/api/machines/' + enc(id), { method: 'DELETE' }),
+    rotateMachine: (id: string) => request<Pairing>('/api/machines/' + enc(id) + '/token', { body: {} }),
 
     // ---- sessions and skills ----
     sessions: async (agent: string): Promise<SessionInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/sessions`)).sessions ?? []).filter((s: any) => s?.id).map((s: any) => ({ id: String(s.id), title: typeof s.title === 'string' ? s.title : undefined })),
