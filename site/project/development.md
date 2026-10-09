@@ -58,3 +58,38 @@ cd site && npm ci && npm run dev      # live preview at http://localhost:5173/Fo
 npm run build                          # generates api/env/errors/roadmap pages, then builds .vitepress/dist
 npm run check-links                    # verify every internal link and asset in the built site
 ```
+
+## Signing a release
+
+The Android `release` build is signed from a keystore that is **never stored in the repository**. Anyone can sign their own build:
+
+```bash
+# 1. Create a key once (keep the file and passwords private and backed up; losing it means users cannot update):
+keytool -genkeypair -v -keystore ~/foxfleet-release.jks -storetype PKCS12 -alias foxfleet \
+  -keyalg RSA -keysize 4096 -validity 10950
+
+# 2. Tell Gradle about it, either with environment variables ...
+export FOXFLEET_KEYSTORE=$HOME/foxfleet-release.jks FOXFLEET_KEYSTORE_PASSWORD=... FOXFLEET_KEY_ALIAS=foxfleet FOXFLEET_KEY_PASSWORD=...
+# ... or an untracked android/keystore.properties (gitignored):
+#   storeFile=/home/me/foxfleet-release.jks
+#   storePassword=...
+#   keyAlias=foxfleet
+#   keyPassword=...
+
+# 3. Build and verify:
+cd android && ./gradlew assembleRelease
+$ANDROID_HOME/build-tools/<version>/apksigner verify --print-certs app/build/outputs/apk/release/app-release.apk
+```
+
+Without a keystore, `assembleRelease` produces an **unsigned** APK (CI smoke builds). A build signed with a different key cannot be installed over one signed with another: uninstall first. R8/minification is off for the alpha (see the comment in `android/app/build.gradle.kts`).
+
+### GitHub Actions secrets
+
+The release workflow (`.github/workflows/release.yml`, a draft that runs when a `v*` tag is pushed) reads these **repository secrets** to sign the APK; without them it still publishes the server tarball and an unsigned APK is skipped:
+
+| Secret | Value |
+| --- | --- |
+| `ANDROID_KEYSTORE_BASE64` | the `.jks` file, base64-encoded (`base64 -w0 foxfleet-release.jks`) |
+| `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
+| `ANDROID_KEY_ALIAS` | the key alias (`foxfleet`) |
+| `ANDROID_KEY_PASSWORD` | the key password |

@@ -3,12 +3,12 @@
 The app is `dev.foxfleet.app` (name **Foxfleet**), minimum Android 10 (API 29), built with Kotlin and Jetpack Compose.
 
 ::: warning Status: not verified on a physical device
-Unit tests and screenshot tests (Roborazzi) pass in development and the APK assembles, but the maintainers have not yet run the current build end to end on a physical device. Builds are **debug-signed**; there is no release keystore or store listing yet.
+Unit tests and screenshot tests (Roborazzi) pass in development and the APK assembles, but the maintainers have not yet run the current build end to end on a physical device. Release builds are signed with the project's own key (compare the fingerprint in the release notes); there is no store listing yet.
 :::
 
 ## Get the APK
 
-- **Releases:** <https://github.com/TinkerDoge/FoxFleet/releases> (placeholder until the first release is published).
+- **Releases:** <https://github.com/TinkerDoge/FoxFleet/releases/latest> (file `foxfleet-<version>.apk`, with `SHA256SUMS`).
 - **Build it yourself:** see [Development](/project/development). In short, with JDK 17 and the Android SDK: `cd android && ./gradlew assembleDebug`, then install `app/build/outputs/apk/debug/app-debug.apk`.
 
 Android will ask you to allow *Install unknown apps* for the app you opened the file with (browser or file manager).

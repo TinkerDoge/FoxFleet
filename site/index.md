@@ -14,7 +14,7 @@ hero:
       link: /guide/quick-start
     - theme: alt
       text: Download the Android app
-      link: https://github.com/TinkerDoge/FoxFleet/releases
+      link: https://github.com/TinkerDoge/FoxFleet/releases/latest
     - theme: alt
       text: GitHub
       link: https://github.com/TinkerDoge/FoxFleet
@@ -60,7 +60,7 @@ features:
 
 | | |
 | --- | --- |
-| **Android app** (`dev.foxfleet.app`, Android 10+) | [GitHub Releases](https://github.com/TinkerDoge/FoxFleet/releases) (placeholder: no signed release has been published yet; builds are debug-signed) |
+| **Android app** (`dev.foxfleet.app`, Android 10+) | [GitHub Releases](https://github.com/TinkerDoge/FoxFleet/releases/latest) (release-signed `.apk` with `SHA256SUMS`; once the first release is published) |
 | **Hub** | Clone the repository, or build the [Docker image](/hosting/docker) yourself. No published image yet. |
 | **Web app** | Served by your own hub. Nothing to download. |
 
