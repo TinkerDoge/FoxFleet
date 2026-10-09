@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { Client, QueuedMessage, SendMode } from '../api/client';
+import type { Client, OpenRequest, QueuedMessage, SendMode } from '../api/client';
 import type { SessionInfo } from '../api/types';
 import { ApiError, AuthRequiredError, NetworkError } from '../api/errors';
 import type { UiMessage, UiImage } from '../lib/chat';
@@ -15,10 +15,17 @@ export interface ChatState {
   hasOlder: boolean; loadingOlder: boolean; olderOffset: number;
   /** Messages the hub holds for this conversation (queued, waiting for a stop, guidance accepted) and whether draining is paused. */
   queue: QueueItem[]; halted: boolean;
+  /** Questions and approvals the agent is waiting on (native sessions); a card each, answered once. */
+  requests: OpenRequest[];
+  /** Tools the agent used in the current reply, newest last. */
+  toolLog: string[];
+  /** False when the agent keeps the queue itself (Hermes): a queued message cannot be taken back from here. */
+  canCancel: boolean;
 }
 export interface QueueItem extends QueuedMessage { images?: UiImage[] }
+const dismissed = new Set<string>();
 const states = new Map<string, ChatState>(); const aborts = new Map<string, AbortController>(); const runIds = new Map<string, string>(); const subs = new Set<() => void>();
-const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0 , queue: [], halted: false });
+const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0, queue: [], halted: false, requests: [], toolLog: [], canCancel: true });
 export const chatOf = (agent: string): ChatState => { let s = states.get(agent); if (!s) { s = fresh(agent); states.set(agent, s); } return s; };
 function patch(agent: string, p: Partial<ChatState>) { states.set(agent, { ...chatOf(agent), ...p }); subs.forEach((f) => f()); }
 export function useChat(agent: string): ChatState {
@@ -38,7 +45,7 @@ export async function loadAgent(client: Client, agent: string, onAuthLost: () =>
   } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loading: false }); }
 }
 export async function openSession(client: Client, agent: string, id: string, onAuthLost: () => void) {
-  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, session: id, queue: [], halted: false, messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, olderOffset: 0 });
+  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, session: id, queue: [], halted: false, requests: [], toolLog: [], messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, olderOffset: 0 });
   try { const page = await client.messages(agent, id); patch(agent, { messages: page.messages, hasOlder: page.hasMore, olderOffset: PAGE, loading: false }); }
   catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); patch(agent, { loading: false, error: friendly(e) }); }
 }
@@ -65,7 +72,7 @@ export async function deleteSession(client: Client, agent: string, id: string) {
   if (c.session === id) newChat(agent);
 }
 export function newChat(agent: string) { detach(agent); clearSaved(agent); discardDraft(draftKey(agent)); // the unsent text of a brand-new chat goes with it; drafts of other sessions stay
-  patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, queue: [], halted: false }); }
+  patch(agent, { messages: [], session: undefined, error: undefined, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, queue: [], halted: false, requests: [], toolLog: [] }); }
 /** Leaves the screen without cancelling anything: the hub keeps the agent running and the reply can be picked up later. */
 function detach(agent: string) { aborts.get(agent)?.abort(); aborts.delete(agent); runIds.delete(agent); }
 const stoppedBy = new WeakSet<AbortController>(), localImages = new Map<string, UiImage[]>(), submitting = new Map<string, number>();
@@ -88,7 +95,11 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     onGap: () => { if (!live()) return; acc.reply = ''; patch(agent, { streamText: '' }); },
     onContent: (d: string) => { if (!live()) return; acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined }); },
     onReasoning: (d: string) => { if (!live()) return; acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning }); },
-    onTool: (label: string) => { if (live()) patch(agent, { tool: label }); },
+    onTool: (label: string) => { if (live()) { const log = chatOf(agent).toolLog; patch(agent, { tool: label, toolLog: log[log.length - 1] === label ? log : [...log, label].slice(-12) }); } },
+    // cards come and go with the agent's own events; the id is the only key, so a late or repeated event changes nothing
+    onRequest: (r: OpenRequest) => { if (live() && !chatOf(agent).requests.some((x) => x.id === r.id)) patch(agent, { requests: [...chatOf(agent).requests, r] }); },
+    onRequestClosed: (id: string) => { if (live()) patch(agent, { requests: chatOf(agent).requests.filter((x) => x.id !== id) }); },
+    onAck: (id: string, ack: import('../api/client').Ack) => { if (live()) patch(agent, { queue: chatOf(agent).queue.map((q) => (q.id === id ? { ...q, ack } : q)) }); },
     onRunState: (state: string) => { acc.state = state; },
   };
 };
@@ -98,7 +109,7 @@ function settle(agent: string, ctrl: AbortController, base: UiMessage[], acc: Ac
   if (aborts.get(agent) !== ctrl && !stoppedBy.has(ctrl)) return false;
   const interrupted = stoppedBy.has(ctrl) || acc.state === 'stopped';
   const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
-  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', tool: undefined, ...extra });
+  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', tool: undefined, toolLog: [], requests: [], ...extra });
   return true;
 }
 
@@ -124,9 +135,9 @@ export async function syncQueue(client: Client, agent: string, onAuthLost: () =>
   try { q = await client.queue(agent, c.session); } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); return; }
   if (chatOf(agent).session !== c.session) return; // the user moved on to another chat
   const running = q.items.find((i) => i.runId && i.runId === q.activeRun);
-  const gone = chatOf(agent).queue.filter((x) => x.state === 'guidance_accepted' && !q.items.some((i) => i.id === x.id)); // the run ended: the guidance becomes part of the transcript
+  const gone = chatOf(agent).queue.filter((x) => (x.state === 'guidance_accepted' || (x.state === 'queued' && x.ack === 'queued')) && !q.items.some((i) => i.id === x.id)); // the run ended (guidance) or Hermes started the queued turn itself // the run ended: the guidance becomes part of the transcript
   if (gone.length) patch(agent, { messages: [...chatOf(agent).messages, ...gone.map((g): UiMessage => ({ role: 'user', content: g.text, ...(g.images?.length ? { images: g.images } : {}) }))] });
-  if (!submitting.get(agent)) patch(agent, { queue: q.items.filter((i) => i !== running && i.state !== 'sending' && i.state !== 'running').map((i) => ({ ...i, images: localImages.get(i.id) })), halted: q.halted });
+  if (!submitting.get(agent)) patch(agent, { queue: q.items.filter((i) => !dismissed.has(i.id) && i !== running && i.state !== 'sending' && i.state !== 'running').map((i) => ({ ...i, images: localImages.get(i.id) })), halted: q.halted, canCancel: q.canCancel, requests: q.openRequests });
   if (q.activeRun && !runIds.has(agent) && !chatOf(agent).streaming) { await followRun(client, agent, q.activeRun, running ? { ...running, images: localImages.get(running.id) } : undefined, onAuthLost); return; }
   if (!q.activeRun && !q.halted && attempts < 12 && q.items.some((i) => i.state === 'queued' || i.state === 'awaiting_stop')) { await sleep(300); return syncQueue(client, agent, onAuthLost, attempts + 1); }
 }
@@ -136,7 +147,8 @@ export async function resumeQueue(client: Client, agent: string, onAuthLost: () 
 }
 export async function cancelQueued(client: Client, agent: string, id: string) {
   const item = chatOf(agent).queue.find((q) => q.id === id);
-  try { await client.cancelQueued(agent, id, chatOf(agent).session); } catch { /* it may have started meanwhile */ }
+  dismissed.add(id); // a message Hermes refused is only hidden here; Hermes keeps no copy to take back
+  try { await client.cancelQueued(agent, id, chatOf(agent).session); } catch { /* it may have started meanwhile, or the agent holds the queue itself */ }
   patch(agent, { queue: chatOf(agent).queue.filter((q) => q.id !== id) });
   if (item) restoreDraft(draftKey(agent, chatOf(agent).session), item.text); // taking a message back puts its text in the composer
 }
@@ -202,4 +214,12 @@ export async function retryLast(client: Client, agent: string, onAuthLost: () =>
   const last = msgs.pop(); if (!last) return;
   patch(agent, { messages: msgs });
   await send(client, agent, last.content, last.images ?? [], [], onAuthLost);
+}
+
+/** Answers a card. The card goes away once the hub took the answer; if it was already closed elsewhere (404) it goes away as well. */
+export async function answerRequest(client: Client, agent: string, id: string, result: Record<string, unknown>, onAuthLost: () => void): Promise<string | null> {
+  const c = chatOf(agent); if (!c.session) return 'no session';
+  const drop = () => patch(agent, { requests: chatOf(agent).requests.filter((x) => x.id !== id) });
+  try { await client.answerRequest(agent, c.session, id, result); drop(); return null; }
+  catch (e) { if (e instanceof AuthRequiredError) { onAuthLost(); return 'sign-in'; } if (e instanceof ApiError && e.status === 404) { drop(); return null; } return friendly(e); }
 }

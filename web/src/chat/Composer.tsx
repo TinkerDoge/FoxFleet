@@ -72,13 +72,17 @@ export function Composer(props: {
   const tooBig = estimatedBytes(draftHistory) > HUB_BODY_LIMIT;
   const canSend = !uploading && !tooBig && (text.trim().length > 0 || images.length > 0 || fileRefs.some((f) => f.ref));
 
-  function describeMode() { return t(('chat.mode.' + mode) as K); }
+  const native = caps.nativeUi === true;
+  /** Native: Interrupt is a live redirect that Hermes may refuse. HTTP/other agents: it stops the reply and then sends. Labels say which. */
+  const modeLabel = (m: SendMode) => t((m === 'interrupt' && native ? 'chat.mode.interrupt.native' : 'chat.mode.' + m) as K);
+  const modeHelp = (m: SendMode) => t((native ? 'chat.mode.' + m + '.native.help' : 'chat.mode.' + m + '.help') as K);
+  function describeMode() { return modeLabel(mode); }
   function hubCommand(h: NonNullable<ReturnType<typeof parseHub>>) {
     const { cmd, args } = h, waiting = queue.filter((q) => q.state === 'queued' || q.state === 'awaiting_stop');
     if (h.command.executable === false) { setNote(`/${h.command.name}: ${h.command.disabledReason ?? t('chat.noSteer')}`); return; }
     if (cmd === 'busy') {
       if (!args || args === 'status') { setNote(`${t('chat.modeNow', { mode: describeMode() })} · ${waiting.length ? t('chat.queueCount', { n: waiting.length }) : t('chat.queueEmpty')}`); setText(''); return; }
-      if (modes.includes(args as SendMode)) { setMode(args as SendMode); setNote(t('chat.modeNow', { mode: t(('chat.mode.' + args) as K) })); setText(''); return; }
+      if (modes.includes(args as SendMode)) { setMode(args as SendMode); setNote(`${t('chat.modeNow', { mode: modeLabel(args as SendMode) })}${native ? ' · ' + t('chat.busyNote') : ''}`); setText(''); return; }
       setNote(`/busy ${args}: ${args === 'steer' ? t('chat.noSteer') : modes.join(' | ') + ' | status'}`); return;
     }
     if (cmd === 'queue') {
@@ -165,12 +169,12 @@ export function Composer(props: {
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />
         {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
         {(streaming || queue.length > 0) && modes.length > 1 && (
-          <select class="mode" aria-label={t('chat.mode')} title={t(('chat.mode.' + mode + '.help') as K)} value={mode} onChange={(e) => setMode((e.currentTarget as HTMLSelectElement).value as SendMode)}>
-            {modes.map((m) => <option key={m} value={m}>{t(('chat.mode.' + m) as K)}</option>)}
+          <select class="mode" aria-label={t('chat.mode')} title={modeHelp(mode)} value={mode} onChange={(e) => setMode((e.currentTarget as HTMLSelectElement).value as SendMode)}>
+            {modes.map((m) => <option key={m} value={m} title={modeHelp(m)}>{modeLabel(m)}</option>)}
           </select>
         )}
         {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>}
-        <button class="send" aria-label={streaming ? `${t('chat.send')} · ${t(('chat.mode.' + mode) as K)}` : t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
+        <button class="send" aria-label={streaming ? `${t('chat.send')} · ${modeLabel(mode)}` : t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

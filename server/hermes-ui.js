@@ -90,7 +90,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       const snap = await this.attach(scope, machineId, agent, stored), waiting = new Set(snap.queued); let changed = false;
       for (const m of journal.messages) if (m.session === stored && m.agent === agent && m.state === 'acked' && m.ack === 'queued' && m.mode !== 'steer' && !m.settled && !waiting.has(m.text)) { m.settled = true; changed = true; }
       if (changed) await save();
-      const items = journal.messages.filter((m) => m.scope === scope && m.agent === agent && m.session === stored && !m.settled && ['sending', 'acked', 'uncertain', 'rejected', 'failed'].includes(m.state) && !(m.state === 'acked' && m.ack === 'streaming')).slice(-30).map(msgView);
+      const items = journal.messages.filter((m) => m.scope === scope && m.agent === agent && m.session === stored && !m.settled && ['sending', 'acked', 'uncertain', 'rejected', 'failed'].includes(m.state) && !(m.state === 'acked' && m.ack === 'streaming') && !(['rejected', 'failed'].includes(m.state) && now() - m.created > 300_000)).slice(-30).map(msgView);
       return { items, open_requests: snap.open_requests, running: snap.running, snapshot: snap };
     },
     async busy(scope, machineId, agent, mode) { const ui = ensureSub(machineId); const r = await ui.call(agent, 'busy', { mode }); return { mode: String(r.value ?? '') }; },

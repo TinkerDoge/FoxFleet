@@ -4,9 +4,11 @@ import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
 import { draftKey } from './drafts';
 import { SessionsMenu } from './SessionsMenu';
+import { RequestCards } from './RequestCards';
+import { ChatControls } from './ChatControls';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
-import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, openSession, renameSession, restore, retryLast, send, stop, useChat, syncQueue, resumeQueue, cancelQueued } from './store';
+import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, openSession, renameSession, restore, retryLast, send, stop, answerRequest, useChat, syncQueue, resumeQueue, cancelQueued } from './store';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate } from '../router';
@@ -45,6 +47,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         <span class={`dot ${agent.online ? 'on' : 'off'}`} aria-hidden="true" />
         <div class="grow"><b>{name}</b><small class="muted">{status ?? (agent.online ? t('chat.online') : t('chat.offline'))}</small></div>
         {agent.capabilities?.screen && agent.online && <button class="btn text" onClick={() => navigate('screen', { agent: agent.name })}>{t('chat.screen')}</button>}
+        {agent.capabilities?.nativeUi && <ChatControls client={client} agent={agent.name} session={c.session} streaming={c.streaming} />}
         <button class="btn text" onClick={() => newChat(agent.name)}>{t('chat.new')}</button>
         {agent.capabilities?.sessions !== false && <SessionsMenu sessions={c.sessions} current={c.session} open={sessionsOpen} onOpenChange={openHistory}
           total={c.sessionsTotal} loading={c.sessionsLoading} error={historyError}
@@ -61,6 +64,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
           <div class="msg assistant">
             {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{c.streamReasoning}</div></details>}
             {c.streamText && <Markdown text={c.streamText} onMedia={setViewer} />}
+            {c.toolLog.length > 1 && <details class="tools"><summary>{t('chat.toolsDone', { n: c.toolLog.length })}</summary><ul>{c.toolLog.map((x, i) => <li key={i}>{i === c.toolLog.length - 1 && c.tool ? '… ' : '✓ '}{x}</li>)}</ul></details>}
             {status && <p class="status shimmer" role="status" aria-live="polite">{status}<span class="dots" aria-hidden="true" /></p>}
           </div>
         )}
@@ -69,14 +73,15 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
             {c.queue.map((q) => (
               <li key={q.id} class={`msg user queued ${q.state}`}>
                 <div class="bubble"><p class="user-text">{q.text}</p>
-                  <small class="muted" role="status">{q.error ?? t(('chat.q.' + q.state) as K)}{q.note === 'accepted_not_consumed' ? '' : ''}</small>
-                  {(q.state === 'queued' || q.state === 'awaiting_stop') && <button class="btn text" onClick={() => void cancelQueued(client, agent.name, q.id)}>{t('chat.q.cancel')}</button>}
+                  <small class="muted" role="status">{q.error ?? (q.ack ? t(('chat.ack.' + q.ack) as K) : t(('chat.q.' + q.state) as K))}</small>
+                  {(q.state === 'queued' || q.state === 'awaiting_stop') && <button class="btn text" disabled={!c.canCancel} title={c.canCancel ? undefined : t('chat.q.cantCancel')} onClick={() => void cancelQueued(client, agent.name, q.id)}>{t('chat.q.cancel')}</button>}
                 </div>
               </li>
             ))}
             {c.halted && c.queue.some((q) => q.state === 'queued') && <li class="queue-paused"><span class="muted">{t('chat.q.paused')}</span> <button class="btn text" onClick={() => void resumeQueue(client, agent.name, onAuthLost)}>{t('chat.q.resume')}</button></li>}
           </ul>
         )}
+        <RequestCards requests={c.requests} agent={name} onAnswer={(id, result) => answerRequest(client, agent.name, id, result, onAuthLost)} />
         {c.error && <div class="card error-card" role="alert"><p class="error">{c.error}</p></div>}
       </div>
       <Composer key={draftKey(agent.name, c.session)} client={client} agent={agent} history={c.messages} streaming={c.streaming} skills={c.skills} draftKey={draftKey(agent.name, c.session)} session={c.session} queue={c.queue} onCancelQueued={(id) => void cancelQueued(client, agent.name, id)}
