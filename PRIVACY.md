@@ -18,7 +18,7 @@
 
 ## 2. What the apps and the docs site do
 
-- **Android and web apps:** talk only to the hub address you enter (and, in the web app, to the hub that served it). They keep a few settings on your device (hub addresses, theme, which terms version you accepted, avatars you picked). The web app is installable and caches its own files for offline start-up; it never caches your chats or API responses.
+- **Android and web apps:** talk only to the hub address you enter (and, in the web app, to the hub that served it). They keep a few settings on your device (hub addresses, theme, which terms version you accepted, avatars you picked) and, in the web app, the text of unsent message drafts per chat (stored in the browser for the signed-in user only and deleted when you sign out). The web app is installable and caches its own files for offline start-up; it never caches your chats or API responses.
 - **Documentation site (GitHub Pages):** static pages. The project adds no analytics, cookies or third-party fonts, scripts or icon services. **GitHub**, which hosts the site and the repository, may log visits under [GitHub's privacy statement](https://docs.github.com/site-policy/privacy-policies/github-general-privacy-statement); the project does not receive that data.
 - Links in the docs to other sites (provider docs, GitHub) are governed by those sites.
 

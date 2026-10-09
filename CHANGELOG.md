@@ -8,7 +8,7 @@ Android `versionName 0.2.1-alpha`, `versionCode 6`. Not yet published; the versi
 
 ### Fixed
 
-- Web chat preserves unsent text and attachments per agent and session while navigating (kept in memory only, never stored); sign-out clears drafts and cancels pending uploads. A draft typed in a new chat follows it when the hub assigns the session id.
+- Web chat keeps unsent text like a messenger: per agent and session, restored after switching chats, a reload or closing the browser. Drafts are stored text-only in this browser's `localStorage`, scoped to the signed-in user, written after a short pause, cleared when you send, start a new chat or delete the session, and wiped on sign-out. Attachments in a draft stay in memory only; sign-out cancels pending uploads. A draft typed in a new chat follows it when the hub assigns the session id.
 - Text-size preferences scale typography without pushing the chat composer or sidebar controls below the viewport.
 - The composer shows a visible focus outline, and the history menu supports keyboard navigation (arrows, Home/End, Escape, outside dismissal, focus return).
 - Pairing-code styling no longer adds letter spacing to Markdown code blocks.

@@ -33,6 +33,9 @@ Re-run the manual pass for any change to layout, colour tokens or interaction.
 - [x] Everything is reachable and operable without a pointer: add/edit/reorder agents (↑/↓ buttons, not drag-only), attach menu, media viewer (Esc close, +/−/0 zoom), invites, devices.
 - [ ] Remote-screen keyboard capture while in control: noVNC grabs keys when the canvas is focused; verify with a screen reader before release.
 
+## Drafts
+- [x] Unsent message text is remembered per chat (web): restored after navigating, reloading or reopening the browser, so interrupted keyboard or voice entry is not lost. It is stored locally per signed-in user and removed on sign-out.
+
 ## Visual and motion
 - [x] Text size setting (small / default / large) scales typography rather than the whole body; the shell tracks the viewport and chat messages scroll independently. Browser zoom up to 200% keeps the layout usable (single column on phones).
 - [x] Status is never colour-only (online dot has an accessible name; checks say OK/Failed).

@@ -6,6 +6,7 @@ import { Wordmark } from '../components/Brand';
 import { PrimaryButton } from '../components/ui';
 import { ChatView } from '../chat/ChatView';
 import { resetChats } from '../chat/store';
+import { setDraftScope, wipeDrafts } from '../chat/drafts';
 import { Manage } from '../agents/Manage';
 import { Admin } from '../admin/Admin';
 import { Account } from '../admin/Account';
@@ -23,6 +24,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const owner = info.user?.role === 'owner';
+  setDraftScope(info.user?.id); // unsent text is stored per signed-in user (set before the chat reads its draft)
   const main = useRef<HTMLElement>(null);
   useEffect(() => { const el = main.current; if (el && route.name !== 'agents') el.focus({ preventScroll: true }); }, [route.name]); // keep keyboard focus in the new view
   useEffect(() => { if (!open) return; const k = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false); addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, [open]);
@@ -30,7 +32,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const load = () => { setError(null); client.agents().then(setAgents).catch((e) => { if (e instanceof AuthRequiredError) lost(); else setError(t('home.failed')); }); };
   useEffect(load, []);
   useEffect(() => { const id = setInterval(() => client.agents().then(setAgents).catch(() => {}), 30000); return () => clearInterval(id); }, []);
-  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); lost(); }
+  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); wipeDrafts(); lost(); }
   const PAGES = ['manage', 'admin', 'account', 'settings'];
   const selected = !PAGES.includes(route.name) ? agents?.find((a) => a.name === (route.params.get('agent') ?? lastAgent())) ?? agents?.[0] : undefined;
   const go = () => setOpen(false);
