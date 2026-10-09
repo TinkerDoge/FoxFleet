@@ -136,6 +136,7 @@ private fun FoxfleetApp(vm: HubViewModel) {
 
 @Composable
 private fun RouteContent(vm: HubViewModel, route: Route) {
+    LaunchedEffect(vm.authed, vm.pendingPair) { vm.consumePendingPair() }
     when (route) {
         Route.Fleet -> FleetScreen(
             agents = vm.agents, loading = vm.fleetLoading, loadedOnce = vm.fleetLoadedOnce, error = vm.fleetError,
@@ -181,13 +182,14 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             onSwitch = vm::switchHub, onAdd = vm::startAddHub, onRemove = vm::removeHub,
         )
         Route.Admin -> dev.foxfleet.app.ui.screens.AdminScreen(api = vm.api, onBack = { vm.back() })
+        is Route.Machines -> dev.foxfleet.app.ui.screens.MachinesScreen(api = vm.api, hub = vm.settings.baseUrl, initialCode = route.code, onBack = { vm.back() }, onChanged = { vm.loadRegistry(); vm.refreshFleet() })
         Route.Devices -> dev.foxfleet.app.ui.screens.DevicesScreen(api = vm.api, onBack = { vm.back() }, onSignedOut = vm::signOut)
         Route.Agents -> {
             LaunchedEffect(Unit) { vm.loadRegistry() }
             dev.foxfleet.app.ui.screens.AgentsScreen(
                 agents = vm.savedAgents, error = vm.registryError, onBack = { vm.back() },
                 onAdd = { vm.navigate(Route.AgentEditor(null)) }, onEdit = { vm.navigate(Route.AgentEditor(it)) },
-                onMove = vm::moveAgent,
+                onMove = vm::moveAgent, onMachines = { vm.navigate(Route.Machines()) },
             )
         }
         is Route.AgentEditor -> {
@@ -201,7 +203,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onSave = { _, fields -> vm.saveAgent(route.agent, fields) },
                 onDelete = { vm.deleteAgent(route.agent!!) },
                 onDone = { vm.navigate(Route.Agents) },
-                onNewToken = { existing?.let { vm.api.newConnectorToken(it.name) } },
+                onNewToken = { existing?.let { vm.api.newInboxToken(it.name) } },
             )
         }
     }

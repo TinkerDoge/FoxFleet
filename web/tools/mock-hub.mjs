@@ -80,7 +80,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
       if (!pr || pr.used || pr.expires < Date.now()) return json(res, 403, { error: 'That pairing code is wrong, already used or expired' });
       pr.used = true; const mc = { id: randomBytes(16).toString('hex'), name: pr.machineId ? machines.find((x) => x.id === pr.machineId)?.name ?? 'My machine' : String(b.name || 'My machine'), os: 'linux', online: true, paired: true, created: Date.now(), lastSeen: Date.now(), profiles: [] };
       if (pr.machineId) { const old = machines.find((x) => x.id === pr.machineId); if (old) { old.online = true; pr.result = old.id; return json(res, 200, { machineId: old.id, token: old.id + '.' + randomBytes(24).toString('base64url'), name: old.name }); } }
-      machines.push(mc); pr.result = mc.id; setTimeout(() => { mc.profiles = ['default', 'coder', 'sumi'].map((n) => ({ profile: n, agent: n })); }, Number(process.env.MOCK_PROFILE_DELAY || 1500));
+      machines.push(mc); pr.result = mc.id; setTimeout(() => { mc.profiles = ['default', 'coder', 'research'].map((n) => ({ profile: n, agent: n })); }, Number(process.env.MOCK_PROFILE_DELAY || 1500));
       return json(res, 200, { machineId: mc.id, token: mc.id + '.' + randomBytes(24).toString('base64url'), name: mc.name }); }
     if (!user) return json(res, 401, { error: 'Login required' });
     if (p === '/api/auth/logout-all') { sessions.clear(); return json(res, 200, { authenticated: false }); }

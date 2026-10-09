@@ -4,7 +4,7 @@ Add agents in the web app (**Manage agents → Add**) or Android (**Settings →
 
 | I want to talk to… | Guide | Auth | Needs on your side |
 | --- | --- | --- | --- |
-| A Hermes agent on a machine I own | [Hermes](./hermes) | connector token (or dashboard login for direct) | Node 22 on that machine |
+| A Hermes agent on a machine I own | [Hermes](./hermes) | machine pairing code (or dashboard login for direct) | Node 22 on that machine |
 | Any OpenAI-style `/chat/completions` API | [OpenAI-compatible](./openai) | optional API key | the base URL |
 | Hundreds of models with one key | [OpenRouter](./openrouter) | API key | nothing |
 | GLM models | [Z.ai](./zai) | API key | nothing (read the warning) |

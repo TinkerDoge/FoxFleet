@@ -2,7 +2,7 @@
 
 ## The write-only rule
 
-`WRITE_ONLY` in `server/config.js` lists every sensitive field: `host`, ports, URLs, `baseUrl`, `apiKey`, `dashboardPass`, `apiServerKey`, `dashboardWsToken`, connector and inbox token hashes, `uploadDir`. The API:
+`WRITE_ONLY` in `server/config.js` lists every sensitive field: `host`, ports, URLs, `baseUrl`, `apiKey`, `dashboardPass`, `apiServerKey`, `dashboardWsToken`, machine ids, inbox token hashes, `uploadDir`. The API:
 
 - accepts them on create and edit;
 - never returns them: you get booleans (`hasApiKey`, `hasHost`, `hasConnectorToken`, …);

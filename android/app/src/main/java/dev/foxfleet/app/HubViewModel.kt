@@ -30,12 +30,14 @@ sealed interface Route {
     data object Hubs : Route
     data object Devices : Route
     data object Admin : Route
+    /** Machines list; [code] is set when a foxfleet://pair link opened the app. */
+    data class Machines(val code: String? = null) : Route
     /** Add (agent = null) or edit an agent in the hub registry. */
     data class AgentEditor(val agent: String? = null) : Route
 }
 
 /** Screen depth used to pick the slide direction between routes. */
-fun Route.depth(): Int = when (this) { Route.Fleet -> 0; is Route.Chat -> 1; Route.Settings -> 1; is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2; is Route.AgentEditor -> 3 }
+fun Route.depth(): Int = when (this) { Route.Fleet -> 0; is Route.Chat -> 1; Route.Settings -> 1; is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2; is Route.Machines -> 3; is Route.AgentEditor -> 3 }
 
 /** App state that must outlive rotation: auth, fleet, chats, in-flight streams, route. */
 class HubViewModel(app: Application) : AndroidViewModel(app) {
@@ -57,7 +59,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     val hubName get() = settings.hubs.firstOrNull { it.id == settings.activeHubId }?.name.orEmpty()
 
     /** foxfleet://connect?hub=… opened the app: prefill the address screen (the user still confirms). */
+    /** A foxfleet://pair code waiting for the owner to be signed in; shown on the Machines screen. */
+    var pendingPair by mutableStateOf<String?>(null)
+    fun consumePendingPair() { val c = pendingPair ?: return; if (authed == true) { pendingPair = null; navigate(Route.Machines(c)) } }
     fun openConnectLink(link: String) {
+        HubAddress.parsePairLink(link)?.let { p -> pendingPair = p.code; return }
         val parsed = HubAddress.parseLink(link) ?: return
         val hub = parsed.hub; inviteDraft = parsed.invite.orEmpty()
         hubDraft = hub; addingHub = true; hubSetup = true
@@ -145,6 +151,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         is Route.Screen -> { route = Route.Chat(r.agent); true }
         Route.Agents, Route.Hubs, Route.Devices, Route.Admin -> { route = Route.Settings; true }
         is Route.AgentEditor -> { route = Route.Agents; true }
+        is Route.Machines -> { route = Route.Agents; true }
         Route.Fleet -> false
         else -> { route = Route.Fleet; true }
     }

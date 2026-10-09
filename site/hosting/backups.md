@@ -26,7 +26,7 @@ systemctl --user start foxfleet
 curl -fsS http://127.0.0.1:3080/health
 ```
 
-Everyone stays signed in only if `accounts/devices.json` is restored too (it is part of `accounts/`). Connector tokens are in `config.json`, so connectors reconnect without changes.
+Everyone stays signed in only if `accounts/devices.json` is restored too (it is part of `accounts/`). Machine records (token hashes) are in `machines.json`, so connectors reconnect without changes.
 
 ## Docker volume
 

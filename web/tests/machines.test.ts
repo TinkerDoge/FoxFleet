@@ -27,6 +27,6 @@ describe('machine status text', () => {
   it('lists profiles the way the hub reports them, singular and plural', () => {
     expect(profileLine(machine([]))).toBe('No profiles shared yet');
     expect(foundLine(machine(['default']))).toBe('Found 1 profile: default');
-    expect(foundLine(machine(['default', 'coder', 'sumi']))).toBe('Found 3 profiles: default, coder, sumi');
+    expect(foundLine(machine(['default', 'coder', 'research']))).toBe('Found 3 profiles: default, coder, research');
   });
 });

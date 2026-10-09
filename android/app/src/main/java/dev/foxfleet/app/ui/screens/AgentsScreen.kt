@@ -91,6 +91,7 @@ fun AgentsScreen(
     onAdd: () -> Unit,
     onEdit: (String) -> Unit,
     onMove: (Int, Int) -> Unit,
+    onMachines: () -> Unit = {},
 ) {
     val c = LocalHubColors.current
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
@@ -99,6 +100,12 @@ fun AgentsScreen(
             Text("Everyone your hub can talk to. Addresses and keys stay on the hub; this phone never sees them.",
                 style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
             error?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(4.dp)) }
+            SoftCard(Modifier.fillMaxWidth().padding(bottom = 12.dp), onClick = onMachines) {
+                Column(Modifier.padding(16.dp)) {
+                    Text("Machines", style = MaterialTheme.typography.titleMedium, color = c.text)
+                    Text("Connect a computer once and share all of its Hermes profiles as agents.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                }
+            }
             when {
                 agents == null -> Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), color = c.accent, strokeWidth = 2.dp) }
                 agents.isEmpty() -> SoftCard(Modifier.fillMaxWidth().padding(top = 8.dp), onClick = onAdd) {
@@ -151,7 +158,6 @@ fun AgentEditorScreen(
     initialKind: String? = existing?.kind,
     initialTest: TestResult? = null,
     initialToken: String? = null,
-    initialTokenIsBootstrap: Boolean = false,
     onNewToken: (suspend () -> String?)? = null,
 ) {
     val c = LocalHubColors.current
@@ -169,7 +175,6 @@ fun AgentEditorScreen(
     var problem by remember { mutableStateOf<String?>(null) }
     var test by remember { mutableStateOf(initialTest) }
     var token by remember { mutableStateOf(initialToken) }
-    var tokenIsBootstrap by remember { mutableStateOf(initialTokenIsBootstrap) }
     var confirmDelete by remember { mutableStateOf(false) }
     val editing = existing != null
     val title = when { token != null -> "Agent added"; editing -> "Edit ${existing!!.label}"; kind == null -> "Add agent"; else -> "New ${kind.label}" }
@@ -187,7 +192,7 @@ fun AgentEditorScreen(
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
             val t = token
             if (t != null) {
-                TokenCard(t, tokenIsBootstrap, onDone)
+                TokenCard(t, onDone)
                 return@Column
             }
             if (kind == null) {
@@ -226,11 +231,11 @@ fun AgentEditorScreen(
                 PrimaryAction(if (editing) "Save" else "Add agent", Modifier.weight(1f), busy) {
                     val bad = Registry.validate(kind, form, editing, existing)
                     if (bad != null) { problem = bad; return@PrimaryAction }
-                    run { val r = onSave(kind, Registry.payload(kind, form, editing)); val shown = r.bootstrap ?: r.inboxToken; if (shown != null) { tokenIsBootstrap = r.bootstrap != null; token = shown } else onDone() }
+                    run { val r = onSave(kind, Registry.payload(kind, form, editing)); val shown = r.inboxToken; if (shown != null) token = shown else onDone() }
                 }
             }
-            if (editing && onNewToken != null && existing?.hasSaved("connectorToken") == true) {
-                TextButton(onClick = { run { onNewToken()?.let { tokenIsBootstrap = true; token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new connector token", color = c.accent) }
+            if (editing && onNewToken != null && existing?.kind == "mcp-inbox") {
+                TextButton(onClick = { run { onNewToken()?.let { token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new token", color = c.accent) }
             }
             if (editing) {
                 Spacer(Modifier.height(24.dp))
@@ -274,7 +279,7 @@ private fun KindTile(k: AgentKind, onClick: () -> Unit) {
 }
 
 @Composable
-private fun enumLabel(o: String) = when (o) { "connector" -> "Connector (recommended)"; "direct" -> "Direct"; "general" -> "General"; "coding" -> "Coding Plan"; else -> o.replaceFirstChar { it.uppercase() } }
+private fun enumLabel(o: String) = when (o) { "direct" -> "Direct (advanced)"; "general" -> "General"; "coding" -> "Coding Plan"; else -> o.replaceFirstChar { it.uppercase() } }
 
 @Composable
 private fun FieldInput(f: KindField, value: String, editing: Boolean, existing: SavedAgent?, onChange: (String) -> Unit) {
@@ -336,12 +341,12 @@ private fun TestCard(t: TestResult) {
 }
 
 @Composable
-private fun TokenCard(token: String, bootstrap: Boolean, onDone: () -> Unit) {
+private fun TokenCard(token: String, onDone: () -> Unit) {
     val c = LocalHubColors.current
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
     Spacer(Modifier.height(8.dp))
-    Text(if (bootstrap) "Paste this into the agent on its own machine. It dials out to your hub, so you open no ports. The token is shown only once; you can issue a new one later." else "Give this token to the agent's MCP connector as a Bearer key. It's shown only once; you can issue a new one later.",
+    Text("Give this token to the agent's MCP connector as a Bearer key. It's shown only once; you can issue a new one later.",
         style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(4.dp))
     Spacer(Modifier.height(12.dp))
     SoftCard(Modifier.fillMaxWidth()) {

@@ -123,6 +123,14 @@ class HubApi(private val store: SettingsStore) {
     suspend fun setup(username: String, password: String, code: String, acceptedTerms: String? = null) = withContext(Dispatchers.IO) { signIn("/api/auth/setup", buildMap { put("username", username); put("password", password); if (code.isNotBlank()) put("setupCode", code); if (acceptedTerms != null) put("acceptedTerms", acceptedTerms) }) }
     suspend fun register(username: String, password: String, invite: String, acceptedTerms: String? = null) = withContext(Dispatchers.IO) { signIn("/api/auth/register", buildMap { put("username", username); put("password", password); if (invite.isNotBlank()) put("invite", invite); if (acceptedTerms != null) put("acceptedTerms", acceptedTerms) }) }
 
+    // ---- machines: one connector per computer, paired with a short-lived code ----
+    suspend fun machines(): List<Machine> = withContext(Dispatchers.IO) { parseMachines(request("/api/machines")) }
+    suspend fun createPairing(machineId: String? = null): Pairing = withContext(Dispatchers.IO) { parsePairing(request("/api/machines/pairing", "POST", if (machineId == null) "{}" else buildJsonObject { put("machineId", machineId) }.toString())) }
+    suspend fun pairingStatus(code: String): PairingState = withContext(Dispatchers.IO) { parsePairingState(request("/api/machines/pairing?code=" + enc(code))) }
+    suspend fun renameMachine(id: String, name: String) = withContext(Dispatchers.IO) { request("/api/machines/" + enc(id), "PATCH", buildJsonObject { put("name", name) }.toString()); Unit }
+    suspend fun revokeMachine(id: String) = withContext(Dispatchers.IO) { request("/api/machines/" + enc(id), "DELETE"); Unit }
+    suspend fun rotateMachine(id: String): Pairing = withContext(Dispatchers.IO) { parsePairing(request("/api/machines/" + enc(id) + "/token", "POST", "{}")) }
+
     // ---- admin (owner only) ----
     suspend fun registrationMode(): String = withContext(Dispatchers.IO) { request("/api/admin/settings")["registration"]?.jsonPrimitive?.contentOrNull ?: "closed" }
     suspend fun setRegistration(mode: String) = withContext(Dispatchers.IO) { request("/api/admin/settings", "PUT", buildJsonObject { put("registration", mode) }.toString()); Unit }
@@ -165,7 +173,7 @@ class HubApi(private val store: SettingsStore) {
 
     suspend fun addAgent(fields: Map<String, Any>): SaveResult = withContext(Dispatchers.IO) {
         val obj = request("/api/connections", "POST", jsonOf(fields))
-        SaveResult(parseSaved(obj["connection"]!!.jsonObject), obj["inboxToken"]?.jsonPrimitive?.contentOrNull, obj["bootstrap"]?.jsonPrimitive?.contentOrNull)
+        SaveResult(parseSaved(obj["connection"]!!.jsonObject), obj["inboxToken"]?.jsonPrimitive?.contentOrNull)
     }
 
     suspend fun editAgent(name: String, fields: Map<String, Any>): SaveResult = withContext(Dispatchers.IO) {
@@ -173,7 +181,7 @@ class HubApi(private val store: SettingsStore) {
     }
 
     /** New connector token for a Hermes agent (the old one stops working immediately). */
-    suspend fun newConnectorToken(name: String): String? = withContext(Dispatchers.IO) { request("/api/connections/" + enc(name) + "/token", "POST", "{}")["bootstrap"]?.jsonPrimitive?.contentOrNull }
+    suspend fun newInboxToken(name: String): String? = withContext(Dispatchers.IO) { request("/api/connections/" + enc(name) + "/token", "POST", "{}")["inboxToken"]?.jsonPrimitive?.contentOrNull }
 
     suspend fun deleteAgent(name: String) = withContext(Dispatchers.IO) { request("/api/connections/" + enc(name), "DELETE"); Unit }
 
@@ -411,6 +419,24 @@ class HubApi(private val store: SettingsStore) {
             required = o.bool("required") ?: true, authenticated = o.bool("authenticated") ?: false, setupRequired = o.bool("setupRequired") ?: false,
             setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
         )
+        fun parseMachine(o: JsonObject) = Machine(
+            id = o.str("id") ?: "", name = o.str("name") ?: "Machine", online = o.bool("online") ?: false, lastSeen = o["lastSeen"]?.jsonPrimitive?.longOrNull,
+            profiles = o["profiles"]?.jsonArray?.mapNotNull { it.jsonObject.str("agent") } ?: emptyList(),
+        )
+        fun parseMachines(o: JsonObject): List<Machine> = o["machines"]?.jsonArray?.map { parseMachine(it.jsonObject) } ?: emptyList()
+        fun parsePairing(o: JsonObject): Pairing {
+            val cmds = o["commands"]?.jsonObject
+            return Pairing(
+                code = o.str("code") ?: "", display = o.str("display") ?: "", expires = o["expires"]?.jsonPrimitive?.longOrNull ?: 0L, url = o.str("url") ?: "", link = o.str("link") ?: "",
+                rows = o["rows"]?.let { r -> runCatching { r.jsonArray.map { it.jsonPrimitive.content } }.getOrNull() },
+                sh = cmds?.str("sh") ?: "", powershell = cmds?.str("powershell") ?: "", node = cmds?.str("node") ?: "",
+            )
+        }
+        fun parsePairingState(o: JsonObject): PairingState = when (o.str("state")) {
+            "paired" -> PairingState.Paired(o["machine"]?.let { parseMachine(it.jsonObject) })
+            "expired" -> PairingState.Expired
+            else -> PairingState.Waiting
+        }
         fun parseShareable(o: JsonObject) = Shareable(
             o.str("link") ?: "", o["rows"]?.let { r -> runCatching { r.jsonArray.map { it.jsonPrimitive.content } }.getOrNull() },
             o["id"]?.let { Invite(o.str("id") ?: "", o["expires"]?.jsonPrimitive?.longOrNull ?: 0L, false) },

@@ -4,7 +4,7 @@
 
 - **Hub (`server/`)**: one Node process, no runtime dependencies. It owns accounts, per-user agent registries, secrets, sessions, and talks to agents. Every client request is authenticated (cookie for the web app, bearer token for Android) and runs inside a per-user context (`AsyncLocalStorage`), so each user sees only their own agents, files, inbox and screens.
 - **Clients**: the Android app (Compose) and the web app (Preact). They only see *names, status and capabilities*; hosts, URLs and keys are write-only on the hub (privacy contract, tested).
-- **Connector (`connector/`)**: a tiny script on an agent machine that dials the hub over WebSocket with a per-agent token. The hub opens loopback forwarders and tunnels HTTP and WebSocket traffic through that single outbound link, so agents need no open ports or public name.
+- **Connector (`connector/`)**: one tiny script per computer that pairs once with a short-lived code, discovers its Hermes profiles, and dials the hub over ONE WebSocket with a per-machine token (hash only on the hub); every frame names its agent. The hub opens loopback forwarders and tunnels HTTP and WebSocket traffic through that single outbound link, so agents need no open ports or public name.
 - **Design tokens (`design/tokens.json`)**: colours, radii, type and motion; a script generates the web CSS variables and the Android `Tokens.kt`.
 
 ## Agent kinds (plugins)
@@ -13,7 +13,7 @@ Each kind is declared in `server/config.js` (`KIND_SPECS`): fields, auth methods
 
 | Kind | How the hub reaches it |
 | --- | --- |
-| `hermes` | Connector (default) or direct host/port (advanced): chat, sessions, files, skills, screen |
+| `hermes` | Machine connector (default; credentials stay on the machine) or direct host/port (advanced): chat, sessions, files, skills, screen |
 | `mcp-inbox` | Mailbox for an outside agent that calls the hub's `/mcp` with a bearer token |
 | `openai`, `openrouter`, `zai`, `opencode`, `grok` | API-key chat providers; the hub calls the provider |
 

@@ -8,7 +8,7 @@ One file per user: the owner's is `FOXFLEET_CONFIG`, others live in `users/<id>/
   "machines": [
     { "name": "home-hermes", "kind": "hermes", "connection": "connector", "profile": "default",
       "label": "Home", "description": "", "avatar": "🦊",
-      "connectorId": "<32 hex>", "connectorTokenHash": "<64 hex sha-256>",
+      "machineId": "<32 hex>",
       "dashboardUser": "admin", "dashboardPass": "…", "apiServerKey": "…" },
     { "name": "router", "kind": "openrouter", "model": "openai/gpt-4o-mini",
       "baseUrl": "https://openrouter.ai/api/v1", "apiKey": "…" },
@@ -36,7 +36,7 @@ The array order is the display order. You normally never edit this file by hand;
 | --- | --- |
 | `connection` | `connector` or `direct` (default: `direct` if `host` is set, else `connector`); immutable |
 | `profile` | id, default `default` |
-| connector mode | `connectorId` (32 hex), `connectorTokenHash` (64 hex) |
+| machine mode | `machineId` (32 hex); created by a paired machine, holds no credentials |
 | direct mode | `host` (IP or DNS name), `dashboardPort` (default 9119), `apiServerPort` (default 8642), optional `dashboardUrl` / `apiServerUrl` (https origin only) |
 | credentials | `dashboardUser` (default `admin`), `dashboardPass`, `apiServerKey` (≤ 4096 chars, no control chars), optional `dashboardWsToken` |
 | `uploadDir` | absolute or `~/…`, no `..`, ≤ 256 chars |

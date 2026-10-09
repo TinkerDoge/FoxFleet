@@ -8,7 +8,7 @@ A **kind** (the plugin id) is declared in `server/config.js` (`KIND_SPECS`). It 
 
 | Kind | Auth | How the hub reaches it | Capabilities |
 | --- | --- | --- | --- |
-| `hermes` | connector token, or direct dashboard login | Connector (default, the agent dials out) or direct host/ports (advanced) | chat, sessions, files, skills, screen, voice, images |
+| `hermes` | machine token (paired once per computer), or direct dashboard login | Machine connector (default, the computer dials out; credentials stay on it) or direct host/ports (advanced) | chat, sessions, files, skills, screen, voice, images |
 | `openai` | optional API key | Hub calls `{baseUrl}/chat/completions` | chat, images |
 | `openrouter` | API key | `https://openrouter.ai/api/v1` | chat, images |
 | `zai` | API key | `general` or `coding` endpoint (see the [warning](/agents/zai)) | chat |

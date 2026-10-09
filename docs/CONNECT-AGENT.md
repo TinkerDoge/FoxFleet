@@ -1,69 +1,56 @@
 # Connect an agent to your Foxfleet
 
-This page is written so a person **or an AI agent** can follow it end to end. The hub never needs to
-reach into your network: the agent machine dials **out** to the hub, so you open no ports and need no
-public hostname or DNS for the agent.
+For people **and for agents reading this**: how to connect a computer that runs Hermes (all of its profiles at once), or any API-key provider, to a Foxfleet hub.
 
-## Which path?
+## API-key providers (no machine needed)
 
-| Agent | Path | What runs where |
-| --- | --- | --- |
-| **Hermes** (default) | Connector (outbound WebSocket) | `foxfleet-connector.mjs` on the Hermes machine |
-| Hermes, advanced | Direct | The hub dials the Hermes host and ports itself (set in the app under *Advanced*) |
-| **Scribe** and other MCP agents | Inbox (MCP over HTTPS) | The agent calls the hub's `/mcp` with a bearer token. Also outbound only |
-| OpenAI, OpenRouter, Z.ai, OpenCode, Grok | API key | Nothing on your machines. Paste a key in the app |
+OpenAI-compatible, OpenRouter, Z.ai, OpenCode and Grok: **Manage › Add agent**, pick the type, paste the key, **Test**, **Save**. The key stays on the hub and is never shown again.
 
-## Hermes: connector (recommended)
+## A computer running Hermes (one command, any number of profiles)
 
-1. In the app: **Settings → Manage agents → Add → Hermes** (connection: *Connector*). Name it and save.
-2. The app shows a **one-time token** and a ready-made **bootstrap prompt**. Copy the prompt.
-   The token is a secret; if it leaks, tap *New token* on the agent and the old one stops working at once.
-3. Give the prompt to the agent (or run it yourself) on the machine that runs Hermes. It is just:
+Requirements: Node.js **22+** on that computer, and Hermes installed for the same user (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows).
 
-```bash
-# Node 22 or newer. Use your own hub address.
-curl -fsSL https://YOUR-HUB/connector.mjs -o foxfleet-connector.mjs
-HUB_URL=https://YOUR-HUB FOXFLEET_TOKEN=<token from the app> node foxfleet-connector.mjs
-```
+1. In the app: **Manage › Machines › Connect a machine**. The hub creates a pairing code (`K7QMX-2PD4H`, valid 15 minutes, single use) and shows the commands below.
+2. On the computer, run **one** of:
 
-4. Keep it running. With systemd:
+   ```sh
+   curl -fsSL https://YOUR-HUB/c/<code> | sh                       # macOS, Linux, WSL
+   ```
+   ```powershell
+   irm https://YOUR-HUB/c/<code>.ps1 | iex                         # Windows PowerShell
+   ```
+   ```sh
+   curl -fsSL https://YOUR-HUB/connector.mjs -o foxfleet-connector.mjs
+   node foxfleet-connector.mjs pair --hub https://YOUR-HUB --code <code>   # Node only
+   ```
 
-```ini
-[Service]
-Environment=HUB_URL=https://YOUR-HUB
-Environment=FOXFLEET_TOKEN=<token>
-ExecStart=/usr/bin/node /opt/foxfleet/foxfleet-connector.mjs
-Restart=always
-```
+3. The connector pairs, finds the Hermes profiles, and asks which to share (`--all`, or `--profiles default,coder`, skip the question). It then offers to keep itself running in the background (`--install-service`).
+4. The app shows **Found N profiles: …**; each is now an agent named after its profile.
 
-5. In the app the agent turns **Ready** within seconds. Use **Test** to see *Connector online*, dashboard and chat.
+### If you are an agent asked to do this
 
-Defaults: dashboard `http://127.0.0.1:9119`, chat API `http://127.0.0.1:8642`. Override with
-`DASHBOARD_URL` / `API_URL`. The connector forwards only to those two addresses.
+Run exactly: `curl -fsSL https://YOUR-HUB/c/<code> | sh` (the code is in the prompt the owner copied). Answer **Enter** to share every profile found, or **n** and type numbers to choose. If there is no terminal, add `--all` by running the Node-only variant. Do not ask for, print or send Hermes passwords or API keys: the connector reads them locally. Report the last lines of its output. If it says the code is wrong or expired, ask the owner for a new one.
 
-Dashboard password and API key (if your Hermes uses them) are entered once in the app. They are stored on the
-hub, never shown again, and used for the hub's own calls into your Hermes.
+### Commands
 
-### What the agent can follow by itself (checklist)
-- [ ] `node --version` is 22 or newer
-- [ ] `curl -fsSL <hub>/connector.mjs` returns JavaScript (the hub address is reachable over https)
-- [ ] Hermes dashboard and API answer on localhost (`curl -s http://127.0.0.1:9119/api/status`)
-- [ ] Connector prints `connected to hub`, and reconnects by itself (backoff 1s → 60s) after a drop
-- [ ] 401 on connect means a wrong or rotated token; get a new one in the app
+`pair`, `run`, `profiles`, `status`, `install-service`, `uninstall-service`, `unpair`; flags `--name`, `--all`, `--profiles a,b`, `--install-service`, `--no-run`, `--hermes-home DIR`, `--dashboard-port N`. Config and token: `~/.config/foxfleet/connector.json` (mode `0600`).
 
-### Security notes
-- Plain `ws://` is refused unless the hub is localhost or you set `ALLOW_INSECURE_HUB=1` (trusted LAN only).
-- One token per agent, stored on the hub only as a SHA-256 hash.
-- Screen takeover works over a connector too: the hub tunnels the screen WebSocket through the same outbound link (tickets, lease and hand-back unchanged).
+### What leaves the computer
 
-## Scribe and MCP agents (inbox)
-Add the agent with type **MCP inbox**. The app shows a token once. Point the agent's MCP client at
-`https://YOUR-HUB/mcp` with header `Authorization: Bearer <token>`. Replies land in the conversation.
+Only: the machine name you chose, the OS family, the names of the shared profiles, and, while someone uses an agent, that agent's chats, files and screen frames. Dashboard passwords, API keys and paths stay local; the connector signs in to Hermes on `127.0.0.1` itself.
 
-## API-key chat agents
-Add OpenRouter, Z.ai, OpenCode or Grok in the app and paste your key. Z.ai: use the *general* endpoint
-unless you have a Coding Plan key; Z.ai restricts the Coding Plan endpoint to officially supported coding tools.
+### Manage and revoke
 
-## Pairing the phone
-Open the app, enter your hub address (or scan the QR / open a link like `foxfleet://connect?hub=https://YOUR-HUB`).
-Use `http://` only for a LAN or dev hub, and only after switching on *Allow http on this network*.
+**Manage › Machines**: rename, **Re-pair** (kills the old token now, gives a new code, keeps the agents), **Revoke** (removes the machine and its agents). On the machine: `node foxfleet-connector.mjs unpair`.
+
+### Troubleshooting
+
+See the table in the docs: *Connect a real machine › Troubleshooting*. Most issues: Node older than 22, a code that expired (15 minutes) or was already used, the machine cannot reach the hub's https address, or Hermes itself is not running.
+
+## Mailbox agents (Muse and other MCP agents)
+
+Unchanged: **Add agent › MCP inbox**, copy the token shown once into the outside agent's MCP connector (`/mcp`, Bearer).
+
+## Other local agents
+
+The same machine connector is the intended carrier (see the docs, *Write your own plugin › Local agents through a machine*). Only Hermes profiles are discovered today.

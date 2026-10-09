@@ -9,7 +9,7 @@
 <script type="application/json" id="data">
 {
   "updated": "2026-10-09",
-  "version": "0.1.0-alpha",
+  "version": "0.1.1-alpha (unreleased)",
   "overview": [
     "Foxfleet is a self-hosted hub plus a web app and an Android app for talking to all your AI agents from one calm place. Free, MIT licensed.",
     "Phone app (Kotlin/Compose) and web app (Preact) → your hub (zero-dependency Node server, per-user accounts and secrets) → agents: Hermes machines through an outbound connector, API-key chat providers, and MCP-inbox agents.",
@@ -19,9 +19,23 @@
     {
       "v": "0.1.0-alpha",
       "what": "First release. Hub with accounts and a login gate, provider plugins (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok), Hermes connector with screen takeover, MCP inbox, QR pairing and Admin, web app (PWA) and Android app with shared design tokens, OpenAPI contract, documentation site, Terms/Privacy templates with acceptance on setup and join. Release-signed Android APK and server tarball."
+    },
+    {
+      "v": "0.1.1-alpha",
+      "what": "Easy onboarding: pairing codes, machines, one connector per computer with several Hermes profiles, Machines screens on web and Android. Replaces per-agent connector tokens."
     }
   ],
   "board": [
+    {
+      "id": "eo1",
+      "col": "Done",
+      "text": "Easy onboarding: Connect a machine (code, one-liner, QR, magic link, live status) on web and Android"
+    },
+    {
+      "id": "eo2",
+      "col": "Done",
+      "text": "One connector per computer: Hermes profile discovery, choose profiles, one multiplexed socket, background service"
+    },
     {
       "id": "d1",
       "col": "Done",
@@ -65,7 +79,7 @@
     {
       "id": "p1",
       "col": "Done",
-      "text": "Web: agents list, schema-driven add/edit/remove/reorder, test connection, connector bootstrap shown once"
+      "text": "Web: agents list, schema-driven add/edit/remove/reorder, test connection, Machines with one pairing command"
     },
     {
       "id": "n1",
@@ -131,6 +145,16 @@
       "id": "n8",
       "col": "Next",
       "text": "Device test of the Android app and a real-hub run of the Docker image"
+    },
+    {
+      "id": "eo3",
+      "col": "Next",
+      "text": "Verify the connector against a real Hermes install and Windows/macOS service installs"
+    },
+    {
+      "id": "eo4",
+      "col": "Later",
+      "text": "Generic local agents through the machine connector (extension point documented)"
     }
   ],
   "limits": [
@@ -140,7 +164,8 @@
     "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",
     "Google code scanner needs Play services; without it the user types the address.",
     "Z.ai Coding Plan keys are for supported coding tools only; the app warns and defaults to the general endpoint.",
-    "The alpha APK is signed with the project's own release key but is not on any store; R8/minify is off until device tests exist."
+    "The alpha APK is signed with the project's own release key but is not on any store; R8/minify is off until device tests exist.",
+    "The connector is tested against a mock multi-profile Hermes, not a real Hermes install; Windows and macOS service installs are generated but untested."
   ],
   "providers": [
     {

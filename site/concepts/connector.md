@@ -1,29 +1,30 @@
 # The connector
 
-Most agents that run on a real machine sit behind a home router or firewall. Instead of making you open ports, Foxfleet inverts the connection: a tiny script on the agent's machine **dials out** to the hub.
+The connector is a small Node 22 script (`foxfleet-connector.mjs`, no dependencies) that runs on **one computer** and lets the hub reach the Hermes profiles on it without any open port, DNS name or tunnel.
 
-```text
-Hermes machine                              Hub
-┌────────────────────┐   wss://hub/connector   ┌─────────────────────────┐
-│ dashboard :9119    │◄──┐  one WebSocket       │ per-agent loopback      │
-│ chat API  :8642    │   │  (outbound only)     │ forwarders (random      │
-│ foxfleet-connector ├───┴─────────────────────►│ ports, 127.0.0.1 only)  │
-└────────────────────┘                          └──────────┬──────────────┘
-                                                           │ normal Hermes client
-                                                    chat, sessions, files, screen
+```
+ your computer                                      your hub
+┌─────────────────────────────┐                ┌─────────────────────────────┐
+│ Hermes dashboard :9119      │◄──┐            │ per-profile loopback        │
+│ Hermes chat API  :8642      │◄─┐│  ONE       │ forwarders (127.0.0.1 only) │
+│ profiles: default coder research│  ││ outbound   │ coder  ─┐                   │
+│                             │  ││ WebSocket  │ research   ─┼─ normal Hermes    │
+│ foxfleet-connector ─────────┼──┴┴───────────►│ default─┘   client          │
+└─────────────────────────────┘                └─────────────────────────────┘
 ```
 
-- **Auth.** Each agent has its own random token. The app shows it once; the hub stores only its SHA-256 hash. The connector sends it as a WebSocket sub-protocol (`foxfleet.v1`, `<token>`). *New token* on the agent rotates it and drops the old link.
-- **Tunnelling.** The hub opens two loopback-only forwarders per connected agent (dashboard and chat API) and turns every request into frames over the single socket. WebSocket upgrades (screen takeover, the gateway socket) are tunnelled as raw frames after the handshake, so [takeover](/apps/screen) works in connector mode with tickets and hand-back unchanged.
-- **Safety.** The connector forwards **only** to the two local addresses it was configured with. At most 64 concurrent streams per agent. The hub pings every 25 s and drops a silent link after 90 s; the connector reconnects with backoff from 1 s up to 60 s.
-- **Transport.** Plain `ws://` is refused unless the hub is localhost or you set `ALLOW_INSECURE_HUB=1`.
+- **One process per machine**, not per profile. Every frame on the socket names its agent, so profiles are multiplexed and routed independently.
+- **Pairing**: you create a 15-minute single-use code in the app; the connector trades it once for a **machine token**, saved as a `0600` file in its config folder (`~/.config/foxfleet/connector.json`, `~/Library/Application Support/foxfleet/…`, `%APPDATA%\foxfleet\…`). The hub keeps only a SHA-256 hash.
+- **Discovery**: it reads the Hermes layout locally, lets you choose profiles, and tells the hub only their names. The hub creates one agent per profile (deduping names).
+- **Credentials stay local**: the connector signs in to each profile's dashboard and adds its API key to requests itself.
+- **Revoke / rotate** from **Manage › Machines**: the token dies at once and the agents go away (revoke) or stay offline until re-paired (rotate).
+- It only ever talks to `127.0.0.1` ports, and refuses a plain `http://` hub unless that is a loopback address.
 
-Full frame list: [Connector protocol](/reference/connector-protocol). Setup steps: [Hermes](/agents/hermes).
-
-## Connector vs direct
-
-| | Connector (default) | Direct (advanced) |
+| | Machine connector (default) | Direct (advanced) |
 | --- | --- | --- |
-| Who dials | the agent machine, out to the hub | the hub, in to the agent's host and ports |
-| Open ports on the agent side | none | dashboard and API ports reachable from the hub |
-| Needs a name for the agent | no | yes (host or IP, kept on the hub) |
+| Who dials | the machine dials the hub | the hub dials the agent |
+| Open ports / DNS on the agent | none | yes |
+| Credentials | stay on the machine | stored on the hub |
+| Setup | one command per computer | host, ports and credentials per agent |
+
+Protocol details: [Connector protocol](/reference/connector-protocol). Step by step: [Connect a real machine](/agents/real-machine).

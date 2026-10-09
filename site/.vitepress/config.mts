@@ -80,7 +80,7 @@ export default defineConfig({
       ] }],
       '/agents/': [{ text: 'Onboarding agents', items: [
         { text: 'Overview', link: '/agents/' },
-        { text: 'Connect a real-machine agent', link: '/agents/real-machine' },
+        { text: 'Connect a real machine', link: '/agents/real-machine' },
         { text: 'Hermes', link: '/agents/hermes' },
         { text: 'OpenAI-compatible', link: '/agents/openai' },
         { text: 'OpenRouter', link: '/agents/openrouter' },

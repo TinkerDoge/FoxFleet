@@ -66,6 +66,15 @@ Suppose "Acme AI" offers an OpenAI-compatible API at `https://api.acme.example/v
 
 If the provider is **not** OpenAI-compatible, write a client module like `server/openai.js` that exposes `chat(m, messages, signal)` (returns a `fetch` Response whose body is the SSE stream above, adapting upstream frames if needed) and `probe(m)` (returns `{ online, chatReady, checks, capabilities }`), then dispatch to it in `server/index.js` next to the `isChatKind` branches. Keep the privacy contract: never put a URL, host or key in an error message (`fault()` messages are shown to clients).
 
+## Local agents through a machine
+
+The machine connector is the intended carrier for **other local agents** too (a CLI agent, a local model server), so they need no open port either. Today only Hermes profiles are discovered. The extension point is small:
+
+- **Connector side** (`connector/foxfleet-connector.mjs`): `discoverProfiles()` returns `{ profile, home }` entries and `profileTargets()` turns one into local `api` / `dashboard` targets with their credentials. A `generic` provider would add its own discovery (a folder of manifests, a config file) returning entries with a `kind` and a local base URL, and send them in the same `profiles` frame.
+- **Hub side** (`syncProfiles()` in `server/index.js`): creates the agents with `connection: 'machine'` and a `machineId`; `base()` in `server/hermes.js` resolves them to the loopback forwarder. A new kind would add its own client that calls `tunnelPorts.get(`${machineId}:${name}`)` the same way.
+
+Nothing here is wired for non-Hermes kinds yet; the frame and storage shapes are already per-agent so it needs no protocol change. Muse and other mailbox agents keep using the [MCP inbox](./mcp-inbox), which is unrelated to machines.
+
 ## What the config schema may not do
 
 - Kind and connection mode cannot change after creation.

@@ -32,6 +32,8 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="foxfleet" android:host="connect" />
+                <!-- foxfleet://pair?hub=…&code=… : owner opened a machine pairing link on this phone -->
+                <data android:scheme="foxfleet" android:host="pair" />
             </intent-filter>
         </activity>
         <provider

@@ -12,7 +12,7 @@ phone / browser  ──►  HUB (one Node process)  ──►  agents
 | **Hub** (`server/`) | One Node process with **no runtime dependencies**. Owns accounts, per-user agent registries, secrets, sessions, files and the screen relay. Serves the built web app, `/api/*`, the connector WebSocket (`/connector`), the MCP endpoint (`/mcp`) and the connector script (`/connector.mjs`). |
 | **Web app** (`web/`) | Preact + TypeScript single-page app, served by the hub from `web/dist`. Installable as a PWA. |
 | **Android app** (`android/`) | Kotlin/Jetpack Compose. Knows nothing about your hub until you give it an address; supports several hubs. |
-| **Connector** (`connector/`) | A ~60-line Node script run on a Hermes machine. Dials out to the hub and tunnels HTTP and WebSocket traffic back. |
+| **Connector** (`connector/`) | One Node script per computer with Hermes. Pairs once with a short-lived code, discovers the Hermes profiles, dials out to the hub over one WebSocket and tunnels each profile's HTTP and WebSocket traffic back. |
 | **Contract** (`contract/`) | The OpenAPI 3.1 spec plus a scenario that tests the hub and the web mock against it. |
 
 ## The privacy contract

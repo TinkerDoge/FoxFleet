@@ -37,7 +37,6 @@ private val kinds1 = listOf(
     AgentKind("grok", "Grok (xAI)", "Grok models with your xAI API key.", false, common1),
     AgentKind("mcp-inbox", "MCP inbox", "A mailbox an outside agent (e.g. an outside agent) reads and answers over MCP.", false, common1),
 )
-private val bootstrap = "Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).\n1. curl -fsSL https://hub.example.com/connector.mjs -o foxfleet-connector.mjs\n2. HUB_URL=https://hub.example.com FOXFLEET_TOKEN=3f9c…e1.Xk2…Qw node foxfleet-connector.mjs\nFull guide: https://hub.example.com/connect-agent.md"
 
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
@@ -53,8 +52,8 @@ class V1ScreenshotTest {
     }
     private val noTest: suspend (AgentKind, Map<String, Any>) -> TestResult = { _, _ -> TestResult(true, emptyList()) }
     private val noSave: suspend (AgentKind, Map<String, Any>) -> SaveResult = { _, _ -> SaveResult(SavedAgent("x", "hermes")) }
-    private fun editor(name: String, dark: Boolean, kind: String?, token: String? = null, boot: Boolean = false, test: TestResult? = null) = shot(name, dark) {
-        AgentEditorScreen(kinds1, null, {}, noTest, noSave, {}, {}, initialKind = kind, initialToken = token, initialTokenIsBootstrap = boot, initialTest = test)
+    private fun editor(name: String, dark: Boolean, kind: String?, token: String? = null, test: TestResult? = null) = shot(name, dark) {
+        AgentEditorScreen(kinds1, null, {}, noTest, noSave, {}, {}, initialKind = kind, initialToken = token, initialTest = test)
     }
 
     @Test fun hubAddressFirstLaunch() = shot("hub-address", false) { HubAddressScreen("", false, null, { _, _ -> }) }
@@ -72,9 +71,8 @@ class V1ScreenshotTest {
     @Test fun settings() = shot("settings", false) { SettingsScreen(AppPrefs(), {}, {}, {}, {}, hubName = "hub.example.com", username = "owner1") }
     @Test fun settingsDark() = shot("settings", true) { SettingsScreen(AppPrefs(theme = ThemeMode.Dark), {}, {}, {}, {}, hubName = "hub.example.com", username = "owner1") }
     @Test fun pickType() = editor("add-type", false, null)
-    @Test fun addHermesConnector() = editor("add-hermes-connector", false, "hermes")
-    @Test fun addHermesConnectorDark() = editor("add-hermes-connector", true, "hermes")
-    @Test fun bootstrapPrompt() = editor("connector-bootstrap", false, "hermes", token = bootstrap, boot = true)
+    @Test fun addHermesDirect() = editor("add-hermes-direct", false, "hermes")
+    @Test fun addHermesDirectDark() = editor("add-hermes-direct", true, "hermes")
     @Test fun addZai() = editor("add-zai", false, "zai")
     @Test fun addOpenRouter() = editor("add-openrouter", false, "openrouter")
 }

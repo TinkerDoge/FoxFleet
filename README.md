@@ -65,7 +65,7 @@ machine addresses never leave the hub.
 
 | Type | How it connects | Auth | Chat | Images | Files | Screen | Voice | Skills / sessions |
 | --- | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: |
-| **Hermes agent** | Outbound **connector** on the agent's machine (default), or direct host/port | per-agent token / dashboard credentials | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Hermes agent** | One **machine connector** per computer (default, pair with one command), or direct host/port | machine token / dashboard credentials | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **OpenAI-compatible** (any `/chat/completions` API, local models) | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
 | **OpenRouter** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
 | **Z.ai (GLM)** | Hub calls the API | API key | ✅ | – | – | – | – | – |
@@ -113,17 +113,16 @@ cd android && ./gradlew assembleDebug      # JDK 17, Android SDK 36; APK in app/
 
 Install the APK, then on the first screen type your hub address, tap **Scan QR**, or open a `foxfleet://connect?hub=https://…` link. In the web app, **Admin → Pair a phone** shows the QR; invite links carry the invite code too. Public hubs must use `https://` (plain `http://` is only offered for local addresses, behind an explicit switch).
 
-## Connect an agent on a real machine
+## Connect a computer that runs Hermes
 
-For a Hermes agent, add it under **Manage agents → Add agent → Hermes agent** with the *Connector* connection. The hub shows a **bootstrap prompt once**; paste it into the agent on that machine. It looks like:
+In the app open **Manage › Machines › Connect a machine** (web or Android). The hub makes a 15-minute, single-use pairing code and shows one line to paste on the computer:
 
 ```text
-Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).
-1. curl -fsSL https://hub.example.com/connector.mjs -o foxfleet-connector.mjs
-2. HUB_URL=https://hub.example.com FOXFLEET_TOKEN=<per-agent token> node foxfleet-connector.mjs   (Node 22+; keep it running with systemd)
+curl -fsSL https://your-hub/c/<code> | sh            # macOS, Linux, WSL
+irm https://your-hub/c/<code>.ps1 | iex              # Windows PowerShell
 ```
 
-The connector dials **out** to the hub over a WebSocket authenticated with the per-agent token, so the agent needs no open port and no public hostname; chat, files and the screen WebSocket are tunnelled through that link. The full, agent-readable guide is [docs/CONNECT-AGENT.md](docs/CONNECT-AGENT.md). A direct host/port mode remains as an advanced option for agents on the same network.
+(or scan the QR with a phone camera, or open the `foxfleet://pair?...` link). The connector pairs once, finds the Hermes profiles on that computer, lets you tick which to share, and keeps **one** outbound WebSocket for all of them; the app then says *Found 3 profiles: default, coder, research*. It can install itself as a background service. The computer needs Node.js 22+ and no open port; dashboard passwords and API keys never leave it. Details: [`docs/CONNECT-AGENT.md`](docs/CONNECT-AGENT.md) and the docs site.
 
 ## Putting it on the internet (Cloudflare Tunnel)
 
@@ -159,7 +158,7 @@ flowchart LR
   A -- https --> API
   API --> P
   P -- API key --> LLM["OpenAI-compatible · OpenRouter\nZ.ai · OpenCode · Grok"]
-  C <-- "outbound WebSocket (per-agent token)" --> H["Hermes agent machine\nfoxfleet-connector"]
+  C <-- "one outbound WebSocket (machine token)" --> H["Computer with Hermes profiles\nfoxfleet-connector"]
   S <--> C
   API --> C
   API --> M -- "public https only" --> IMG["Remote images"]

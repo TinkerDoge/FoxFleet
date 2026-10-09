@@ -19,6 +19,18 @@ data class AuthInfo(
 
 data class ConnectLink(val hub: String, val invite: String? = null)
 
+/** A computer running the Foxfleet connector. [profiles] are the agent names it shares. No addresses, ever. */
+data class Machine(val id: String, val name: String, val online: Boolean, val lastSeen: Long?, val profiles: List<String>)
+/** A 15-minute single-use code with the one-line commands the hub built for it. */
+data class Pairing(val code: String, val display: String, val expires: Long, val url: String, val link: String, val rows: List<String>?, val sh: String, val powershell: String, val node: String)
+sealed interface PairingState {
+    data object Waiting : PairingState
+    data object Expired : PairingState
+    data class Paired(val machine: Machine?) : PairingState
+}
+/** foxfleet://pair?hub=…&code=… */
+data class PairLink(val hub: String, val code: String)
+
 data class AdminUser(val id: String, val username: String, val role: String, val disabled: Boolean)
 data class Invite(val id: String, val expires: Long, val used: Boolean)
 /** A freshly made code: [link] is what gets shared; [rows] is the QR matrix ('1' dark, '0' light) or null when too long. */
@@ -64,6 +76,15 @@ object HubAddress {
         val m = Regex("^foxfleet://connect\\?(.*)$", RegexOption.IGNORE_CASE).matchEntire(link.trim()) ?: return null
         val hub = m.groupValues[1].split('&').map { it.split('=', limit = 2) }.firstOrNull { it[0] == "hub" && it.size == 2 }?.get(1) ?: return null
         return runCatching { java.net.URLDecoder.decode(hub, "UTF-8") }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
+
+    /** foxfleet://pair?hub=…&code=…: the owner opened a machine pairing link on the phone. */
+    fun parsePairLink(link: String): PairLink? {
+        val m = Regex("^foxfleet://pair\\?(.*)$", RegexOption.IGNORE_CASE).matchEntire(link.trim()) ?: return null
+        val kv = m.groupValues[1].split('&').map { it.split('=', limit = 2) }.filter { it.size == 2 }.associate { it[0] to (runCatching { java.net.URLDecoder.decode(it[1], "UTF-8") }.getOrNull() ?: "") }
+        val code = kv["code"]?.uppercase()?.replace("-", "")?.takeIf { it.matches(Regex("[A-Z2-9]{10}")) } ?: return null
+        val hub = kv["hub"]?.takeIf { it.isNotBlank() } ?: return null
+        return PairLink(hub, code)
     }
 
     fun parseLink(link: String): ConnectLink? {

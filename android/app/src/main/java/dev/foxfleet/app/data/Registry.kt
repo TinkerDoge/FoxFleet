@@ -51,7 +51,7 @@ data class TestResult(val ok: Boolean, val checks: List<Pair<String, CheckResult
 data class CheckResult(val ok: Boolean, val message: String)
 
 /** Result of saving: an inbox agent gets its MCP token exactly once. */
-data class SaveResult(val agent: SavedAgent, val inboxToken: String? = null, val bootstrap: String? = null)
+data class SaveResult(val agent: SavedAgent, val inboxToken: String? = null)
 
 object Registry {
     val checkLabels = mapOf("dashboard" to "Dashboard", "management" to "Management", "api" to "Chat API", "inbox" to "Mailbox", "connector" to "Connector")

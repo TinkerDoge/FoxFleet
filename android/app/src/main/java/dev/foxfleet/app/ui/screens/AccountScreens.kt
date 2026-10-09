@@ -205,7 +205,7 @@ fun DevicesScreen(api: HubApi?, onBack: () -> Unit, onSignedOut: () -> Unit, pre
         dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("Cancel", color = c.textMuted) } })
 }
 
-private fun lastSeen(ms: Long): String {
+internal fun lastSeen(ms: Long): String {
     if (ms <= 0) return "never"
     val mins = (System.currentTimeMillis() - ms) / 60000
     return when { mins < 2 -> "active now"; mins < 60 -> "$mins min ago"; mins < 60 * 24 -> "${mins / 60} h ago"; else -> "${mins / 1440} d ago" }

@@ -32,7 +32,7 @@ Update later with `deploy/deploy.sh` (backup, tests, web build, restart, health 
 1. Open the hub in a browser (or the app) and **create the owner** with the one-time setup code. (On a loopback-only bind no code is needed.)
 2. **Admin** (owner only): registration is **closed** by default. Switch to *Invite* and create invite links for other people.
 3. **Pair a phone**: Admin shows a QR for `foxfleet://connect?hub=...`. In the Android app choose *Scan QR*, or just type the address.
-4. **Add agents**: Settings > Manage agents. API-key providers need only a key. For a Hermes machine, create a *connector* agent, copy the bootstrap prompt to that machine ([CONNECT-AGENT.md](CONNECT-AGENT.md)).
+4. **Add agents**: Settings > Manage agents. API-key providers need only a key. For a Hermes computer use **Manage > Machines > Connect a machine** and paste the one-line command there ([CONNECT-AGENT.md](CONNECT-AGENT.md)).
 
 ## Publishing on the internet
 

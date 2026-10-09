@@ -30,7 +30,7 @@ Very long hub addresses exceed the QR encoder's capacity (about 105 bytes); the 
 
 ## Agents
 
-**A Hermes connector agent stays offline.** See the [troubleshooting table](/agents/real-machine#troubleshooting). Check that the connector process is running, the token is current, and `curl https://hub/connector.mjs` works from that machine.
+**A Hermes agent stays offline.** See the [troubleshooting table](/agents/real-machine#troubleshooting). Check that the connector process is running on the machine, the machine was not revoked or re-paired, and `curl https://hub/connector.mjs` works from that machine.
 
 **`Test` says "Chat API unavailable or authentication failed" for a provider.** Wrong key, wrong base URL, or the provider has no `/models` route. The test only calls `GET {base}/models`.
 

@@ -49,6 +49,10 @@ The container binds `0.0.0.0` internally (so it prints a setup code); compose pu
 
 Sidebar → **Manage agents → Add**. The simplest first agent is an API-key provider such as [OpenRouter](/agents/openrouter): pick the type, paste the key, **Test connection**, **Save**. Then open it from the sidebar and chat.
 
+## Connect a computer that runs Hermes
+
+Sidebar → **Manage agents → Machines → Connect a machine**. Paste the one line it shows into a terminal on the computer with Hermes (Node.js 22+ needed), tick the profiles to share, and the app reports *Found 3 profiles: default, coder, research*. Full guide: [Connect a real machine](/agents/real-machine).
+
 ## Put the app on your phone
 
 1. Install the Android app ([guide](/guide/android)).

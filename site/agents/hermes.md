@@ -1,46 +1,39 @@
 # Hermes
 
-Hermes is the agent kind with the most features: chat, images, files, skills, sessions, voice and the desktop screen. A Hermes install exposes a **dashboard** (default `127.0.0.1:9119`) and a **chat API** (default `127.0.0.1:8642`); Foxfleet talks to those two.
+Hermes is the agent kind with the most features: chat, images, files, skills, sessions, voice and the desktop screen. A Hermes install exposes a **dashboard** (default `127.0.0.1:9119`) and a **chat API** (default `127.0.0.1:8642`) on the machine it runs on. Several **profiles** can share one install: the default profile lives in `~/.hermes`, named ones in `~/.hermes/profiles/<name>`.
 
-## Connector mode (default, recommended)
+## Recommended: connect the machine
 
-1. **Add → Hermes**, *Connection: Connector*. Pick an ID and display name. The *Profile* defaults to `default`.
-2. Optionally enter the **Dashboard password** and **Chat API key** if your Hermes uses them. They are stored on the hub, never shown again, and used only for the hub's own calls.
-3. Save. You see the **token and bootstrap prompt once**. The prompt the hub generates reads:
+Follow [Connect a real machine](./real-machine): one command, one connector per computer, every profile you tick becomes an agent. Nothing on the machine listens for the hub and you open no ports.
 
-   > Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).
-   > 1. `curl -fsSL https://hub.example.com/connector.mjs -o foxfleet-connector.mjs`
-   > 2. `HUB_URL=https://hub.example.com FOXFLEET_TOKEN=<token> node foxfleet-connector.mjs` (Node 22+; keep it running with systemd)
+How the connector finds things (read from the profile's own files, locally):
 
-   Give it to the agent, or run it yourself on the Hermes machine.
-4. Keep it alive with systemd:
-   ```ini
-   [Service]
-   Environment=HUB_URL=https://hub.example.com
-   Environment=FOXFLEET_TOKEN=<token>
-   ExecStart=/usr/bin/node /opt/foxfleet/foxfleet-connector.mjs
-   Restart=always
-   ```
-5. The agent shows **Ready**; **Test** reports *Connector online* with dashboard and chat checks.
+| What | Where it looks |
+| --- | --- |
+| Profiles | `default` = the Hermes folder itself (`~/.hermes`, `%LOCALAPPDATA%\hermes`, or `HERMES_HOME`); named profiles = folders in `profiles/` whose name matches `[a-z0-9][a-z0-9_-]*`, that contain a Hermes file (`config.yaml`, `.env`, `SOUL.md`, `profile.yaml`, `auth.json` or `state.db`) and are not deleted (`profiles/.deleted/<name>`) |
+| Chat API port and key | the profile's `.env` (`API_SERVER_PORT`, `API_SERVER_KEY`, `API_SERVER_HOST`) or `config.yaml` (`api_server.port`, `api_server.key`); defaults `8642` |
+| Dashboard login | `.env` (`HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `…_PASSWORD`) or `config.yaml` (`basic_auth.username` / `password`); dashboard port `9119` (`--dashboard-port` to change) |
 
-*New token* on an existing agent shows a fresh one and immediately disconnects the old. The connector forwards only to the two local addresses (`DASHBOARD_URL`, `API_URL`).
+Profiles on the same Hermes install normally share one dashboard and one chat API, which tell profiles apart with `?profile=` and `/p/<profile>/`. If a profile runs its own gateway, give it its own ports in the connector's `connector.json` (`profiles.<name>.apiPort`, `dashboardPort`). Those files are on the machine only.
 
-## Direct mode (advanced)
+### What crosses the wire
 
-Choose *Connection: Direct* only when the hub can reach the Hermes machine itself (same LAN, VPN). Enter the fields marked advanced:
+| Goes to the hub | Stays on the machine |
+| --- | --- |
+| A machine name you chose, the OS family (`linux`, `darwin`, `win32`) | Hermes folder paths, usernames, hostnames |
+| The names of the profiles you chose to share | Dashboard passwords, chat API keys, session cookies |
+| Your chats, files and screen frames, **while you use** an agent (the hub relays them to your app) | The machine token's plain text is on the machine and in your hub only as a hash |
 
-| Field | Default | Notes |
-| --- | --- | --- |
-| Host or IP | | write-only; never shown again |
-| Dashboard port / Chat API port | 9119 / 8642 | write-only |
-| Dashboard user / password | `admin` / | password write-only |
-| Chat API key | | write-only |
-| Dashboard / Chat API HTTPS origin | | optional; for a Hermes behind an https reverse proxy; origin only, no path |
-| Dashboard session token | | only for dashboards running without auth |
-| Upload folder on the agent | | absolute or `~/…`, no `..` |
+The hub asks Hermes questions **through** the connector. The connector signs in to the dashboard and adds the API key itself, on `127.0.0.1`, so the hub and your phone never hold those credentials.
 
-The mode cannot be changed later; delete and re-add to switch.
+## Advanced: direct connection
 
-## What you get
+If the hub can reach the machine itself (same private network, or HTTPS origins you publish), add a **Hermes** agent by hand: **Manage › Add agent › Hermes › Connection: Direct** and enter host, ports and credentials. They are stored on the hub, never shown again, and used only for the hub's own calls. Agents added this way show up and behave like any other, but you maintain the network path yourself.
 
-Chat with streaming and reasoning; sessions (list, search, resume); images; file upload (up to 90 MiB, streamed to the agent); skills (`#skill` or `/skill`); commands (`/new`, `/stop`, `/btw`, `/bg`, `/usage`, `/reasoning`, `/title`, `/rollback`, `/help`); voice transcription through the agent; artifacts and the desktop [screen](./screen-setup). The hub also has routes for cron jobs, logs and usage statistics of a Hermes agent (not yet in the OpenAPI spec).
+## Check it works
+
+A healthy agent shows three checks in the app: **Dashboard**, **Management** and **Chat API**. The first fails if Hermes' dashboard is not running; the third if its gateway/API server is not running or the API key is wrong. Screen takeover needs the extra setup in [Screen takeover setup](./screen-setup).
+
+## Troubleshooting
+
+See the table in [Connect a real machine](./real-machine#troubleshooting).
