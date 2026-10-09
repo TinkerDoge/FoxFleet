@@ -10,208 +10,416 @@
 {
   "updated": "2026-10-09",
   "version": "0.2.0-alpha",
+  "releasedVersion": "0.2.0-alpha",
   "overview": [
-    "Foxfleet is a self-hosted hub plus a web app and an Android app for talking to all your AI agents from one calm place. Free, MIT licensed.",
-    "Phone app (Kotlin/Compose) and web app (Preact) → your hub (zero-dependency Node server, per-user accounts and secrets) → agents: Hermes machines through an outbound connector, API-key chat providers, and MCP-inbox agents.",
-    "The hub keeps every address and key; clients only see names, status and capabilities."
+    "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
+    "The latest public downloads are 0.2.0-alpha, including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
+    "API-provider keys stay on the hub; paired Hermes dashboard passwords and chat API keys stay on the agent machine."
   ],
   "timeline": [
     {
-      "v": "0.1.0-alpha",
-      "what": "First release. Hub with accounts and a login gate, provider plugins (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok), Hermes connector with screen takeover, MCP inbox, QR pairing and Admin, web app (PWA) and Android app with shared design tokens, OpenAPI contract, documentation site, Terms/Privacy templates with acceptance on setup and join. Release-signed Android APK and server tarball."
+      "v": "0.2.0-alpha (9 October 2026)",
+      "what": "Easy connect release with 15-minute single-use pairing codes, command/QR/magic-link onboarding, live connection status, automatic Hermes profile discovery, one multiplexed connector per computer, background service installers, and Machines screens on web and Android. Machine pairing replaces per-agent connector tokens; dashboard passwords and chat API keys stay on the machine. Includes real app screenshots and reproducible image tooling. Signed APK, server bundle, checksums, and certificate fingerprint are published. Real Hermes discovery and platform service installs still need validation."
     },
     {
-      "v": "0.2.0-alpha",
-      "what": "Easy onboarding: pairing codes, machines, one connector per computer with several Hermes profiles, Machines screens on web and Android. Replaces per-agent connector tokens."
+      "v": "0.1.0-alpha (9 October 2026)",
+      "what": "First public pre-release with a release-signed Android APK, server bundle, checksums, and certificate fingerprint. Includes accounts, provider plugins, outbound Hermes connections, MCP inbox, streaming chat, attachments, screen takeover, PWA, shared design tokens, documentation, and versioned terms acceptance."
     }
   ],
   "board": [
     {
-      "id": "eo1",
-      "col": "Done",
-      "text": "Easy onboarding: Connect a machine (code, one-liner, QR, magic link, live status) on web and Android"
-    },
-    {
-      "id": "eo2",
-      "col": "Done",
-      "text": "One connector per computer: Hermes profile discovery, choose profiles, one multiplexed socket, background service"
-    },
-    {
-      "id": "d1",
-      "col": "Done",
-      "text": "Plugin core, config v3, API-key chat providers"
-    },
-    {
-      "id": "d2",
-      "col": "Done",
-      "text": "Accounts, login gate, devices, lockout, rotating tokens"
-    },
-    {
-      "id": "d3",
-      "col": "Done",
-      "text": "Reverse Hermes connector incl. screen takeover tunnel"
-    },
-    {
-      "id": "d4",
-      "col": "Done",
-      "text": "QR pairing and in-app Admin (Android)"
-    },
-    {
-      "id": "d5",
-      "col": "Done",
-      "text": "Rename to Foxfleet, clean repo, hosts and personas scrubbed"
-    },
-    {
-      "id": "d6",
-      "col": "Done",
-      "text": "Design tokens generating web CSS and Android theme"
-    },
-    {
-      "id": "d7",
-      "col": "Done",
-      "text": "Web: scaffold, router, typed API client, hub address + sign-in/setup/join"
-    },
-    {
-      "id": "d8",
-      "col": "Done",
-      "text": "Hub serves web/dist (SPA fallback, CSP, cache headers)"
-    },
-    {
-      "id": "p1",
-      "col": "Done",
-      "text": "Web: agents list, schema-driven add/edit/remove/reorder, test connection, Machines with one pairing command"
-    },
-    {
-      "id": "n1",
-      "col": "Done",
-      "text": "Web: chat (SSE streaming, Markdown + DOMPurify, reasoning, / and # commands)"
-    },
-    {
-      "id": "n2",
-      "col": "Done",
-      "text": "Web: images (downscaled), files with progress, voice, drag/paste, media viewer"
-    },
-    {
-      "id": "n3",
-      "col": "Done",
-      "text": "Web: screen takeover (lazy noVNC, ticket flow, hand-back, countdown, keys row)"
-    },
-    {
-      "id": "n4",
-      "col": "Done",
-      "text": "Web: Admin, devices and security, settings; pairing and invite QR"
-    },
-    {
-      "id": "n5",
-      "col": "Done",
-      "text": "OpenAPI 3.1 spec + shared contract tests (real hub and web mock)"
-    },
-    {
-      "id": "n6",
-      "col": "In progress",
-      "text": "PWA shell worker and accessibility checklist done; axe in CI and screen-reader pass remain"
-    },
-    {
-      "id": "l1",
-      "col": "Later",
-      "text": "TOTP two-factor"
-    },
-    {
-      "id": "l2",
-      "col": "Later",
-      "text": "Trusted-proxy header so rate limits see real client IPs"
-    },
-    {
-      "id": "l3",
-      "col": "Later",
-      "text": "Web push (needs a hub push channel)"
-    },
-    {
-      "id": "l4",
-      "col": "Later",
-      "text": "Codex and Claude Code providers"
-    },
-    {
-      "id": "l5",
-      "col": "Later",
-      "text": "Signed releases, Docker image on GHCR, store listing"
-    },
-    {
-      "id": "p2",
-      "col": "Done",
-      "text": "Documentation site (VitePress, GitHub Pages)"
-    },
-    {
       "id": "n8",
       "col": "Next",
-      "text": "Device test of the Android app and a real-hub run of the Docker image"
+      "area": "Android",
+      "text": "Test on physical Android devices",
+      "detail": "Exercise the published 0.2.0-alpha APK on Android 10+ through setup, QR/deep-link pairing, the Machines screen, streaming chat, voice, attachments, hub switching, and screen hand-back.",
+      "doneWhen": "Record devices and OS versions; verify both foxfleet://connect and foxfleet://pair links, rotation/background behavior, and resolve or document failures.",
+      "href": "/guide/android"
     },
     {
       "id": "eo3",
       "col": "Next",
-      "text": "Verify the connector against a real Hermes install and Windows/macOS service installs"
+      "area": "Agents",
+      "text": "Verify profile discovery and service installs",
+      "detail": "Multi-profile pairing is tested with mock Hermes services. Real Hermes installs and platform-specific background services still need a compatibility pass.",
+      "doneWhen": "Pair a real Hermes installation, verify the selected profiles and local credential use, and exercise install/restart/uninstall on systemd, launchd, and Windows scheduled tasks.",
+      "href": "/agents/real-machine"
+    },
+    {
+      "id": "n9",
+      "col": "Next",
+      "area": "Releases",
+      "text": "Verify Docker and host deployment",
+      "detail": "The Dockerfile, Compose file, systemd unit, and update script exist. Docker end-to-end use and the deployment/rollback path still need real-host validation.",
+      "doneWhen": "Build and run Compose from a clean checkout; check setup, persistent data, HTTPS/WebSockets, backup/restore, and systemd update/rollback.",
+      "href": "/hosting/docker"
+    },
+    {
+      "id": "n10",
+      "col": "Next",
+      "area": "Agents",
+      "text": "Smoke-test real agent integrations",
+      "detail": "Provider adapters and Hermes/MCP flows have automated doubles. Live endpoint behavior and real-machine networking need a recorded compatibility pass.",
+      "doneWhen": "Run chat through the implemented API providers, test a paired multi-profile Hermes machine with reconnect/upload/screen, and round-trip an MCP inbox reply.",
+      "href": "/agents/real-machine"
+    },
+    {
+      "id": "n11",
+      "col": "Next",
+      "area": "Web",
+      "text": "Finish accessibility validation",
+      "detail": "Contrast, focus, semantics, reduced motion, and streaming announcements are implemented. Automated axe checks and manual screen-reader passes remain.",
+      "doneWhen": "Wire axe checks into CI and record sign-in, agent management, chat, and screen-takeover keyboard/screen-reader results.",
+      "href": "/project/accessibility"
+    },
+    {
+      "id": "n12",
+      "col": "Next",
+      "area": "Hub",
+      "text": "Extend the shared API contract scenario",
+      "detail": "The shared scenario now covers accounts, agents, admin, devices, and machine pairing/list/revoke operations. Agent-backed sessions, streaming, files, and screen operations still have separate hub tests instead of shared scenario coverage.",
+      "doneWhen": "Exercise sessions, SSE, uploads, and screen responses against an agent-backed hub and keep relevant mock responses aligned.",
+      "href": "/reference/api"
+    },
+    {
+      "id": "l2",
+      "col": "Later",
+      "area": "Hub",
+      "text": "Recognize client IPs behind trusted proxies",
+      "detail": "Clients currently share the proxy socket address for IP throttling. Keep forwarding-header trust explicit and configurable.",
+      "doneWhen": "Accept forwarded client IPs only from configured trusted proxies and test spoofing, direct clients, and rate-limit isolation.",
+      "href": "/security/auth"
+    },
+    {
+      "id": "l1",
+      "col": "Later",
+      "area": "Hub",
+      "text": "Add optional TOTP two-factor login",
+      "detail": "Password login, lockout, and rotating devices already exist. The reserved TOTP field has no enrollment or recovery flow.",
+      "doneWhen": "Deliver enrollment, confirmation, login, recovery, and disable flows across the hub and both clients, with tests.",
+      "href": "/security/auth"
+    },
+    {
+      "id": "l3",
+      "col": "Later",
+      "area": "Web",
+      "text": "Notify users when an agent replies",
+      "detail": "Web push needs a hub notification channel and opt-in subscription management. No push service is shipped yet.",
+      "doneWhen": "Deliver an opt-in reply notification with permission, subscription/revoke, and offline behavior documented and tested.",
+      "href": "/apps/chat"
+    },
+    {
+      "id": "l5",
+      "col": "Later",
+      "area": "Releases",
+      "text": "Publish a verified container image",
+      "detail": "Signed APK and server downloads already ship. A GHCR image is a separate distribution task after Docker validation.",
+      "doneWhen": "Publish a versioned image through CI with documented pull/update instructions and a clean-host smoke test.",
+      "href": "/hosting/docker"
+    },
+    {
+      "id": "l6",
+      "col": "Later",
+      "area": "Android",
+      "text": "Prepare store distribution",
+      "detail": "The alpha APK is release-signed and distributed on GitHub. Store listings and a device-verified minified build are future work.",
+      "doneWhen": "Verify the release build on devices, finalize publisher/privacy metadata, and complete the chosen store review.",
+      "href": "/project/release"
+    },
+    {
+      "id": "l7",
+      "col": "Later",
+      "area": "Agents",
+      "text": "Implement A2A and Webhook adapters",
+      "detail": "Both kinds are advertised as planned in the registry and are rejected when added. Their runtimes are not implemented.",
+      "doneWhen": "Define authentication and lifecycle behavior, implement one adapter at a time, and ship a documented end-to-end example.",
+      "href": "/agents/write-a-plugin"
+    },
+    {
+      "id": "l4",
+      "col": "Later",
+      "area": "Agents",
+      "text": "Explore a Codex connector",
+      "detail": "There is no Codex adapter in the repository. Connection design and allowed authentication need investigation; Claude Code has no scheduled implementation.",
+      "doneWhen": "Choose a supported integration approach and validate a prototype before committing to a provider release.",
+      "href": "/agents/"
+    },
+    {
+      "id": "l8",
+      "col": "Later",
+      "area": "Docs",
+      "text": "Finalize publishing and legal metadata",
+      "detail": "Terms acceptance is implemented, but the policy texts still contain operator placeholders and await review before wider distribution.",
+      "doneWhen": "Fill actual publisher/contact details, review the policy templates, and keep accepted versions aligned with the published texts.",
+      "href": "/legal/"
+    },
+    {
+      "id": "eo1",
+      "col": "Done",
+      "area": "Web",
+      "release": "0.2.0-alpha",
+      "text": "Pair a machine with one command",
+      "detail": "Web and Android show a 15-minute single-use pairing code, shell/PowerShell/Node command, QR, magic link, and live connection status.",
+      "href": "/agents/real-machine"
+    },
+    {
+      "id": "eo2",
+      "col": "Done",
+      "area": "Agents",
+      "release": "0.2.0-alpha",
+      "text": "Discover profiles and manage machines",
+      "detail": "One connector discovers and shares selected Hermes profiles over one socket. Machines screens support status, profile lists, rename, credential rotation, and revoke; service installers are generated for Linux, macOS, and Windows.",
+      "href": "/concepts/connector"
+    },
+    {
+      "id": "d1",
+      "col": "Done",
+      "area": "Agents",
+      "text": "Provider registry and schema-driven forms",
+      "detail": "Hermes, MCP inbox, OpenAI-compatible, OpenRouter, Z.ai, OpenCode, and Grok use hub-defined fields and capabilities.",
+      "href": "/concepts/agents",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "d2",
+      "col": "Done",
+      "area": "Hub",
+      "text": "Accounts, devices, and isolated registries",
+      "detail": "Owner setup, invites/open registration, scrypt passwords, token rotation, revoke, lockout, and per-user agent data.",
+      "href": "/concepts/accounts",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "d3",
+      "col": "Done",
+      "area": "Agents",
+      "text": "Outbound Hermes tunneling",
+      "detail": "Chat, files, and screen WebSockets use an outbound machine connector. Multi-profile machine pairing replaces the old per-agent connector bootstrap in 0.2.0-alpha.",
+      "href": "/concepts/connector",
+      "release": "0.2.0-alpha"
+    },
+    {
+      "id": "d4",
+      "col": "Done",
+      "area": "Android",
+      "text": "Pairing and multiple hubs",
+      "detail": "QR pairing and foxfleet://connect links are implemented; Android keeps separate sessions for remembered hubs. Device validation remains a next item.",
+      "href": "/guide/android",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "d6",
+      "col": "Done",
+      "area": "Design",
+      "text": "One shared design system",
+      "detail": "Design tokens generate web styles and Android theme values, including light/dark, accents, text sizing, and reduced motion.",
+      "href": "/project/design-tokens",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "d7",
+      "col": "Done",
+      "area": "Web",
+      "text": "Hub onboarding and authentication",
+      "detail": "Hub address, first-owner setup, sign-in, and invitation/open-registration screens are implemented.",
+      "href": "/guide/first-run",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "d8",
+      "col": "Done",
+      "area": "Hub",
+      "text": "Serve the web app safely",
+      "detail": "Built assets, SPA fallback, cache headers, strict CSP, and a checked hub proxy for remote Markdown images.",
+      "href": "/security/media-proxy",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "p1",
+      "col": "Done",
+      "area": "Web",
+      "text": "Manage and test agents",
+      "detail": "Add, edit, remove, reorder, and test API/direct agents with write-only fields. Machine-connected profiles are registered through the separate pairing flow.",
+      "href": "/concepts/agents",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n1",
+      "col": "Done",
+      "area": "Web",
+      "text": "Streaming chat and conversation tools",
+      "detail": "Markdown, reasoning, tool status, sessions, slash commands, and skill autocomplete are available in the clients.",
+      "href": "/apps/chat",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n2",
+      "col": "Done",
+      "area": "Web",
+      "text": "Attachments, voice, and media",
+      "detail": "Downscaled images, streamed file uploads with progress, media viewing, and voice input where the platform supports it.",
+      "href": "/apps/attachments",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n3",
+      "col": "Done",
+      "area": "Agents",
+      "text": "Observe, take over, and hand back",
+      "detail": "Web and Android screen views use noVNC, single-use tickets, a control lease, and automatic hand-back; connector mode is supported.",
+      "href": "/apps/screen",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n4",
+      "col": "Done",
+      "area": "Web",
+      "text": "Admin, security, and preferences",
+      "detail": "Registration settings, invites, people, pairing QR, device revocation, password changes, and appearance settings.",
+      "href": "/apps/admin",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n5",
+      "col": "Done",
+      "area": "Hub",
+      "text": "OpenAPI contract and automated coverage",
+      "detail": "The real hub and web mock share a contract scenario; hub, web, and Android suites cover logic and mocked integration flows.",
+      "href": "/reference/api",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "n6",
+      "col": "Done",
+      "area": "Web",
+      "text": "Installable PWA and prompted updates",
+      "detail": "The service worker caches the app shell and shows a reload prompt. API and private session traffic stay outside its cache.",
+      "href": "/apps/settings",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "p2",
+      "col": "Done",
+      "area": "Docs",
+      "text": "Documentation site and Pages workflow",
+      "detail": "VitePress docs cover setup, hosting, integrations, apps, security, API reference, and development; main can deploy through GitHub Pages.",
+      "href": "/project/development",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "docs1",
+      "col": "Done",
+      "area": "Docs",
+      "release": "0.2.0-alpha",
+      "text": "Real app screenshots and image tooling",
+      "detail": "README and docs use captures of the web and Android apps with demo fixtures. A rebuild script creates the framed screenshots, hero, and social preview; placeholder funding links have been removed.",
+      "href": "/project/development"
+    },
+    {
+      "id": "r1",
+      "col": "Done",
+      "area": "Releases",
+      "text": "Signed alpha downloads and release workflow",
+      "detail": "Published alpha downloads include a signed APK, server bundle, checksums, and certificate fingerprint. Tag publishing builds new releases and leaves existing assets untouched.",
+      "href": "/project/release",
+      "release": "0.1.0-alpha"
+    },
+    {
+      "id": "r2",
+      "col": "Done",
+      "area": "Hub",
+      "text": "Versioned terms acceptance",
+      "detail": "Setup and join screens request acceptance, and the hub records the version and timestamp. Policy templates still require review.",
+      "href": "/legal/",
+      "release": "0.1.0-alpha"
     },
     {
       "id": "eo4",
       "col": "Later",
-      "text": "Generic local agents through the machine connector (extension point documented)"
+      "area": "Agents",
+      "text": "Support more local agents through the connector",
+      "detail": "The machine connector has an extension point for other local agents; only Hermes profile discovery is implemented today.",
+      "doneWhen": "Choose a local agent, define discovery/authentication rules, and demonstrate multiple working profiles through the shared machine connection.",
+      "href": "/agents/write-a-plugin"
     }
   ],
   "limits": [
-    "The Docker image build and the Android app on a physical device have not been verified end to end yet (unit and screenshot tests pass; see the docs site status notes).",
-    "Rate limits key on the socket IP; behind a proxy every client shares one bucket (per-username lockout still works).",
-    "Web app talks to the hub on its own origin; a hub on another origin would need CORS (not implemented).",
-    "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",
-    "Google code scanner needs Play services; without it the user types the address.",
-    "Z.ai Coding Plan keys are for supported coding tools only; the app warns and defaults to the general endpoint.",
-    "The alpha APK is signed with the project's own release key but is not on any store; R8/minify is off until device tests exist.",
-    "The connector is tested against a mock multi-profile Hermes, not a real Hermes install; Windows and macOS service installs are generated but untested."
+    "0.2.0-alpha replaces per-agent connector tokens with machine pairing. When upgrading from 0.1.0-alpha, reconnect Hermes through Manage > Machines > Connect a machine; hand-added Hermes agents are direct connections only.",
+    "Docker/Compose and real-host deploy/rollback still need an end-to-end validation pass. No container image is published.",
+    "Android has unit and screenshot coverage; physical-device behavior and pairing are not yet verified. R8/minification remains off.",
+    "The machine connector has mock multi-profile coverage; real Hermes discovery and Windows/macOS service installs remain unverified.",
+    "Live-provider calls are not part of the automated suites. Shared contract coverage does not yet include agent-backed sessions, chat streams, uploads, or screens.",
+    "The web accessibility checklist has outstanding axe CI and manual screen-reader checks.",
+    "Behind a reverse proxy, IP throttling currently shares the proxy socket address; per-username lockout still applies.",
+    "The web app expects same-origin hosting. Cross-origin hub access has no CORS support.",
+    "Pairing QR links are limited to 105 bytes; longer addresses use a text link. Android QR scanning needs Google Play services, with manual address entry available.",
+    "Two-factor login, web push, A2A, Webhook, and Codex adapters are not implemented. Claude Code is not scheduled.",
+    "Policy texts are templates pending review. Store distribution and a verified minified Android build are future work."
   ],
   "providers": [
     {
-      "name": "Hermes",
-      "auth": "Connector token (or direct host)",
-      "status": "Ready"
+      "kind": "hermes",
+      "name": "Hermes agent",
+      "auth": "Machine pairing token or direct connection",
+      "status": "Implemented"
     },
     {
-      "name": "Scribe (MCP inbox)",
-      "auth": "Bearer token, outbound from Scribe",
-      "status": "Ready"
+      "kind": "mcp-inbox",
+      "name": "MCP inbox",
+      "auth": "Per-agent bearer token",
+      "status": "Implemented"
     },
     {
+      "kind": "openai",
       "name": "OpenAI-compatible",
-      "auth": "API key",
-      "status": "Ready"
+      "auth": "API key when required",
+      "status": "Implemented"
     },
     {
+      "kind": "openrouter",
       "name": "OpenRouter",
       "auth": "API key",
-      "status": "Ready"
+      "status": "Implemented"
     },
     {
+      "kind": "zai",
       "name": "Z.ai (GLM)",
-      "auth": "API key (general or Coding Plan)",
-      "status": "Ready"
+      "auth": "API key; general endpoint by default",
+      "status": "Implemented"
     },
     {
+      "kind": "opencode",
       "name": "OpenCode",
       "auth": "API key",
-      "status": "Beta"
+      "status": "Implemented"
     },
     {
+      "kind": "grok",
       "name": "Grok (xAI)",
       "auth": "API key",
-      "status": "Ready"
+      "status": "Implemented"
+    },
+    {
+      "kind": "a2a",
+      "name": "A2A agent",
+      "auth": "Not implemented",
+      "status": "Planned"
+    },
+    {
+      "kind": "webhook",
+      "name": "Webhook",
+      "auth": "Not implemented",
+      "status": "Planned"
     },
     {
       "name": "Codex",
-      "auth": "Host login",
-      "status": "Later"
+      "auth": "Undecided",
+      "status": "Exploring"
     },
     {
       "name": "Claude Code",
-      "auth": "Host login",
-      "status": "Skipped"
+      "auth": "Undecided",
+      "status": "Not scheduled"
     }
   ],
   "deploy": [
@@ -220,7 +428,7 @@
     "First run: create the owner with the setup code from the log (or FOXFLEET_PASSWORD once, then remove it).",
     "Set FOXFLEET_TRUSTED_ORIGINS to your public https origin (tunnel or proxy).",
     "Admin → Pair a phone, scan the QR on each phone, install the APK.",
-    "Re-add Hermes agents as connectors if you want no open ports (direct ones keep working)."
+    "Manage > Machines > Connect a machine creates the pairing command; run it on the computer and select the Hermes profiles to share."
   ],
   "links": [
     {
@@ -243,15 +451,69 @@
       "title": "Security policy",
       "file": "../SECURITY.md"
     }
+  ],
+  "stage": "Validating 0.2.0-alpha",
+  "focus": "0.2.0-alpha is the latest public release. Machine pairing, multi-profile Hermes connectors, and Machines screens now ship on web and Android. The next priority is validation on physical devices, real Hermes installations, and deployment hosts.",
+  "milestones": [
+    {
+      "label": "01 / Current priority",
+      "title": "Validate the released alpha",
+      "detail": "Validate 0.2.0-alpha machine pairing, multi-profile Hermes connections, service installation, and existing workflows on real devices and hosts.",
+      "doneWhen": "Machine onboarding/service checks, Android, Docker/systemd, live-agent, accessibility, and shared contract checks below have documented results."
+    },
+    {
+      "label": "02 / After validation",
+      "title": "Harden everyday hosting",
+      "detail": "Improve account protection and behavior behind reverse proxies before wider use.",
+      "doneWhen": "Trusted-proxy handling and optional TOTP have tests, client flows, and operator documentation."
+    },
+    {
+      "label": "03 / Later",
+      "title": "Expand reach and integrations",
+      "detail": "Consider published container images, notifications, more agent protocols, and store distribution as the core stabilizes.",
+      "doneWhen": "Each selected feature has an end-to-end workflow, documentation, and a verified distribution path."
+    }
+  ],
+  "available": [
+    {
+      "area": "Hub and accounts",
+      "text": "Owner setup, invites, isolated registries, rotating devices, write-only credentials, and media proxy.",
+      "href": "/concepts/accounts"
+    },
+    {
+      "area": "Agent connections",
+      "text": "Implemented provider kinds, machine pairing and Hermes profile discovery, outbound tunneling, API-key chat, and an MCP mailbox.",
+      "href": "/agents/"
+    },
+    {
+      "area": "Web and Android",
+      "text": "Streaming chat, attachments, voice, sessions, agent management, Machines screens, Admin, and screen takeover.",
+      "href": "/apps/chat"
+    },
+    {
+      "area": "Design and PWA",
+      "text": "Shared tokens, theme/accessibility preferences, installable app shell, and explicit update prompts.",
+      "href": "/project/design-tokens"
+    },
+    {
+      "area": "Docs and verification",
+      "text": "Published docs, generated API reference, contract checks, unit tests, and real app screenshots with reproducible demo fixtures.",
+      "href": "/project/development"
+    },
+    {
+      "area": "Distribution",
+      "text": "Release-signed APK, server tarball, checksums, certificate fingerprint, and a tag-triggered release workflow.",
+      "href": "/project/release"
+    }
   ]
 }
 </script>
 <!-- ============ end of editable data ============ -->
 <style>
-:root{--bg:#f6f3ee;--card:#fff;--text:#2b2723;--muted:#7a7168;--line:#e7e1d8;--accent:#d9622b;--accent-soft:#fbe9df;--ok:#3d8b5a}
-@media (prefers-color-scheme:dark){:root{--bg:#14110f;--card:#1d1916;--text:#eee8e1;--muted:#a1978c;--line:#2e2924;--accent:#f0824e;--accent-soft:#3a2418;--ok:#6cc08a}}
-:root[data-theme=light]{--bg:#f6f3ee;--card:#fff;--text:#2b2723;--muted:#7a7168;--line:#e7e1d8;--accent:#d9622b;--accent-soft:#fbe9df;--ok:#3d8b5a}
-:root[data-theme=dark]{--bg:#14110f;--card:#1d1916;--text:#eee8e1;--muted:#a1978c;--line:#2e2924;--accent:#f0824e;--accent-soft:#3a2418;--ok:#6cc08a}
+:root{--bg:#F7F5F2;--card:#fff;--text:#1B1B1C;--muted:#66625D;--line:#e7e1d8;--accent:#BE4A21;--accent-soft:#fbe9df;--ok:#3d8b5a}
+@media (prefers-color-scheme:dark){:root{--bg:#0E0E0F;--card:#17171A;--text:#EDEDED;--muted:#A1A1A6;--line:#2e2924;--accent:#F08A5D;--accent-soft:#3a2418;--ok:#6cc08a}}
+:root[data-theme=light]{--bg:#F7F5F2;--card:#fff;--text:#1B1B1C;--muted:#66625D;--line:#e7e1d8;--accent:#BE4A21;--accent-soft:#fbe9df;--ok:#3d8b5a}
+:root[data-theme=dark]{--bg:#0E0E0F;--card:#17171A;--text:#EDEDED;--muted:#A1A1A6;--line:#2e2924;--accent:#F08A5D;--accent-soft:#3a2418;--ok:#6cc08a}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.5 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
 main{max-width:1060px;margin:0 auto;padding:20px 16px 64px}
 header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
@@ -263,10 +525,18 @@ button{font:inherit;color:var(--text);background:var(--card);border:1px solid va
 .timeline{list-style:none;margin:0;padding:0;border-left:2px solid var(--line)}
 .timeline li{position:relative;padding:0 0 14px 18px}.timeline li:before{content:"";position:absolute;left:-7px;top:6px;width:12px;height:12px;border-radius:50%;background:var(--card);border:2px solid var(--accent)}
 .timeline li:last-child:before{background:var(--accent)}.timeline b{color:var(--accent)}
-.board{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+.board{display:grid;gap:24px}
 .col h3{margin:0 0 8px;font-size:.95rem;display:flex;justify-content:space-between}.col h3 span{color:var(--muted);font-weight:400}
-.item{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid var(--line)}.item:first-of-type{border-top:0}
-.item input{margin-top:5px;width:18px;height:18px;accent-color:var(--accent);flex:none}.item label{flex:1}.item input:checked+label{color:var(--muted);text-decoration:line-through}
+.work-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.item{display:flex;gap:12px;align-items:flex-start;padding:18px;background:var(--card);border:1px solid var(--line);border-radius:16px;min-width:0}.item-body{flex:1;min-width:0}
+.item input{margin-top:4px;width:20px;height:20px;accent-color:var(--accent);flex:none}.item h4{margin:12px 0 8px;font-size:1rem}.item p{font-size:.85rem;color:var(--muted);line-height:1.65}
+.item-meta{display:flex;justify-content:space-between;gap:8px;font-size:.75rem;color:var(--muted)}.criteria{margin:14px 0;padding:12px;border-radius:8px;background:var(--bg)}.criteria b{font-size:.75rem}.item a{font-size:.8rem}
+.snapshot{margin:24px 0;padding:24px;background:linear-gradient(135deg,var(--accent-soft),var(--card));border:1px solid var(--line);border-radius:16px}.snapshot h2{font-size:1.8rem;margin:8px 0 14px}.eyebrow{text-transform:uppercase;letter-spacing:.1em;color:var(--accent);font-size:.7rem;font-weight:650}.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;margin-top:24px;padding-top:20px;border-top:1px solid var(--line)}.stats strong{display:block;font-size:1.8rem}.stats span{font-size:.8rem}
+.milestones{display:grid;gap:12px}.milestones h3{margin:8px 0}.milestones p{color:var(--muted);font-size:.9rem}.milestones .card:first-child{border-color:var(--accent)}
+.filters{padding:16px}.stage-filters{display:flex;flex-wrap:wrap;gap:8px}.stage-filters button[aria-pressed=true]{background:var(--accent);color:var(--bg);border-color:var(--accent)}.search-filters{display:grid;grid-template-columns:minmax(0,1fr) 180px;gap:14px;margin-top:16px}.search-filters label{display:flex;flex-direction:column;gap:6px;font-size:.8rem}.search-filters input,.search-filters select{width:100%;padding:10px;background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:8px;font:inherit}.filters button{min-height:40px}
+button:focus-visible,input:focus-visible,select:focus-visible,a:focus-visible,summary:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@media(max-width:640px){.work-grid,.search-filters{grid-template-columns:1fr}.snapshot h2{font-size:1.4rem}.stats span{font-size:.7rem}.item{padding:14px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:8px 6px;border-top:1px solid var(--line);vertical-align:top}th{font-size:.8rem;color:var(--muted);font-weight:500;border-top:0}
 .s-Ready{color:var(--ok)}.s-Beta{color:var(--accent)}.s-Later,.s-Skipped{color:var(--muted)}
 ul.plain,ol{margin:0;padding-left:20px}li+li{margin-top:6px}
@@ -277,19 +547,23 @@ a{color:var(--accent)}code,pre{font:.85rem ui-monospace,Menlo,monospace;backgrou
 </head>
 <body>
 <main>
-<header><h1>Fox<b>fleet</b> <span class="muted" style="font-weight:400;font-size:1rem">roadmap</span></h1><span class="pill" id="ver"></span><button id="theme" aria-label="Toggle light or dark">Theme</button></header>
+<header><h1>Fox<b>fleet</b> <span class="muted" style="font-weight:400;font-size:1rem">roadmap</span></h1><span id="ver"></span><span id="next-version"></span><button id="theme" aria-label="Toggle light or dark">Theme</button></header>
 <p class="muted" id="updated"></p>
 
-<h2>Overview</h2><div class="card" id="overview"></div>
-<h2>Version timeline</h2><ol class="timeline" id="timeline"></ol>
+<section class="snapshot" aria-label="Current project stage"><span class="eyebrow">Current stage</span><h2 id="stage"></h2><p class="muted" id="focus"></p><div class="stats" id="stats"></div></section>
+<h2>Next milestones</h2><div class="milestones" id="milestones"></div>
+<p class="muted">Future work is ordered by priority, with no promised release dates. Validation comes before expanding the feature set.</p>
 
-<h2>Status board</h2>
-<div class="card"><div id="progress" class="muted"></div><div class="bar"><i id="barfill"></i></div><button id="reset">Reset ticks to the file's defaults</button></div>
+<h2>Work tracker</h2>
+<div class="card filters"><div class="stage-filters" id="filters" role="group" aria-label="Filter by stage"></div><div class="search-filters"><label for="search">Search work<input type="search" id="search" placeholder="Chat, Docker, accessibility…"></label><label for="area">Area<select id="area"><option value="All">All areas</option></select></label></div></div>
+<p id="result" class="muted" role="status" aria-live="polite"></p>
 <div class="board" id="board" style="margin-top:12px"></div>
+<details class="card" style="margin-top:16px"><summary>Personal checklist</summary><p class="muted">Ticks are saved in this browser only. They do not change project status.</p><p id="progress" class="muted"></p><button id="reset">Reset personal ticks</button></details>
 
 <h2>Open items and known limitations</h2><div class="card"><ul class="plain" id="limits"></ul></div>
-<h2>Providers and plugins</h2><div class="card"><table><thead><tr><th>Provider</th><th>Auth</th><th>Status</th></tr></thead><tbody id="providers"></tbody></table></div>
-<h2>Deploy checklist</h2><div class="card" id="deploy"></div>
+<h2>Integration status</h2><p class="muted">Implemented means an adapter exists. Live-provider validation remains a next item. Model and agent setup determine which features work.</p><div class="card"><table><thead><tr><th>Integration</th><th>Connection</th><th>Repository status</th></tr></thead><tbody id="providers"></tbody></table></div>
+<h2>Release history</h2><ol class="timeline" id="timeline"></ol>
+<details class="card"><summary>Deploy checklist</summary><div id="deploy"></div></details>
 <h2>Docs</h2><div class="card"><ul class="plain" id="links"></ul></div>
 
 <h2>How to use and update this page</h2>
@@ -299,7 +573,8 @@ a{color:var(--accent)}code,pre{font:.85rem ui-monospace,Menlo,monospace;backgrou
 <li><b>Ticking a box</b> is saved in this browser only (localStorage). It does not change the file.</li>
 <li><b>Updating the project:</b> edit the JSON block at the top of <code>roadmap.html</code> (the part marked EDIT ME). Change <code>version</code> and <code>updated</code>, add a <code>timeline</code> entry per release, and move board items between columns by changing their <code>col</code> (Done, In progress, Next, Later). Give a new item a unique <code>id</code>.</li>
 <li>Items already ticked on a phone keep their tick if the <code>id</code> stays the same. Use the reset button to start from the file again.</li>
-<li>Keep the copy in <code>projects/Foxfleet/docs/</code> as the source of truth and copy it to the artifacts folder after editing.</li>
+<li>The JSON block in <code>docs/roadmap.html</code> is the source for this tracker and the <a href="https://tinkerdoge.github.io/FoxFleet/project/roadmap">published roadmap</a>. The docs build checks the version and provider statuses against the code.</li>
+<li>For unfinished work, set an <code>area</code>, a <code>detail</code> description, and a <code>doneWhen</code> completion criterion. Mark features implemented separately from their real-world validation.</li>
 </ul>
 </div>
 </main>
@@ -307,26 +582,36 @@ a{color:var(--accent)}code,pre{font:.85rem ui-monospace,Menlo,monospace;backgrou
 (()=>{
 const D=JSON.parse(document.getElementById('data').textContent),$=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const KEY='foxfleet-roadmap:v1';let ticks={};try{ticks=JSON.parse(localStorage.getItem(KEY)||'{}')}catch{}
+const KEY='foxfleet-roadmap:v1';let ticks={};try{const saved=JSON.parse(localStorage.getItem(KEY)||'{}');if(saved&&typeof saved==='object'&&!Array.isArray(saved))ticks=saved}catch{}
 const save=()=>{try{localStorage.setItem(KEY,JSON.stringify(ticks))}catch{}};
 const isOn=i=>i.id in ticks?ticks[i.id]:i.col==='Done';
-$('ver').textContent='v'+D.version;$('updated').textContent='Last updated '+D.updated;
-$('overview').innerHTML=D.overview.map(t=>'<p>'+esc(t)+'</p>').join('');
+$('ver').textContent='Released v'+(D.releasedVersion||D.version);$('next-version').textContent=D.nextVersion?D.nextVersion+' / Unreleased':'';$('updated').textContent='Last updated '+D.updated;
+$('stage').textContent=D.stage;$('focus').textContent=D.focus;
+const count=c=>D.board.filter(i=>i.col===c).length;
+$('stats').innerHTML=[['Done','Implemented'],['Next','Next priorities'],['Later','Future items']].map(([c,label])=>'<div><strong>'+(count(c)+(c==='Next'?count('In progress'):0))+'</strong><span>'+label+'</span></div>').join('');
+$('milestones').innerHTML=D.milestones.map(m=>'<article class="card"><span class="eyebrow">'+esc(m.label)+'</span><h3>'+esc(m.title)+'</h3><p>'+esc(m.detail)+'</p><p><b>Complete when:</b> '+esc(m.doneWhen)+'</p></article>').join('');
 $('timeline').innerHTML=D.timeline.map(t=>'<li><b>'+esc(t.v)+'</b> '+esc(t.what)+'</li>').join('');
 $('limits').innerHTML=D.limits.map(t=>'<li>'+esc(t)+'</li>').join('');
-$('providers').innerHTML=D.providers.map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+esc(p.auth)+'</td><td class="s-'+esc(p.status)+'">'+esc(p.status)+'</td></tr>').join('');
+$('providers').innerHTML=D.providers.map(p=>'<tr><td>'+esc(p.name)+'</td><td>'+esc(p.auth)+'</td><td>'+esc(p.status)+'</td></tr>').join('');
 $('deploy').innerHTML='<ol>'+D.deploy.map(t=>'<li>'+esc(t)+'</li>').join('')+'</ol>';
 const pre='';
 $('links').innerHTML=D.links.map(l=>'<li><a href="'+pre+encodeURI(l.file)+'">'+esc(l.title)+'</a></li>').join('');
-const cols=['Done','In progress','Next','Later'];
+const cols=['In progress','Next','Later','Done'],stages=['All',...cols.filter(c=>count(c))];let selected='Next';
+const stageLabel=c=>c==='Done'?'Implemented':c;
+const areas=[...new Set(D.board.map(i=>i.area))].sort();$('area').innerHTML='<option value="All">All areas</option>'+areas.map(a=>'<option>'+esc(a)+'</option>').join('');
+function drawFilters(){$('filters').innerHTML=stages.map(c=>'<button type="button" data-stage="'+esc(c)+'" aria-pressed="'+(selected===c)+'">'+stageLabel(c)+' '+(c==='All'?D.board.length:count(c))+'</button>').join('')}
 function draw(){
-  $('board').innerHTML=cols.map(c=>{const items=D.board.filter(i=>i.col===c);return '<section class="card col"><h3>'+c+'<span>'+items.filter(isOn).length+'/'+items.length+'</span></h3>'+items.map(i=>'<div class="item"><input type="checkbox" id="c-'+esc(i.id)+'" data-id="'+esc(i.id)+'"'+(isOn(i)?' checked':'')+'><label for="c-'+esc(i.id)+'">'+esc(i.text)+'</label></div>').join('')+'</section>'}).join('');
-  const all=D.board.length,on=D.board.filter(isOn).length;$('progress').textContent=on+' of '+all+' items ticked';$('barfill').style.width=(all?on*100/all:0)+'%';
+  const q=$('search').value.trim().toLowerCase(),a=$('area').value,shown=D.board.filter(i=>(selected==='All'||i.col===selected)&&(a==='All'||i.area===a)&&(!q||[i.text,i.detail,i.doneWhen,i.area].join(' ').toLowerCase().includes(q)));
+  $('result').textContent=shown.length+' of '+D.board.length+' items';
+  $('board').innerHTML=cols.map(c=>{const items=shown.filter(i=>i.col===c);return items.length?'<section class="col" aria-label="'+stageLabel(c)+' work"><h3>'+stageLabel(c)+' <span>'+items.length+'</span></h3><div class="work-grid">'+items.map(i=>'<article class="item"><input type="checkbox" id="c-'+esc(i.id)+'" data-id="'+esc(i.id)+'"'+(isOn(i)?' checked':'')+'><div class="item-body"><div class="item-meta"><span>'+esc(i.area)+'</span><span>'+stageLabel(c)+(i.release==='Unreleased'?' / Unreleased':'')+'</span></div><h4>'+esc(i.text)+'</h4><label class="sr-only" for="c-'+esc(i.id)+'">Personal checklist: '+esc(i.text)+'</label><p>'+esc(i.detail)+'</p>'+(i.doneWhen?'<div class="criteria"><b>Complete when</b><p>'+esc(i.doneWhen)+'</p></div>':'')+(i.href?'<a href="https://tinkerdoge.github.io/FoxFleet'+encodeURI(i.href)+'">Related docs<span class="sr-only"> for '+esc(i.text)+'</span> →</a>':'')+'</div></article>').join('')+'</div></section>':''}).join('')||'<p class="card">No work matches these filters.</p>';
+  $('progress').textContent=D.board.filter(isOn).length+' of '+D.board.length+' items personally checked. Project statuses stay unchanged.';
 }
-$('board').addEventListener('change',e=>{const id=e.target.dataset?.id;if(!id)return;ticks[id]=e.target.checked;save();draw()});
+$('filters').addEventListener('click',e=>{const b=e.target.closest('button[data-stage]');if(!b)return;selected=b.dataset.stage;for(const button of $('filters').querySelectorAll('button'))button.setAttribute('aria-pressed',String(button.dataset.stage===selected));draw()});
+$('search').addEventListener('input',draw);$('area').addEventListener('change',draw);
+$('board').addEventListener('change',e=>{const id=e.target.dataset?.id;if(!id)return;ticks[id]=e.target.checked;save();$('progress').textContent=D.board.filter(isOn).length+' of '+D.board.length+' items personally checked. Project statuses stay unchanged.'});
 $('reset').onclick=()=>{ticks={};save();draw()};
 $('theme').onclick=()=>{const r=document.documentElement,dark=r.dataset.theme?r.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;r.dataset.theme=dark?'light':'dark'};
-draw();
+drawFilters();draw();
 })();
 </script>
 </body>

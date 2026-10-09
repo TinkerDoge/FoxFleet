@@ -42,8 +42,10 @@ design/fonts/
 # Docs site: build output, generated pages and tokens (rebuilt by `npm run build` in site/)
 site/node_modules/
 site/.vitepress/cache/
+site/.vitepress/.temp/
 site/.vitepress/dist/
 site/.vitepress/theme/tokens.generated.css
+site/.vitepress/theme/roadmap.generated.json
 site/reference/api.md
 site/reference/errors.md
 site/hosting/environment.md

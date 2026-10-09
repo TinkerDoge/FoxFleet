@@ -1,6 +1,6 @@
 # Release process
 
-Foxfleet is alpha and there is no automated release pipeline yet. This is the manual process the maintainers follow, so that a future workflow can automate it.
+Foxfleet is alpha. The tag-triggered workflow in `.github/workflows/release.yml` can test, build, and publish a release; manual publishing is also supported. The workflow leaves existing releases and assets untouched. Follow the same checks below for either path.
 
 1. **Green main.** Hub tests, web tests/build, Android unit tests and gitleaks pass (`.github/workflows`).
 2. **Bump versions:** `android/app/build.gradle.kts` (`versionCode` +1, `versionName`), root, `web/`, `site/` and `server/` `package.json` versions, `contract/openapi.json` (`info.version`), `docs/roadmap.html` (`version`, `updated`, a `timeline` entry), `CHANGELOG.md` and the release notes.
@@ -13,5 +13,6 @@ Foxfleet is alpha and there is no automated release pipeline yet. This is the ma
 
    Only people with write access to the repository can push a tag and therefore publish.
 7. **Docs** deploy automatically from `main` if the Pages workflow is enabled.
+8. **Roadmap after publishing.** Update `releasedVersion` in `docs/roadmap.html` to the published tag's version and update its history and work-item release labels. Keep `nextVersion` aligned with the changelog's named unreleased work, or remove it when none is named. The root package version alone does not prove that downloads have been published.
 
 Not in place yet: a published Docker image (GHCR), store listings, device tests. See the [roadmap](./roadmap).

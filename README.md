@@ -210,7 +210,7 @@ CI workflows for the hub tests, the web build, the Android assemble and a secret
 
 ## Roadmap
 
-[docs/roadmap.html](docs/roadmap.html) is a single-file tracker (open it in a browser; ticks are saved locally and the board is a JSON block you can edit).
+[Read the roadmap](https://tinkerdoge.github.io/FoxFleet/project/roadmap) for the current alpha stage, next milestones, and a work tracker you can filter by stage or area. Its source is the JSON block in [docs/roadmap.html](docs/roadmap.html), which also works as an offline tracker. The docs build checks the version and provider status against the code.
 
 ## Contributing
 

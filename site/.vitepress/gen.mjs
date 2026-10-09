@@ -4,10 +4,12 @@
 //   hosting/environment.md      <- process.env.* found in server/ and connector/ (+ descriptions below)
 //   reference/errors.md         <- fault(status, 'message') calls in server/*.js
 //   project/roadmap.md          <- JSON block in docs/roadmap.html
+//   theme/roadmap.generated.json <- the same roadmap data, checked against version and provider kinds
 // All outputs are gitignored.
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, copyFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { generateRoadmap } from './roadmap.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url)), site = resolve(here, '..'), root = resolve(site, '..');
 const out = (rel, text) => { const f = resolve(site, rel); mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, text); };
@@ -97,13 +99,7 @@ for (const [s, set] of [...errs].sort((a, b) => a[0] - b[0])) e += `## ${s} ${na
 out('reference/errors.md', e);
 
 // ---- roadmap ----
-const html = readFileSync(resolve(root, 'docs/roadmap.html'), 'utf8');
-const rm = JSON.parse(html.match(/<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/)[1]);
-let r = `# Roadmap\n\n> Generated from the JSON block at the top of [\`docs/roadmap.html\`](https://github.com/TinkerDoge/FoxFleet/blob/main/docs/roadmap.html) (updated ${rm.updated}, current version **${rm.version}**). Edit that block, not this page.\n\n## Overview\n\n${rm.overview.map((x) => `- ${x}`).join('\n')}\n\n## Version timeline\n\n${rm.timeline.map((x) => `- **${x.v}** — ${x.what}`).join('\n')}\n\n`;
-r += `## Status board\n\n`;
-for (const col of ['Done', 'In progress', 'Next', 'Later']) { const items = rm.board.filter((i) => i.col === col); r += `### ${col}\n\n${items.length ? items.map((i) => `- ${i.text}`).join('\n') : '- (nothing)'}\n\n`; }
-r += `## Known limitations\n\n${rm.limits.map((x) => `- ${x}`).join('\n')}\n\n## Provider matrix\n\n| Provider | Auth | Status |\n| --- | --- | --- |\n${rm.providers.map((p) => `| ${esc(p.name)} | ${esc(p.auth)} | ${esc(p.status)} |`).join('\n')}\n\n## Deploy checklist\n\n${rm.deploy.map((x) => `1. ${x}`).join('\n')}\n`;
-out('project/roadmap.md', r);
+generateRoadmap(root, out);
 // Licence text for the bundled Inter font, published with the site.
 mkdirSync(resolve(site, 'public/licenses'), { recursive: true });
 copyFileSync(resolve(root, 'LICENSES/Inter-OFL-1.1.txt'), resolve(site, 'public/licenses/Inter-OFL-1.1.txt'));
