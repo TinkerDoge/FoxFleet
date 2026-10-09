@@ -1,0 +1,18 @@
+{
+  "name": "foxfleet-docs",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Foxfleet documentation site (VitePress). Published to GitHub Pages at /FoxFleet/.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "gen": "node .vitepress/gen.mjs",
+    "dev": "npm run gen && vitepress dev",
+    "build": "npm run gen && vitepress build",
+    "preview": "vitepress preview",
+    "check-links": "node .vitepress/check-links.mjs"
+  },
+  "devDependencies": {
+    "vitepress": "^1.6.4"
+  }
+}

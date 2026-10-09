@@ -9,7 +9,7 @@
 <script type="application/json" id="data">
 {
   "updated": "2026-10-09",
-  "version": "0.1.0-alpha",
+  "version": "0.1.1-alpha",
   "overview": [
     "Foxfleet is a self-hosted hub plus a web app and an Android app for talking to all your AI agents from one calm place. Free, MIT licensed.",
     "Phone app (Kotlin/Compose) and web app (Preact) → your hub (zero-dependency Node server, per-user accounts and secrets) → agents: Hermes machines through an outbound connector, API-key chat providers, and MCP-inbox agents.",
@@ -47,6 +47,10 @@
     {
       "v": "Foxfleet 0.1.0-alpha",
       "what": "New name and clean open-source repo (MIT), package dev.foxfleet.app, foxfleet:// links, shared design tokens, web rebuild started (Preact + Vite + TypeScript): first-launch hub address and sign-in/setup/join, hub serves the built app with SPA fallback and CSP."
+    },
+    {
+      "v": "Foxfleet 0.1.1-alpha",
+      "what": "Web app reaches parity: chat with Markdown and media, agent management, screen takeover (noVNC), Admin, devices, settings, PWA shell, SSRF-checked media proxy, OpenAPI contract and a documentation site."
     }
   ],
   "board": [
@@ -159,10 +163,15 @@
       "id": "l5",
       "col": "Later",
       "text": "Signed releases, Docker image on GHCR, store listing"
+    },
+    {
+      "id": "p2",
+      "col": "Done",
+      "text": "Documentation site (VitePress, GitHub Pages)"
     }
   ],
   "limits": [
-    "The web app currently has sign-in, setup, join and an agents list only; chat, admin and settings are still on the Android app.",
+    "The Docker image build and the Android app on a physical device have not been verified end to end yet (unit and screenshot tests pass; see the docs site status notes).",
     "Rate limits key on the socket IP; behind a proxy every client shares one bucket (per-username lockout still works).",
     "Web app talks to the hub on its own origin; a hub on another origin would need CORS (not implemented).",
     "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",

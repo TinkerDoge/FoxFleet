@@ -8,7 +8,12 @@
 <p align="center"><b>A universal hub for all your AI agents: web + Android, self-hosted.</b></p>
 
 <p align="center">
-  <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
+  <a href="https://tinkerdoge.github.io/FoxFleet/"><img src="https://img.shields.io/badge/docs-tinkerdoge.github.io%2FFoxFleet-BE4A21?style=flat" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/licence-MIT-blue?style=flat" alt="MIT licence"></a>
+</p>
+
+<p align="center">
+  <b><a href="https://tinkerdoge.github.io/FoxFleet/">Documentation</a></b> · <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
 </p>
 
 Foxfleet puts the agents you run on your own machines and the chat APIs you pay for in **one calm place**. You run a small hub
@@ -90,7 +95,7 @@ Open `http://localhost:3080`. The compose file publishes the port on loopback on
 
 ```bash
 (cd web && npm ci && npm run build)       # the hub serves web/dist
-node server/index.js                       # listens on 127.0.0.1:3080; prints "First-run setup code: …" on the first start
+node server/index.js                       # listens on 127.0.0.1:3080 (loopback: no setup code; a non-loopback bind prints one)
 ```
 
 The hub itself has no npm dependencies. For a systemd user service and the update script (backup, tests, restart, health check, rollback) see [docs/INSTALL.md](docs/INSTALL.md) and [`deploy/`](deploy/); `deploy/deploy.sh --dry-run` checks prerequisites without changing anything.
@@ -113,10 +118,9 @@ Install the APK, then on the first screen type your hub address, tap **Scan QR**
 For a Hermes agent, add it under **Manage agents → Add agent → Hermes agent** with the *Connector* connection. The hub shows a **bootstrap prompt once**; paste it into the agent on that machine. It looks like:
 
 ```text
-Connect this machine to my Foxfleet hub.
-1. Download foxfleet-connector.mjs from <your hub>/connector.mjs
-2. Run: node foxfleet-connector.mjs --hub <your hub> --token <per-agent token>
-It only makes an outbound connection; no ports to open.
+Connect this machine's Hermes agent to my Foxfleet (outbound only, no ports to open).
+1. curl -fsSL https://hub.example.com/connector.mjs -o foxfleet-connector.mjs
+2. HUB_URL=https://hub.example.com FOXFLEET_TOKEN=<per-agent token> node foxfleet-connector.mjs   (Node 22+; keep it running with systemd)
 ```
 
 The connector dials **out** to the hub over a WebSocket authenticated with the per-agent token, so the agent needs no open port and no public hostname; chat, files and the screen WebSocket are tunnelled through that link. The full, agent-readable guide is [docs/CONNECT-AGENT.md](docs/CONNECT-AGENT.md). A direct host/port mode remains as an advanced option for agents on the same network.
@@ -164,6 +168,10 @@ flowchart LR
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The API contract lives in [`contract/openapi.json`](contract/openapi.json) (OpenAPI 3.1) and is checked against both the real hub and the web mock by the same test scenario.
 
+## Documentation
+
+The full documentation (quick start, hosting guides, per-agent onboarding, security, API reference, FAQ) is at **<https://tinkerdoge.github.io/FoxFleet/>**. Its sources are in [`site/`](site/) (VitePress).
+
 ## Project layout
 
 | Path | What |
@@ -176,6 +184,7 @@ More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The API contract lives in 
 | `design/` | `tokens.json` (colours, radii, type) and generators; brand assets and how to rebuild the wordmarks. |
 | `deploy/` | systemd unit, deploy script (backup, tests, restart, health, rollback), env example, Cloudflare Tunnel note. |
 | `docs/` | Install, architecture, connecting agents, accessibility checklist, roadmap. |
+| `site/` | The documentation site (VitePress), published to GitHub Pages. |
 
 ## Development
 

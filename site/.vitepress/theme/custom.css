@@ -1,0 +1,33 @@
+/* Foxfleet: the same calm look as the apps. Colours come from design/tokens.json (tokens.generated.css). */
+:root {
+  --vp-font-family-base: var(--ff-font);
+  --vp-font-family-mono: var(--ff-mono);
+  --vp-c-brand-1: var(--ff-accent);
+  --vp-c-brand-2: var(--ff-accent);
+  --vp-c-brand-3: var(--ff-accent);
+  --vp-c-brand-soft: color-mix(in srgb, var(--ff-accent) 14%, transparent);
+  --vp-c-bg: var(--ff-bg);
+  --vp-c-bg-alt: var(--ff-alt);
+  --vp-c-bg-elv: var(--ff-surface);
+  --vp-c-bg-soft: var(--ff-alt);
+  --vp-c-text-1: var(--ff-text);
+  --vp-c-text-2: var(--ff-muted);
+  --vp-c-danger-1: var(--ff-danger);
+  --vp-button-brand-bg: var(--ff-accent);
+  --vp-button-brand-hover-bg: var(--ff-accent);
+  --vp-button-brand-active-bg: var(--ff-accent);
+  --vp-button-brand-text: #fff;
+  --vp-home-hero-name-color: var(--ff-accent);
+}
+.dark { --vp-button-brand-text: #17171a; }
+.VPNavBarTitle .logo, .VPImage.logo { height: 30px; }
+.vp-doc, .VPSidebar { font-size: 15.5px; }
+.vp-doc h1 { letter-spacing: -0.01em; }
+.vp-doc div[class*='language-'], .vp-doc table, .vp-doc .custom-block, .VPFeature, .vp-doc img { border-radius: var(--ff-r-control); }
+.VPFeature { background: var(--ff-surface) !important; border: 1px solid var(--vp-c-divider) !important; border-radius: var(--ff-r-card) !important; }
+.shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin: 24px 0; }
+.shots figure { margin: 0; } .shots img { width: 100%; border: 1px solid var(--vp-c-divider); }
+.shots figcaption { font-size: 13px; color: var(--vp-c-text-2); margin-top: 6px; }
+.home-note { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+.status-box { border-left: 4px solid var(--ff-accent); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; scroll-behavior: auto !important; } }
