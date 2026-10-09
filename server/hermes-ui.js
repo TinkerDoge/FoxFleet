@@ -104,8 +104,9 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     // Attach (never starts another agent): reuse the live owner, restore partial answer + queue + open requests from the snapshot, backfill missed events.
     async attach(scope, machineId, agent, stored) {
       own(scope, stored); const ui = ensureSub(machineId), s = st(machineId, agent, stored, scope);
+      const seen = s.next; // events published while the snapshot is in flight are newer than it
       const r = await ui.call(agent, 'attach', { stored_session_id: stored });
-      journal.owners[stored] ??= scope; const hadRuntime = s.runtime === r.session_id; s.runtime = r.session_id; s.running = Boolean(r.running);
+      journal.owners[stored] ??= scope; const hadRuntime = s.runtime === r.session_id; s.runtime = r.session_id; if (s.next === seen) s.running = Boolean(r.running); // a stale snapshot must not revive a turn that already ended (it left a run open that never ended)
       s.requests = new Map((r.open_requests ?? []).map((q) => [q.id, q]));
       if (hadRuntime && s.up > 0) { try { const since = await ui.call(agent, 'events.since', { session_id: r.session_id, last_seen: s.up }); if (since.epoch && s.epoch && since.epoch !== s.epoch) s.up = 0; for (const e of since.events ?? []) onUpstream(machineId, agent, { kind: 'event', ...e }); s.epoch = since.epoch ?? s.epoch; } catch { /* snapshot below is authoritative */ } }
       else { try { const since = await ui.call(agent, 'events.since', { session_id: r.session_id, last_seen: 0 }); s.up = Math.max(s.up, since.latest_seq ?? 0); s.epoch = since.epoch ?? s.epoch; } catch { /* optional */ } }

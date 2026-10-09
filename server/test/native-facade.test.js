@@ -17,6 +17,7 @@ async function boot(t) {
       for await (const c of r.body) { buf += dec.decode(c, { stream: true }); let i; while ((i = buf.indexOf('\n\n')) >= 0) { const raw = buf.slice(0, i); buf = buf.slice(i + 2); const ev = /^event: (.*)$/m.exec(raw)?.[1] ?? 'message', d = /^data: (.*)$/m.exec(raw)?.[1]; if (!d || d === '[DONE]') { if (d === '[DONE]') out.ended = true; continue; } let j; try { j = JSON.parse(d); } catch { continue; } out.events.push({ event: ev, data: j }); const c0 = j?.choices?.[0]?.delta?.content; if (c0) out.text += c0; } }
       out.ended = true;
     }).catch(() => {});
+    const cap = setTimeout(() => ac.abort(), 20_000); out.done = out.done.finally(() => clearTimeout(cap)); // a stream that never ends fails the test in 20 s instead of holding the process
     out.stop = () => ac.abort(); out.wait = (pred, o = { tries: 150, ms: 100 }) => waitFor(async () => out.events.find(pred) ?? null, o);
     return out;
   }

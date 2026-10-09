@@ -124,6 +124,18 @@ test('an answer that arrives after the gateway went down is recorded as uncertai
   assert.equal(hub.list('u1', 'p', s.session_id)[0].state, 'uncertain');
 });
 
+test('a stale attach snapshot taken before a turn ended does not revive that turn (it left a run open that never ended)', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let release, gated = false; const gate = new Promise((r) => { release = r; }); let listener;
+  const ui = { caps: () => ({ native: true }), subscribe: (fn) => { listener = fn; }, call: async (agent, op) => { if (op === 'attach' && gated) { await gate; return { session_id: 'rt1', running: true, messages: [] }; } return stub.reply(op); } };
+  const hub = await nativeHub({ connectors: { ui: () => ui }, file: path.join(dir, 'j.json') }); const s = await hub.create('u1', 'm1', 'p');
+  gated = true; const attaching = hub.attach('u1', 'm1', 'p', s.session_id); // Hermes answered "running" ...
+  listener('p', { kind: 'event', session_id: 'rt1', seq: 1, type: 'message.start', payload: {} });
+  listener('p', { kind: 'event', session_id: 'rt1', seq: 2, type: 'message.complete', payload: { status: 'complete' } }); // ... and the turn ended before the answer arrived
+  release(); await attaching;
+  assert.equal(hub.isRunning('m1', 'p', s.session_id), false);
+});
+
 // ---- hub unit tests with a scripted upstream: ownership, restart reconcile, event mapping ----
 function stub() {
   const calls = []; let listener; const ui = { caps: () => ({ native: true }), subscribe: (fn) => { listener = fn; }, call: async (agent, op, params) => { calls.push([op, params]); return stub.reply(op, params); } };

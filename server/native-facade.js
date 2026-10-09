@@ -28,12 +28,14 @@ export function nativeFacade({ runs }) {
 
   const starting = new Map(), began = new Map(), links = new Map(); // links: the newest run's link per session; its `terminal` is set the moment the turn ends, before the run registry marks the run done.
   const live = (k) => { const r = active.get(k); return r && !r.done && !links.get(k)?.terminal ? r : null; }; // began: how many runs were opened per session, so a turn that started and ended while a send was in flight is not opened twice
-  function startRun(nat, { scope, m, stored, from }) {
+  function startRun(nat, { scope, m, stored, from, needRunning = false }) {
     const k = akey(scope, m.name, stored), cur = live(k); if (cur) return Promise.resolve(cur); if (starting.has(k)) return starting.get(k);
     began.set(k, (began.get(k) ?? 0) + 1);
     const link = { runId: 'native', sessionId: stored, stop: async () => { await nat.interrupt(scope, m.machineId, m.profile, stored); } }; links.set(k, link);
     let unsub = () => {}, closed = false;
     const open = async () => {
+      // Following "a turn already in flight" from a snapshot that may be stale: if the turn ended meanwhile there is nothing to follow, and a run opened now would never get its end event.
+      if (needRunning && !nat.isRunning(m.machineId, m.profile, stored)) throw new Error('no turn in flight');
       let ctl; const body = new ReadableStream({ start(c) { ctl = c; }, cancel() { unsub(); } });
       const end = (state, error) => { if (closed) return; closed = true; link.terminal = state; if (error) link.error = error; ctl.enqueue(frame({ state, ...(error ? { error } : {}) }, 'foxfleet.upstream')); ctl.enqueue(enc.encode('data: [DONE]\n\n')); ctl.close(); unsub(); };
       const handle = (e) => {
@@ -74,7 +76,7 @@ export function nativeFacade({ runs }) {
       if (!/^[\w.:-]{1,120}$/.test(session ?? '')) return { items: [], recent: [], halted: false, active_run: null, modes: ['queue', 'steer', 'interrupt'], open_requests: [] };
       this.remember(nat, scope, m, session);
       const p = await nat.pending(scope, m.machineId, m.profile, session); let run = activeRun(scope, m.name, session);
-      if (!run && p.running) run = await startRun(nat, { scope, m, stored: session, from: nat.cursor(m.machineId, m.profile, session) }).catch(() => null); // a turn already in flight: follow it from now
+      if (!run && p.running) run = await startRun(nat, { scope, m, stored: session, from: nat.cursor(m.machineId, m.profile, session), needRunning: true }).catch(() => null); // a turn already in flight: follow it from now
       return { items: p.items.map(viewOf), recent: [], halted: false, active_run: run?.id ?? null, modes: ['queue', 'steer', 'interrupt'], open_requests: p.open_requests, can_cancel: false };
     },
     activeRun,
