@@ -20,7 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -92,7 +92,7 @@ fun AdminScreen(
                     val p = pairing
                     if (p?.rows != null) QrCode(p.rows) else Text(if (p == null) "Loading…" else "This hub address is too long for a QR. Share the link instead.", color = c.textMuted)
                     Text("On the other phone: first screen → Scan QR.", style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(top = 10.dp))
-                    if (p != null) TextButton(onClick = { clipboard.setText(AnnotatedString(p.link)); copied = "pair" }) { Text(if (copied == "pair") "Link copied" else "Copy link", color = c.accent) }
+                    if (p != null) SoftButton(onClick = { clipboard.setText(AnnotatedString(p.link)); copied = "pair" }) { Text(if (copied == "pair") "Link copied" else "Copy link", color = c.accent) }
                 }
             }
 
@@ -115,7 +115,7 @@ fun AdminScreen(
                             Text("New invite · single use · 3 days", style = MaterialTheme.typography.labelLarge, color = c.text)
                             Spacer(Modifier.height(10.dp))
                             if (f.rows != null) QrCode(f.rows, Modifier.size(180.dp))
-                            TextButton(onClick = { clipboard.setText(AnnotatedString(f.link)); copied = "invite" }) { Text(if (copied == "invite") "Link copied" else "Copy invite link", color = c.accent) }
+                            SoftButton(onClick = { clipboard.setText(AnnotatedString(f.link)); copied = "invite" }) { Text(if (copied == "invite") "Link copied" else "Copy invite link", color = c.accent) }
                         }
                         Hairline(Modifier.padding(start = 16.dp))
                     }
@@ -128,7 +128,7 @@ fun AdminScreen(
                                 Text(if (inv.used) "Used" else "Open invite", style = MaterialTheme.typography.bodyLarge, color = c.text)
                                 Text("Expires in " + expiresIn(inv.expires), style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                             }
-                            TextButton(onClick = { guarded { api?.revokeInvite(inv.id); invites = api?.invites(); fresh = null } }) { Text("Revoke", color = c.textMuted) }
+                            SoftButton(onClick = { guarded { api?.revokeInvite(inv.id); invites = api?.invites(); fresh = null } }) { Text("Revoke", color = c.textMuted) }
                         }
                     }
                     Hairline(Modifier.padding(start = 16.dp))
@@ -148,7 +148,7 @@ fun AdminScreen(
                                 Text(u.username, style = MaterialTheme.typography.bodyLarge, color = if (u.disabled) c.textFaint else c.text)
                                 Text(if (u.role == "owner") "Owner" else if (u.disabled) "Disabled" else "Member", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                             }
-                            if (u.role != "owner") TextButton(onClick = { guarded { api?.setUserDisabled(u.id, !u.disabled); users = api?.adminUsers() } }) { Text(if (u.disabled) "Enable" else "Disable", color = c.textMuted) }
+                            if (u.role != "owner") SoftButton(onClick = { guarded { api?.setUserDisabled(u.id, !u.disabled); users = api?.adminUsers() } }) { Text(if (u.disabled) "Enable" else "Disable", color = c.textMuted) }
                         }
                     }
                 }

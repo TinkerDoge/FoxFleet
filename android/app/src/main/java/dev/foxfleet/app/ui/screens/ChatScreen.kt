@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -214,7 +215,7 @@ fun ChatScreen(
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                SoftIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tint = c.text)
+                SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
                 Spacer(Modifier.width(4.dp))
                 AgentAvatar(agent.name, agent.presence(), 34.dp, Modifier.sharedAvatar(agent.name)
                     .combinedClickable(onClick = {}, onLongClick = { onAvatarLongPress(agent.name) }))
@@ -228,10 +229,9 @@ fun ChatScreen(
                     if (state.streaming && sub != null) ShimmerStatusText(sub, style = MaterialTheme.typography.bodySmall)
                     else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 }
-                if (onOpenScreen != null) SoftIconButton(ScreenGlyph, "Agent's screen", onOpenScreen)
-                if (agent.capabilities.sessions) Text("History", style = MaterialTheme.typography.labelLarge, color = c.accent,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(onClickLabel = "Open chat history") { history = true }.padding(horizontal = 10.dp, vertical = 8.dp))
-                SoftIconButton(Icons.Filled.Add, "New chat", onNewChat)
+                if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
+                if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
+                SoftIconButton(FoxIcons.get("add"), "New chat", onNewChat)
             }
             Hairline()
             Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest) { viewing = it }
@@ -445,7 +445,7 @@ private fun MediaCard(ref: MediaRef, onClick: () -> Unit) {
     ) {
         if (ref.kind == MediaRef.Kind.Image) AsyncImage(ref.url, ref.alt.ifBlank { "Image" }, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 220.dp))
         else Row(Modifier.padding(18.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Filled.PlayArrow, null, tint = c.accent, modifier = Modifier.size(28.dp))
+            Icon(FoxIcons.get("play"), null, tint = c.accent, modifier = Modifier.size(28.dp))
             Spacer(Modifier.width(8.dp))
             Text(ref.url.substringAfterLast('/').take(40), style = MaterialTheme.typography.bodyMedium, color = c.text, maxLines = 1)
         }
@@ -663,7 +663,7 @@ private fun Composer(
                             Modifier.align(Alignment.TopEnd).padding(3.dp).size(20.dp).clip(CircleShape).background(Color(0x99000000))
                                 .clickable { attachments = attachments - a },
                             contentAlignment = Alignment.Center,
-                        ) { Icon(Icons.Filled.Close, "Remove", tint = Color.White, modifier = Modifier.size(14.dp)) }
+                        ) { Icon(FoxIcons.get("close"), "Remove", tint = Color.White, modifier = Modifier.size(14.dp)) }
                     }
                 }
                 repeat(encoding) {
@@ -674,7 +674,7 @@ private fun Composer(
             }
             Row(Modifier.padding(start = 4.dp, end = 6.dp, top = 6.dp, bottom = 6.dp), verticalAlignment = Alignment.Bottom) {
                 if (allowImages || onUploadFile != null) Box {
-                    SoftIconButton(Icons.Filled.Add, "Attach", { menu = true })
+                    SoftIconButton(FoxIcons.get("attach"), "Attach", { menu = true })
                     DropdownMenu(menu, { menu = false }, containerColor = c.surface) {
                         if (onUploadFile != null) DropdownMenuItem(text = { Text("File (PDF, docs, zip…)") }, onClick = {
                             menu = false; docPicker.launch(arrayOf("*/*"))
@@ -721,7 +721,7 @@ private fun Composer(
                                 }
                             },
                         contentAlignment = Alignment.Center,
-                    ) { MicGlyph(if (voice.listening) c.onAccent else c.textMuted) }
+                    ) { Icon(FoxIcons.get("mic"), if (voice.listening) "Stop voice input" else "Voice input", tint = if (voice.listening) c.onAccent else c.textMuted, modifier = Modifier.size(22.dp)) }
                 } else {
                     if (streaming) {
                         val stopSrc = remember { MutableInteractionSource() }
@@ -729,7 +729,7 @@ private fun Composer(
                             Modifier.size(40.dp).pressScale(stopSrc, 0.88f).clip(CircleShape).background(c.surfaceAlt)
                                 .clickable(interactionSource = stopSrc, indication = null, onClickLabel = "Stop") { onStop() },
                             contentAlignment = Alignment.Center,
-                        ) { Box(Modifier.size(14.dp).clip(RoundedCornerShape(3.dp)).background(c.text)) }
+                        ) { Icon(FoxIcons.get("stop"), "Stop", tint = c.text, modifier = Modifier.size(22.dp)) }
                     }
                     val src = remember { MutableInteractionSource() }
                     val active = canSend
@@ -738,21 +738,10 @@ private fun Composer(
                             .background(if (active) c.accent else c.surfaceAlt)
                             .clickable(interactionSource = src, indication = null, enabled = active, onClickLabel = "Send") { send() },
                         contentAlignment = Alignment.Center,
-                    ) { Icon(Icons.AutoMirrored.Filled.Send, "Send", tint = if (active) c.onAccent else c.textFaint, modifier = Modifier.size(18.dp)) }
+                    ) { Icon(FoxIcons.get("send"), "Send", tint = if (active) c.onAccent else c.textFaint, modifier = Modifier.size(22.dp)) }
                 }
             }
         }
-    }
-}
-
-/** Microphone drawn with shapes (the core icon set has no mic). */
-@Composable
-private fun MicGlyph(color: Color) {
-    Canvas(Modifier.size(20.dp)) {
-        val w = size.width; val h = size.height
-        drawRoundRect(color, topLeft = Offset(w * 0.36f, h * 0.08f), size = Size(w * 0.28f, h * 0.52f), cornerRadius = CornerRadius(w * 0.14f))
-        drawArc(color, 0f, 180f, false, topLeft = Offset(w * 0.22f, h * 0.30f), size = Size(w * 0.56f, h * 0.46f), style = Stroke(w * 0.08f))
-        drawLine(color, Offset(w / 2, h * 0.76f), Offset(w / 2, h * 0.92f), strokeWidth = w * 0.08f)
     }
 }
 
@@ -786,20 +775,8 @@ fun FileChip(name: String, size: String, modifier: Modifier = Modifier, onRemove
         if (onRemove != null) {
             Spacer(Modifier.width(4.dp))
             Box(Modifier.size(24.dp).clip(CircleShape).clickable(onClick = onRemove), contentAlignment = Alignment.Center) {
-                Icon(Icons.Filled.Close, "Remove", tint = c.textMuted, modifier = Modifier.size(16.dp))
+                Icon(FoxIcons.get("close"), "Remove", tint = c.textMuted, modifier = Modifier.size(16.dp))
             }
         } else Spacer(Modifier.width(6.dp))
     }
-}
-
-/** Monitor glyph for "open the agent's screen" (no extended-icons dependency). */
-private val ScreenGlyph: androidx.compose.ui.graphics.vector.ImageVector by lazy {
-    androidx.compose.ui.graphics.vector.ImageVector.Builder("Screen", 24.dp, 24.dp, 24f, 24f).apply {
-        addPath(
-            androidx.compose.ui.graphics.vector.PathParser().parsePathString(
-                "M4,4h16a2,2 0,0 1,2 2v10a2,2 0,0 1,-2 2h-6v2h3v2H7v-2h3v-2H4a2,2 0,0 1,-2 -2V6a2,2 0,0 1,2 -2zM4,6v10h16V6H4z"
-            ).toNodes(),
-            fill = androidx.compose.ui.graphics.SolidColor(Color.Black),
-        )
-    }.build()
 }

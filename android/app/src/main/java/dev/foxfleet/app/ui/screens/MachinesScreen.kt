@@ -19,7 +19,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -87,8 +87,8 @@ fun MachinesScreen(api: HubApi, hub: String, initialCode: String?, onBack: () ->
         onConnect = { start(null) }, onRepair = { start(it.id) }, onRevoke = { revoke = it }, onNewCode = { start(machineId) })
     revoke?.let { m ->
         AlertDialog(onDismissRequest = { revoke = null }, title = { Text("Revoke ${m.name}?") }, text = { Text("It disconnects and its agents are removed. You can connect it again later with a new code.") },
-            confirmButton = { TextButton(onClick = { revoke = null; scope.launch { try { api.revokeMachine(m.id); load(); onChanged() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't revoke") } } }) { Text("Revoke") } },
-            dismissButton = { TextButton(onClick = { revoke = null }) { Text("Cancel") } })
+            confirmButton = { SoftButton(onClick = { revoke = null; scope.launch { try { api.revokeMachine(m.id); load(); onChanged() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't revoke") } } }) { Text("Revoke") } },
+            dismissButton = { SoftButton(onClick = { revoke = null }) { Text("Cancel") } })
     }
 }
 
@@ -135,7 +135,7 @@ fun MachinesContent(
                 SoftCard(Modifier.fillMaxWidth()) {
                     Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                         Text(pairingStatusText(state), style = MaterialTheme.typography.titleMedium, color = if (state is PairingState.Paired && state.machine?.profiles?.isNotEmpty() == true) c.text else c.textMuted, modifier = Modifier.weight(1f))
-                        if (state is PairingState.Expired) TextButton(onClick = onNewCode) { Text("New code", color = c.accent) }
+                        if (state is PairingState.Expired) SoftButton(onClick = onNewCode) { Text("New code", color = c.accent) }
                     }
                 }
                 Spacer(Modifier.height(32.dp))
@@ -158,7 +158,7 @@ fun MachinesContent(
                                         Text(if (m.online) "Online" else m.lastSeen?.let { "Last seen " + lastSeen(it) } ?: "Never connected", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                                     }
                                     Text(if (m.profiles.isEmpty()) "No profiles shared yet" else m.profiles.joinToString(", "), style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(start = 18.dp, top = 2.dp))
-                                    Row { TextButton(onClick = { onRepair(m) }) { Text("Re-pair", color = c.accent) }; TextButton(onClick = { onRevoke(m) }) { Text("Revoke", color = androidx.compose.ui.graphics.Color(0xFFC4372B)) } }
+                                    Row { SoftButton(onClick = { onRepair(m) }) { Text("Re-pair", color = c.accent) }; SoftButton(onClick = { onRevoke(m) }) { Text("Revoke", color = androidx.compose.ui.graphics.Color(0xFFC4372B)) } }
                                 }
                             }
                         }

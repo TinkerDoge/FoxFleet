@@ -25,7 +25,7 @@ import androidx.compose.material3.CheckboxDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -108,14 +108,14 @@ fun HubAddressScreen(
         PrimaryAction(if (busy) "Checking…" else "Continue", Modifier.fillMaxWidth(), busy, enabled = text.isNotBlank()) { go() }
         val shown = error ?: if (text.isNotBlank() && cleaned == null) problem else null
         shown?.let { Spacer(Modifier.height(14.dp)); Text(it, style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.align(Alignment.CenterHorizontally)) }
-        TextButton(onClick = {
+        SoftButton(onClick = {
             // Google code scanner: runs in Play services, so the app needs no camera permission and no camera code.
             val options = com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions.Builder().setBarcodeFormats(com.google.mlkit.vision.barcode.common.Barcode.FORMAT_QR_CODE).build()
             com.google.mlkit.vision.codescanner.GmsBarcodeScanning.getClient(context, options).startScan()
                 .addOnSuccessListener { code -> code.rawValue?.let { raw -> val link = HubAddress.parseLink(raw); if (link != null) { text = link.hub; error = null; onScanned(raw) } else error = "That QR isn't an Foxfleet pairing code" } }
                 .addOnFailureListener { error = "QR scanning needs Google Play services. Type the address instead." }
         }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Scan QR", color = c.accent) }
-        onCancel?.let { TextButton(onClick = it, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = c.textMuted) } }
+        onCancel?.let { SoftButton(onClick = it, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Cancel", color = c.textMuted) } }
     }
 }
 
@@ -125,7 +125,7 @@ fun HubsScreen(hubs: List<HubEntry>, activeId: String, onBack: () -> Unit, onSwi
     val c = LocalHubColors.current
     var confirm by remember { mutableStateOf<HubEntry?>(null) }
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
-        TopBar("Hubs", onBack) { TextButton(onClick = onAdd) { Text("Add", color = c.accent) } }
+        TopBar("Hubs", onBack) { SoftButton(onClick = onAdd) { Text("Add", color = c.accent) } }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
             Text("Switch between hubs, for example home and work. Each hub has its own account and agents.", style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(4.dp, 8.dp))
             SoftCard(Modifier.fillMaxWidth()) {
@@ -137,7 +137,7 @@ fun HubsScreen(hubs: List<HubEntry>, activeId: String, onBack: () -> Unit, onSwi
                                 Text(h.name, style = MaterialTheme.typography.bodyLarge, color = c.text)
                                 Text(if (h.id == activeId) "Active" else "Tap to switch", style = MaterialTheme.typography.bodySmall, color = if (h.id == activeId) c.accent else c.textFaint)
                             }
-                            TextButton(onClick = { confirm = h }) { Text("Remove", color = c.textMuted) }
+                            SoftButton(onClick = { confirm = h }) { Text("Remove", color = c.textMuted) }
                         }
                     }
                 }
@@ -147,8 +147,8 @@ fun HubsScreen(hubs: List<HubEntry>, activeId: String, onBack: () -> Unit, onSwi
     confirm?.let { h ->
         AlertDialog(onDismissRequest = { confirm = null }, containerColor = c.surface,
             title = { Text("Remove ${h.name}?") }, text = { Text("This phone forgets the hub and its sign-in. Nothing on the hub is deleted.") },
-            confirmButton = { TextButton(onClick = { confirm = null; onRemove(h.id) }) { Text("Remove", color = c.textMuted) } },
-            dismissButton = { TextButton(onClick = { confirm = null }) { Text("Keep", color = c.accent) } })
+            confirmButton = { SoftButton(onClick = { confirm = null; onRemove(h.id) }) { Text("Remove", color = c.textMuted) } },
+            dismissButton = { SoftButton(onClick = { confirm = null }) { Text("Keep", color = c.accent) } })
     }
 }
 
@@ -178,7 +178,7 @@ fun DevicesScreen(api: HubApi?, onBack: () -> Unit, onSignedOut: () -> Unit, pre
                                 Text(d.name + if (d.current) " · this device" else "", style = MaterialTheme.typography.bodyLarge, color = c.text)
                                 Text((if (d.kind == "app") "App" else "Browser") + " · " + lastSeen(d.lastSeen), style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                             }
-                            if (!d.current) TextButton(onClick = { scope.launch { try { api?.revokeDevice(d.id); reload() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't sign it out") } } }) { Text("Sign out", color = c.textMuted) }
+                            if (!d.current) SoftButton(onClick = { scope.launch { try { api?.revokeDevice(d.id); reload() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't sign it out") } } }) { Text("Sign out", color = c.textMuted) }
                         }
                     }
                 }
@@ -201,8 +201,8 @@ fun DevicesScreen(api: HubApi?, onBack: () -> Unit, onSignedOut: () -> Unit, pre
     }
     if (confirmAll) AlertDialog(onDismissRequest = { confirmAll = false }, containerColor = c.surface,
         title = { Text("Sign out everywhere?") }, text = { Text("Every phone and browser, including this one, will need to sign in again.") },
-        confirmButton = { TextButton(onClick = { confirmAll = false; scope.launch { api?.logoutEverywhere(); onSignedOut() } }) { Text("Sign out everywhere", color = c.accent) } },
-        dismissButton = { TextButton(onClick = { confirmAll = false }) { Text("Cancel", color = c.textMuted) } })
+        confirmButton = { SoftButton(onClick = { confirmAll = false; scope.launch { api?.logoutEverywhere(); onSignedOut() } }) { Text("Sign out everywhere", color = c.accent) } },
+        dismissButton = { SoftButton(onClick = { confirmAll = false }) { Text("Cancel", color = c.textMuted) } })
 }
 
 internal fun lastSeen(ms: Long): String {
@@ -226,6 +226,6 @@ private fun ChangePasswordDialog(onDismiss: () -> Unit, onSubmit: suspend (Strin
                 error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
             }
         },
-        confirmButton = { TextButton(enabled = !busy && cur.isNotEmpty() && next.length >= 10, onClick = { busy = true; scope.launch { error = onSubmit(cur, next); busy = false } }) { Text("Change", color = c.accent) } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = c.textMuted) } })
+        confirmButton = { SoftButton(enabled = !busy && cur.isNotEmpty() && next.length >= 10, onClick = { busy = true; scope.launch { error = onSubmit(cur, next); busy = false } }) { Text("Change", color = c.accent) } },
+        dismissButton = { SoftButton(onClick = onDismiss) { Text("Cancel", color = c.textMuted) } })
 }

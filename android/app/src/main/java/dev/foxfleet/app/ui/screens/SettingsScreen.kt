@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
@@ -69,7 +70,7 @@ fun SettingsScreen(
     val c = LocalHubColors.current
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            SoftIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tint = c.text)
+            SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
             Spacer(Modifier.width(4.dp))
             Text("Settings", style = MaterialTheme.typography.titleLarge, color = c.text)
         }
@@ -207,5 +208,5 @@ private fun Swatch(color: androidx.compose.ui.graphics.Color, name: String, sele
         Modifier.size(36.dp).graphicsLayer { scaleX = s; scaleY = s }.clip(CircleShape).background(color)
             .border(if (selected) 2.dp else 0.dp, if (selected) c.text else color, CircleShape).clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
-    ) { if (selected) Icon(Icons.Filled.Check, name, tint = c.onAccent.takeIf { color == c.accent } ?: androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(18.dp)) }
+    ) { if (selected) Icon(FoxIcons.get("check"), name, tint = c.onAccent.takeIf { color == c.accent } ?: androidx.compose.ui.graphics.Color.White, modifier = Modifier.size(18.dp)) }
 }

@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.components
 
+import dev.foxfleet.app.ui.FoxIcons
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
@@ -39,7 +40,7 @@ fun MediaViewer(item: MediaRef, client: OkHttpClient?, onClose: () -> Unit) {
             MediaRef.Kind.Video -> if (!LocalInspectionMode.current) VideoPlayer(item.url, client)
         }
         SoftIconButton(
-            Icons.Filled.Close, "Close", onClose,
+            FoxIcons.get("close"), "Close", onClose,
             modifier = Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp),
             tint = Color.White, background = Color(0x66000000),
         )

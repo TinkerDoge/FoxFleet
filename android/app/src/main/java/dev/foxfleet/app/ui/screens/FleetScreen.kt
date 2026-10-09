@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
@@ -26,7 +27,7 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -85,8 +86,8 @@ fun FleetScreen(
                     style = MaterialTheme.typography.bodySmall, color = c.textMuted,
                 )
             }
-            SoftIconButton(Icons.Filled.Refresh, "Refresh", onRefresh)
-            SoftIconButton(Icons.Filled.Settings, "Settings", onSettings)
+            SoftIconButton(FoxIcons.get("retry"), "Refresh", onRefresh)
+            SoftIconButton(FoxIcons.get("settings"), "Settings", onSettings)
         }
         PullToRefreshBox(isRefreshing = loading && loadedOnce, onRefresh = onRefresh, modifier = Modifier.weight(1f).fillMaxWidth()) {
             when {
@@ -187,7 +188,7 @@ private fun EmptyState(title: String, body: String, action: String, onAction: ()
         Spacer(Modifier.height(6.dp))
         Text(body, style = MaterialTheme.typography.bodyMedium, color = c.textMuted)
         Spacer(Modifier.height(12.dp))
-        TextButton(onClick = onAction) { Text(action, color = c.accent) }
+        SoftButton(onClick = onAction) { Text(action, color = c.accent) }
     }
 }
 

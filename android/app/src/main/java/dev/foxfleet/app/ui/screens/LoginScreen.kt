@@ -22,7 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -164,10 +164,10 @@ fun LoginScreen(hubName: String, api: HubApi, notice: String?, onChangeHub: () -
         }
         Spacer(Modifier.height(12.dp))
         if (mode != AuthMode.Setup && info?.registration?.let { it != "closed" } == true) {
-            TextButton(onClick = { wantsJoin = !wantsJoin; error = null }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
+            SoftButton(onClick = { wantsJoin = !wantsJoin; error = null }, modifier = Modifier.align(Alignment.CenterHorizontally)) {
                 Text(if (wantsJoin) "I already have an account" else "Create an account", color = c.accent)
             }
         }
-        TextButton(onClick = onChangeHub, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use a different hub", color = c.textMuted) }
+        SoftButton(onClick = onChangeHub, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Use a different hub", color = c.textMuted) }
     }
 }

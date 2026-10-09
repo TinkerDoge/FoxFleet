@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.ui.FoxIcons
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.os.Handler
@@ -181,7 +182,7 @@ fun ScreenScreen(
     val border by animateColorAsState(if (phase == ScreenPhase.Control) ControlRed else Color.Transparent, label = "control-border")
     Column(Modifier.fillMaxSize().background(Color(0xFF0B0B0C)).statusBarsPadding().navigationBarsPadding()) {
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            SoftIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tint = Color.White)
+            SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = Color.White)
             Spacer(Modifier.width(6.dp))
             Column(Modifier.weight(1f)) {
                 Text("$agentName's screen", style = MaterialTheme.typography.titleMedium, color = Color.White)

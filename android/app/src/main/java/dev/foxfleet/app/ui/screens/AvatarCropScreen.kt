@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -81,8 +81,8 @@ fun AvatarCropScreen(agent: String, bitmap: Bitmap, onDone: (left: Int, top: Int
         }
         Spacer(Modifier.weight(1f))
         Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
-            TextButton(onClick = onCancel) { Text("Cancel", color = Color.White) }
-            TextButton(onClick = {
+            SoftButton(onClick = onCancel) { Text("Cancel", color = Color.White) }
+            SoftButton(onClick = {
                 val (l, t, sz) = CropMath.sourceSquare(bitmap.width, bitmap.height, vp, base * zoom, dx, dy)
                 onDone(l, t, sz)
             }) { Text("Use photo", color = c.accent) }

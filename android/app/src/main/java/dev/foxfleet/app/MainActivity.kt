@@ -255,12 +255,12 @@ private fun AvatarFlow(vm: HubViewModel) {
         title = { androidx.compose.material3.Text("$target's photo") },
         text = { androidx.compose.material3.Text("Pick a photo from your library. It stays on this phone.") },
         confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
+            dev.foxfleet.app.ui.components.SoftButton(onClick = {
                 picker.launch(androidx.activity.result.PickVisualMediaRequest(androidx.activity.result.contract.ActivityResultContracts.PickVisualMedia.ImageOnly))
             }) { androidx.compose.material3.Text("Choose photo", color = c.accent) }
         },
         dismissButton = {
-            androidx.compose.material3.TextButton(onClick = { vm.avatars.reset(target); vm.avatarTarget = null }) {
+            dev.foxfleet.app.ui.components.SoftButton(onClick = { vm.avatars.reset(target); vm.avatarTarget = null }) {
                 androidx.compose.material3.Text("Reset", color = c.textMuted)
             }
         },

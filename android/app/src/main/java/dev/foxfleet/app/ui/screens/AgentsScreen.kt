@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -36,7 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -73,7 +74,7 @@ import kotlinx.coroutines.launch
 internal fun TopBar(title: String, onBack: () -> Unit, trailing: @Composable () -> Unit = {}) {
     val c = LocalHubColors.current
     Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-        SoftIconButton(Icons.AutoMirrored.Filled.ArrowBack, "Back", onBack, tint = c.text)
+        SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
         Spacer(Modifier.width(4.dp))
         Text(title, style = MaterialTheme.typography.titleLarge, color = c.text, modifier = Modifier.weight(1f))
         trailing()
@@ -95,7 +96,7 @@ fun AgentsScreen(
 ) {
     val c = LocalHubColors.current
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
-        TopBar("Agents", onBack) { SoftIconButton(Icons.Filled.Add, "Add agent", onAdd, tint = c.accent) }
+        TopBar("Agents", onBack) { SoftIconButton(FoxIcons.get("add"), "Add agent", onAdd, tint = c.accent) }
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
             Text("Everyone your hub can talk to. Addresses and keys stay on the hub; this phone never sees them.",
                 style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(horizontal = 4.dp, vertical = 8.dp))
@@ -128,8 +129,8 @@ fun AgentsScreen(
                                         Text(a.description.ifBlank { kindName(a.kind) }, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 2)
                                     }
                                     Column {
-                                        SoftIconButton(Icons.Filled.KeyboardArrowUp, "Move ${a.label} up", { onMove(i, -1) }, tint = if (i > 0) c.textMuted else c.hairline)
-                                        SoftIconButton(Icons.Filled.KeyboardArrowDown, "Move ${a.label} down", { onMove(i, 1) }, tint = if (i < agents.lastIndex) c.textMuted else c.hairline)
+                                        SoftIconButton(FoxIcons.get("chevronUp"), "Move ${a.label} up", { onMove(i, -1) }, tint = if (i > 0) c.textMuted else c.hairline)
+                                        SoftIconButton(FoxIcons.get("chevronDown"), "Move ${a.label} down", { onMove(i, 1) }, tint = if (i < agents.lastIndex) c.textMuted else c.hairline)
                                     }
                                 }
                             }
@@ -211,7 +212,7 @@ fun AgentEditorScreen(
                 }
             }
             if (advanced.isNotEmpty()) {
-                TextButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Hide advanced" else "Advanced", color = c.accent) }
+                SoftButton(onClick = { showAdvanced = !showAdvanced }) { Text(if (showAdvanced) "Hide advanced" else "Advanced", color = c.accent) }
                 AnimatedVisibility(showAdvanced) {
                     SoftCard(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -236,12 +237,12 @@ fun AgentEditorScreen(
                 }
             }
             if (editing && onNewToken != null && existing?.kind == "mcp-inbox") {
-                TextButton(onClick = { run { onNewToken()?.let { token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new token", color = c.accent) }
+                SoftButton(onClick = { run { onNewToken()?.let { token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new token", color = c.accent) }
             }
             if (editing && nativeControls != null) ProfileBusyCard(nativeControls)
             if (editing) {
                 Spacer(Modifier.height(24.dp))
-                TextButton(onClick = { confirmDelete = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Remove agent", color = dangerColor()) }
+                SoftButton(onClick = { confirmDelete = true }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Remove agent", color = dangerColor()) }
             }
             Spacer(Modifier.height(32.dp))
         }
@@ -251,8 +252,8 @@ fun AgentEditorScreen(
             onDismissRequest = { confirmDelete = false }, containerColor = c.surface,
             title = { Text("Remove ${existing.label}?") },
             text = { Text("The hub forgets this agent and its saved keys. Nothing on the agent's own machine is deleted.") },
-            confirmButton = { TextButton(onClick = { confirmDelete = false; run { onDelete(); onDone() } }) { Text("Remove", color = dangerColor()) } },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Keep", color = c.textMuted) } },
+            confirmButton = { SoftButton(onClick = { confirmDelete = false; run { onDelete(); onDone() } }) { Text("Remove", color = dangerColor()) } },
+            dismissButton = { SoftButton(onClick = { confirmDelete = false }) { Text("Keep", color = c.textMuted) } },
         )
     }
 }

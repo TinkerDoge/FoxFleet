@@ -22,7 +22,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.FoxIcon
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -75,7 +76,7 @@ fun HistorySheet(
         Column(Modifier.navigationBarsPadding().padding(bottom = 8.dp)) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
                 Text("History · $agentName", style = MaterialTheme.typography.titleMedium, color = c.text, modifier = Modifier.weight(1f))
-                TextButton(onClick = { onNew(); onDismiss() }) { Text("New chat", color = c.accent) }
+                SoftButton(onClick = { onNew(); onDismiss() }) { FoxIcon("add", null, tint = c.accent, size = 18.dp); Text("New chat", color = c.accent) }
             }
             error?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp)) }
             PullToRefreshBox(isRefreshing = loading && sessions.isNotEmpty(), onRefresh = onRefresh, modifier = Modifier.weight(1f, fill = false)) {
@@ -101,7 +102,7 @@ fun HistorySheet(
                         }
                     }
                     if (sessions.size < total) item {
-                        TextButton(onClick = onLoadMore, enabled = !loading, modifier = Modifier.fillMaxWidth()) { Text(if (loading) "Loading…" else "Load more", color = c.accent) }
+                        SoftButton(onClick = onLoadMore, enabled = !loading, modifier = Modifier.fillMaxWidth()) { Text(if (loading) "Loading…" else "Load more", color = c.accent) }
                     }
                     item { Spacer(Modifier.height(8.dp)) }
                 }
@@ -112,13 +113,13 @@ fun HistorySheet(
         var title by remember(s.id) { mutableStateOf(s.title.orEmpty()) }
         AlertDialog(onDismissRequest = { renaming = null }, title = { Text("Rename chat") },
             text = { OutlinedTextField(title, { title = it.take(120) }, singleLine = true) },
-            confirmButton = { TextButton(onClick = { if (title.isNotBlank()) onRename(s.id, title.trim()); renaming = null }) { Text("Save") } },
-            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } })
+            confirmButton = { SoftButton(onClick = { if (title.isNotBlank()) onRename(s.id, title.trim()); renaming = null }) { Text("Save") } },
+            dismissButton = { SoftButton(onClick = { renaming = null }) { Text("Cancel") } })
     }
     deleting?.let { s ->
         AlertDialog(onDismissRequest = { deleting = null }, title = { Text("Delete this conversation?") },
             text = { Text(s.title ?: "Untitled chat") },
-            confirmButton = { TextButton(onClick = { onDelete(s.id); deleting = null }) { Text("Delete") } },
-            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } })
+            confirmButton = { SoftButton(onClick = { onDelete(s.id); deleting = null }) { Text("Delete") } },
+            dismissButton = { SoftButton(onClick = { deleting = null }) { Text("Cancel") } })
     }
 }

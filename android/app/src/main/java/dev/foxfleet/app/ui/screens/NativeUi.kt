@@ -16,7 +16,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
+import dev.foxfleet.app.ui.components.SoftButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -80,7 +80,7 @@ internal fun RequestCard(r: HubApi.OpenRequest, agentName: String, onAnswer: sus
             Text("$agentName asks permission", style = MaterialTheme.typography.titleSmall, color = c.text)
             r.description?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.text) }
             r.command?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(c.bg).padding(8.dp)) }
-            Row { TextButton({ go(approvalAnswer(true)) }, enabled = !sending) { Text("Allow once", color = c.accent) }; TextButton({ go(approvalAnswer(false)) }, enabled = !sending) { Text("Deny", color = c.accent) } }
+            Row { SoftButton({ go(approvalAnswer(true)) }, enabled = !sending) { Text("Allow once", color = c.accent) }; SoftButton({ go(approvalAnswer(false)) }, enabled = !sending) { Text("Deny", color = c.accent) } }
         } else {
             Text("$agentName has a question", style = MaterialTheme.typography.titleSmall, color = c.text)
             if (r.questions.isEmpty()) Text("The agent asked something without a question text. You can send an empty answer to let it continue.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
@@ -94,7 +94,7 @@ internal fun RequestCard(r: HubApi.OpenRequest, agentName: String, onAnswer: sus
                 }
                 OutlinedTextField(typed.value[q.id].orEmpty(), { typed.value = typed.value + (q.id to it) }, enabled = !sending, singleLine = true, label = { Text(if (q.choices.isEmpty()) "Your answer" else "Or type your own answer") }, modifier = Modifier.fillMaxWidth())
             }
-            TextButton({ go(clarifyAnswers(r, picked.value, typed.value)) }, enabled = !sending) { Text("Send answer", color = c.accent) }
+            SoftButton({ go(clarifyAnswers(r, picked.value, typed.value)) }, enabled = !sending) { Text("Send answer", color = c.accent) }
         }
         err?.let { Text("Could not send the answer: $it", style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
     }
@@ -157,14 +157,14 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                         }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
-                        TextButton({ page = shown - 1 }, enabled = shown > 0) { Text("Previous", color = c.accent) }
+                        SoftButton({ page = shown - 1 }, enabled = shown > 0) { Text("Previous", color = c.accent) }
                         Text("Page ${shown + 1} of $pages", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-                        TextButton({ page = shown + 1 }, enabled = shown < pages - 1) { Text("Next", color = c.accent) }
+                        SoftButton({ page = shown + 1 }, enabled = shown < pages - 1) { Text("Next", color = c.accent) }
                     }
                 }
             }
             err?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
-            Row { if (p != null) TextButton({ sel = null; q = "" }) { Text("Back", color = c.accent) }; TextButton(onDismiss) { Text("Cancel", color = c.accent) } }
+            Row { if (p != null) SoftButton({ sel = null; q = "" }) { Text("Back", color = c.accent) }; SoftButton(onDismiss) { Text("Cancel", color = c.accent) } }
         }
     }
 }
@@ -178,7 +178,7 @@ internal fun ChoiceSheet(command: String, options: List<String>, onChoose: (Stri
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text("/$command", style = MaterialTheme.typography.titleMedium, color = c.text)
             options.forEach { o -> ChoiceRow(o, true) { onChoose("/$command $o") } }
-            TextButton(onDismiss) { Text("Cancel", color = c.accent) }
+            SoftButton(onDismiss) { Text("Cancel", color = c.accent) }
         }
     }
 }
@@ -201,12 +201,12 @@ fun ProfileBusyCard(controls: NativeControls) {
         Text("Hermes default for messages sent while it works", style = MaterialTheme.typography.titleSmall, color = c.text)
         Text("This is a setting of the Hermes profile. Changing it affects every chat of this profile, including the terminal and messaging apps.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
         if (now.isNotEmpty()) Text("Now: ${modeLabel(now, true)}", style = MaterialTheme.typography.bodySmall, color = c.text)
-        Row { listOf("queue", "steer", "interrupt").forEach { m -> TextButton({ confirmMode = m }, enabled = now != m) { Text(modeLabel(m, true), color = c.accent) } } }
+        Row { listOf("queue", "steer", "interrupt").forEach { m -> SoftButton({ confirmMode = m }, enabled = now != m) { Text(modeLabel(m, true), color = c.accent) } } }
         err?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted) }
     }
     confirmMode?.let { m ->
         AlertDialog(onDismissRequest = { confirmMode = null }, title = { Text("Change it for the whole Hermes profile?") }, text = { Text("Every chat of this profile will treat messages sent while it works as: ${modeLabel(m, true)}.") },
-            confirmButton = { TextButton({ confirmMode = null; scope.launch { runCatching { controls.setBusy(m) }.onSuccess { busy = m; err = null }.onFailure { err = it.message } } }) { Text("Change the profile default") } },
-            dismissButton = { TextButton({ confirmMode = null }) { Text("Cancel") } })
+            confirmButton = { SoftButton({ confirmMode = null; scope.launch { runCatching { controls.setBusy(m) }.onSuccess { busy = m; err = null }.onFailure { err = it.message } } }) { Text("Change the profile default") } },
+            dismissButton = { SoftButton({ confirmMode = null }) { Text("Cancel") } })
     }
 }
