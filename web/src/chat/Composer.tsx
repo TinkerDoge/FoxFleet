@@ -8,6 +8,7 @@ import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
 import { estimatedBytes, HUB_BODY_LIMIT, type UiImage, type UiMessage } from '../lib/chat';
 import { t } from '../i18n/t';
 import { useDraft, type PendingAttachment as Pending } from './drafts';
+import { ActionMenu } from '../components/ActionMenu';
 
 const SR: any = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
 let nextId = 1;
@@ -16,7 +17,7 @@ const catalogs = new Map<string, Catalog>();
 export function plainMode(native: boolean, modes: SendMode[]): SendMode { return native ? 'auto' : modes.includes('interrupt') ? 'interrupt' : 'queue'; }
 
 export function Composer(props: {
-  client: Client; agent: AgentSummary; history: UiMessage[]; streaming: boolean; skills: string[]; draftKey: string; session?: string; queue?: QueueItem[]; onCancelQueued?: (id: string) => void;
+  client: Client; agent: AgentSummary; history: UiMessage[]; streaming: boolean; skills: string[]; draftKey: string; session?: string; disabled?: boolean; queue?: QueueItem[]; onCancelQueued?: (id: string) => void;
   onSend: (text: string, images: UiImage[], files: FileRef[], mode: SendMode) => void; onStop: () => void; onLocal: (c: LocalCommand, args?: string) => void;
   onModel?: (args: string) => void; onChoices?: (command: string, options: string[]) => void;
 }) {
@@ -83,6 +84,7 @@ export function Composer(props: {
   }
   function sendBody(body: string, m: SendMode) { setDraft({ text: '', pending: [] }); setNote(null); setMenu(false); props.onSend(body, [], [], m); }
   function submit() {
+    if (props.disabled) return;
     const mm = /^\/model(?:\s+([\s\S]*))?$/i.exec(text.trim());
     if (native && mm && props.onModel) { setText(''); setNote(null); setMenu(false); props.onModel((mm[1] ?? '').trim()); return; }
     const bare = /^\/([A-Za-z0-9_-]+)$/.exec(text.trim()), bc = bare && native ? resolveCommand(bare[1], catalog) : undefined;
@@ -141,12 +143,10 @@ export function Composer(props: {
       <div class="bar">
         {(caps.images || caps.files) && (
           <span class="attach">
-            <button class="icon-btn" aria-label={t('chat.attach')} aria-haspopup="menu" onClick={(e) => { const m = (e.currentTarget.nextElementSibling as HTMLElement); m.hidden = !m.hidden; }}>＋</button>
-            <div class="attach-menu" role="menu" hidden onClick={(e) => ((e.currentTarget as HTMLElement).hidden = true)}>
-              {caps.images && <button role="menuitem" onClick={() => photo.current?.click()}>{t('chat.photo')}</button>}
-              {caps.images && <button role="menuitem" onClick={() => cam.current?.click()}>{t('chat.camera')}</button>}
-              {caps.files && <button role="menuitem" onClick={() => file.current?.click()}>{t('chat.file')}</button>}
-            </div>
+            <ActionMenu label={t('chat.attach')} above actions={[
+              ...(caps.images ? [{ label: t('chat.photo'), onSelect: () => photo.current?.click() }, { label: t('chat.camera'), onSelect: () => cam.current?.click() }] : []),
+              ...(caps.files ? [{ label: t('chat.file'), onSelect: () => file.current?.click() }] : []),
+            ]}>＋</ActionMenu>
             <input ref={photo} type="file" accept="image/*" multiple hidden onChange={media} />
             <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={media} />
             <input ref={file} type="file" multiple hidden onChange={media} />
@@ -157,7 +157,7 @@ export function Composer(props: {
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />
         {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
         {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>}
-        <button class="send" aria-label={t('chat.send')} disabled={!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog)} onClick={submit}>↑</button>
+        <button class="send" aria-label={t('chat.send')} disabled={props.disabled || (!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog))} onClick={submit}>↑</button>
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

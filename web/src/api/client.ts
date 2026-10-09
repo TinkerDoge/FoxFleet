@@ -114,7 +114,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
       if (++attempts > 8) throw new NetworkError();
       await sleep(Math.min(500 * 2 ** (attempts - 1), 8000), opts.signal);
       try { res = await openEvents(agent, run, last, opts.signal); }
-      catch (e) { if (e instanceof ApiError) return sid; /* the run expired on the hub: keep what we have */ if ((e as Error).name === 'AbortError') throw e; continue; }
+      catch (e) { if (e instanceof AuthRequiredError) throw e; if (e instanceof ApiError) { opts.onRunState?.('unavailable'); return sid; } /* keep partial text without implying completion */ if ((e as Error).name === 'AbortError') throw e; continue; }
     }
   }
 
