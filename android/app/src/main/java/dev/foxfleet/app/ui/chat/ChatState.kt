@@ -11,6 +11,7 @@ import dev.foxfleet.app.data.SavedChat
 import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.UiMessage
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 
 const val PAGE = 80
 
@@ -50,6 +51,14 @@ class ChatState {
         private set
     var unread by mutableStateOf(false)
         private set
+    /** What the hub holds for this conversation (queued, waiting for a stop, guidance accepted) and whether draining is paused. */
+    var queue by mutableStateOf<List<HubApi.QueuedMessage>>(emptyList())
+        private set
+    var halted by mutableStateOf(false)
+        private set
+    /** Bumped whenever the screen moves to another chat or stream: callbacks of an older stream are ignored. */
+    private var gen = 0
+    private var submitting = 0
 
     /** Previews/screenshot tests: put the live overlays into a mid-stream state. */
     internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null) {
@@ -73,6 +82,7 @@ class ChatState {
     }
 
     fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
+        gen++; queue = emptyList(); halted = false
         this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
         if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
@@ -90,15 +100,16 @@ class ChatState {
     fun olderFailed() { loadingOlder = false }
 
     fun newConversation() {
+        gen++; queue = emptyList(); halted = false
         messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; persist(SavedChat())
         resetStream(); error = null
     }
 
-    private fun callbacks() = HubApi.StreamCallbacks(
-        onContent = { streamText += it }, onReasoning = { streamReasoning += it }, onTool = { toolLabel = it },
-        onSession = { adopt(it); persist(SavedChat(sessionId, runId, pendingUser)) },
-        onRun = { runId = it; persist(SavedChat(sessionId, it, pendingUser)) },
-        onGap = { streamText = "" },
+    private fun callbacks(g: Int) = HubApi.StreamCallbacks(
+        onContent = { if (g == gen) streamText += it }, onReasoning = { if (g == gen) streamReasoning += it }, onTool = { if (g == gen) toolLabel = it },
+        onSession = { if (g == gen) { adopt(it); persist(SavedChat(sessionId, runId, pendingUser)) } },
+        onRun = { if (g == gen) { runId = it; persist(SavedChat(sessionId, it, pendingUser)) } },
+        onGap = { if (g == gen) streamText = "" },
     )
     private var pendingUser: String? = null
 
@@ -117,26 +128,62 @@ class ChatState {
     }
 
     private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
+        val g = ++gen
         streaming = true; error = null; streamText = ""; streamReasoning = ""; toolLabel = null
         try {
-            val text = block(callbacks())
+            val text = block(callbacks(g))
+            if (g != gen) return // another chat is open now: this stream's end changes nothing
             toolLabel = null
-            push(UiMessage(role = "assistant", content = text))
+            if (text.isNotEmpty() || streamReasoning.isNotEmpty()) push(UiMessage(role = "assistant", content = text))
             resetStream(); finishRun()
         } catch (e: CancellationException) {
             // The app left the screen or the process is going away. The hub keeps the run alive, so keep what we have and
             // leave the saved run id in place: the next launch reattaches and fills in the rest.
             val partial = streamText
+            if (g != gen) throw e
             resetStream()
             if (partial.isNotBlank()) push(UiMessage(role = "assistant", content = partial))
             throw e
         } catch (e: AuthRequiredException) {
-            resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) }; throw e
+            if (g == gen) resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) }; throw e
         } catch (e: Exception) {
+            if (g != gen) throw e
             resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Chat failed"
             throw e
         }
     }
 
     fun finishRun() { runId = null; pendingUser = null; persist(SavedChat(sessionId, null, null)) }
+
+    // ---- sending while the agent works ----
+
+    /** The hub stores the message first; the mode decides what happens if the agent is busy. A rejected send returns its text so nothing is lost. */
+    suspend fun sendBusy(api: HubApi, agent: String, userText: String, images: List<dev.foxfleet.app.data.ImageAttachment>, mode: String): String? {
+        val clientId = java.util.UUID.randomUUID().toString()
+        val local = HubApi.QueuedMessage(clientId, if (mode == "interrupt") "awaiting_stop" else if (mode == "steer") "sending" else "queued", mode, userText)
+        queue = queue + local; submitting++
+        try {
+            val r = api.sendMessage(agent, UiMessage(role = "user", content = userText, images = images), sessionId, mode, clientId)
+            queue = queue.map { if (it.id == clientId) r.message else it }
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { queue = queue.filter { it.id != clientId }; throw e } catch (e: Exception) {
+            queue = queue.filter { it.id != clientId }; error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Not sent"; return userText
+        } finally { submitting-- }
+        return null
+    }
+
+    /**
+     * Reads the hub's queue for this conversation: shows what is waiting and follows the next reply when the hub has started one
+     * (a queued message, or the replacement after Interrupt & send). Call after a send, a finished reply, a reload or a reconnect.
+     */
+    suspend fun syncQueue(api: HubApi, agent: String, attempts: Int = 0) {
+        val s = sessionId; val q = try { api.queue(agent, s) } catch (e: CancellationException) { throw e } catch (_: Exception) { return }
+        if (s != sessionId) return
+        val running = q.items.firstOrNull { it.runId != null && it.runId == q.activeRun }
+        val gone = queue.filter { it.state == "guidance_accepted" && q.items.none { i -> i.id == it.id } } // the run ended: the guidance joins the transcript
+        if (gone.isNotEmpty()) messages = messages + gone.map { UiMessage(role = "user", content = it.text) }
+        if (submitting == 0) { queue = q.items.filter { it !== running && it.state != "sending" && it.state != "running" }; halted = q.halted }
+        if (q.activeRun != null && !streaming && runId == null) { resume(api, agent, q.activeRun, running?.text); syncQueue(api, agent); return }
+        if (q.activeRun == null && !q.halted && attempts < 12 && q.items.any { it.state == "queued" || it.state == "awaiting_stop" }) { delay(300); syncQueue(api, agent, attempts + 1) }
+    }
+    fun dropQueued(id: String) { queue = queue.filter { it.id != id } }
 }

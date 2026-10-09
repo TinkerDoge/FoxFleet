@@ -9,7 +9,7 @@
 <script type="application/json" id="data">
 {
   "updated": "2026-10-09",
-  "version": "0.2.1-alpha",
+  "version": "0.3.0-alpha",
   "releasedVersion": "0.2.0-alpha",
   "overview": [
     "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
@@ -27,6 +27,56 @@
     }
   ],
   "board": [
+    {
+      "id": "cc1",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Message coordinator and queue",
+      "detail": "Persisted FIFO queue per conversation, idempotent admission, steer / queue / interrupt, one writer at a time, Stop pauses the queue."
+    },
+    {
+      "id": "cc2",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Hermes native runs",
+      "detail": "Detects run controls through /v1/capabilities and uses /v1/runs, events, steer and stop; older Hermes keeps chat completions. Tested against a fake Hermes only."
+    },
+    {
+      "id": "cc3",
+      "col": "Done",
+      "area": "Web",
+      "release": "0.3.0-alpha",
+      "text": "Composer that works while the agent works",
+      "detail": "Send and Stop together, send-mode selector (Steer, Queue, Interrupt & send), command choices for /busy and friends."
+    },
+    {
+      "id": "cc4",
+      "col": "Done",
+      "area": "Android",
+      "release": "0.3.0-alpha",
+      "text": "Send while the agent works",
+      "detail": "Same modes and queue on the phone, per-agent command catalog with choices."
+    },
+    {
+      "id": "cc5",
+      "col": "Next",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Live Hermes check of native runs and steer",
+      "doneWhen": "Steer, Interrupt \u0026 send and Stop have been run on a real Hermes and any difference from the documented events is fixed.",
+      "detail": "Run Steer, Interrupt & send and Stop against a real Hermes (direct and through the connector); check the real event names and the pending_steer shape."
+    },
+    {
+      "id": "cc6",
+      "col": "Later",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Telegram adapter",
+      "doneWhen": "The Telegram channel uses the hub coordinator and command catalog.",
+      "detail": "Reuse the coordinator and catalog for a Telegram channel (stage 7 of docs/HERMES-CHAT-CONTROLS.md). Out of scope for 0.3.0."
+    },
     {
       "id": "fx1",
       "col": "Done",

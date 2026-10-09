@@ -10,12 +10,14 @@ data class Capabilities(
     val skills: Boolean = false,
     val sessions: Boolean = false,
     val mailbox: Boolean = false,
+    /** Send modes while the agent is replying: "queue", "steer", "interrupt" (only what the agent can really do). */
+    val busy: List<String> = listOf("queue"),
 ) {
     companion object {
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
         fun forKind(kind: String) = when (kind) {
-            "hermes" -> Capabilities(images = true, files = true, screen = true, voice = true, skills = true, sessions = true)
-            "openai" -> Capabilities(images = true, sessions = true)
+            "hermes" -> Capabilities(images = true, files = true, screen = true, voice = true, skills = true, sessions = true, busy = listOf("queue", "interrupt"))
+            "openai" -> Capabilities(images = true, sessions = true, busy = listOf("queue", "interrupt"))
             "mcp-inbox" -> Capabilities(sessions = true, mailbox = true)
             else -> Capabilities()
         }

@@ -167,3 +167,4 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .queue .msg.queued small{display:block;margin-top:4px}
 .queue .queue-paused{text-align:center}
 .interrupted{display:block;margin-top:4px;font-style:italic}
+.composer .bar{flex-wrap:wrap}.composer .bar textarea{flex:1 1 9rem;min-width:9rem}

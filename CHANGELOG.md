@@ -2,6 +2,23 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## 0.3.0-alpha
+
+Android `versionName 0.3.0-alpha`, `versionCode 7`. Not yet published. Implements stages 1 to 6 of `docs/HERMES-CHAT-CONTROLS.md`; stage 7 (a Telegram adapter) is out of scope. Source-level and fake-upstream tested only: **Hermes native runs need a live check** (see the roadmap).
+
+### Added
+
+- **Type to run, with choices.** `/` opens a searchable command list; picking a command opens its choices (`/busy ` lists queue, steer, interrupt and status, `/busy st` filters). Aliases resolve (`/q`, `/s`), free-text arguments and `#` skills are left alone. The catalog is per agent (`GET /api/agents/{name}/commands`) and says what each command does (`handler`, `busy` policy, `executable`, `disabledReason`); commands without a verified route are disabled with a reason, and generic agents never show Hermes commands.
+- **A composer that works while the agent works** (web and Android): Send and Stop are both available, with a small send-mode selector limited to what the agent supports: **Steer**, **Queue**, **Interrupt & send**. The choice is remembered per conversation; Hermes defaults to Interrupt & send. Labels are honest: *Interrupt & send* stops the reply, waits until it has really stopped and then sends a new turn (over HTTP this is not a live redirect); *Guidance accepted* is not *used*.
+- **Hub message coordinator** (`server/coordinator.js`) per user, agent and conversation: a persisted FIFO queue with stable message ids, idempotent admission (`client_id`), a control path that never waits for the run, never two writers, Stop halts queue draining until you resume or send again, unused guidance (`pending_steer`) comes back once as a queued message, and the queue survives a hub restart (paused until resumed). API: `POST /api/agents/{name}/messages`, `GET /queue`, `POST /queue/resume`, `DELETE /queue/{id}`; `POST …/runs/{id}/stop` now reports whether termination was confirmed.
+- **Hermes native runs** (`server/hermes-runs.js`): when `GET /v1/capabilities` advertises `run_submission`, `run_events_sse`, `run_steer` and `run_stop`, chat uses `POST /v1/runs` (with `Idempotency-Key`, session reuse and cursor replay), `/steer` and `/stop`. Older Hermes keeps `/v1/chat/completions` (queue and transport-abort interrupt only). `/steer …` text is never sent through chat.
+- Grok and other OpenAI-compatible agents: queue, and abort and resubmit with the stored history. MCP inbox: queue only.
+
+### Changed
+
+- Every chat send now goes through the coordinator, so one conversation has one writer; `POST …/chat` answers 409 while the agent is replying (clients use `/messages`).
+- Web chat store: stream callbacks are bound to their stream and ignored once another chat is open; the transcript is no longer replaced from a captured snapshot; a stopped reply keeps its partial text marked *Interrupted*.
+
 ## 0.2.1-alpha
 
 Android `versionName 0.2.1-alpha`, `versionCode 6`. Not yet published; the version is set in every package (server, web, docs, connector, OpenAPI).

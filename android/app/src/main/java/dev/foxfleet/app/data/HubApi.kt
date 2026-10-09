@@ -321,7 +321,7 @@ class HubApi(private val store: SettingsStore) {
     /** Callbacks for one streamed reply. [onRun] gets the hub's run id (the reply keeps running on the hub if we disconnect). */
     class StreamCallbacks(
         val onContent: (String) -> Unit, val onReasoning: (String) -> Unit, val onTool: (String) -> Unit,
-        val onSession: (String) -> Unit, val onRun: (String) -> Unit = {}, val onGap: () -> Unit = {},
+        val onSession: (String) -> Unit, val onRun: (String) -> Unit = {}, val onGap: () -> Unit = {}, val onRunState: (String) -> Unit = {},
     )
 
     /**
@@ -370,6 +370,39 @@ class HubApi(private val store: SettingsStore) {
     /** The explicit Stop button: cancels the agent run itself. Just closing the app never does. */
     suspend fun stopRun(agent: String, run: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/runs/" + enc(run) + "/stop", "POST", "{}"); Unit }
 
+    /** A message the hub holds for a conversation: queued, waiting for a stop, or guidance accepted by the run. */
+    data class QueuedMessage(val id: String, val state: String, val mode: String, val text: String, val error: String? = null, val note: String? = null, val runId: String? = null)
+    data class QueueState(val items: List<QueuedMessage>, val halted: Boolean, val activeRun: String?, val modes: List<String>)
+    data class SendResult(val message: QueuedMessage, val runId: String?, val sessionId: String?)
+
+    private fun queued(o: JsonObject) = QueuedMessage(o.str("id").orEmpty(), o.str("state") ?: "queued", o.str("mode") ?: "queue", o.str("text").orEmpty(), o.str("error"), o.str("note"), o.str("run_id"))
+    private fun queueState(o: JsonObject) = QueueState(
+        o["items"]?.let { runCatching { it.jsonArray.map { e -> queued(e.jsonObject) } }.getOrNull() } ?: emptyList(), o.bool("halted") ?: false, o.str("active_run"),
+        o["modes"]?.let { runCatching { it.jsonArray.map { e -> e.jsonPrimitive.content } }.getOrNull() } ?: emptyList(),
+    )
+
+    /** Send while the agent may be replying. The hub stores and acknowledges it first; [mode] says what to do if it is busy (queue / steer / interrupt). */
+    suspend fun sendMessage(agent: String, userMessage: UiMessage, sessionId: String?, mode: String, clientId: String): SendResult = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("model", "hermes-agent"); put("mode", mode); put("client_id", clientId)
+            if (!sessionId.isNullOrBlank()) put("session_id", sessionId)
+            put("messages", ChatPayload.messages(listOf(userMessage)))
+        }.toString()
+        val o = request(agentPath(agent) + "/messages", "POST", body)
+        SendResult(queued(o["message"]!!.jsonObject), o.str("run_id"), o.str("session_id"))
+    }
+    suspend fun queue(agent: String, session: String?): QueueState = withContext(Dispatchers.IO) {
+        queueState(request(agentPath(agent) + "/queue", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15))
+    }
+    suspend fun resumeQueue(agent: String, session: String?): QueueState = withContext(Dispatchers.IO) {
+        queueState(request(agentPath(agent) + "/queue/resume", "POST", "{}", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15))
+    }
+    suspend fun cancelQueued(agent: String, id: String, session: String?) = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/queue/" + enc(id), "DELETE", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15); Unit
+    }
+    /** The hub's per-agent command catalog (JSON text), parsed by [dev.foxfleet.app.ui.chat.HermesCatalog.parseDefs]. */
+    suspend fun commandsJson(agent: String): String = withContext(Dispatchers.IO) { request(agentPath(agent) + "/commands", timeoutSec = 15).toString() }
+
     private suspend fun pump(agent: String, first: Response, cb: StreamCallbacks, knownRun: String?, from: Int): String {
         var res = first; var run = knownRun; var last = from; var attempts = 0
         val builder = StringBuilder()
@@ -386,7 +419,7 @@ class HubApi(private val store: SettingsStore) {
                     when {
                         e.data == "[DONE]" -> { finished = true; false }
                         e.event == "foxfleet.gap" -> { builder.setLength(0); cb.onGap(); true }
-                        e.event == "foxfleet.run" -> { finished = true; false } // stopped or failed on the hub
+                        e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
                         e.event == "error" -> throw HubApiException(0, "The agent reply failed. Check the agent and try again.")
                         else -> {
                             val value = runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()
@@ -451,6 +484,7 @@ class HubApi(private val store: SettingsStore) {
                     chat = caps.bool("chat") ?: true, images = caps.bool("images") ?: false, files = caps.bool("files") ?: false,
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,
                     sessions = caps.bool("sessions") ?: false, mailbox = caps.bool("mailbox") ?: false,
+                    busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),
                 ) else Capabilities.forKind(kind),
             )
         }

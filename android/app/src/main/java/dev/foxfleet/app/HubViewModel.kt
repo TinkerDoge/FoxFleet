@@ -168,21 +168,42 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     /** Agent whose avatar is being changed (long-press menu → picker → crop). */
     var avatarTarget by mutableStateOf<String?>(null)
 
+    /** The hub's per-agent command catalog (what this agent can execute); the bundled list is the fallback. */
+    val commandDefs = mutableStateMapOf<String, List<dev.foxfleet.app.ui.chat.CommandDef>>()
     fun loadSkills(agent: String) {
         if (skills.containsKey(agent)) return
+        viewModelScope.launch { runCatching { dev.foxfleet.app.ui.chat.HermesCatalog.parseDefs(api.commandsJson(agent)) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { commandDefs[agent] = it } }
         skills[agent] = emptyList()
         viewModelScope.launch {
             try { skills[agent] = api.skills(agent) } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false } catch (_: Exception) {}
         }
     }
 
-    fun send(agent: String, text: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList()) {
+    /** Send mode per agent (Steer / Queue / Interrupt & send), remembered across launches. Hermes defaults to Interrupt & send. */
+    private val modePrefs by lazy { getApplication<Application>().getSharedPreferences("foxfleet_send_mode", 0) }
+    fun sendMode(agent: dev.foxfleet.app.data.AgentStatus): String {
+        val modes = agent.capabilities.busy
+        return modePrefs.getString(agent.name, null)?.takeIf { it in modes } ?: if (agent.kind == "hermes" && "interrupt" in modes) "interrupt" else "queue"
+    }
+    var sendModes by mutableStateOf<Map<String, String>>(emptyMap())
+    fun setSendMode(agent: String, mode: String) { modePrefs.edit().putString(agent, mode).apply(); sendModes = sendModes + (agent to mode) }
+
+    fun send(agent: String, text: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList(), mode: String? = null) {
         val state = chatFor(agent)
-        if (state.streaming || (text.isBlank() && images.isEmpty())) return
+        if (text.isBlank() && images.isEmpty()) return
+        val m = mode ?: sendModes[agent] ?: agents.firstOrNull { it.name == agent }?.let { sendMode(it) } ?: "queue"
+        if (state.streaming || state.queue.isNotEmpty()) { // busy: the hub takes it (queue / steer / interrupt) and the reply keeps streaming
+            viewModelScope.launch {
+                try { state.sendBusy(api, agent, text.trim(), images, m)?.let { lastRejected[agent] = it }; state.syncQueue(api, agent) }
+                catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false } catch (_: Exception) { }
+            }
+            return
+        }
         jobs[agent] = viewModelScope.launch {
             try {
                 state.send(api, agent, text.trim(), images)
                 if ((route as? Route.Chat)?.agent != agent) state.markUnread()
+                state.syncQueue(api, agent)
             } catch (e: CancellationException) {
             } catch (e: AuthRequiredException) {
                 authed = false
@@ -261,9 +282,13 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     /** The explicit Stop button: cancels the agent's run on the hub, then the local stream. */
     fun stop(agent: String) {
         val state = chatFor(agent); val run = state.runId
-        if (run != null) viewModelScope.launch { runCatching { api.stopRun(agent, run) } }
+        if (run != null) viewModelScope.launch { runCatching { api.stopRun(agent, run) }; runCatching { state.syncQueue(api, agent) } }
         detach(agent); state.finishRun()
     }
+    /** Text the hub refused (e.g. steer with nothing running): handed back to the composer so nothing is lost. */
+    val lastRejected = mutableMapOf<String, String>()
+    fun resumeQueue(agent: String) { viewModelScope.launch { runCatching { api.resumeQueue(agent, chatFor(agent).sessionId) }; runCatching { chatFor(agent).syncQueue(api, agent) } } }
+    fun cancelQueued(agent: String, id: String) { viewModelScope.launch { runCatching { api.cancelQueued(agent, id, chatFor(agent).sessionId) }; chatFor(agent).dropQueued(id) } }
 
     fun newChat(agent: String) { detach(agent); chatFor(agent).newConversation() }
 
