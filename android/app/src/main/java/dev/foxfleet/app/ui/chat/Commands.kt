@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonPrimitive
 data class CommandSuggestion(
     val insert: String, val label: String, val hint: String, val local: LocalCommand? = null,
     val group: String = "", val args: String = "", val availability: String = "chat", val reason: String = "",
+    val alias: Boolean = false,
 )
 
 /** One catalog entry, kept whole so argument choices, aliases and what the agent can execute survive (flattened [CommandSuggestion]s lose them). */
@@ -27,7 +28,7 @@ enum class LocalCommand { New, Sessions, Stop, Retry, Title }
 
 private val appCommands = mapOf("new" to LocalCommand.New, "reset" to LocalCommand.New, "history" to LocalCommand.Sessions, "resume" to LocalCommand.Sessions,
     "sessions" to LocalCommand.Sessions, "stop" to LocalCommand.Stop, "retry" to LocalCommand.Retry, "title" to LocalCommand.Title)
-private val categoryOrder = listOf("Session", "Configuration", "Info", "Tools & Skills", "Context", "Background & Automation", "Plugins", "Exit")
+private val categoryOrder = listOf("Session", "Skills", "Configuration", "Info", "Tools & Skills", "Context", "Background & Automation", "Plugins", "Exit")
 
 /** Always available for every agent kind: they act on the conversation in the app. */
 private val localOnly = listOf(
@@ -54,7 +55,7 @@ object HermesCatalog {
             for (n in listOf(d.name) + d.aliases) {
                 if (avail == "app" && n !in appCommands) continue
                 val hint = if (avail == "unavailable") "${d.description} · ${reason.ifEmpty { "Not available remotely" }}" else d.description
-                out += CommandSuggestion("/$n" + if (d.args.isNotEmpty()) " " else "", "/$n", hint, if (avail == "app") appCommands[n] else null, d.category, d.args, avail, reason)
+                out += CommandSuggestion("/$n" + if (d.args.isNotEmpty()) " " else "", "/$n", hint, if (avail == "app") appCommands[n] else null, d.category, d.args, avail, reason, alias = n != d.name)
             }
         }
         return out.sortedWith(compareBy<CommandSuggestion>({ categoryOrder.indexOf(it.group).let { i -> if (i < 0) 99 else i } }, { when (it.availability) { "app" -> 0; "chat" -> 1; else -> 2 } }, { it.label }))
@@ -75,26 +76,47 @@ object HermesCatalog {
     }
     val defs: List<CommandDef> by lazy { parseDefs(HermesCatalog::class.java.getResourceAsStream("/hermes-commands.json")?.bufferedReader()?.readText().orEmpty()) }
 
+    /** Skill names carried on the hub catalog (`skills` is a list of names). */
+    fun parseSkills(text: String): List<String> {
+        val arr = runCatching { Json.parseToJsonElement(text).jsonObject["skills"]?.jsonArray }.getOrNull() ?: return emptyList()
+        return arr.mapNotNull { e -> runCatching { e.jsonPrimitive.content }.getOrNull()?.removePrefix("/")?.takeIf { it.matches(Regex("[A-Za-z0-9_-]{1,80}")) } }.distinct().take(200)
+    }
+
     fun unavailableReason(text: String): String? {
         val name = Regex("^/([A-Za-z0-9_-]+)").find(text.trim())?.groupValues?.get(1)?.lowercase() ?: return null
         return suggestions.firstOrNull { it.label == "/$name" && it.availability == "unavailable" }?.reason?.ifEmpty { "Not available remotely" }
     }
 }
 
+private fun wordHit(text: String, q: String) = text.lowercase().split(Regex("[^a-z0-9_+-]+")).any { it.startsWith(q) }
+private fun byGroup(a: CommandSuggestion, b: CommandSuggestion): Int {
+    fun rank(g: String) = categoryOrder.indexOf(g).let { if (it < 0) 99 else it }
+    fun avail(s: String) = when (s) { "app" -> 0; "chat" -> 1; else -> 2 }
+    return compareValuesBy(a, b, { rank(it.group) }, { avail(it.availability) }, { it.label })
+}
+
+/** /help and /palette open the in-app command browser. They are not sent to the agent. */
+fun opensCommandBrowser(text: String) = Regex("^/(help|palette)$", RegexOption.IGNORE_CASE).matches(text.trim())
+
 /**
- * Suggestions for the token being typed. `/` offers the grouped Hermes commands plus skills as `/<skill>`;
- * `#` offers skills. Only while the token is the first word. Agents that are not Hermes get only the local commands.
+ * Suggestions for the token being typed. Bare `/` lists canonical commands that can run, plus skills.
+ * Aliases and commands that cannot run from here appear when their name is typed. A limit of
+ * [Int.MAX_VALUE] returns the whole match set. `#` offers skills. Only while the token is the first word.
  */
-fun commandSuggestions(input: String, skills: List<String>, limit: Int = 12, agentCommands: Boolean = true, defs: List<CommandDef>? = null): List<CommandSuggestion> {
+fun commandSuggestions(input: String, skills: List<String>, limit: Int = 12, agentCommands: Boolean = true, defs: List<CommandDef>? = null, includeHidden: Boolean = false): List<CommandSuggestion> {
     if (input.isEmpty()) return emptyList()
     if (input.contains(' ') || input.contains('\n')) return if (input[0] == '/' && (agentCommands || defs != null) && !input.contains('\n')) argSuggestions(input, defs ?: HermesCatalog.defs).take(limit) else emptyList()
     val q = input.drop(1).lowercase()
     return when (input[0]) {
-        '/' -> ((if (defs != null) HermesCatalog.fromDefs(defs) else if (agentCommands) HermesCatalog.suggestions else localOnly).filter { it.label.drop(1).startsWith(q) } +
-            (if (agentCommands) skills.filter { it.lowercase().startsWith(q) }.map { CommandSuggestion("/$it ", "/$it", "Skill", group = "Skills") } else emptyList()))
-            .distinctBy { it.label }.take(limit)
+        '/' -> {
+            val all = if (defs != null) HermesCatalog.fromDefs(defs) else if (agentCommands) HermesCatalog.suggestions else localOnly
+            val skillRows = if (agentCommands) skills.filter { it.lowercase().startsWith(q) }.map { CommandSuggestion("/$it ", "/$it", "Skill", group = "Skills") } else emptyList()
+            val named = if (q.isEmpty()) { if (includeHidden) all else all.filter { !it.alias && it.availability != "unavailable" } } else all.filter { it.label.drop(1).lowercase().startsWith(q) }
+            val text = if (q.length >= 2 && named.isEmpty()) all.filter { !it.alias && wordHit("${it.hint} ${it.args}", q) } else emptyList()
+            ((named + skillRows).sortedWith(::byGroup) + text).distinctBy { it.label }.let { if (limit == Int.MAX_VALUE) it else it.take(limit) }
+        }
         '#' -> if (!agentCommands) emptyList() else skills.filter { it.lowercase().contains(q) }.sortedBy { if (it.lowercase().startsWith(q)) 0 else 1 }
-            .map { CommandSuggestion("#$it ", "#$it", "Skill", group = "Skills") }.take(limit)
+            .map { CommandSuggestion("#$it ", "#$it", "Skill", group = "Skills") }.let { if (limit == Int.MAX_VALUE) it else it.take(limit) }
         else -> emptyList()
     }
 }

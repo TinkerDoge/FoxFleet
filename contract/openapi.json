@@ -2688,7 +2688,7 @@
     "/api/agents/{name}/commands": {
       "get": {
         "operationId": "listCommands",
-        "summary": "Slash commands for this agent. Hermes agents: the full Hermes list (bundled, generated from its command registry; Hermes has no REST endpoint for the live one). Other kinds: empty.",
+        "summary": "Slash commands for this agent. Hermes starts from the bundled registry. A connected gateway adds that profile's skills and any extra names, which stay non-executable. Pass session to scope the live catalog to that chat. Other kinds: the local chat commands.",
         "tags": [
           "agents"
         ],
@@ -2701,6 +2701,13 @@
               "type": "string"
             },
             "description": ""
+          },
+          {
+            "name": "session",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Stored chat id. When the hub knows that chat's runtime session, the live catalog is read in that session."
           }
         ],
         "responses": {
@@ -2803,6 +2810,15 @@
                       "items": {
                         "type": "string"
                       }
+                    },
+                    "skills": {
+                      "type": "array",
+                      "items": { "type": "string" },
+                      "description": "Skill names from the live catalog, when a gateway answered."
+                    },
+                    "warning": {
+                      "type": "string",
+                      "description": "Live catalog warning, such as a skill-discovery failure."
                     }
                   }
                 }

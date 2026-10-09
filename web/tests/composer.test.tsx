@@ -34,6 +34,28 @@ async function attach() {
   await act(() => { input.dispatchEvent(new Event('change', { bubbles: true })); });
 }
 
+describe('slash discovery', () => {
+  it('lists commands past the old cutoff, and /help opens the browser instead of sending', async () => {
+    const key = draftKey('atlas');
+    await act(() => render(<Composer key={key} draftKey={key} client={{ uploadFile } as unknown as Client} agent={agent('atlas')}
+      history={[]} streaming={false} skills={['deploy-notes']} onSend={onSend} onStop={() => {}} onLocal={() => {}} />, host));
+    await type('/');
+    const labels = [...host.querySelectorAll('.suggest [role="option"]')].map((li) => li.querySelector('b')?.firstChild?.textContent);
+    expect(labels).toContain('/model');
+    expect(labels).toContain('/help');
+    expect(labels).toContain('/usage');
+    expect(labels).toContain('/deploy-notes');
+    expect(labels).not.toContain('/clear');
+    await act(() => host.querySelector<HTMLButtonElement>('[aria-label="All commands"]')!.click());
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy();
+    await act(() => host.querySelector<HTMLButtonElement>('[aria-label="Close"]')!.click());
+    await type('/help');
+    await act(() => editor().blur());
+    await act(() => { editor().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(host.querySelector('[role="dialog"]')).toBeTruthy();
+  });
+});
 describe('composer drafts across navigation', () => {
   it('restores separate unsent text for each agent and session', async () => {
     await show('atlas'); await type('Atlas draft');

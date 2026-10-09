@@ -52,7 +52,8 @@ class ChatControlsTest {
 
     @Test fun genericAgentCatalogHasNoHermesCommands() {
         val generic = HermesCatalog.parseDefs("""{"commands":[{"name":"new","aliases":["reset"],"description":"New","category":"Session","args":"","subcommands":[],"availability":"app"}]}""")
-        assertEquals(listOf("/new", "/reset"), commandSuggestions("/", emptyList(), defs = generic).map { it.label }.sorted())
+        assertEquals(listOf("/new"), commandSuggestions("/", emptyList(), defs = generic).map { it.label })
+        assertEquals("/reset", commandSuggestions("/reset", emptyList(), defs = generic).first().label)
     }
 
     @Test fun supportedBusyModesFallBackSensibly() {

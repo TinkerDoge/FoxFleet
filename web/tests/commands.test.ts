@@ -1,21 +1,28 @@
 import { describe, expect, it } from 'vitest';
-import { BUNDLED_CATALOG, commandSuggestions, localCommandFor, parseLocal, unavailableReason } from '../src/lib/commands';
+import { BUNDLED_CATALOG, commandSuggestions, localCommandFor, opensCommandBrowser, parseLocal, unavailableReason } from '../src/lib/commands';
 import { composeWithFiles, humanSize, splitFiles } from '../src/lib/files';
 import { chatMessages } from '../src/lib/chat';
 
 const skills = ['review', 'research', 'deploy-notes', 'translate'];
 describe('command autocomplete', () => {
-  it('offers the full Hermes catalog on "/", grouped, with skills', () => {
-    const all = commandSuggestions('/', skills, 500); const l = all.map((s) => s.label);
-    expect(BUNDLED_CATALOG.commands.length).toBeGreaterThan(90); expect(all.length).toBeGreaterThan(90);
-    for (const n of ['/new', '/compress', '/model', '/reasoning', '/skills', '/bg', '/review']) expect(l, n).toContain(n);
+  it('offers useful commands on bare "/", with skills, and leaves aliases and unavailable commands out', () => {
+    const all = commandSuggestions('/', skills, Number.POSITIVE_INFINITY); const l = all.map((s) => s.label);
+    expect(BUNDLED_CATALOG.commands.length).toBeGreaterThan(90);
+    for (const n of ['/new', '/compress', '/model', '/help', '/usage', '/memory', '/skills', '/reasoning', '/deploy-notes']) expect(l, n).toContain(n);
+    for (const n of ['/clear', '/reset', '/compact', '/palette']) expect(l, n).not.toContain(n);
+    expect(l.indexOf('/deploy-notes')).toBeGreaterThan(l.indexOf('/new')); expect(l.indexOf('/deploy-notes')).toBeLessThan(l.indexOf('/model'));
     expect(new Set(all.map((s) => s.group)).size).toBeGreaterThan(3); expect(commandSuggestions('/', skills).length).toBe(12);
     expect(all.find((s) => s.label === '/model')).toMatchObject({ group: 'Configuration', availability: 'chat' }); expect(all.find((s) => s.label === '/new')).toMatchObject({ local: 'new', availability: 'app' });
   });
-  it('shows args hints, aliases, and flags terminal-only commands as not available remotely', () => {
-    const all = commandSuggestions('/', [], 500); expect(all.find((s) => s.label === '/reset')?.local).toBe('new'); expect(all.find((s) => s.label === '/compress')?.args).toMatch(/here/);
-    const clear = all.find((s) => s.label === '/clear')!; expect(clear.availability).toBe('unavailable'); expect(clear.hint).toMatch(/Terminal|terminal/); expect(unavailableReason('/clear')).toBeTruthy(); expect(unavailableReason('/new')).toBeUndefined(); expect(unavailableReason('hello')).toBeUndefined();
-    const idx = (n: string) => all.findIndex((s) => s.label === n); expect(idx('/model')).toBeLessThan(idx('/clear') + 100); expect(all.filter((s) => s.group === 'Session' && s.availability !== 'unavailable').length).toBeGreaterThan(0);
+  it('still finds aliases and unavailable commands by name, and searches descriptions when the name does not match', () => {
+    expect(commandSuggestions('/reset', [], 20)[0]).toMatchObject({ label: '/reset', local: 'new' });
+    const clear = commandSuggestions('/cl', [], 20).find((s) => s.label === '/clear')!; expect(clear.availability).toBe('unavailable'); expect(clear.hint).toMatch(/Terminal|terminal/);
+    expect(unavailableReason('/clear')).toBeTruthy(); expect(unavailableReason('/new')).toBeUndefined(); expect(unavailableReason('hello')).toBeUndefined();
+    expect(commandSuggestions('/comp', [], 20).map((s) => s.label)).toEqual(expect.arrayContaining(['/compress', '/compact']));
+    expect(commandSuggestions('/', [], Number.POSITIVE_INFINITY).find((s) => s.label === '/compress')?.args).toMatch(/here/);
+    expect(commandSuggestions('/token', [], 20).map((s) => s.label)).toContain('/usage');
+    expect(commandSuggestions('/', [], Number.POSITIVE_INFINITY, true, undefined, true).some((s) => s.label === '/clear')).toBe(true);
+    expect(opensCommandBrowser('/help')).toBe(true); expect(opensCommandBrowser('/palette')).toBe(true); expect(opensCommandBrowser('/help skills')).toBe(false);
   });
   it('filters by prefix, including aliases', () => {
     expect(commandSuggestions('/re', skills, 50).map((s) => s.label)).toEqual(expect.arrayContaining(['/reasoning', '/retry', '/reset', '/review', '/research']));

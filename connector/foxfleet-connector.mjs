@@ -311,7 +311,7 @@ export const UI_OPS = {
   steer: (p) => ['session.steer', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
   redirect: (p) => ['session.redirect', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
   interrupt: (p) => ['session.interrupt', { session_id: need(str(p.session_id), 'session_id') }],
-  catalog: () => ['commands.catalog', {}],
+  catalog: (p) => ['commands.catalog', { ...(str(p?.session_id) ? { session_id: p.session_id } : {}) }],
   resolve: (p) => ['command.resolve', { name: need(str(p.name, 100), 'name') }],
   dispatch: (p) => { const name = need(str(p.name, 100), 'name').replace(/^\//, ''); if (!DISPATCH_OK.has(name)) throw Object.assign(new Error(`/${name} is not available remotely`), { code: 'not_allowed' }); return ['command.dispatch', { name, arg: typeof p.arg === 'string' ? p.arg.slice(0, 2000) : '', session_id: need(str(p.session_id), 'session_id') }]; },
   // /model: session-scoped switch. `--global` / `--once` flags are refused here; a profile default is changed in Hermes itself.

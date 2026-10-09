@@ -76,7 +76,16 @@ test('approvals/clarifications: card data, respond once by id, cancel by id, res
 test('models and commands pass through the allowlist; /model is session scoped; profile defaults are refused', async (t) => {
   const x = await boot(t), sid = (await x.json(`${x.A}/sessions`, {})).body.session_id;
   const models = (await x.json(`${x.A}/models`)).body; assert.ok(models.providers.length > 0 && models.providers.every((p) => p.slug && Array.isArray(p.models)));
-  assert.ok((await x.json(`${x.A}/commands`)).body.pairs.some(([n]) => n === '/busy'));
+  const nativeCmds = (await x.json(`${x.A}/commands`)).body;
+  assert.ok(nativeCmds.pairs.some(([n]) => n === '/busy'));
+  assert.equal(nativeCmds.skills['/deploy-notes'].origin, 'project');
+  assert.equal(nativeCmds.skill_count, 1);
+  const pub = (await x.json('/api/agents/default/commands')).body;
+  assert.equal(pub.source, 'agent');
+  assert.ok(pub.skills.includes('deploy-notes'));
+  assert.equal(pub.commands.find((c) => c.name === 'ship').executable, false, 'a live name is not permission to run it');
+  assert.ok(pub.commands.some((c) => c.name === 'model'));
+  assert.equal((await x.json(`/api/agents/default/commands?session=${sid}`)).body.warning, 'session catalog');
   const m = await x.json(`${x.A}/sessions/${sid}/model`, { model: 'fake-model' }); assert.equal(m.status, 200); assert.equal(m.body.scope, 'session');
   assert.equal((await x.json(`${x.A}/sessions/${sid}/model`, { model: 'x --global' })).status >= 400, true);
 });

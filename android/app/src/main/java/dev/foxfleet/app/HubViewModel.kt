@@ -172,10 +172,15 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     val commandDefs = mutableStateMapOf<String, List<dev.foxfleet.app.ui.chat.CommandDef>>()
     fun loadSkills(agent: String) {
         if (skills.containsKey(agent)) return
-        viewModelScope.launch { runCatching { dev.foxfleet.app.ui.chat.HermesCatalog.parseDefs(api.commandsJson(agent)) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { commandDefs[agent] = it } }
+        viewModelScope.launch {
+            val json = runCatching { api.commandsJson(agent) }.getOrNull() ?: return@launch
+            runCatching { dev.foxfleet.app.ui.chat.HermesCatalog.parseDefs(json) }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { commandDefs[agent] = it }
+            val extra = dev.foxfleet.app.ui.chat.HermesCatalog.parseSkills(json)
+            if (extra.isNotEmpty()) skills[agent] = (skills[agent].orEmpty() + extra).distinct()
+        }
         skills[agent] = emptyList()
         viewModelScope.launch {
-            try { skills[agent] = api.skills(agent) } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false } catch (_: Exception) {}
+            try { skills[agent] = (skills[agent].orEmpty() + api.skills(agent)).distinct() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { authed = false } catch (_: Exception) {}
         }
     }
 
