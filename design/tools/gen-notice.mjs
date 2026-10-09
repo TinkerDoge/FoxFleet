@@ -64,6 +64,7 @@ The site is built with VitePress. Its output bundles the packages below (all res
 | --- | --- | --- |
 ${docsBundled.join('\n')}
 | Inter (14 \`.woff2\` files, shipped inside VitePress's default theme and copied to the site output) | SIL OFL 1.1, Copyright (c) 2016 The Inter Project Authors | \`site/.vitepress/dist/assets/inter-*.woff2\`; full licence text in \`LICENSES/Inter-OFL-1.1.txt\` (also published at \`/licenses/Inter-OFL-1.1.txt\` on the site) |
+| Material Symbols Rounded, 48 icon outlines (weight 400, from \`@material-symbols/svg-400\` 0.48.0) | Apache-2.0, Copyright Google LLC | \`design/icons/icons.json\`, compiled into \`web/src/icons/paths.ts\` and \`android/.../ui/FoxIcons.kt\`; full licence text in \`LICENSES/Material-Symbols-Apache-2.0.txt\` |
 
 Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-it and friends) are not shipped in the output.
 

@@ -1,3 +1,4 @@
+import { Icon } from './Icon';
 import { useEffect, useRef, useState } from 'preact/hooks';
 
 export interface MediaItem { kind: 'image' | 'video'; src: string; alt?: string }
@@ -15,7 +16,7 @@ export function MediaViewer({ item, onClose }: { item: MediaItem; onClose: () =>
     <div class="viewer" role="dialog" aria-modal="true" aria-label={item.alt || (item.kind === 'video' ? 'Video' : 'Image')} onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <div class="viewer-bar">
         {item.kind === 'image' && <><button class="icon-btn" aria-label="Zoom out" onClick={() => setScale((s) => clamp(s / 1.25))}>−</button><button class="icon-btn" aria-label="Zoom in" onClick={() => setScale((s) => clamp(s * 1.25))}>+</button><button class="icon-btn" aria-label="Reset zoom" onClick={reset}>1:1</button></>}
-        <button class="icon-btn" aria-label="Close" onClick={onClose}>✕</button>
+        <button class="icon-btn" aria-label="Close" onClick={onClose}><Icon name="close" /></button>
       </div>
       {item.kind === 'video'
         ? <video class="viewer-media" src={item.src} controls autoplay playsInline />

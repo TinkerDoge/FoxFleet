@@ -216,3 +216,22 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 /* eight rows tall whatever is in them, so the card does not jump between pages or while searching */
 .picker .choices.fixed { min-height: calc(8 * 44px + 7 * 6px); align-content: flex-start; }
 .msg.notice { text-align: center; padding: 4px 12px; }
+
+/* ---- Button system (soft, rounded, pressed states; same roles as the Android app) ---- */
+.btn{border-radius:14px;min-height:44px;font-weight:500;transition:background var(--motion-fast),transform var(--motion-fast),box-shadow var(--motion-base),opacity var(--motion-fast)}
+.btn:active:not(:disabled){transform:scale(.97)}
+.btn.primary{box-shadow:0 1px 2px #0002}.btn.primary:hover:not(:disabled){filter:brightness(1.06)}.btn.primary:active:not(:disabled){filter:brightness(.94)}
+/* tonal: the default for secondary actions (replaces plain text links) */
+.btn.text{background:color-mix(in srgb,var(--accent) 12%,var(--surface-alt));color:var(--text);padding:10px 16px;align-self:center}
+.btn.text:hover:not(:disabled){background:color-mix(in srgb,var(--accent) 20%,var(--surface-alt))}.btn.text:active:not(:disabled){background:color-mix(in srgb,var(--accent) 28%,var(--surface-alt))}
+.btn.text .icon{color:var(--accent)}
+.btn.outline{background:none;border:1px solid var(--hairline);color:var(--text)}.btn.outline:hover:not(:disabled){background:var(--surface-alt)}.btn.outline:active:not(:disabled){background:color-mix(in srgb,var(--accent) 14%,var(--surface-alt))}
+.btn.text.danger,.btn.danger{color:var(--danger)}.btn.text.danger{background:color-mix(in srgb,var(--danger) 12%,var(--surface-alt))}.btn.text.danger .icon{color:var(--danger)}
+.btn.older{min-height:36px;padding:6px 14px}
+.icon-btn{width:40px;height:40px;display:inline-grid;place-items:center;padding:0;border-radius:50%;transition:background var(--motion-fast),transform var(--motion-fast)}
+.icon-btn:hover:not(:disabled){background:var(--surface-alt)}.icon-btn:active:not(:disabled){background:color-mix(in srgb,var(--accent) 16%,var(--surface-alt));transform:scale(.92)}
+.icon{flex:none;vertical-align:middle}
+.sidebar nav a{display:flex;align-items:center;gap:10px;border-radius:12px;transition:background var(--motion-fast)}.sidebar nav a .icon{color:var(--text-muted)}.sidebar nav a.active .icon{color:var(--accent)}
+.empty-home .icon-hero,.empty .icon-hero{color:var(--accent);opacity:.8;margin-bottom:8px}
+.card{border-radius:var(--radius-card);box-shadow:0 1px 2px #0000000d}
+@media (prefers-reduced-motion:reduce){.btn:active:not(:disabled),.icon-btn:active:not(:disabled){transform:none}}

@@ -9,6 +9,7 @@ import { MAX_FILE_BYTES, humanSize, type FileRef } from '../lib/files';
 import { estimatedBytes, HUB_BODY_LIMIT, type UiImage, type UiMessage } from '../lib/chat';
 import { t } from '../i18n/t';
 import { useDraft, type PendingAttachment as Pending } from './drafts';
+import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
 
 const SR: any = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
@@ -145,7 +146,7 @@ export function Composer(props: {
           {pending.map((p) => p.kind === 'image'
             ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}>✕</button></div>
             : <div class={`att file${p.error ? ' bad' : ''}`} key={p.id}>
-                <span class="chip-name">📎 {p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
+                <Icon name="attach" size={16} /><span class="chip-name">{p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
                 {!p.ref && !p.error && <progress max={1} value={p.progress} aria-label={t('chat.uploading')} />}
                 <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}>✕</button>
               </div>)}
@@ -158,7 +159,7 @@ export function Composer(props: {
             <ActionMenu label={t('chat.attach')} above actions={[
               ...(caps.images ? [{ label: t('chat.photo'), onSelect: () => photo.current?.click() }, { label: t('chat.camera'), onSelect: () => cam.current?.click() }] : []),
               ...(caps.files ? [{ label: t('chat.file'), onSelect: () => file.current?.click() }] : []),
-            ]}>＋</ActionMenu>
+            ]}><Icon name="add" size={22} /></ActionMenu>
             <input ref={photo} type="file" accept="image/*" multiple hidden onChange={media} />
             <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={media} />
             <input ref={file} type="file" multiple hidden onChange={media} />
@@ -167,9 +168,9 @@ export function Composer(props: {
         <textarea ref={ta} rows={1} value={text} placeholder={t('chat.placeholder', { agent: agent.displayName || agent.name })} aria-label={t('chat.message')}
           onInput={(e) => { setText((e.currentTarget as HTMLTextAreaElement).value); setMenu(true); }} onKeyDown={key} onBlur={() => setMenu(false)}
           onPaste={(e) => { const f = Array.from(e.clipboardData?.files ?? []); if (f.length) { e.preventDefault(); route(f); } }} />
-        {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>🎤</button>}
-        {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>■</button>}
-        <button class="send" aria-label={t('chat.send')} disabled={props.disabled || (!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog))} onClick={submit}>↑</button>
+        {SR && caps.voice !== false && !text.trim() && <button class={`icon-btn mic${listening ? ' on' : ''}`} aria-label={listening ? t('chat.stopVoice') : t('chat.voice')} aria-pressed={listening} onClick={toggleVoice}>{<Icon name="mic" size={22} />}</button>}
+        {streaming && <button class="send stop" aria-label={t('chat.stop')} onClick={props.onStop}>{<Icon name="stop" size={22} />}</button>}
+        <button class="send" aria-label={t('chat.send')} disabled={props.disabled || (!canSend && !parseLocal(text, isHermes) && !parseHub(text, catalog))} onClick={submit}><Icon name="send" size={22} /></button>
       </div>
       {drag && <div class="drop-hint" aria-hidden="true">{t('chat.drop')}</div>}
     </div>

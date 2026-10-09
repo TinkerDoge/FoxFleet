@@ -1,3 +1,4 @@
+import { Icon } from '../components/Icon';
 import { useEffect, useMemo, useRef } from 'preact/hooks';
 import type { UiMessage } from '../lib/chat';
 import { enhance, isVideoUrl, renderMarkdown } from '../lib/markdown';
@@ -45,7 +46,7 @@ export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia
           {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
           {text && <p class="user-text">{text}</p>}
           <Time ts={m.ts} />
-          {files.map((f, i) => <div class="chip" key={i}><span aria-hidden="true">📎</span><span class="chip-name">{f.path.split('/').pop()}</span><small>{f.size}</small></div>)}
+          {files.map((f, i) => <div class="chip" key={i}><Icon name="attach" size={16} /><span class="chip-name">{f.path.split('/').pop()}</span><small>{f.size}</small></div>)}
         </div>
       </div>
     );

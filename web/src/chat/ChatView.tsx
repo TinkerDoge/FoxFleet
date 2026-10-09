@@ -9,6 +9,7 @@ import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { Markdown, Message } from './Message';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
+import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
 import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued } from './store';
 import { rememberAgent } from '../lib/persist';
@@ -63,15 +64,15 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     else if (c.recovery === 'reconnect') void reconnectReply(client, agent.name, onAuthLost);
     else openHistory(true);
   };
-  const secondary = [...(agent.capabilities?.screen && agent.online ? [{ label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { label: t('chat.new'), onSelect: startNew }];
+  const secondary = [...(agent.capabilities?.screen && agent.online ? [{ icon: 'screen' as const, label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { icon: 'add' as const, label: t('chat.new'), onSelect: startNew }];
   return (
     <section class="chat" aria-label={name}>
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</div>
       <header class="chat-head">
         <span class={`dot ${agent.online ? 'on' : 'off'}`} aria-hidden="true" />
         <div class="grow chat-identity"><h1 title={name}>{name}</h1><small class="muted">{agent.online ? t('chat.online') : t('chat.offline')}</small></div>
-        <div class="chat-secondary">{secondary.map((action) => <button class="btn text" onClick={action.onSelect}>{action.label}</button>)}</div>
-        <ActionMenu className="chat-overflow" label={t('chat.moreActions')} actions={secondary}>⋯</ActionMenu>
+        <div class="chat-secondary">{secondary.map((action) => <button class="btn text" onClick={action.onSelect}><Icon name={action.icon} />{action.label}</button>)}</div>
+        <ActionMenu className="chat-overflow" label={t('chat.moreActions')} actions={secondary}><Icon name="more" /></ActionMenu>
         {agent.capabilities?.sessions !== false && <SessionsMenu sessions={c.sessions} current={c.session} open={sessionsOpen} onOpenChange={openHistory}
           total={c.sessionsTotal} loading={c.sessionsLoading} error={historyError || c.sessionsError}
           onSelect={selectSession} onNew={startNew}
@@ -84,7 +85,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
       <div class="messages" ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <p class="muted center">{t('home.loading')}</p>}
-        {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><p>{t('chat.empty', { agent: name })}</p></div>}
+        {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><Icon name="chat" size={48} class="icon-hero" /><p>{t('chat.empty', { agent: name })}</p></div>}
         {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} />)}
         {c.streaming && (
           <div class="msg assistant">

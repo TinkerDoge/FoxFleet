@@ -1,3 +1,4 @@
+import { Icon } from '../components/Icon';
 import { ProfileBusy } from '../chat/ProfileBusy';
 import { useEffect, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
@@ -32,7 +33,7 @@ export function Manage({ client, onChanged, onAuthLost }: { client: Client; onCh
           {list.map((a, i) => (
             <li key={a.name} class="static">
               <span class="grow"><b>{a.values.label || a.name}</b><small class="muted">{kinds.find((k) => k.kind === a.kind)?.label ?? a.kind}</small></span>
-              <button class="icon-btn" aria-label={t('manage.moveUp')} disabled={i === 0} onClick={() => move(i, -1)}>↑</button>
+              <button class="icon-btn" aria-label={t('manage.moveUp')} disabled={i === 0} onClick={() => move(i, -1)}><Icon name="up" /></button>
               <button class="icon-btn" aria-label={t('manage.moveDown')} disabled={i === list.length - 1} onClick={() => move(i, 1)}>↓</button>
               <button class="btn text" onClick={() => setEditing({ saved: a, kind: kinds.find((k) => k.kind === a.kind) })}>{t('manage.edit')}</button>
               {a.values.connection === 'machine' ? <small class="muted">{t('manage.fromMachine')}</small> : <button class="btn text danger" onClick={() => remove(a)}>{t('manage.remove')}</button>}

@@ -1,3 +1,4 @@
+import { Icon } from '../components/Icon';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import type { AgentSummary, AuthInfo } from '../api/types';
@@ -67,29 +68,29 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   return (
     <div class={`shell${open ? ' drawer-open' : ''}`}>
       <a class="skip" ref={skip} href="#main" onClick={(e) => { e.preventDefault(); main.current?.focus(); }}>{t('a11y.skip')}</a>
-      <header class="topbar" ref={topbar}><button class="icon-btn" ref={menu} aria-label={t('nav.menu')} aria-expanded={modal} aria-controls="sidebar" onClick={() => setOpen(!open)}>☰</button><Wordmark height={28} /></header>
+      <header class="topbar" ref={topbar}><button class="icon-btn" ref={menu} aria-label={t('nav.menu')} aria-expanded={modal} aria-controls="sidebar" onClick={() => setOpen(!open)}><Icon name="menu" /></button><Wordmark height={28} /></header>
       <aside class="sidebar" ref={sidebar} id="sidebar" aria-label="Navigation" role={modal ? 'dialog' : undefined} aria-modal={modal ? 'true' : undefined}>
-        <button class="icon-btn drawer-close" aria-label={t('nav.closeMenu')} onClick={() => setOpen(false)}>✕</button>
+        <button class="icon-btn drawer-close" aria-label={t('nav.closeMenu')} onClick={() => setOpen(false)}><Icon name="close" /></button>
         <Wordmark height={34} />
         <nav aria-label={t('nav.recent')}>
           <span class="nav-label">{t('nav.recent')}</span>
           {agents?.map((a) => (
             <a key={a.name} href={`#/chat?agent=${encodeURIComponent(a.name)}`} class={selected?.name === a.name ? 'active' : ''} aria-current={selected?.name === a.name ? 'page' : undefined} onClick={go}>
-              <span class={`dot ${a.online ? 'on' : 'off'}`} aria-label={a.online ? t('chat.online') : t('chat.offline')} /><span class="grow">{a.displayName || a.name}</span>
+              <Icon name="agents" size={18} /><span class={`dot ${a.online ? 'on' : 'off'}`} aria-label={a.online ? t('chat.online') : t('chat.offline')} /><span class="grow">{a.displayName || a.name}</span>
             </a>
           ))}
         </nav>
         <nav aria-label="Account and tools" class="tools">
-          {owner && <a href="#/manage" class={route.name === 'manage' ? 'active' : ''} aria-current={route.name === 'manage' ? 'page' : undefined} onClick={go}>{t('nav.manage')}</a>}
-          {owner && <a href="#/admin" class={route.name === 'admin' ? 'active' : ''} aria-current={route.name === 'admin' ? 'page' : undefined} onClick={go}>{t('nav.admin')}</a>}
-          <a href="#/account" class={route.name === 'account' ? 'active' : ''} aria-current={route.name === 'account' ? 'page' : undefined} onClick={go}>{t('nav.account')}</a>
-          <a href="#/settings" class={route.name === 'settings' ? 'active' : ''} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={go}>{t('nav.settings')}</a>
+          {owner && <a href="#/manage" class={route.name === 'manage' ? 'active' : ''} aria-current={route.name === 'manage' ? 'page' : undefined} onClick={go}><Icon name="agents" size={18} />{t('nav.manage')}</a>}
+          {owner && <a href="#/admin" class={route.name === 'admin' ? 'active' : ''} aria-current={route.name === 'admin' ? 'page' : undefined} onClick={go}><Icon name="shield" size={18} />{t('nav.admin')}</a>}
+          <a href="#/account" class={route.name === 'account' ? 'active' : ''} aria-current={route.name === 'account' ? 'page' : undefined} onClick={go}><Icon name="user" size={18} />{t('nav.account')}</a>
+          <a href="#/settings" class={route.name === 'settings' ? 'active' : ''} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={go}><Icon name="settings" size={18} />{t('nav.settings')}</a>
         </nav>
         <div class="sidebar-foot">
           <span class="muted small">{info.user?.username}{owner ? ' · Owner' : ''}</span>
           <div class="row">
-            <button class="btn text" onClick={() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')}>Theme</button>
-            <button class="btn text" onClick={signOut}>{t('nav.signOut')}</button>
+            <button class="btn text" onClick={() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')}><Icon name="moon" size={18} />Theme</button>
+            <button class="btn text" onClick={signOut}><Icon name="logout" size={18} />{t('nav.signOut')}</button>
           </div>
         </div>
       </aside>
@@ -98,7 +99,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {error && <div class="card"><p class="error">{error}</p><PrimaryButton type="button" onClick={load}>{t('home.retry')}</PrimaryButton></div>}
         {!error && agents === null && <p class="muted pad">{t('home.loading')}</p>}
         {!PAGES.includes(route.name) && agents && requested && !selected && <div class="empty-home" role="status">
-          <h1>{t('chat.agentUnavailable')}</h1><p class="muted">{t('chat.agentUnavailableHint')}</p>
+          <Icon name="warning" size={40} class="icon-hero" /><h1>{t('chat.agentUnavailable')}</h1><p class="muted">{t('chat.agentUnavailableHint')}</p>
           <button class="btn text" onClick={() => { if (mobile) setOpen(true); else sidebar.current?.querySelector<HTMLElement>('nav a')?.focus(); }}>{t('chat.chooseAgent')}</button>
         </div>}
         {route.name === 'manage' && owner && <Manage client={client} onChanged={load} onAuthLost={lost} />}
@@ -106,7 +107,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {route.name === 'account' && <Account client={client} onAuthLost={lost} />}
         {route.name === 'settings' && <Settings hub={loadHub()} />}
         {!PAGES.includes(route.name) && agents && agents.length === 0 && (
-          <div class="empty-home"><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
+          <div class="empty-home"><Icon name="agents" size={48} class="icon-hero" /><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}
         {route.name === 'screen' && selected && <ScreenView key={selected.name} client={client} agent={selected} onAuthLost={lost} onClose={() => navigate('chat', { agent: selected.name })} />}
         {route.name !== 'screen' && !PAGES.includes(route.name) && selected && <ChatView key={selected.name} client={client} agent={selected} onAuthLost={lost} session={route.params.get('new') === '1' ? '' : route.params.get('session') ?? undefined} />}
