@@ -10,11 +10,12 @@ import { fileURLToPath } from 'node:url';
 
 const BASE_PATH = ({ ...process.env }).PATH;
 const SRC = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const PKG_VERSION = JSON.parse(fs.readFileSync(path.join(SRC, 'package.json'), 'utf8').replace(/^\uFEFF/, '')).version;
 const sha = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
 
-/** A sandbox that looks like an installer layout: apps/0.2.0-alpha (current), data/, fake systemctl on PATH. */
+/** A sandbox that looks like an installer layout: apps/current-version (current), data/, fake systemctl on PATH. */
 function sandbox({ systemctl = true } = {}) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-cli-')), apps = path.join(root, 'apps'), app = path.join(apps, '0.2.0-alpha'), data = path.join(root, 'data'), bin = path.join(root, 'bin');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ff-cli-')), apps = path.join(root, 'apps'), app = path.join(apps, PKG_VERSION), data = path.join(root, 'data'), bin = path.join(root, 'bin');
   for (const d of ['server/bin', 'connector', 'web/dist']) fs.mkdirSync(path.join(app, d), { recursive: true });
   fs.copyFileSync(path.join(SRC, 'bin/foxfleet'), path.join(app, 'server/bin/foxfleet')); fs.chmodSync(path.join(app, 'server/bin/foxfleet'), 0o755);
   for (const f of ['package.json', 'accounts.js', 'index.js']) fs.existsSync(path.join(SRC, f)) && fs.copyFileSync(path.join(SRC, f), path.join(app, 'server', f));
@@ -73,7 +74,7 @@ test('doctor sees a running hub and a missing web/dist', async () => {
 test('update --check compares against the mock release server and uses exit code 10', async () => {
   const sb = sandbox(), rel = await releaseServer(sb, ['0.3.0-alpha', '0.2.0-alpha', '0.1.0-alpha']);
   try {
-    const r = await cli(sb, ['update', '--check', '--json'], { FOXFLEET_RELEASES_API: rel.api }); assert.equal(r.code, 10); assert.deepEqual([r.json().current, r.json().latest, r.json().updateAvailable], ['0.2.0-alpha', '0.3.0-alpha', true]);
+    const r = await cli(sb, ['update', '--check', '--json'], { FOXFLEET_RELEASES_API: rel.api }); assert.equal(r.code, 10); assert.deepEqual([r.json().current, r.json().latest, r.json().updateAvailable], [PKG_VERSION, '0.3.0-alpha', true]);
     const same = await cli(sb, ['update', '--check', '--json'], { FOXFLEET_RELEASES_API: rel.api }); void same;
     const stable = await cli(sb, ['update', '--check', '--stable', '--json'], { FOXFLEET_RELEASES_API: rel.api }); assert.equal(stable.code, 3 === 0 ? 0 : stable.code); assert.equal(stable.json().error, 'No releases found');
     const bad = await cli(sb, ['update', '--check'], { FOXFLEET_RELEASES_API: 'http://127.0.0.1:9' }); assert.equal(bad.code, 1); assert.match(bad.err, /Could not read the releases list/);

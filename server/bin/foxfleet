@@ -14,7 +14,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fs.realpathSync(fileURLToPath(import.meta.url)));
 const SERVER_DIR = path.resolve(HERE, '..'), APP = path.resolve(SERVER_DIR, '..');
-const PKG = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8'));
+const PKG = JSON.parse(fs.readFileSync(path.join(SERVER_DIR, 'package.json'), 'utf8').replace(/^\uFEFF/, '')); // main's package.json starts with a BOM
 export const VERSION = PKG.version;
 
 // ---------- output ----------

@@ -1,1 +1,1 @@
-{"description":"Foxfleet hub server","engines":{"node":">=22"},"name":"foxfleet-server","scripts":{"start":"node index.js","test":"node --test test/*.test.js"},"type":"module","version":"0.2.0-alpha","bin":{"foxfleet":"bin/foxfleet"}}
+﻿{"description":"Foxfleet hub server","engines":{"node":">=22"},"name":"foxfleet-server","scripts":{"start":"node index.js","test":"node --test test/*.test.js"},"type":"module","version":"0.2.1-alpha","bin":{"foxfleet":"bin/foxfleet"}}
