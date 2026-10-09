@@ -322,6 +322,7 @@ class HubApi(private val store: SettingsStore) {
     class StreamCallbacks(
         val onContent: (String) -> Unit, val onReasoning: (String) -> Unit, val onTool: (String) -> Unit,
         val onSession: (String) -> Unit, val onRun: (String) -> Unit = {}, val onGap: () -> Unit = {}, val onRunState: (String) -> Unit = {},
+        val onRequest: (OpenRequest) -> Unit = {}, val onRequestClosed: (String, String) -> Unit = { _, _ -> }, val onAck: (String, String) -> Unit = { _, _ -> },
     )
 
     /**
@@ -338,6 +339,9 @@ class HubApi(private val store: SettingsStore) {
         onSession: (String) -> Unit,
         onRun: (String) -> Unit = {},
         onGap: () -> Unit = {},
+        onRequest: (OpenRequest) -> Unit = {},
+        onRequestClosed: (String, String) -> Unit = { _, _ -> },
+        onAck: (String, String) -> Unit = { _, _ -> },
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -347,7 +351,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -371,14 +375,20 @@ class HubApi(private val store: SettingsStore) {
     suspend fun stopRun(agent: String, run: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/runs/" + enc(run) + "/stop", "POST", "{}"); Unit }
 
     /** A message the hub holds for a conversation: queued, waiting for a stop, or guidance accepted by the run. */
-    data class QueuedMessage(val id: String, val state: String, val mode: String, val text: String, val error: String? = null, val note: String? = null, val runId: String? = null)
-    data class QueueState(val items: List<QueuedMessage>, val halted: Boolean, val activeRun: String?, val modes: List<String>)
+    /** [ack] is what Hermes itself answered (queued / steered / redirected / rejected / streaming); null until it did. Shown as received, never predicted. */
+    data class QueuedMessage(val id: String, val state: String, val mode: String, val text: String, val error: String? = null, val note: String? = null, val runId: String? = null, val ack: String? = null)
+    data class RequestQuestion(val id: String, val question: String, val choices: List<String>, val multi: Boolean)
+    /** A question or an approval the agent waits on (native sessions). Answered once, by [id]. */
+    data class OpenRequest(val id: String, val kind: String, val questions: List<RequestQuestion> = emptyList(), val command: String? = null, val description: String? = null)
+    data class QueueState(val items: List<QueuedMessage>, val halted: Boolean, val activeRun: String?, val modes: List<String>, val openRequests: List<OpenRequest> = emptyList(), val canCancel: Boolean = true)
+    data class ModelProvider(val slug: String, val name: String, val models: List<String>, val current: Boolean)
     data class SendResult(val message: QueuedMessage, val runId: String?, val sessionId: String?)
 
-    private fun queued(o: JsonObject) = QueuedMessage(o.str("id").orEmpty(), o.str("state") ?: "queued", o.str("mode") ?: "queue", o.str("text").orEmpty(), o.str("error"), o.str("note"), o.str("run_id"))
+    private fun queued(o: JsonObject) = QueuedMessage(o.str("id").orEmpty(), o.str("state") ?: "queued", o.str("mode") ?: "queue", o.str("text").orEmpty(), o.str("error"), o.str("note"), o.str("run_id"), o.str("ack")?.takeIf { it in ACKS })
     private fun queueState(o: JsonObject) = QueueState(
         o["items"]?.let { runCatching { it.jsonArray.map { e -> queued(e.jsonObject) } }.getOrNull() } ?: emptyList(), o.bool("halted") ?: false, o.str("active_run"),
         o["modes"]?.let { runCatching { it.jsonArray.map { e -> e.jsonPrimitive.content } }.getOrNull() } ?: emptyList(),
+        o["open_requests"]?.let { runCatching { it.jsonArray.mapNotNull { e -> parseRequest(e.jsonObject) } }.getOrNull() } ?: emptyList(), o.bool("can_cancel") ?: true,
     )
 
     /** Send while the agent may be replying. The hub stores and acknowledges it first; [mode] says what to do if it is busy (queue / steer / interrupt). */
@@ -394,6 +404,24 @@ class HubApi(private val store: SettingsStore) {
     suspend fun queue(agent: String, session: String?): QueueState = withContext(Dispatchers.IO) {
         queueState(request(agentPath(agent) + "/queue", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15))
     }
+    /** Answer an open question or approval, once. A 404 means it was already closed (answered elsewhere or cancelled): the caller just drops the card. */
+    suspend fun answerRequest(agent: String, session: String, id: String, result: JsonObject) = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/native/sessions/" + enc(session) + "/requests/" + enc(id), "POST", buildJsonObject { put("result", result) }.toString(), timeoutSec = 20); Unit
+    }
+    suspend fun models(agent: String): List<ModelProvider> = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/native/models", timeoutSec = 30)["providers"]?.jsonArray?.mapNotNull { e ->
+            val o = e.jsonObject; val slug = o.str("slug") ?: return@mapNotNull null
+            ModelProvider(slug, o.str("name") ?: slug, o["models"]?.jsonArray?.mapNotNull { m -> m.jsonPrimitive.contentOrNull } ?: emptyList(), o.bool("current") ?: false)
+        } ?: emptyList()
+    }
+    /** Session-scoped: this conversation only. The profile default is never touched from here. */
+    suspend fun setModel(agent: String, session: String, model: String, provider: String?): String = withContext(Dispatchers.IO) {
+        val value = if (provider.isNullOrBlank()) model else "$model --provider $provider"
+        val r = request(agentPath(agent) + "/native/sessions/" + enc(session) + "/model", "POST", buildJsonObject { put("model", value) }.toString(), timeoutSec = 30)
+        if (r.bool("confirm_required") == true) r.str("confirm_message") ?: "Confirm in Hermes" else "Model for this chat: $model"
+    }
+    suspend fun profileBusy(agent: String): String = withContext(Dispatchers.IO) { request(agentPath(agent) + "/native/busy", timeoutSec = 15).str("mode").orEmpty() }
+    suspend fun setProfileBusy(agent: String, mode: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/native/busy", "POST", buildJsonObject { put("mode", mode); put("confirm", true) }.toString(), timeoutSec = 15); Unit }
     suspend fun resumeQueue(agent: String, session: String?): QueueState = withContext(Dispatchers.IO) {
         queueState(request(agentPath(agent) + "/queue/resume", "POST", "{}", query = if (session.isNullOrBlank()) emptyMap() else mapOf("session_id" to session), timeoutSec = 15))
     }
@@ -420,6 +448,9 @@ class HubApi(private val store: SettingsStore) {
                         e.data == "[DONE]" -> { finished = true; false }
                         e.event == "foxfleet.gap" -> { builder.setLength(0); cb.onGap(); true }
                         e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
+                        e.event == "foxfleet.request" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::parseRequest)?.let(cb.onRequest); true }
+                        e.event == "foxfleet.request_closed" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> v.str("request_id")?.let { id -> cb.onRequestClosed(id, v.str("reason") ?: "closed") } }; true }
+                        e.event == "foxfleet.ack" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val a = v.str("ack"); if (a != null && a in ACKS) cb.onAck(v.str("message_id").orEmpty(), a) }; true }
                         e.event == "error" -> throw HubApiException(0, "The agent reply failed. Check the agent and try again.")
                         else -> {
                             val value = runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()
@@ -465,6 +496,17 @@ class HubApi(private val store: SettingsStore) {
     companion object {
         private val parser = Json { ignoreUnknownKeys = true }
 
+        internal val ACKS = setOf("streaming", "queued", "steered", "redirected", "rejected")
+        /** Only clarify and approval become cards; any other kind is ignored (the hub already declined it upstream, so nothing waits). */
+        internal fun parseRequest(o: JsonObject): OpenRequest? {
+            val kind = o.str("kind"); val id = o.str("request_id")
+            if ((kind != "clarify" && kind != "approval") || id == null || !id.matches(Regex("[\\w.:-]{1,100}"))) return null
+            val qs = runCatching { o["questions"]?.jsonArray }.getOrNull()?.take(6)?.mapIndexed { i, q ->
+                val qo = q.jsonObject
+                RequestQuestion(qo.str("id") ?: "q$i", (qo.str("question") ?: "").take(2000), runCatching { qo["choices"]!!.jsonArray.map { it.jsonPrimitive.content }.take(50) }.getOrNull() ?: emptyList(), qo.bool("multi_select") ?: false)
+            } ?: emptyList()
+            return OpenRequest(id, kind, qs, o.str("command"), o.str("description"))
+        }
         internal fun JsonObject.str(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
         internal fun JsonObject.bool(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.booleanOrNull }.getOrNull() }
 
@@ -484,6 +526,7 @@ class HubApi(private val store: SettingsStore) {
                     chat = caps.bool("chat") ?: true, images = caps.bool("images") ?: false, files = caps.bool("files") ?: false,
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,
                     sessions = caps.bool("sessions") ?: false, mailbox = caps.bool("mailbox") ?: false,
+                    nativeUi = caps.bool("nativeUi") ?: false,
                     busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),
                 ) else Capabilities.forKind(kind),
             )

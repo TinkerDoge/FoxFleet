@@ -290,6 +290,14 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun resumeQueue(agent: String) { viewModelScope.launch { runCatching { api.resumeQueue(agent, chatFor(agent).sessionId) }; runCatching { chatFor(agent).syncQueue(api, agent) } } }
     fun cancelQueued(agent: String, id: String) { viewModelScope.launch { runCatching { api.cancelQueued(agent, id, chatFor(agent).sessionId) }; chatFor(agent).dropQueued(id) } }
 
+    /** Native Hermes sessions only: cards answer through the hub, the model is per conversation, the busy default is profile-wide. */
+    fun nativeControls(agent: String): dev.foxfleet.app.ui.screens.NativeControls = dev.foxfleet.app.ui.screens.NativeControls(
+        models = { api.models(agent) },
+        setModel = { m, p -> api.setModel(agent, chatFor(agent).sessionId ?: error("No conversation yet"), m, p) },
+        busy = { api.profileBusy(agent) }, setBusy = { api.setProfileBusy(agent, it) },
+    )
+    suspend fun answerRequest(agent: String, id: String, result: kotlinx.serialization.json.JsonObject): String? = chatFor(agent).answerRequest(api, agent, id, result)
+
     fun newChat(agent: String) { detach(agent); chatFor(agent).newConversation() }
 
     /** /retry: drop the last assistant reply and send the last user message again. */

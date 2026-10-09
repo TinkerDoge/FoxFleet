@@ -12,6 +12,8 @@ data class Capabilities(
     val mailbox: Boolean = false,
     /** Send modes while the agent is replying: "queue", "steer", "interrupt" (only what the agent can really do). */
     val busy: List<String> = listOf("queue"),
+    /** The agent runs through Hermes's native session gateway: approval/question cards, a model picker and a real Redirect exist. */
+    val nativeUi: Boolean = false,
 ) {
     companion object {
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
