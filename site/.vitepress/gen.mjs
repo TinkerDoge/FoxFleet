@@ -78,6 +78,7 @@ const ENV = {
   FOXFLEET_STOP_WAIT_MS: ['How long the hub waits for an agent to confirm that a stopped reply has really ended (Stop, Interrupt & send) before it reports the stop as failed, in milliseconds.', '`15000`', 'hub'],
   FOXFLEET_HUB: ['Hub address for `pair` (same as `--hub`).', 'required for `pair`', 'connector'],
   FOXFLEET_CODE: ['Pairing code for `pair` (same as `--code`).', 'required for `pair`', 'connector'],
+  HERMES_REAL_GATEWAY_TEST: ['Tests only: JSON with a real Hermes gateway command (`cmd`, `cwd`, `config`) so the native-session tests run against it instead of the built-in fake.', 'unset', 'tests'],
   FOXFLEET_ALLOW_INSECURE_HUB: ['Allow plain `http://` to a non-loopback hub. Trusted LAN only.', 'unset', 'connector'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],

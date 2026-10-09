@@ -65,3 +65,12 @@ An agent tells Foxfleet which send modes it supports (`capabilities.busy` on `GE
 - **MCP inbox**: `queue` only (messages are delivered when the agent next checks in).
 
 `POST /api/agents/{name}/messages` takes `{ messages, session_id?, mode, client_id }`, stores the message and answers `202 { message, run_id? }` (or `200` for a repeated `client_id`). Follow a started reply with `GET …/runs/{id}/events`. `GET …/queue?session_id=` returns what is waiting. See `contract/openapi.json`.
+
+## Native sessions (preferred when the machine has Hermes installed)
+
+The connector can run Hermes's own UI gateway (`python -m tui_gateway.entry`, the protocol Hermes's TUI and dashboard chat use) for each shared profile and relay a small allowlist of actions to the hub over the same outbound connection. Nothing listens on the machine, the profile's credentials stay in its own `HERMES_HOME`, and the hub cannot call arbitrary Hermes methods.
+
+- **Finding Hermes.** Set `uiGatewayCommand` in the connector config (an array such as `["/home/me/.hermes/hermes-agent/venv/bin/python","-m","tui_gateway.entry"]`, with `uiGatewayCwd` for the checkout), or `FOXFLEET_HERMES_GATEWAY_CMD` as a JSON array. Without either, the connector looks for `<hermes root>/hermes-agent/venv` or `.venv`. `uiGateway: "off"` disables it. If nothing is found the profile keeps using HTTP (`/v1/runs`, then chat completions).
+- **What changes for you.** Send modes map to Hermes itself: Queue is `prompt.submit` with `queued`, Steer is `session.steer`, Interrupt & send is `session.redirect`. The hub shows exactly what Hermes answered and never turns a rejected redirect into a Stop. Approval and clarification questions arrive as cards and can be answered once.
+- **/busy** changes a Hermes setting for the whole profile, not for one chat, so Foxfleet only changes it when you ask.
+- **Needs Python 3.14** for the pinned Hermes dependencies at the time of writing (see `design/notes/hermes-ui-gateway.md`).

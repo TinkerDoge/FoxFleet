@@ -28,6 +28,32 @@
   ],
   "board": [
     {
+      "id": "cc7",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Native Hermes sessions through the connector",
+      "detail": "Connector-owned Hermes UI gateway, allowlisted actions, journal, ownership, foxfleet.native/1 event stream. Verified against a protocol fake in CI and a real gateway by hand."
+    },
+    {
+      "id": "cc8",
+      "col": "Next",
+      "area": "Web",
+      "release": "0.3.0-alpha",
+      "text": "Approval cards, model picker and live acknowledgement labels",
+      "doneWhen": "Both apps answer a clarification and an approval once, show them again after reconnect, and label each message with Hermes\u0027s own acknowledgement.",
+      "detail": "Web and Android render approvals and clarification questions, a model picker and what Hermes actually answered to each message."
+    },
+    {
+      "id": "cc9",
+      "col": "Later",
+      "area": "Hub",
+      "release": "0.3.0-alpha",
+      "text": "Telegram and Discord channels",
+      "doneWhen": "A Telegram bot and a Discord bot can run the same slash commands and approvals as the app against the same live session.",
+      "detail": "Reuse the hub dispatcher, ownership and native bridge for real Telegram and Discord channels (stage 7 of docs/HERMES-CHAT-CONTROLS.md)."
+    },
+    {
       "id": "cc1",
       "col": "Done",
       "area": "Hub",
