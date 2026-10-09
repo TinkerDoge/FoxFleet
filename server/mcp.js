@@ -28,7 +28,7 @@ export function mcpHandler(inbox) {
     switch (msg.method) {
       case 'initialize': {
         const version = PROTOCOLS.includes(p.protocolVersion) ? p.protocolVersion : PROTOCOLS[0];
-        return ok(msg.id, { protocolVersion: version, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'foxfleet', title: 'Foxfleet', version: '0.4.0' },
+        return ok(msg.id, { protocolVersion: version, capabilities: { tools: { listChanged: false } }, serverInfo: { name: 'foxfleet', title: 'Foxfleet', version: '0.1.0-alpha' },
           instructions: `You are connected to a Foxfleet hub as "${agent.label || agent.name}". Check in with hub_get_messages, then answer each message with hub_post_message using its thread_id.` });
       }
       case 'ping': return ok(msg.id, {});

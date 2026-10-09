@@ -9,7 +9,7 @@
 <script type="application/json" id="data">
 {
   "updated": "2026-10-09",
-  "version": "0.1.1-alpha",
+  "version": "0.1.0-alpha",
   "overview": [
     "Foxfleet is a self-hosted hub plus a web app and an Android app for talking to all your AI agents from one calm place. Free, MIT licensed.",
     "Phone app (Kotlin/Compose) and web app (Preact) → your hub (zero-dependency Node server, per-user accounts and secrets) → agents: Hermes machines through an outbound connector, API-key chat providers, and MCP-inbox agents.",
@@ -17,40 +17,8 @@
   ],
   "timeline": [
     {
-      "v": "0.1",
-      "what": "Web Mission Control: hub relays chat, sessions, skills, cron, files and logs for Hermes agents; owner password; zero dependencies."
-    },
-    {
-      "v": "0.2",
-      "what": "Android app: calm light/dark look, agents list, streaming chat, drawer with sessions, settings, shared-element and predictive-back motion."
-    },
-    {
-      "v": "0.3",
-      "what": "Markdown replies, send images, media viewer, slash commands and skills, voice input, custom avatars."
-    },
-    {
-      "v": "0.4",
-      "what": "File attach (90 MB streamed), agent desktop screen with takeover and hand-back, Scribe inbox over MCP, OpenAI-compatible bridge, brand set."
-    },
-    {
-      "v": "0.5",
-      "what": "Data-driven agent registry and in-app agent management, write-only secrets, privacy contract (no hosts, IPs or URLs to clients), wooden-fox brand."
-    },
-    {
-      "v": "1.0-alpha1",
-      "what": "Plugin core and config v3 (OpenRouter, Z.ai, OpenCode, Grok), multi-user accounts and login gate, first-launch hub address, multi-hub, reverse Hermes connector."
-    },
-    {
-      "v": "1.0-alpha2",
-      "what": "Screen takeover through the connector, QR pairing, owner Admin screen (registration, invites, people), real hosts scrubbed from the repo, v1 deploy script, this page."
-    },
-    {
-      "v": "Foxfleet 0.1.0-alpha",
-      "what": "New name and clean open-source repo (MIT), package dev.foxfleet.app, foxfleet:// links, shared design tokens, web rebuild started (Preact + Vite + TypeScript): first-launch hub address and sign-in/setup/join, hub serves the built app with SPA fallback and CSP."
-    },
-    {
-      "v": "Foxfleet 0.1.1-alpha",
-      "what": "Web app reaches parity: chat with Markdown and media, agent management, screen takeover (noVNC), Admin, devices, settings, PWA shell, SSRF-checked media proxy, OpenAPI contract and a documentation site."
+      "v": "0.1.0-alpha",
+      "what": "First release. Hub with accounts and a login gate, provider plugins (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok), Hermes connector with screen takeover, MCP inbox, QR pairing and Admin, web app (PWA) and Android app with shared design tokens, OpenAPI contract, documentation site, Terms/Privacy templates with acceptance on setup and join. Release-signed Android APK and server tarball."
     }
   ],
   "board": [
@@ -98,11 +66,6 @@
       "id": "p1",
       "col": "Done",
       "text": "Web: agents list, schema-driven add/edit/remove/reorder, test connection, connector bootstrap shown once"
-    },
-    {
-      "id": "p2",
-      "col": "In progress",
-      "text": "Device test of the Android app under the new id"
     },
     {
       "id": "n1",
@@ -163,6 +126,11 @@
       "id": "p2",
       "col": "Done",
       "text": "Documentation site (VitePress, GitHub Pages)"
+    },
+    {
+      "id": "n8",
+      "col": "Next",
+      "text": "Device test of the Android app and a real-hub run of the Docker image"
     }
   ],
   "limits": [
@@ -172,7 +140,7 @@
     "QR encoder handles links up to 105 bytes; a longer hub address shows the link only.",
     "Google code scanner needs Play services; without it the user types the address.",
     "Z.ai Coding Plan keys are for supported coding tools only; the app warns and defaults to the general endpoint.",
-    "Android builds are debug-signed; no release keystore yet."
+    "The alpha APK is signed with the project's own release key but is not on any store; R8/minify is off until device tests exist."
   ],
   "providers": [
     {

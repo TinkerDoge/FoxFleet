@@ -1,7 +1,7 @@
 {
   "name": "foxfleet-docs",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.0-alpha",
   "description": "Foxfleet documentation site (VitePress). Published to GitHub Pages at /FoxFleet/.",
   "license": "MIT",
   "type": "module",
