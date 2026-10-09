@@ -17,7 +17,7 @@ import readline from 'node:readline';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.1-alpha';
+export const VERSION = '0.3.2-alpha';
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const log = (...a) => console.log(...a);

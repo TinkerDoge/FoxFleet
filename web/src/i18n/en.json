@@ -283,7 +283,7 @@
   "picker.model.title": "Choose a model",
   "picker.model.step1": "Choose a provider",
   "picker.model.step2": "Models from {provider}",
-  "picker.search": "Search models",
+  "picker.search": "Search",
   "picker.none": "Nothing matches",
   "picker.prev": "Previous",
   "picker.next": "Next",

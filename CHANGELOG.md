@@ -4,6 +4,22 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased
 
+(nothing yet)
+
+## 0.3.2-alpha (Android versionCode 10)
+
+### Fixed
+- **Opening a non-default Hermes profile signed people out (phone) or looped the page (web).** When a profile's Hermes answered 401 to the hub, the hub passed that 401 on, and both clients read it as "your login ended". The hub now answers 502 ("the agent did not accept the hub's credentials"), and the web client and the Android app only sign out when `/api/auth` itself says the login is gone. Regression tests: hub (one machine, three profiles, one rejecting), web client and router (profile names with `/ : @ + %` and spaces), Android.
+
+### Changed
+- **Android: the burger button and agent drawer are gone.** Switch agents with Back; chats are in the History button. Settings, sign-out and Add agent stay on the agents screen.
+- **Both apps: the extra `/` button is gone** (typing `/` and `/help` are the way in).
+- **`/model` pickers** (web card, Android sheet): the provider list is now searchable and paged like the model list, both are a fixed height with Previous / Next and "Page n of N".
+- **One rounded icon set on web and Android** (Material Symbols Rounded, Apache-2.0, bundled as path data: no font or CDN download; see `NOTICE.md`, `design/icons`, `node design/tools/gen-icons.mjs`). Used in navigation, the composer, menus and empty states.
+- **Real buttons instead of text links** across both apps: soft tonal buttons for secondary actions, filled for the main action, outlined for quiet ones, with pressed states.
+
+## 0.3.1-alpha (merged batch, not tagged)
+
 ### Added
 - **Slash menu parity (web and Android).** Bare `/` lists the commands that can run plus skills, with no 60-row cut-off; aliases and commands that cannot run from here appear when their name is typed (or description words). `/help` and `/palette` open a searchable command browser. A connected Hermes gateway adds that profile's skills and any extra names it discovered (shown, never executable: discovery is not permission). The catalog can be scoped to a chat (`?session=`). See `docs/HERMES-SLASH-PARITY.md`.
 
