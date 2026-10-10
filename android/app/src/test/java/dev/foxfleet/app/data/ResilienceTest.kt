@@ -93,4 +93,13 @@ class ResilienceTest {
         val script = mapOf("/runs/r/events" to mutableListOf<R>(bad(), sse(ev(1, "a") + ev(2, "b") + "data: [DONE]\n\n")))
         Hub(script, mutableListOf()).use { h -> var text = ""; api(h.port).follow("x", "r", 0, HubApi.StreamCallbacks({ text += it }, {}, {}, {})); assertEquals("ab", text) }
     }
+
+    @Test fun mediaLinkIsAbsoluteAndOnlyHubMediaPathsAreAccepted() = runBlocking {
+        Hub(mapOf("/agents/a/media" to mutableListOf(json("""{"url":"/api/media/abc.def","kind":"video","name":"v.mp4"}"""))), mutableListOf()).use { h ->
+            val l = api(h.port).media("a", "/tmp/v.mp4"); assertEquals("http://127.0.0.1:${h.port}/api/media/abc.def", l.url); assertEquals("video", l.kind); assertEquals("v.mp4", l.name)
+        }
+        Hub(mapOf("/agents/a/media" to mutableListOf(json("""{"url":"https://evil.example/x","kind":"image","name":"x"}"""))), mutableListOf()).use { h ->
+            try { api(h.port).media("a", "/tmp/x.png"); fail("accepted a foreign url") } catch (e: HubApiException) { assertEquals(502, e.status) }
+        }
+    }
 }

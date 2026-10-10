@@ -434,6 +434,15 @@ class HubApi(private val store: SettingsStore) {
     }
 
     /** The explicit Stop button: cancels the agent run itself. Just closing the app never does. */
+    /** A file or picture the agent mentioned with MEDIA: -> a short-lived link for this user (the hub fetches it from the agent's machine). */
+    suspend fun media(agent: String, ref: String): MediaLink = withContext(Dispatchers.IO) {
+        val r = request(agentPath(agent) + "/media", "POST", buildJsonObject { put("ref", ref) }.toString())
+        val path = r["url"]?.jsonPrimitive?.contentOrNull ?: throw HubApiException(502, "Invalid media reply")
+        if (!path.startsWith("/api/media/")) throw HubApiException(502, "Invalid media reply")
+        val kind = when (r["kind"]?.jsonPrimitive?.contentOrNull) { "image" -> "image"; "video" -> "video"; "audio" -> "audio"; else -> "file" }
+        MediaLink(store.baseUrl.trimEnd('/') + path, kind, r["name"]?.jsonPrimitive?.contentOrNull ?: "file")
+    }
+
     suspend fun stopRun(agent: String, run: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/runs/" + enc(run) + "/stop", "POST", "{}"); Unit }
 
     /** A message the hub holds for a conversation: queued, waiting for a stop, or guidance accepted by the run. */
@@ -666,3 +675,6 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
     }
 }
+
+/** A hub link to one media file (absolute URL; the app's HTTP client adds the sign-in). */
+data class MediaLink(val url: String, val kind: String, val name: String)

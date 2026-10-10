@@ -135,6 +135,9 @@ import androidx.compose.ui.window.Dialog
 import dev.foxfleet.app.ui.chat.extractMedia
 import dev.foxfleet.app.ui.chat.localCommandFor
 import dev.foxfleet.app.ui.components.MediaViewer
+import dev.foxfleet.app.ui.components.AssistantBody
+import dev.foxfleet.app.ui.components.AgentMediaCards
+import dev.foxfleet.app.ui.chat.MediaTags
 import dev.foxfleet.app.ui.components.RichText
 import dev.foxfleet.app.ui.components.VoiceInput
 import dev.foxfleet.app.ui.components.mergeDictation
@@ -327,7 +330,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             }
         }
         if (state.streaming) item(key = "stream") {
-            StreamingMessage(agentName, state, Modifier.animateItem())
+            StreamingMessage(agentName, state, Modifier.animateItem(), onOpen)
         }
         if (state.loading) item(key = "loading") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
         val rev = state.messages.asReversed()
@@ -368,9 +371,9 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 if (m.steps.isNotEmpty()) ToolSteps(m.steps)
                 m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
                     modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
-                if (m.content.isNotBlank()) RichText(m.content)
+                AssistantBody(agentName, m.content, onOpen = onOpen) { RichText(it) }
                 if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(top = 4.dp))
-                val media = remember(m.content) { extractMedia(m.content) }
+                val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
                 media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
             }
         }
@@ -378,7 +381,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
 }
 
 @Composable
-private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier) {
+private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val reduce = reduceMotion()
     Row(modifier.fillMaxWidth()) {
@@ -386,7 +389,8 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f).animateContentSize()) {
             if (state.streamReasoning.isNotBlank()) Reasoning(state.streamReasoning, live = true)
-            val text = state.streamText
+            val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
+            val text = parsedStream.text
             val status = if (state.reconnecting) "Reconnecting…" else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
             if (text.isNotBlank()) {
                 val fadeFrom = if (reduce) text.length else maxOf(0, text.length - STREAM_FADE_CHARS)
@@ -400,6 +404,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
                     style = MaterialTheme.typography.bodyLarge, color = c.text,
                 )
             }
+            AgentMediaCards(agentName, parsedStream.media, onOpen)
             if (status != null) ShimmerStatusText(status, Modifier.padding(top = 4.dp))
         }
     }

@@ -71,7 +71,8 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(style, style)
             }
             FoxfleetTheme(vm.prefs) {
-                CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars) { FoxfleetApp(vm) }
+                val mediaHost = remember { dev.foxfleet.app.ui.components.MediaHost(vm.api.httpClient) { agent, ref -> vm.api.media(agent, ref) } }
+                CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars, dev.foxfleet.app.ui.components.LocalMediaHost provides mediaHost) { FoxfleetApp(vm) }
             }
         }
     }
