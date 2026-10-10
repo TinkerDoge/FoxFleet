@@ -6,3 +6,4 @@ Tap or click an image or video in a conversation to open it fullscreen.
 - **Video:** the native player with controls (Media3 on Android, the browser's `<video>` on the web).
 - **Close:** `Esc`, the close button, or swipe/back gesture.
 - The viewer never leaves the page: images shown here come from the hub (including the [media proxy](/security/media-proxy) for remote Markdown images).
+- Pictures and videos that agents send with `MEDIA:` tags open here too: see [Pictures, video and files from agents](/apps/agent-media).

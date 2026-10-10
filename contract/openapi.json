@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.2-alpha",
+    "version": "0.3.3-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -2706,7 +2706,9 @@
             "name": "session",
             "in": "query",
             "required": false,
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "Stored chat id. When the hub knows that chat's runtime session, the live catalog is read in that session."
           }
         ],
@@ -2813,7 +2815,9 @@
                     },
                     "skills": {
                       "type": "array",
-                      "items": { "type": "string" },
+                      "items": {
+                        "type": "string"
+                      },
                       "description": "Skill names from the live catalog, when a gateway answered."
                     },
                     "warning": {
@@ -3806,6 +3810,184 @@
           }
         ],
         "operationId": "nativeBusySet"
+      }
+    },
+    "/health/stream": {
+      "get": {
+        "operationId": "healthStream",
+        "summary": "Streaming probe for `foxfleet doctor`: an event stream of four chunks 400 ms apart, nothing private. Shows whether a proxy or tunnel buffers streams.",
+        "tags": [
+          "system"
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream (retry hint, comments, then `data: done`)",
+            "content": {
+              "text/event-stream": {}
+            }
+          }
+        },
+        "security": []
+      }
+    },
+    "/api/agents/{name}/media": {
+      "post": {
+        "operationId": "resolveMedia",
+        "summary": "Turn a file the agent mentioned (a `MEDIA:` tag, a Markdown image or a media link in one of its replies) into a short-lived link for THIS user. Only refs the agent actually mentioned in a reply this hub has seen can be resolved; anything else is 404.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ref"
+                ],
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "The path or URL exactly as the agent wrote it, e.g. /home/me/chart.png or https://example.com/a.mp4"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A link valid for 15 minutes for this user only",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "url",
+                    "kind",
+                    "name"
+                  ],
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "description": "Path on this hub: /api/media/<token>"
+                    },
+                    "kind": {
+                      "type": "string",
+                      "enum": [
+                        "image",
+                        "video",
+                        "audio",
+                        "file"
+                      ]
+                    },
+                    "name": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "machine",
+                        "url"
+                      ]
+                    },
+                    "expires": {
+                      "type": "integer",
+                      "description": "Unix ms"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/media/{token}": {
+      "get": {
+        "operationId": "getMedia",
+        "summary": "The bytes behind a media link. Bound to the user the link was issued to (anyone else gets 404), expires after 15 minutes (410). Local files are fetched from the agent's machine by its connector (allowed roots, type allowlist with content sniffing, size cap, rate limit); URLs go through the SSRF-guarded fetcher. Supports Range for video/audio.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "bytes=a-b"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The file",
+            "content": {
+              "image/*": {},
+              "video/*": {},
+              "audio/*": {},
+              "application/pdf": {},
+              "application/octet-stream": {}
+            }
+          },
+          "206": {
+            "description": "Partial content"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "410": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     }
   },

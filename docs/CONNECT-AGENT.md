@@ -84,3 +84,11 @@ foxfleet connector doctor          # or: node foxfleet-connector.mjs doctor
 ```
 
 It lists the Hermes profiles it found, how it found the gateway, starts the gateway to prove it works and prints a fix when something is off. Discovery order: `uiGatewayCommand` in `connector.json` (an array, e.g. `["/home/me/hermes-agent/venv/bin/python","-m","tui_gateway.entry"]`, optional `uiGatewayCwd`), the `FOXFLEET_HERMES_GATEWAY_CMD` environment variable (same array as JSON), `hermesAgentDir` / `HERMES_AGENT_DIR` (a checkout with a `venv`), a checkout next to the Hermes home (`hermes-agent`, `~/hermes-agent`, `~/.hermes/hermes-agent`), then the interpreter named in the first line of the `hermes` command on PATH. `"uiGateway": "off"` disables it. Hermes' own dependencies decide the Python version (3.14 at the time of writing): use the interpreter Hermes itself runs in.
+
+## Sending images, video and files (0.3.3-alpha)
+
+Write Hermes' normal `MEDIA:/absolute/path/file.png` (or `MEDIA:https://…`) on its own line in the reply; add `[[audio_as_voice]]` before an audio file for a voice message. Foxfleet strips the tag and shows image/video/audio/file cards in the web app and on Android. For a local path the connector on that computer serves the file, but only inside the profile's cache/workspace folders and the temp folder (add more with `mediaRoots` in `connector.json` or `FOXFLEET_MEDIA_ROOTS`), only for allowlisted extensions whose content matches, up to 25 MiB. Tags inside code blocks are ignored. More: https://tinkerdoge.github.io/FoxFleet/apps/agent-media
+
+## Connection drops (0.3.3-alpha)
+
+The connector reconnects by itself after a tunnel or proxy blip, including a failed handshake, and the hub re-attaches the running Hermes sessions without restarting turns. `foxfleet doctor --url <your https address>` tests whether the public address streams live and says what to change if a proxy buffers.

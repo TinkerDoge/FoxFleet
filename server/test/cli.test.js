@@ -186,3 +186,19 @@ test('doctor checks the native Hermes gateway on a computer with a paired connec
   write({ uiGatewayCommand: [process.execPath, '-e', 'process.exit(3)'] }); const bad = await cli(sb, ['doctor', '--json', '--offline'], env);
   assert.equal(bad.json().checks.find((c) => c.id === 'native-gateway-start').status, 'fail'); assert.equal(bad.code, 1);
 });
+
+test('doctor tells a buffering proxy from a live stream on the public address', async () => {
+  const mk = (buffered) => new Promise((resolve) => { const s = http.createServer((q, r) => {
+    if (q.url === '/health') { r.writeHead(200, { 'Content-Type': 'application/json' }); return r.end('{"ok":true}'); }
+    r.writeHead(200, { 'Content-Type': 'text/event-stream', ...(buffered ? {} : { 'cf-ray': 'abc-BKK' }) });
+    if (buffered) return void setTimeout(() => r.end(': 1\n\n: 2\n\n: 3\n\ndata: done\n\n'), 1700);
+    let n = 0; r.write('retry: 3000\n\n'); const t = setInterval(() => { r.write(`: ${++n}\n\n`); if (n >= 3) { clearInterval(t); r.end('data: done\n\n'); } }, 400);
+  }).listen(0, '127.0.0.1', () => resolve(s)); });
+  for (const buffered of [true, false]) {
+    const srv = await mk(buffered), sb = sandbox();
+    const r = await cli(sb, ['doctor', '--json', '--offline', '--url', `http://127.0.0.1:${srv.address().port}`]); srv.close();
+    const c = Object.fromEntries(r.json().checks.map((x) => [x.id, x]));
+    if (buffered) { assert.equal(c.streaming.status, 'warn'); assert.match(c.streaming.message, /buffering/); assert.match(c.streaming.fix, /cloudflare-tunnel#resilience/); }
+    else { assert.equal(c.streaming.status, 'ok'); assert.equal(c.cloudflare.status, 'ok'); }
+  }
+});

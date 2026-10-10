@@ -47,3 +47,15 @@ foxfleet connector doctor
 ```
 
 The check lists profiles, shows how the gateway was found, starts it and tells you the fix if it cannot (a missing checkout, or the wrong Python). Without the checkout everything keeps working over HTTP. The command and the discovery order are described in `docs/CONNECT-AGENT.md`.
+
+## Sending pictures, video and files {#sending-pictures-video-and-files}
+
+Agents send media with the usual Hermes `MEDIA:` tag; nothing needs to be configured for files in the profile's cache or workspace folders or the temp folder:
+
+```text
+MEDIA:/home/me/.hermes/image_cache/result.png
+[[audio_as_voice]]
+MEDIA:/tmp/answer.ogg
+```
+
+The native Hermes gateway does not interpret the tag (it arrives as text), Foxfleet does. For another folder add it to `mediaRoots` in the connector config (or `FOXFLEET_MEDIA_ROOTS=/data/out:/srv/reports`). See [Pictures, video and files from agents](/apps/agent-media). If a connector link flaps (for example behind Cloudflare) it reconnects by itself and running turns continue; `foxfleet connector doctor` and `foxfleet doctor` show what is wrong when it does not.

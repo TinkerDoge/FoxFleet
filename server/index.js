@@ -299,6 +299,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const url = new URL(req.url, 'http://hub');
       let parts; try { parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { throw fault(400, 'Invalid path'); }
       if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
+      if (req.method === 'GET' && url.pathname === '/health/stream') { // `foxfleet doctor` uses this to see whether a proxy/tunnel buffers streaming responses: 4 chunks, 400 ms apart, nothing private
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
+        let n = 0; res.write('retry: 3000\n\n'); const t = setInterval(() => { if (++n >= 4) { clearInterval(t); res.end('data: done\n\n'); } else res.write(`: ${n}\n\n`); }, 400); res.on('close', () => clearInterval(t)); return;
+      }
       if (req.method === 'GET' && url.pathname === '/connector.mjs') { res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'connector', 'foxfleet-connector.mjs'))); }
       if (req.method === 'GET' && url.pathname === '/connect-agent.md') { res.writeHead(200, { 'Content-Type': 'text/markdown; charset=utf-8', 'Cache-Control': 'no-cache', 'X-Content-Type-Options': 'nosniff' }); return res.end(await readFile(path.join(DIR, '..', 'docs', 'CONNECT-AGENT.md'))); }
       { // one-line installer for a machine: GET /c/<code> (sh) or /c/<code>.ps1 (PowerShell). Reading it does NOT use the code up.

@@ -6,6 +6,24 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
+## 0.3.3-alpha (Android versionCode 11)
+
+### Fixed: short outages (Cloudflare blips) no longer end sessions
+- **Root causes found.** (1) *Connector:* a failed WebSocket handshake (the tunnel answering 502 to the upgrade) never triggered a retry, so a machine stayed dead until restarted; a link that went silent without closing was never noticed. (2) *Hub:* after a link flap nothing re-subscribed to the native Hermes events, so a turn that finished during the outage never ended in the UI. (3) *Web and Android:* any 401 signed the user out even when the hub could not be reached to confirm it; the boot call fell back to the hub-address screen on a 502; stream resume gave up after ~30 s (and on web re-used an already-consumed response); a send lost in a blip showed an error and the draft.
+- **Sign-out only on a real 401 from `/api/auth`.** Both clients now ask `/api/auth` before treating a 401 as a lost session; "cannot tell" counts as transient. 502/503/504/52x, timeouts and resets are never a sign-out and never a run failure.
+- **Retry with exponential backoff and jitter** for idempotent GETs, and **stream resume** from the cursor (`?after=` / `Last-Event-ID`) for about three minutes. A small, non-blocking **Reconnecting…** line replaces error banners (web and Android), including at app start.
+- **A send that was cut off by a blip is found or resent once**, with the same `client_id`, so the hub never runs it twice.
+- **Hub:** event streams send a `retry: 3000` hint and an immediate first byte (15 s keep-alives, `Cache-Control: no-transform`, `X-Accel-Buffering: no` were already there); runs keep going when the client disconnects; when a machine reconnects the hub re-attaches live native sessions and back-fills the events it missed.
+- **Connector:** reconnects after a failed handshake, jittered backoff (1 s up to 60 s), a 75 s silence watchdog (`FOXFLEET_LINK_SILENT_MS`) for half-open links, re-registers and re-attaches without restarting agent turns.
+- **`foxfleet doctor`** now tests the public address for streaming (new `GET /health/stream`): it warns when a proxy or tunnel buffers responses and says what to change. Recommended Cloudflare settings: [Hosting → Cloudflare Tunnel](/hosting/cloudflare-tunnel#resilience).
+- Tests: a fault-injecting proxy (502 storms, resets, frozen links) in front of the hub for web, hub, connector and Android.
+
+### Added: pictures, video, audio and files from agents (`MEDIA:` tags)
+- Hermes tags files it wants to send with `MEDIA:/path/file.png` (or an `https://` URL, optionally with `[[audio_as_voice]]`). The native Hermes gateway passes those tags through as plain text, so Foxfleet now reads them itself, over the native path and the HTTP path: the tags (and Markdown images with local paths) are removed from the text and shown as **image, video, audio (voice) and file cards** on web and Android; tap a picture or video for the fullscreen viewer. Old chats show them too.
+- **Local files** on the agent's machine are fetched by the connector (only inside its shared folders, an extension allowlist with content sniffing, symlinks resolved, 25 MB cap, 60 per minute) and served by the hub to the owning user only through a signed link that expires in 15 minutes. Remote URLs go through the SSRF-guarded fetcher. The hub only serves what the agent actually mentioned. See [Pictures, video and files from agents](/apps/agent-media) and [Security → agent media](/security/media-proxy#agent-media).
+- New endpoints: `POST /api/agents/{name}/media`, `GET /api/media/{token}`, `GET /health/stream` (see `contract/openapi.json`). One parser with shared test vectors (`contract/media-tags.vectors.json`) runs in the hub, web and Android.
+- Verified against a real Hermes `tui_gateway` with a fake model (opt-in test `server/test/media-real.test.js`).
+
 ## 0.3.2-alpha (Android versionCode 10)
 
 ### Fixed

@@ -37,6 +37,9 @@ IDs (`id`) are random hex chosen by the hub per stream. `b` is base64.
 | agent → hub | `ws-up` | `id, headers{sec-websocket-accept, sec-websocket-protocol}` | Upgrade accepted; hub writes the `101` to its client. |
 | both | `ws-data` | `id, b` | Raw WebSocket bytes after the handshake. |
 | both | `ws-close` | `id` | Close the tunnelled socket. |
+| hub → agent | `media-get` | `id, agent, path` | Fetch one local file the agent mentioned with a `MEDIA:` tag. |
+| agent → hub | `media-meta` | `id, ok, size, mime, name` or `ok:false, code, error` | The file passed the checks (or why not: `outside`, `type`, `sniff`, `too_big`, `missing`, `denied`, `rate`). |
+| agent → hub | `media-data` / `media-end` | `id, b` / `id` | The file in ≤ 48 KiB chunks. |
 | agent → hub | `error` | `id` | Local failure; hub answers `502` (or closes). |
 | hub → agent | `ping` | | Every 25 s. |
 | agent → hub | `pong` | | Reply. The hub drops a link silent for 90 s. |
@@ -46,5 +49,6 @@ IDs (`id`) are random hex chosen by the hub per stream. `b` is base64.
 - At most **64** concurrent streams per connector (`503` beyond that).
 - Hop-by-hop headers (`host`, `connection`, `upgrade`, `transfer-encoding`, …) are stripped; the response `content-length` is dropped (the hub re-frames).
 - The hub exposes each shared profile through **two loopback-only HTTP servers on random ports**; the normal Hermes client talks to those, so nothing else in the hub knows about tunnelling.
-- The connector reconnects with exponential backoff: 1 s doubling to 60 s, reset on a successful connect.
+- The connector reconnects with exponential backoff and jitter: 1 s doubling to 60 s, reset on a successful connect. A failed handshake (for example a tunnel answering 502 to the upgrade) is retried like a closed link, and a link that receives nothing for 75 s (`FOXFLEET_LINK_SILENT_MS`; the hub pings every 25 s) is closed and reopened. When it is back, the hub re-attaches the live native sessions and back-fills the missed events; running agent turns are not restarted.
+- Local media: the connector serves a file only inside its media roots (the profile's cache and workspace folders, the system temp folder, and anything in `mediaRoots` of `connector.json` or `FOXFLEET_MEDIA_ROOTS`), only for allowlisted extensions whose first bytes match, after resolving symlinks, up to `mediaMaxBytes` (default 25 MiB), at most 60 files a minute.
 - Nothing is persisted: if the hub restarts, connectors simply reconnect.

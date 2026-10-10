@@ -100,6 +100,7 @@ export default defineConfig({
         { text: 'Attachments and voice', link: '/apps/attachments' },
         { text: 'Commands', link: '/apps/commands' },
         { text: 'Media viewer', link: '/apps/media-viewer' },
+        { text: 'Pictures, video and files from agents', link: '/apps/agent-media' },
         { text: 'Screen takeover', link: '/apps/screen' },
         { text: 'Admin', link: '/apps/admin' },
         { text: 'Settings and devices', link: '/apps/settings' },

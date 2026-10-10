@@ -130,6 +130,13 @@ export async function doctorChecks() {
     const r = await get(String(pub).replace(/\/$/, '') + '/health', { timeout: 6000 });
     r.ok ? add('public', 'ok', `public address answers (HTTP ${r.status})`) : add('public', 'fail', `public address did not answer${r.status ? ` (HTTP ${r.status})` : r.error ? ` (${r.error})` : ''}`, 'Check the tunnel/reverse proxy and DNS; the hub itself is fine if the local check above is ok');
   }
+  if (pub) { // does the public address stream (SSE) or does a proxy/tunnel buffer it until the end? A buffered stream makes replies appear all at once and idles out.
+    const first = await new Promise((res) => { const t0 = Date.now(); fetch(String(pub).replace(/\/$/, '') + '/health/stream', { signal: AbortSignal.timeout(8000), headers: { Accept: 'text/event-stream' } }).then(async (r) => { if (!r.ok || !r.body) return res({ status: r.status }); const rd = r.body.getReader(); const f = await rd.read(); const t1 = Date.now() - t0; while (!(await rd.read()).done) { /* drain */ } res({ first: t1, total: Date.now() - t0, server: r.headers.get('server') ?? '', cf: r.headers.has('cf-ray') }); }).catch((e) => res({ error: e.cause?.code || e.name })); });
+    if (first.error || first.status) add('streaming', 'warn', `could not test streaming through the public address (${first.status ? 'HTTP ' + first.status : first.error})`, 'Is the hub up to date (0.3.3-alpha or newer) and the tunnel running? See hosting/cloudflare-tunnel');
+    else if (first.total > 800 && first.first > first.total - 500) add('streaming', 'warn', 'the public address delivers streams only at the end: a proxy or tunnel is buffering responses, so replies would appear all at once and long ones may time out', 'Turn response buffering off for this host (nginx: proxy_buffering off; Cloudflare: disable Auto Minify/Rocket Loader, no Cache Rules on /api). See hosting/cloudflare-tunnel#resilience');
+    else add('streaming', 'ok', `streams pass through the public address live${first.cf ? ' (Cloudflare)' : ''}`);
+    if (first.cf) add('cloudflare', 'ok', 'Cloudflare is in front: short outages (502/524) are ridden out by the apps and the connector; see hosting/cloudflare-tunnel#resilience for the recommended settings');
+  }
   if (up) { // does a WebSocket upgrade get through (connector and screen takeover need it)?
     const target = new URL(pub ? String(pub) : `http://127.0.0.1:${PORT}`);
     const status = await new Promise((res) => {

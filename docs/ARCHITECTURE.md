@@ -103,3 +103,8 @@ phone / browser ──► /chat /messages /queue /runs/*  (unchanged shapes)
 | Wrong user/profile fails; unsupported commands and Steer stay unavailable | `native-hub.test.js` (ownership), `ui-gateway.test.js` (allowlist), `ChatControlsTest.kt` |
 | Detach keeps work alive, cursor replay and truncation recovery | `native-facade.test.js`, `server/test/runs.test.js` |
 | Live Hermes UI-protocol check; HTTP fallback check | `HERMES_REAL_GATEWAY_TEST=…` runs the same suites against a real gateway (see the file header); HTTP fallback in `server/test/chat-controls.test.js` |
+
+## Resilience and agent media (0.3.3-alpha)
+
+- **Short outages.** Clients sign out only on a `401` that `/api/auth` itself confirms; reads retry with backoff and jitter; event streams resume from their cursor (`?after=` / `Last-Event-ID`); a send gets one `client_id` and is found or resent once. The hub's run registry keeps runs alive without a client; the connector reconnects with backoff and a silence watchdog, and `hermes-ui` re-attaches live native sessions on `connectors.onUp`. Tests: `server/test/resilience.test.js`, `native-resilience.test.js` (fault-injecting proxy `fault-proxy.js`), `web/tests/resilience.test.ts`, Android `ResilienceTest`.
+- **Agent media.** `server/media-tags.js` (twins: `web/src/lib/mediaTags.ts`, Android `MediaTags.kt`; shared vectors `contract/media-tags.vectors.json`) finds `MEDIA:` tags. `server/media.js` keeps the per-user mention registry, issues signed expiring links and serves bytes (local files via `connectors.fetchMedia` → connector `checkMedia`; URLs via the SSRF-guarded fetcher). Hermes' native gateway passes tags through as text, so extraction is client/hub side by design.

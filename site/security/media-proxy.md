@@ -28,3 +28,14 @@ object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'
 ## Markdown sanitizing
 
 `marked` renders, then **DOMPurify** sanitizes (tests cover script tags, event handlers, `javascript:` URLs, SVG and data URLs). Links are limited to `http:`, `https:`, `mailto:` and in-page `#` anchors, and open with `target="_blank" rel="noopener noreferrer"`.
+
+## Agent media (`MEDIA:` tags) {#agent-media}
+
+Agents can send pictures, video, audio and files. The rules:
+
+- **Only what the agent mentioned.** The hub remembers the refs found in an agent's replies, per user and agent. `POST /api/agents/{name}/media` answers `404` for anything else, so the endpoint cannot be used to read arbitrary paths or probe URLs.
+- **Links are user-bound and short-lived.** `/api/media/<token>` is signed (HMAC with a per-process secret), tied to the signed-in user, valid for 15 minutes. Someone else's link answers `404`, an old one `410`. Sign-in is still required to fetch it.
+- **Local files** are read by the connector on the agent's machine, not by the hub: the real path (symlinks resolved) must be inside the machine's media roots, not in a denied directory (`.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.git`, `.password-store`), the extension must be on the allowlist and the file's first bytes must match it, the size is capped (25 MiB by default) and requests are rate-limited (60 a minute). An agent therefore cannot use a `MEDIA:` tag to exfiltrate `~/.ssh/id_rsa` or `/etc/passwd`. Add folders on purpose with `mediaRoots` in `connector.json` or `FOXFLEET_MEDIA_ROOTS`.
+- **URLs** go through the same SSRF guard as the [image proxy](#ssrf-protections-server-media-proxy-js) (public addresses only, https, pinned DNS result, size and time caps), now also for video, audio and PDF.
+- **Display.** Media is shown with `<img>`, `<video>` and `<audio>` from the hub's own origin, so the CSP (`img-src 'self'`, `media-src 'self'`) is unchanged. Files are offered as downloads, never rendered. The hub sends `X-Content-Type-Options: nosniff` and a fixed content type.
+- **Tags in code** (fenced, inline, quoted) are not treated as tags.

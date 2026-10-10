@@ -34,6 +34,26 @@ A tunnel gives your hub an https address without opening any port or needing a p
 | **Host and Origin checks** | **Required:** `FOXFLEET_TRUSTED_ORIGINS` must contain the public origin, otherwise the hub answers `403 Untrusted host`. Use the same hostname in the app and in this setting. |
 | **CSP** | The hub sends a strict CSP itself; no Cloudflare rule is needed. Do not enable features that inject scripts (e.g. Rocket Loader, Auto Minify, Email Obfuscation) for this hostname. |
 
+## Resilience: riding out short outages {#resilience}
+
+Cloudflare (or the tunnel process) occasionally answers `502`/`524` for a few seconds or drops connections. Foxfleet is built so that this never signs anyone out and never loses a running turn:
+
+- **Apps** retry reads with exponential backoff and jitter, resume a cut event stream from the last event they saw for about three minutes, and show a small **Reconnecting…** line. They sign out only when `/api/auth` itself answers `401`. A message you sent during the blip is found on the hub or sent once more with the same `client_id`, never twice.
+- **The hub** keeps a run going when the browser disconnects, sends a comment line every 15 s and a `retry: 3000` hint, and marks streams `Cache-Control: no-transform` and `X-Accel-Buffering: no`.
+- **Connectors** reconnect on their own (1 s doubling to 60 s with jitter), notice a silent link after 75 s, re-register, and the hub re-attaches the live Hermes sessions without restarting any turn.
+
+Recommended settings:
+
+| Where | Setting |
+| --- | --- |
+| `cloudflared` config | Keep `originRequest` defaults. If you set `connectTimeout`/`keepAliveTimeout`, keep `keepAliveTimeout` ≥ 90 s. Run it as a service (`cloudflared service install`) so it restarts itself. |
+| Cloudflare dashboard (this hostname) | WebSockets **on** (default). Turn **off** Auto Minify, Rocket Loader and Email Obfuscation. Add no Cache Rule for `/api/*` (do not cache or buffer). |
+| Timeouts | Cloudflare closes a connection that is idle for about 100 s: the hub's 15 s keep-alives and 25 s WebSocket pings stay well below that. Do not raise proxy idle timeouts above what Cloudflare allows. |
+| Other proxies (nginx, Caddy) | nginx: `proxy_buffering off; proxy_read_timeout 3600s; proxy_http_version 1.1;` plus the WebSocket upgrade headers. Caddy needs no change (`flush_interval -1` is the default for event streams). |
+| Check it | `foxfleet doctor --url https://hub.example.com` calls `/health/stream` through your address and warns when responses are buffered. |
+
+If a blip lasts longer than about three minutes the app keeps your draft and the conversation on screen, shows the error with a Try again button, and nothing is lost: the hub still has the run, and reopening the chat picks it up.
+
 ## Things to know
 
 - **Client IPs.** The hub reads the socket address, which is the tunnel, so **all clients share one IP rate-limit bucket**. The per-username lockout still protects accounts. There is no trusted-proxy header setting yet (roadmap).

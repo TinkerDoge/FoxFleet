@@ -51,3 +51,10 @@ test('event streams carry a retry hint and a first byte at once, and the headers
   const reader = ev.body.getReader(); const first = new TextDecoder().decode((await reader.read()).value); assert.match(first, /^retry: 3000\n\n/); await reader.cancel();
   await fetch(`http://127.0.0.1:${hub.port}/api/agents/fixture/runs/${run}/stop`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
 });
+
+test('/health/stream (the doctor probe) streams live, unauthenticated, with the no-buffering headers', async (t) => {
+  const mock = await mockHermes(t, {}), hub = await setup(t, mock.connection);
+  const t0 = Date.now(), r = await fetch(`http://127.0.0.1:${hub.port}/health/stream`);
+  assert.equal(r.status, 200); assert.match(r.headers.get('content-type'), /text\/event-stream/); assert.match(r.headers.get('cache-control'), /no-transform/); assert.equal(r.headers.get('x-accel-buffering'), 'no');
+  const rd = r.body.getReader(); await rd.read(); assert.ok(Date.now() - t0 < 300, 'first bytes are immediate'); while (!(await rd.read()).done); assert.ok(Date.now() - t0 > 1000);
+});
