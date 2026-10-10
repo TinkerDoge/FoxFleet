@@ -18,7 +18,7 @@ export async function mockHermes(t, options = {}) {
     if (options.expireOnce && logins === 1 && !expired) { expired = true; return json(res, 401, {}); }
     await options.beforeDashboardResponse?.(req, u);
     if (options.rejectProfile && u.searchParams.get('profile') === options.rejectProfile && u.pathname.startsWith('/api/sessions')) return json(res, 401, { error: 'profile token rejected' });
-    if (u.pathname === '/api/sessions') return json(res, 200, { sessions: [{ id: 'sess-1', title: 'real session' }] });
+    if (u.pathname === '/api/sessions') return json(res, 200, { sessions: [{ id: 'sess-1', title: 'real session', last_active: 1791407520.5, preview: 'Here is the plan we agreed on' }] });
     if (u.pathname === '/api/sessions/search') return json(res, 200, { sessions: u.searchParams.get('q') === 'missing' ? [] : [{ id: 'sess-1' }] });
     if (/^\/api\/sessions\/[^/]+\/messages$/.test(u.pathname)) return json(res, options.noDashboardMessages ? 404 : 200, { messages: options.messages || [{ role: 'assistant', content: 'Files: `/outputs/result.png` and /outputs/report.html and /outputs/icon.svg and /outputs/notes.txt and /outputs/movie.mp4 and /outputs/archive.bin and /outputs/.env and /outputs/../secret.txt. /outputs/notes.txt.backup [Report](outputs/Launch plan.md)' }] });
     if (u.pathname === '/api/skills/toggle') { requests.at(-1).body = await body(req); return json(res, req.method === 'PUT' ? 200 : 405, { ok: true }); }

@@ -1,5 +1,6 @@
 // The agent list's last-activity line, ordering and pins (hub side).
 import test from 'node:test';
+import { waitFor } from './machine-helpers.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -69,4 +70,13 @@ test('hub: a chat updates last_* fields, pins persist and sort first, nothing ex
   await hub.call(`/api/agents/${name}/pin`, 'PUT', { pinned: false }); assert.equal((await (await hub.call('/api/agents')).json()).agents[0].pinned, false);
   assert.equal((await hub.call('/api/agents/nobody/pin', 'PUT', { pinned: true })).status, 404);
   const text = JSON.stringify(a); assert.ok(!/127\.0\.0\.1|localhost|MEDIA:/.test(text.replace(/"description":"[^"]*"/, '')), text.slice(0, 300));
+});
+
+test('hub: a Hermes agent whose chats live in its own session list is seeded once from them (profile agents too), never blank-by-accident', async (t) => {
+  const mock = await mockHermes(t), hub = await hubFor(t, mock.connection);
+  const first = (await (await hub.call('/api/agents')).json()).agents[0]; assert.ok('last_activity_at' in first, 'field always present, null when unknown');
+  const seeded = await waitFor(async () => { const a = (await (await hub.call('/api/agents')).json()).agents[0]; return a.last_activity_at ? a : null; }, { tries: 60, ms: 100 });
+  assert.ok(seeded, 'activity seeded from the newest Hermes session');
+  assert.equal(seeded.last_activity_at, 1791407520500); assert.equal(seeded.last_session_title, 'real session'); assert.equal(seeded.last_message_preview, 'Here is the plan we agreed on');
+  assert.ok(!/127\.0\.0\.1|localhost/.test(JSON.stringify(seeded).replace(/"description":"[^"]*"/, '')));
 });

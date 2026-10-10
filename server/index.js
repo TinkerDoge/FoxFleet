@@ -50,6 +50,8 @@ export const LIMITS = { json: 4 * 1024 * 1024, chat: 10 * 1024 * 1024, transcrib
 const BODY_LIMIT = LIMITS.json, SESSION_AGE = 30 * 24 * 60 * 60 * 1000;
 export const APP_ORIGIN = 'https://appassets.androidplatform.net';
 // What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
+/** Opt-in diagnostics (FOXFLEET_DEBUG=1): one JSON line per event, never message text or addresses. */
+const log = (event, data = {}) => { if (process.env.FOXFLEET_DEBUG) console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data })); };
 export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo'];
 const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
@@ -233,6 +235,22 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     parts.push(i.agent === 'native' ? 'agent: native (media tags, and files its tools make)' : i.agent === 'http' ? 'agent: media tags in replies' : 'agent: media tags in replies');
     return { ok: true, message: parts.join(' · ') };
   }
+  // Existing Hermes chats (made before this hub tracked activity, or through another client) live in the agent's own session list. Ask for the newest one, once per
+  // minute at most, off the request path, so the next poll of the agent list shows when and what; a failure just means "No messages yet" for now.
+  const seeding = new Map();
+  function seedFromHermes(ctx, m) {
+    const reg = ctx.reg, key = scopeOf(ctx) + '\0' + m.name, tried = seeding.get(key);
+    if (tried && Date.now() - tried < 60_000) return; seeding.set(key, Date.now());
+    if (seeding.size > 500) seeding.delete(seeding.keys().next().value);
+    void (async () => {
+      try {
+        const data = await upstreamJson(await ctx.reg.upstream.dashboard(m, '/api/sessions?limit=1&order=recent')), row = (Array.isArray(data?.sessions) ? data.sessions : Array.isArray(data) ? data : []).find((r) => r?.id != null);
+        if (!row) return void log('activity.seed', { agent: m.name, found: 0 });
+        const s = sessionRow(row), text = s.preview || s.title || ''; reg.activity.seed(m.name, { at: s.updated ?? s.started, role: 'assistant', text, title: s.title ?? undefined, session: s.id });
+        log('activity.seed', { agent: m.name, found: 1, at: s.updated ?? s.started, fields: Object.keys(row) });
+      } catch (e) { log('activity.seed', { agent: m.name, error: e?.status ?? e?.code ?? 'failed' }); }
+    })();
+  }
   /** The agent-list fields, per user: when, what and which chat was last active, pin state, and whether the agent works or waits for an answer. Never an address. */
   function withActivity(ctx, m, view) {
     const reg = ctx.reg, scope = scopeOf(ctx); let a = reg.activity.get(m.name);
@@ -240,6 +258,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const top = reg.history.list(m.name, { limit: 1 }).sessions?.[0];
       if (top) { const last = reg.history.messages(m.name, top.id, { limit: 1 }).messages?.at(-1); reg.activity.seed(m.name, { at: top.updated, role: last?.role === 'user' ? 'user' : 'assistant', text: last?.content ?? top.preview ?? '', title: top.title, session: top.id }); a = reg.activity.get(m.name); }
     }
+    else if (!a && kindOf(m) === 'hermes') seedFromHermes(ctx, m); // Hermes keeps its own sessions (native/connector or old /chat path): read them once, in the background
     const pins = reg.activity.pins(), pinIndex = pins.indexOf(m.name);
     const needs = kindOf(m) === 'hermes' && nativeUi(m) && m.machineId ? reg.native.openRequests(scope, m.machineId, m.profile) > 0 : false;
     return { ...view, last_activity_at: a?.at ?? null, last_session_title: a?.title || null, last_message_preview: a?.preview || null, last_role: a?.role ?? null,

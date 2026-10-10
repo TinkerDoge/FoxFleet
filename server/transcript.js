@@ -7,7 +7,7 @@ import { toolMedia, withMediaLines } from './media-tags.js';
 const CONTROL = [/<system-reminder>[\s\S]*?<\/system-reminder>/gi, /<memory-context>[\s\S]*?<\/memory-context>/gi, /<tool_call>[\s\S]*?<\/tool_call>/gi, /<tool_response>[\s\S]*?<\/tool_response>/gi, /<\/?(?:tool_calls?|function_calls?)>/gi];
 const THINK = /<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/gi;
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
-const ms = (t) => { const n = Number(t); return Number.isFinite(n) && n > 0 ? Math.round(n < 1e12 ? n * 1000 : n) : undefined; };
+const ms = (t) => { if (typeof t === 'string' && /^\d{4}-\d\d-\d\d/.test(t)) { const d = Date.parse(t); return Number.isFinite(d) ? d : undefined; } const n = Number(t); return Number.isFinite(n) && n > 0 ? Math.round(n < 1e12 ? n * 1000 : n) : undefined; };
 
 /** Text, images and a "[file]" note from string or multimodal-array content. */
 export function flattenContent(c) {
