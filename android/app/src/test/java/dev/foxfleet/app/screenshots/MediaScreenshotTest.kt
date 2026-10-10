@@ -66,6 +66,8 @@ class MediaScreenshotTest {
         compose.onRoot().captureRoboImage("$OUT/$name-${if (dark) "dark" else "light"}.png")
     }
     @Test fun media360Light() = shot("07-media-cards-360dp", false, 360)
+    @Test fun media360Dark() = shot("07-media-cards-360dp", true, 360)
+    @Test fun media411Light() = shot("07-media-cards-411dp", false, 411)
     @Test fun media411Dark() = shot("07-media-cards-411dp", true, 411)
 
     private fun reconnecting(name: String, dark: Boolean, w: Int) {
@@ -77,5 +79,7 @@ class MediaScreenshotTest {
         compose.onRoot().captureRoboImage("$OUT/$name-${if (dark) "dark" else "light"}.png")
     }
     @Test fun reconnecting360Light() = reconnecting("08-reconnecting-360dp", false, 360)
+    @Test fun reconnecting360Dark() = reconnecting("08-reconnecting-360dp", true, 360)
+    @Test fun reconnecting411Light() = reconnecting("08-reconnecting-411dp", false, 411)
     @Test fun reconnecting411Dark() = reconnecting("08-reconnecting-411dp", true, 411)
 }
