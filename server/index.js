@@ -187,7 +187,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
   async function syncProfiles(machine, msg, link) {
     const user = ownerOf(machine.userId); if (!user) throw fault(403, 'Owner is gone');
+    if (!machines.get(machine.id)) throw fault(403, 'This machine was revoked'); // a sync already in flight when the machine was removed must not bring its agents back
     const reg = await registryFor(user.id, user.role === 'owner');
+    if (!machines.get(machine.id)) throw fault(403, 'This machine was revoked');
     const names = [...new Set((Array.isArray(msg.profiles) ? msg.profiles : []).map((p) => String(p?.profile ?? '')).filter((n) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(n)))].slice(0, 32);
     const mine = reg.store.all().filter((a) => a.machineId === machine.id);
     for (const a of mine) if (!names.includes(a.profile)) { await reg.store.remove(a.name); reg.upstream.clear(); }
@@ -426,7 +428,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 3 && req.method === 'PATCH') { const b = await body0(); return sendJson(res, 200, { machine: view(await machines.rename(uid, parts[2], b.name)) }); }
         if (parts.length === 3 && req.method === 'DELETE') { // revoke: token gone, link dropped, its agents removed
           const m = await machines.remove(uid, parts[2]); connectors.drop(m.id);
-          for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); }
+          for (let pass = 0; pass < 2; pass++) { for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); } await new Promise((r) => setImmediate(r)); } // second pass: a sync that was mid-flight
           upstream.clear(); return sendJson(res, 200, { ok: true });
         }
         if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') { // rotate: the old token dies now; a new code re-pairs the same machine

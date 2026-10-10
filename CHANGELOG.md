@@ -6,7 +6,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
-## 0.3.4-alpha (Android versionCode 12)
+## 0.3.4-alpha (unreleased, Android versionCode 12)
 
 ### Added: a Telegram-style agent list, sorted by activity, with pins
 - **Order:** pinned agents first (in the order you pinned them, up to 50), then newest message activity, then agents with no messages in registry order. The manual order under *Manage agents* is now only the tie-break. Pins and last-activity data are per account on the hub.

@@ -6,6 +6,12 @@ const columns = ['Next', 'In progress', 'Later', 'Done'];
 const areas = ['Hub', 'Web', 'Android', 'Agents', 'Design', 'Docs', 'Releases'];
 const markdown = (value) => String(value ?? '').replace(/\|/g, '\\|').replace(/</g, '&lt;').replace(/\n/g, ' ');
 
+/** The newest CHANGELOG version that is not marked "(unreleased)": the single source of truth for "what is released". */
+export function latestReleased(changelog) {
+  for (const m of changelog.matchAll(/^## (\d+\.\d+\.\d+(?:-[\w.]+)?)([^\n]*)$/gm)) if (!/unreleased|not tagged/i.test(m[2])) return m[1];
+  return null;
+}
+
 export function readRoadmap(root) {
   const html = readFileSync(resolve(root, 'docs/roadmap.html'), 'utf8');
   const block = html.match(/<script[^>]*type="application\/json"[^>]*>([\s\S]*?)<\/script>/);
@@ -13,8 +19,10 @@ export function readRoadmap(root) {
   const data = JSON.parse(block[1]);
   const version = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')).version;
   if (data.version !== version) throw new Error(`Roadmap: version ${data.version} differs from package.json (${version}). Update the roadmap snapshot.`);
+  const changelog = readFileSync(resolve(root, 'CHANGELOG.md'), 'utf8');
+  const released = latestReleased(changelog);
+  if (data.releasedVersion !== released) throw new Error(`Roadmap: releasedVersion is ${data.releasedVersion} but the newest released CHANGELOG entry is ${released}. Update docs/roadmap.html (releasedVersion, overview, stage/focus) when you release; mark unreleased CHANGELOG headings "(unreleased)".`);
   if (data.nextVersion) {
-    const changelog = readFileSync(resolve(root, 'CHANGELOG.md'), 'utf8');
     const upcoming = changelog.match(/^## Unreleased \(([^)]+)\)/m)?.[1];
     if (data.nextVersion !== upcoming) throw new Error('Roadmap: nextVersion must match the Unreleased version in CHANGELOG.md.');
     if (!data.nextReleaseNote) throw new Error('Roadmap: describe the upcoming source changes in nextReleaseNote.');
