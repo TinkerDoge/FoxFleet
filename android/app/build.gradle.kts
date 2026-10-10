@@ -37,7 +37,14 @@ android {
     }
 
     buildTypes {
+        // Debug installs next to the release app: own application id, label and a DEBUG-badged launcher icon (src/debug/res).
+        debug {
+            applicationIdSuffix = ".debug"
+            versionNameSuffix = "-debug"
+            resValue("string", "app_name", "FoxFleet Debug")
+        }
         release {
+            resValue("string", "app_name", "FoxFleet")
             // R8/minify is OFF for the alpha: the app uses reflection-heavy libraries (kotlinx.serialization, Rive, a JS-bridged
             // WebView) and there is no on-device test suite to prove a minified build works. Turn it on once device tests exist.
             isMinifyEnabled = false
