@@ -19,6 +19,7 @@ import dev.foxfleet.app.data.scrubAddresses
 import dev.foxfleet.app.ui.chat.ChatState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 sealed interface Route {
@@ -102,18 +103,28 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     init { boot() }
 
+    /** True while the first contact with the hub is being retried after a blip. */
+    var bootReconnecting by mutableStateOf(false)
+
     fun boot() {
         bootError = null
         hubSetup = settings.baseUrl.isBlank()
         if (hubSetup) { authed = false; return }
         authed = null
         viewModelScope.launch {
-            authed = try {
-                val info = api.authInfo(); username = info.username.orEmpty(); isOwner = info.isOwner
-                !info.required || info.authenticated
-            } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                bootError = "Can't reach your hub — ${scrubAddresses(e.message ?: "network error")}"
-                false
+            // A tunnel blip (502/503/504, timeout) while opening the app is not a sign-out: keep trying quietly before showing anything.
+            var attempt = 0
+            while (true) {
+                try {
+                    val info = api.authInfo(); username = info.username.orEmpty(); isOwner = info.isOwner
+                    authed = !info.required || info.authenticated; bootReconnecting = false; break
+                } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    val transient = (e as? dev.foxfleet.app.data.HubApiException)?.transient == true
+                    if (transient && attempt < 7) { bootReconnecting = true; delay(dev.foxfleet.app.data.backoffMs(attempt++, 700, 8000)); continue }
+                    bootReconnecting = false
+                    bootError = "Can't reach your hub — ${scrubAddresses(e.message ?: "network error")}"
+                    authed = false; break
+                }
             }
             if (authed == true) refreshFleet()
         }

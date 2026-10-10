@@ -226,7 +226,8 @@ fun ChatScreen(
                         agent.badge?.let { Spacer(Modifier.width(6.dp)); KindBadge(it) }
                     }
                     val sub = statusLine(agent.name, state.toolLabel, state.streamReasoning.isNotBlank(), state.streamText.isNotBlank())
-                    if (state.streaming && sub != null) ShimmerStatusText(sub, style = MaterialTheme.typography.bodySmall)
+                    if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
+                    else if (state.streaming && sub != null) ShimmerStatusText(sub, style = MaterialTheme.typography.bodySmall)
                     else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 }
                 if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
@@ -386,7 +387,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
         Column(Modifier.weight(1f).animateContentSize()) {
             if (state.streamReasoning.isNotBlank()) Reasoning(state.streamReasoning, live = true)
             val text = state.streamText
-            val status = statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
+            val status = if (state.reconnecting) "Reconnecting…" else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
             if (text.isNotBlank()) {
                 val fadeFrom = if (reduce) text.length else maxOf(0, text.length - STREAM_FADE_CHARS)
                 Text(

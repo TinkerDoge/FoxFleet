@@ -123,8 +123,12 @@ class ChatState {
         resetStream(); error = null
     }
 
+    /** True while the hub or the tunnel is briefly unreachable and we are resuming quietly (shown as a small status, never an error). */
+    var reconnecting by mutableStateOf(false)
+
     private fun callbacks(g: Int) = HubApi.StreamCallbacks(
-        onContent = { if (g == gen) streamText += it }, onReasoning = { if (g == gen) streamReasoning += it }, onTool = { if (g == gen) { toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
+        onReconnecting = { if (g == gen) reconnecting = true },
+        onContent = { if (g == gen) { reconnecting = false; streamText += it } }, onReasoning = { if (g == gen) streamReasoning += it }, onTool = { if (g == gen) { toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -138,7 +142,32 @@ class ChatState {
     suspend fun send(api: HubApi, agent: String, userText: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList()) {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
-        stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck) }
+        val sentAt = System.currentTimeMillis(); val before = messages
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting) } }
+        catch (e: dev.foxfleet.app.data.HubApiException) {
+            if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
+        }
+    }
+
+    /**
+     * The submit died in a tunnel blip before a run id was seen. The hub may or may not have started the run: look first (a run that
+     * began after we sent is ours), and only otherwise send again through the idempotent /messages path (one client_id for every retry).
+     */
+    private suspend fun autoResubmit(api: HubApi, agent: String, user: UiMessage, sentAt: Long): Boolean {
+        val clientId = java.util.UUID.randomUUID().toString(); error = null; reconnecting = true; streaming = true
+        try {
+            for (n in 0 until 10) {
+                delay(dev.foxfleet.app.data.backoffMs(n, 600, 10_000))
+                try {
+                    val mine = api.runs(agent, sessionId).firstOrNull { it.started >= sentAt - 3000 }
+                    val run = mine?.id ?: api.sendMessage(agent, user, sessionId, "queue", clientId).also { r -> r.sessionId?.let { adopt(it) } }.runId
+                    reconnecting = false
+                    if (run != null) { resume(api, agent, run, null) } else { streaming = false; syncQueue(api, agent) }
+                    return true
+                } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (e: dev.foxfleet.app.data.HubApiException) { if (!e.transient) return false }
+            }
+            return false
+        } finally { reconnecting = false; if (!messages.isEmpty() && runId == null) streaming = false }
     }
 
     /** Reattach to a reply that was still being written (or just finished) while the app was away. */

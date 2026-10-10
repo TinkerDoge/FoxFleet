@@ -35,7 +35,13 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class AuthRequiredException(message: String = "Login required") : Exception(message)
-class HubApiException(val status: Int, message: String) : Exception(scrubAddresses(message))
+class HubApiException(val status: Int, message: String, val network: Boolean = false, val refused: Boolean = false) : Exception(scrubAddresses(message)) {
+    /** A gateway or tunnel hiccup (502/503/504/52x, timeout, reset): never a verdict about the login or the request. */
+    val transient: Boolean get() = network || (!refused && isTransientStatus(status))
+}
+fun isTransientStatus(s: Int) = s == 408 || s == 502 || s == 503 || s == 504 || s in 520..530
+/** Exponential backoff with jitter: 0.5x..1x of base*2^n, capped. */
+fun backoffMs(n: Int, base: Long = 400, cap: Long = 8000): Long = (minOf(cap, base shl minOf(n, 12)) * (0.5 + Math.random() / 2)).toLong()
 
 /** Adds the active hub's bearer token and keeps a rotated token the hub hands back (X-Session-Token). */
 private class BearerInterceptor(private val store: SettingsStore) : okhttp3.Interceptor {
@@ -73,7 +79,7 @@ class HubApi(private val store: SettingsStore) {
     private suspend fun await(call: Call): Response = suspendCancellableCoroutine { cont ->
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: java.io.IOException) {
-                if (cont.isActive) cont.resumeWithException(HubApiException(0, "The hub could not be reached (${e.message})"))
+                if (cont.isActive) cont.resumeWithException(HubApiException(0, "The hub could not be reached (${e.message})", network = true))
             }
             override fun onResponse(call: Call, response: Response) {
                 if (cont.isActive) cont.resume(response)
@@ -90,23 +96,47 @@ class HubApi(private val store: SettingsStore) {
         }.getOrNull() ?: raw.take(250)
     }
 
-    private suspend fun sessionStillValid(): Boolean = try {
+    private enum class Session { VALID, GONE, UNKNOWN }
+    /** Asks the hub itself whether the login is still good. UNKNOWN (hub unreachable, 5xx) must never sign anyone out. */
+    private suspend fun sessionState(): Session = try {
         val c = client.newCall(Request.Builder().url(base().newBuilder().encodedPath("/api/auth").build()).build()); c.timeout().timeout(10, TimeUnit.SECONDS)
-        await(c).use { r -> r.isSuccessful && runCatching { json.parseToJsonElement(r.body?.string().orEmpty()).jsonObject.bool("authenticated") == true }.getOrDefault(false) }
-    } catch (e: CancellationException) { throw e } catch (_: Exception) { false }
+        await(c).use { r ->
+            if (r.code == 401) Session.GONE
+            else if (!r.isSuccessful) Session.UNKNOWN
+            else when (runCatching { json.parseToJsonElement(r.body?.string().orEmpty()).jsonObject.bool("authenticated") }.getOrNull()) { true -> Session.VALID; false -> Session.GONE; null -> Session.UNKNOWN }
+        }
+    } catch (e: CancellationException) { throw e } catch (_: Exception) { Session.UNKNOWN }
 
+    /** What a 401 means. Only the hub saying "not authenticated" ends the session; a refusing agent or an unreachable hub never does. */
+    private suspend fun unauthorized(message: String): Exception = when (sessionState()) {
+        Session.GONE -> AuthRequiredException()
+        Session.VALID -> HubApiException(502, message.ifEmpty { "The agent did not accept the hub's credentials" }, refused = true)
+        Session.UNKNOWN -> HubApiException(0, "The hub could not be reached", network = true)
+    }
+
+    /** First retry delay for transient failures (tests shrink it). */
+    internal var retryBaseMs = 400L
+
+    /** Idempotent reads ride out a tunnel blip quietly (3 retries, backoff + jitter); writes are never replayed here. */
     private suspend fun request(path: String, method: String = "GET", body: String? = null, timeoutSec: Long = 30, query: Map<String, String> = emptyMap(), plain401: Boolean = false): JsonObject {
+        var n = 0
+        while (true) {
+            try { return requestOnce(path, method, body, timeoutSec, query, plain401) }
+            catch (e: HubApiException) {
+                if (method != "GET" || !e.transient || n >= 3) throw e
+                kotlinx.coroutines.delay(backoffMs(n++, retryBaseMs, 4000))
+            }
+        }
+    }
+
+    private suspend fun requestOnce(path: String, method: String, body: String?, timeoutSec: Long, query: Map<String, String>, plain401: Boolean): JsonObject {
         val url = base().newBuilder().encodedPath(path).apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }.build()
         val builder = Request.Builder().url(url).method(method, body?.toRequestBody(jsonMedia))
         val call = client.newCall(builder.build())
         call.timeout().timeout(timeoutSec, TimeUnit.SECONDS)
         val response = await(call)
         response.use {
-            if (it.code == 401 && !plain401) {
-                // A 401 from one agent's route is that agent refusing the hub, not the user's login ending: only sign out when the hub says so.
-                if (path.startsWith("/api/agents/") && sessionStillValid()) throw HubApiException(502, errorBody(it).ifEmpty { "The agent did not accept the hub's credentials" })
-                throw AuthRequiredException()
-            }
+            if (it.code == 401 && !plain401) throw unauthorized(errorBody(it))
             if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Request failed (${it.code})" })
             val contentType = it.header("Content-Type") ?: ""
             if (!contentType.contains("application/json")) throw HubApiException(0, "Invalid response from the relay")
@@ -293,7 +323,7 @@ class HubApi(private val store: SettingsStore) {
         val call = client.newCall(Request.Builder().url(url).post(body).build())
         call.timeout().timeout(10, TimeUnit.MINUTES)
         await(call).use {
-            if (it.code == 401) throw AuthRequiredException()
+            if (it.code == 401) throw unauthorized(errorBody(it))
             if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Upload failed (${it.code})" })
             val obj = json.parseToJsonElement(it.body?.string() ?: "{}").jsonObject
             FileRef(obj["name"]?.jsonPrimitive?.contentOrNull ?: name, obj["path"]?.jsonPrimitive?.contentOrNull ?: throw HubApiException(0, "Invalid upload response"), size)
@@ -332,6 +362,7 @@ class HubApi(private val store: SettingsStore) {
         val onContent: (String) -> Unit, val onReasoning: (String) -> Unit, val onTool: (String) -> Unit,
         val onSession: (String) -> Unit, val onRun: (String) -> Unit = {}, val onGap: () -> Unit = {}, val onRunState: (String) -> Unit = {},
         val onRequest: (OpenRequest) -> Unit = {}, val onRequestClosed: (String, String) -> Unit = { _, _ -> }, val onAck: (String, String) -> Unit = { _, _ -> },
+        val onReconnecting: () -> Unit = {},
     )
 
     /**
@@ -351,6 +382,7 @@ class HubApi(private val store: SettingsStore) {
         onRequest: (OpenRequest) -> Unit = {},
         onRequestClosed: (String, String) -> Unit = { _, _ -> },
         onAck: (String, String) -> Unit = { _, _ -> },
+        onReconnecting: () -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -360,12 +392,33 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
     suspend fun follow(agent: String, run: String, after: Int, cb: StreamCallbacks): String = withContext(Dispatchers.IO) {
-        pump(agent, openEvents(agent, run, after), cb, run, after)
+        val first = try { openEvents(agent, run, after) } catch (e: HubApiException) { if (!e.transient) throw e; null }
+        val res = if (first != null && !isTransientStatus(first.code)) first else { first?.close(); reopen(agent, run, after, cb, 0) ?: return@withContext "" }
+        pump(agent, res, cb, run, after)
+    }
+
+    /**
+     * Opens the run's event stream again from the cursor, retrying through tunnel faults with backoff and jitter (about three minutes).
+     * Null when the hub says the run is gone; throws on cancellation, sign-out or giving up.
+     */
+    private suspend fun reopen(agent: String, run: String, cursor: Int, cb: StreamCallbacks, start: Int): Response? {
+        var n = start
+        while (true) {
+            if (n >= 14) throw HubApiException(0, "Lost the connection to the hub", network = true)
+            cb.onReconnecting(); kotlinx.coroutines.delay(backoffMs(n, (retryBaseMs * 5) / 4, 15000)); n++
+            val r = try { openEvents(agent, run, cursor) } catch (e: CancellationException) { throw e } catch (e: HubApiException) { if (!e.transient) throw e; continue }
+            when {
+                r.code == 404 -> { r.close(); return null }
+                r.code == 401 -> { val ex = r.use { unauthorized(errorBody(it)) }; if (ex is AuthRequiredException) throw ex; if ((ex as? HubApiException)?.network == true) continue; return null }
+                isTransientStatus(r.code) -> { r.close(); continue }
+                else -> return r
+            }
+        }
     }
 
     private suspend fun openEvents(agent: String, run: String, after: Int): Response {
@@ -446,7 +499,7 @@ class HubApi(private val store: SettingsStore) {
         while (true) {
             var finished = false; var progressed = false
             res.use {
-                if (it.code == 401) throw AuthRequiredException()
+                if (it.code == 401) throw unauthorized(errorBody(it))
                 if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Chat failed (${it.code})" })
                 if (!(it.header("Content-Type") ?: "").contains("text/event-stream")) throw HubApiException(0, "Invalid reply stream")
                 it.header("X-Hermes-Session-Id")?.let { id -> if (id.matches(Regex("[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}"))) cb.onSession(id) }
@@ -494,11 +547,8 @@ class HubApi(private val store: SettingsStore) {
             }
             val r = run
             if (finished || r == null) return builder.toString()
-            if (progressed) attempts = 0
-            if (++attempts > 8) throw HubApiException(0, "Lost the connection to the hub")
-            kotlinx.coroutines.delay(minOf(500L shl (attempts - 1), 8000L))
-            res = try { openEvents(agent, r, last) } catch (e: CancellationException) { throw e } catch (e: Exception) { continue }
-            if (res.code == 404) { res.close(); return builder.toString() } // the run expired on the hub: keep what we have
+            attempts = if (progressed) 0 else attempts + 1 // a stream that delivered something restarts the patience budget
+            res = reopen(agent, r, last, cb, attempts) ?: return builder.toString() // the run is gone for good: keep what we have
         }
     }
 

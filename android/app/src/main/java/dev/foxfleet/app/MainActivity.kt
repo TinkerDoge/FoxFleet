@@ -19,6 +19,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -91,7 +92,12 @@ private fun FoxfleetApp(vm: HubViewModel) {
         return
     }
     when (vm.authed) {
-        null -> Box(Modifier.fillMaxSize().background(c.bg), contentAlignment = Alignment.Center) { dev.foxfleet.app.ui.components.BrandLogo(96.dp) }
+        null -> Box(Modifier.fillMaxSize().background(c.bg), contentAlignment = Alignment.Center) {
+            androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                dev.foxfleet.app.ui.components.BrandLogo(96.dp)
+                if (vm.bootReconnecting) { androidx.compose.foundation.layout.Spacer(Modifier.height(16.dp)); androidx.compose.material3.Text("Reconnecting to your hub…", color = c.textMuted, style = androidx.compose.material3.MaterialTheme.typography.bodyMedium) }
+            }
+        }
         false -> LoginScreen(vm.hubName, vm.api, vm.bootError, inviteCode = vm.inviteDraft, onChangeHub = { vm.startAddHub() }, onLoggedIn = { vm.onLoggedIn() })
         true -> {
             // Predictive back: the current page shrinks and slides with the gesture, then pops.
