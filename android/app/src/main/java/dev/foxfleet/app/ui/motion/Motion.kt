@@ -10,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
@@ -56,4 +57,15 @@ fun rememberHaptic(): (HapticFeedbackType) -> Unit {
     val h = LocalHapticFeedback.current
     val on = LocalAppPrefs.current.haptics
     return remember(h, on) { { t -> if (on) h.performHapticFeedback(t) } }
+}
+
+/** Incoming message: fade + 0.96 scale + 8dp rise, 180 ms ease-out (design tokens). Only when [enabled]; static under reduce motion. */
+@Composable
+fun Modifier.messageEnter(enabled: Boolean): Modifier {
+    if (!enabled || reduceMotion()) return this
+    val a = remember { androidx.compose.animation.core.Animatable(0f) }
+    androidx.compose.runtime.LaunchedEffect(Unit) { a.animateTo(1f, androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionMessageInMs, easing = androidx.compose.animation.core.CubicBezierEasing(0.2f, 0f, 0f, 1f))) }
+    return this.graphicsLayer {
+        alpha = a.value; val k = 0.96f + 0.04f * a.value; scaleX = k; scaleY = k; translationY = (1f - a.value) * 8.dp.toPx()
+    }
 }

@@ -1473,7 +1473,7 @@
     "/api/agents": {
       "get": {
         "operationId": "listAgents",
-        "summary": "Fleet with live status and capabilities.",
+        "summary": "Fleet with live status and capabilities, sorted for the signed-in user: pinned agents first (in pin order), then newest message activity, then agents with none in registry order. Each agent carries last_activity_at, last_session_title, last_message_preview, last_role, pinned, pin_order, working and needs_input.",
         "tags": [
           "agents"
         ],

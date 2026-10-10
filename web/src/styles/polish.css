@@ -122,3 +122,7 @@
 /* one focus ring on the composer (it used to draw the border AND a second outline: a double border) */
 .composer .bar:focus-within { outline: none; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
 @media (max-width: 760px) { .topbar { border-bottom: 0; } }
+
+/* pages: cards on one page share one width and are separated (Manage agents had a narrow card above a wide one, touching) */
+.page .stack { max-width: none; }
+.page > .card + .card, .page > section + .card, .page > .card + section { margin-top: 16px; }

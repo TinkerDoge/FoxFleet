@@ -1,6 +1,6 @@
 # Chat
 
-Pick an agent in the sidebar (web) or the list (Android). The header shows its name and whether it is online or ready.
+Pick an agent in the sidebar (web) or the list (Android); see [the agent list](/apps/agent-list). The header shows its name and whether it is online or ready.
 
 ## Replies
 

@@ -104,6 +104,7 @@ export default defineConfig({
         { text: 'Screen takeover', link: '/apps/screen' },
         { text: 'Admin', link: '/apps/admin' },
         { text: 'Settings and devices', link: '/apps/settings' },
+        { text: 'The agent list', link: '/apps/agent-list' },
         { text: 'Avatars', link: '/apps/avatars' },
       ] }],
       '/security/': [{ text: 'Security', items: [

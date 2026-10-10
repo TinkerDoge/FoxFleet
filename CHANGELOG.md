@@ -6,6 +6,21 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
+## 0.3.4-alpha (Android versionCode 12)
+
+### Added: a Telegram-style agent list, sorted by activity, with pins
+- **Order:** pinned agents first (in the order you pinned them, up to 50), then newest message activity, then agents with no messages in registry order. The manual order under *Manage agents* is now only the tie-break. Pins and last-activity data are per account on the hub.
+- **Rows** (web sidebar and Android home): avatar with presence dot, name (not the description), one-line preview of the last message (`You: ` for your own; *Typing…* while a reply runs; *Needs approval* for an open Hermes request), right-aligned time (clock today, *Yesterday*, weekday this week, short date, locale aware), unread dot, pin mark. Search by name or preview.
+- **Pin / unpin:** web: row button or right-click / long-press menu. Android: swipe a row or long-press it (the menu also has *Change picture*). Reordering animates (FLIP on web, `animateItem` on Android) and honours Reduce motion.
+- **Hub:** `GET /api/agents` adds `last_activity_at`, `last_session_title`, `last_message_preview` (140 characters, plain text: no Markdown, `MEDIA:` tags, addresses or secret-looking values), `last_role`, `pinned`, `pin_order`, `working`, `needs_input` and returns the list sorted; new `PUT /api/agents/{name}/pin`. Updated when you send and when a reply ends, whatever path it took; older API-key chats seed it from the hub's history. Stored per user in `activity.json`. Never contains an address or host.
+- Shared rules and vectors: `contract/agent-list.vectors.json` is checked by the hub, the web app and Android (order, preview line, time labels).
+
+### Changed: polish
+- Design tokens for motion (message-in 180 ms, status 180 ms, panel in 240 / out 150 ms, typing loop 600 ms with 150 ms phase) and the 44 px touch target; reduced-motion zeroes them.
+- Incoming messages fade, scale from 0.96 and rise 8 px (only messages that arrive after the history is shown); a three-dot typing indicator and a status line that cross-fades in a fixed slot; the "Completed" line fades away; skeleton rows instead of "Loading…" text.
+- Agent replies are soft surface cards, yours tinted pills; Android settings: profile card, rows with chevrons, sentence-case section labels, 20 dp cards; rounded circular header and tool buttons (web sidebar tools are icon buttons, so *Sign out* no longer wraps); a back button that is a circle.
+- Fixed: the web composer drew a border and a second outline when focused; the web header buttons *Screen* and *New chat* touched; the drawer's agent list was clipped by the tools block on phones.
+
 ## 0.3.3-alpha (Android versionCode 11)
 
 ### Fixed: short outages (Cloudflare blips) no longer end sessions

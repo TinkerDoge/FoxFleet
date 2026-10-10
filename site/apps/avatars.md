@@ -3,8 +3,8 @@
 ## What an avatar looks like today
 
 - **Default:** a circle with the agent's initials on a stable pastel tint (the same colour for the same name on every screen), plus a presence dot: ready, online or offline.
-- **Android custom avatar:** in a chat, **long-press the avatar** in the header, pick a picture, then pan and zoom it inside the circle cropper. The result is stored **on that phone only** (512 px square WebP in the app's private storage); the hub never sees it. *Reset* returns to the default.
-- **Web:** shows the default avatar; custom avatars are not available yet.
+- **Android custom avatar:** in the agent list, **long-press the row** and choose *Change picture* (or long-press the avatar in a chat header), pick a picture, then pan and zoom it inside the circle cropper. The result is stored **on that phone only** (512 px square WebP in the app's private storage); the hub never sees it. *Reset* returns to the default.
+- **Web:** shows the default avatar, or the emoji set as the agent's *Avatar hint*; custom pictures are not available yet.
 
 ## Hub avatar packs (server feature, no client yet)
 

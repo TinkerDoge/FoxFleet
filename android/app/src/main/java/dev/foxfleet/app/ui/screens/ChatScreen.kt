@@ -76,6 +76,7 @@ import dev.foxfleet.app.ui.chat.ChatState
 import dev.foxfleet.app.ui.components.AgentAvatar
 import dev.foxfleet.app.ui.components.Hairline
 import dev.foxfleet.app.ui.components.ShimmerStatusText
+import dev.foxfleet.app.ui.motion.messageEnter
 import dev.foxfleet.app.ui.components.SoftIconButton
 import dev.foxfleet.app.ui.components.presence
 import dev.foxfleet.app.ui.motion.pressScale
@@ -291,6 +292,8 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         }
         return
     }
+    var baseline by remember { mutableStateOf<Int?>(null) }
+    androidx.compose.runtime.LaunchedEffect(state.loading, state.messages.isNotEmpty()) { if (!state.loading && baseline == null) { kotlinx.coroutines.delay(700); baseline = state.keyBase + state.messages.size } }
     LazyColumn(
         state = list, reverseLayout = true, modifier = modifier.fillMaxWidth(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
@@ -335,7 +338,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         if (state.loading) item(key = "loading") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
         val rev = state.messages.asReversed()
         items(rev.size, key = { state.keyBase + rev.size - 1 - it }) { i ->
-            MessageRow(agentName, rev[i], Modifier.animateItem(), onOpen)
+            // only messages that arrive after the history has been shown animate in (never old ones scrolled back into view)
+            val b = baseline; val isNew = b != null && state.keyBase + rev.size - 1 - i >= b
+            MessageRow(agentName, rev[i], Modifier.animateItem().messageEnter(isNew), onOpen)
         }
         if (state.loadingOlder) item(key = "older") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
     }
@@ -405,7 +410,9 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
                 )
             }
             AgentMediaCards(agentName, parsedStream.media, onOpen)
-            if (status != null) ShimmerStatusText(status, Modifier.padding(top = 4.dp))
+            androidx.compose.animation.Crossfade(status, animationSpec = androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionStatusMs), label = "status") { st ->
+                if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }
+            }
         }
     }
 }

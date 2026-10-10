@@ -12,7 +12,10 @@ import androidx.compose.ui.unit.Density
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.foxfleet.app.data.*
 import dev.foxfleet.app.ui.FoxfleetTheme
+import dev.foxfleet.app.ui.chat.ChatState
+import dev.foxfleet.app.ui.screens.ChatScreen
 import dev.foxfleet.app.ui.screens.FleetScreen
+import dev.foxfleet.app.ui.screens.SettingsScreen
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -64,4 +67,17 @@ class UiPolishScreenshotTest {
     @Test fun listBigFont360Dark() = fleet("11-agent-list-1.3x-360dp", true, 360, 740, fontScale = 1.3f)
     @Test fun skeleton411Dark() = fleet("12-agent-list-loading-411dp", true, 411, 891, list = emptyList(), loading = true)
     @Test fun empty411Light() = fleet("13-agent-list-empty-411dp", false, 411, 891, list = emptyList())
+
+    private val atlas = AgentStatus("Sumin", online = true, chatReady = true, managementReady = true, capabilities = Capabilities(images = true, files = true, sessions = true))
+    private fun chat(name: String, dark: Boolean, w: Int, h: Int, fontScale: Float = 1f) {
+        val state = ChatState().apply {
+            load(listOf(UiMessage("user", "Can you summarise the release notes?", ts = now - 300_000), UiMessage("assistant", "FoxFleet **0.3.3-alpha** is released.\n\n- Cloudflare blips no longer sign you out\n- Agents can send pictures, video and files", ts = now - 240_000), UiMessage("user", "Anything blocking?", ts = now - 120_000)), "s9")
+            simulateStream("", tool = "terminal")
+        }
+        shot(name, dark, w, h, fontScale) { ChatScreen(atlas, listOf(atlas), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}) }
+    }
+    @Test fun chat360Light() = chat("14-chat-360dp", false, 360, 740)
+    @Test fun chat411Dark() = chat("14-chat-411dp", true, 411, 891)
+    @Test fun settings360Dark() = shot("15-settings-360dp", true, 360, 740) { SettingsScreen(AppPrefs(theme = ThemeMode.Dark), {}, {}, {}, hubName = "Home hub", username = "Minh Minh", isOwner = true) }
+    @Test fun settings411Light() = shot("15-settings-411dp", false, 411, 891) { SettingsScreen(AppPrefs(theme = ThemeMode.Light), {}, {}, {}, hubName = "Home hub", username = "Minh Minh", isOwner = true) }
 }

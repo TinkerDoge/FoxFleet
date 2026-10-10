@@ -61,7 +61,7 @@ fun SoftCard(
 ) {
     val c = LocalHubColors.current
     val src = remember { MutableInteractionSource() }
-    var m = modifier.pressScale(src).clip(RoundedCornerShape(16.dp)).background(c.surface)
+    var m = modifier.pressScale(src).clip(RoundedCornerShape(20.dp)).background(c.surface)
     if (onClick != null) m = m.clickable(interactionSource = src, indication = null, onClick = onClick)
     Box(m, content = content)
 }
@@ -69,10 +69,10 @@ fun SoftCard(
 @Composable
 fun SectionLabel(text: String, modifier: Modifier = Modifier) {
     Text(
-        text.uppercase(),
-        style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
-        color = LocalHubColors.current.textFaint,
-        modifier = modifier.padding(start = 4.dp, bottom = 8.dp, top = 20.dp),
+        text,
+        style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+        color = LocalHubColors.current.textMuted,
+        modifier = modifier.padding(start = 16.dp, bottom = 8.dp, top = 24.dp),
     )
 }
 
