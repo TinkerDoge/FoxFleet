@@ -3,6 +3,7 @@
 //   { role: 'user'|'assistant', content, reasoning?, tools?: [{ name, args?, result?, ok? }], images?: [url], ts?, id? }
 // Tool-call and tool-result rows fold into the assistant turn they belong to, consecutive assistant steps merge into one
 // message, hidden/system rows and control tags disappear.
+import { toolMedia, withMediaLines } from './media-tags.js';
 const CONTROL = [/<system-reminder>[\s\S]*?<\/system-reminder>/gi, /<memory-context>[\s\S]*?<\/memory-context>/gi, /<tool_call>[\s\S]*?<\/tool_call>/gi, /<tool_response>[\s\S]*?<\/tool_response>/gi, /<\/?(?:tool_calls?|function_calls?)>/gi];
 const THINK = /<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/gi;
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
@@ -33,17 +34,20 @@ const resultSummary = (c) => { const { text } = flattenContent(c); const t = tex
 
 export function normalizeTranscript(rows) {
   const out = []; const pending = new Map(); // tool_call_id -> tool entry
+  const callInfo = new Map(); // tool_call_id -> { name, args }: media a tool made joins the assistant turn it belongs to as MEDIA: lines (see the end)
   for (const m of rows) {
     if (!m || typeof m !== 'object' || m.display_kind === 'hidden') continue;
     const role = m.role;
     if (role === 'system') continue;
     if (role === 'tool' || role === 'function') {
       const { result, ok } = resultSummary(m.content), entry = pending.get(m.tool_call_id);
+      { const info = callInfo.get(m.tool_call_id), refs = toolMedia(info?.name ?? m.tool_name, info?.args, typeof m.content === 'string' ? m.content : flattenContent(m.content).text); const tgt = refs.length ? [...out].reverse().find((x) => x.role === 'assistant') : null; if (tgt) (tgt._produced ??= []).push(...refs.map((r) => r.ref)); }
       if (entry) { entry.result = result; entry.ok = ok; pending.delete(m.tool_call_id); }
       else { let last = out[out.length - 1]; if (!last || last.role !== 'assistant') { last = { role: 'assistant', content: '' }; out.push(last); } (last.tools ??= []).push({ name: String(m.tool_name ?? 'tool'), result, ok }); }
       continue;
     }
     if (role !== 'user' && role !== 'assistant') continue;
+    for (const tc of Array.isArray(m.tool_calls) ? m.tool_calls : []) if (tc?.id) { let a = tc?.function?.arguments ?? tc?.arguments; if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = {}; } } callInfo.set(tc.id, { name: tc?.function?.name ?? tc?.name, args: a }); }
     const { text, images } = flattenContent(m.content), cleaned = cleanText(text);
     const reasoning = [typeof m.reasoning_content === 'string' ? m.reasoning_content : typeof m.reasoning === 'string' ? m.reasoning : '', cleaned.reasoning].filter(Boolean).join('\n\n').trim();
     const tools = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => { const e = { name: String(tc?.function?.name ?? tc?.name ?? 'tool'), ...(argSummary(tc?.function?.arguments ?? tc?.arguments) ? { args: argSummary(tc?.function?.arguments ?? tc?.arguments) } : {}) }; if (tc?.id) pending.set(tc.id, e); return e; });
@@ -56,7 +60,7 @@ export function normalizeTranscript(rows) {
     if (!base.content && !base.images && !base.tools && !base.reasoning) continue;
     out.push(base);
   }
-  return out.filter((m) => m.content || m.images || m.tools || m.reasoning);
+  return out.filter((m) => m.content || m.images || m.tools || m.reasoning || m._produced).map((m) => { if (!m._produced) return m; const { _produced, ...rest } = m; return { ...rest, content: withMediaLines(rest.content ?? '', _produced) }; });
 }
 /** A Hermes session row from the dashboard list, in the one shape the apps use. */
 export function sessionRow(s) {

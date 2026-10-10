@@ -268,6 +268,15 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
       if (typeof r?.url !== 'string' || !r.url.startsWith('/api/media/')) throw new ApiError(502, 'Invalid media reply');
       return { url: r.url, kind: ['image', 'video', 'audio'].includes(r.kind) ? r.kind : 'file', name: String(r.name ?? 'file') };
     },
+    /** Asks a media link for its first byte so a failed card can say WHY (the hub answers with a status and a code; an <img> error carries neither). */
+    mediaDiagnose: async (url: string): Promise<{ status: number; code?: string; message?: string; network?: boolean }> => {
+      try {
+        const res = await f(`${base}${url}`, { credentials: 'same-origin', headers: { Range: 'bytes=0-0' } });
+        if (res.ok) { await res.body?.cancel(); return { status: res.status }; }
+        let d: any = null; try { d = await res.json(); } catch { /* not JSON */ }
+        return { status: res.status, code: typeof d?.code === 'string' ? d.code : undefined, message: typeof d?.error === 'string' ? d.error : undefined };
+      } catch { return { status: 0, network: true }; }
+    },
     /** The explicit Stop button: cancels the agent run itself (just closing the page never does). */
     stopRun: (agent: string, run: string) => request<any>(`/api/agents/${enc(agent)}/runs/${enc(run)}/stop`, { body: {} }),
     /** Send while the agent may be replying. The hub stores and acknowledges it first; mode says what to do if it is busy. */

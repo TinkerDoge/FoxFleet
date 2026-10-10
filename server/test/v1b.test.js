@@ -50,7 +50,7 @@ test('screen route refuses when the machine is offline (no stale ports)', async 
   const pr = runConnector(t, ['pair', '--hub', base, '--code', (await (await call('/api/machines/pairing', {})).json()).code, '--all', '--dashboard-port', String(mock.connection.dashboardPort)], { hermes: root, configDir: await tmpDir() });
   assert.ok(await waitFor(async () => (await (await call('/api/agents')).json()).agents.length), pr.out); pr.p.kill();
   await waitFor(async () => !(await (await call('/api/agents')).json()).agents[0].online);
-  const r = await call('/api/agents/default/screen/status'); assert.ok([502, 409, 404].includes(r.status), String(r.status));
+  const r = await call('/api/agents/default/screen/status'); assert.equal(r.status, 503); assert.equal((await r.json()).code, 'machine_offline');
 });
 
 import { qrMatrix, qrSvg } from '../qr.js';

@@ -1,0 +1,21 @@
+{
+  "about": "Why a media card could not load, from the hub's answer (status, code, message). Shared by web and Android; the hub puts connector codes (outside, missing, too_big, type, sniff, denied, rate, bad_path) in `code`.",
+  "cases": [
+    { "in": { "status": 403, "code": "outside" }, "kind": "outside" },
+    { "in": { "status": 403, "code": "denied" }, "kind": "denied" },
+    { "in": { "status": 404, "code": "missing" }, "kind": "missing" },
+    { "in": { "status": 413, "code": "too_big" }, "kind": "too_big" },
+    { "in": { "status": 415, "code": "sniff" }, "kind": "type" },
+    { "in": { "status": 415, "code": "type" }, "kind": "type" },
+    { "in": { "status": 429, "code": "rate" }, "kind": "rate" },
+    { "in": { "status": 503, "message": "The machine is offline" }, "kind": "machine_offline" },
+    { "in": { "status": 504, "message": "The machine did not deliver the file in time" }, "kind": "machine_offline" },
+    { "in": { "status": 404, "message": "Not found" }, "kind": "hub_too_old" },
+    { "in": { "status": 404, "message": "That file was not offered by this agent" }, "kind": "not_offered" },
+    { "in": { "status": 404, "message": "This agent cannot deliver local files" }, "kind": "no_connector" },
+    { "in": { "status": 401 }, "kind": "auth_expired" },
+    { "in": { "network": true }, "kind": "hub_unreachable" },
+    { "in": { "status": 410 }, "kind": "expired" },
+    { "in": { "status": 500 }, "kind": "generic" }
+  ]
+}

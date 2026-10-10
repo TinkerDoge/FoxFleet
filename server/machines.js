@@ -42,7 +42,7 @@ export async function machineStore(file, { now = () => Date.now() } = {}) {
     if (fails.global.length >= 60) return 60; // someone is guessing codes against the whole hub
     return 0;
   }
-  const publicMachine = (m, extra = {}) => ({ id: m.id, name: m.name, os: m.os ?? 'other', created: m.created, lastSeen: m.lastSeen ?? null, paired: Boolean(m.tokenHash), profiles: m.profiles ?? [], ...extra });
+  const publicMachine = (m, extra = {}) => ({ id: m.id, name: m.name, os: m.os ?? 'other', created: m.created, lastSeen: m.lastSeen ?? null, paired: Boolean(m.tokenHash), profiles: m.profiles ?? [], connector: { version: m.connectorVersion ?? null, features: m.connectorFeatures ?? [] }, ...extra });
   return {
     publicMachine,
     all: (userId) => machines.filter((m) => m.userId === userId),

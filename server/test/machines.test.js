@@ -91,6 +91,7 @@ test('one connector, three profiles, one socket: pair, discover, register, route
   assert.equal((await h.call('/api/connections', { kind: 'hermes', name: 'x', connection: 'machine', machineId: '0'.repeat(32) })).status, 400);
   // machines list
   const [m] = (await h.json('/api/machines')).machines; assert.equal(m.name, 'Workstation'); assert.equal(m.online, true); assert.deepEqual(m.profiles.map((p) => p.profile), ['default', 'coder', 'research']); assert.doesNotMatch(JSON.stringify(m), /token|hash|127\.0\.0\.1/i);
+  { const { VERSION, FEATURES } = await import('../../connector/foxfleet-connector.mjs'); assert.equal(m.connector.version, VERSION); assert.deepEqual(m.connector.features, FEATURES); const a = (await h.json('/api/agents')).agents[0]; assert.equal(a.capabilities.media.hub, true); assert.equal(a.capabilities.media.local, true); assert.equal(a.capabilities.media.connector.version, VERSION); assert.equal(a.capabilities.media.connector.media, true); assert.doesNotMatch(JSON.stringify(a.capabilities.media), /\/home|127\.0\.0\.1/); } // the Media row of the agent info screen
   assert.equal((await (await h.call(`/api/machines/${m.id}`, { name: 'Desk PC' }, 'PATCH')).json()).machine.name, 'Desk PC');
   // a profile disappears on the machine: rescan removes its agent
   await writeFile(cfgFile, JSON.stringify({ ...(await readJson(cfgFile)), profiles: { default: { expose: true }, research: { expose: true, apiPort: other.connection.apiServerPort, dashboardPort: other.connection.dashboardPort } } }));

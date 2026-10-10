@@ -54,7 +54,7 @@ data class CheckResult(val ok: Boolean, val message: String)
 data class SaveResult(val agent: SavedAgent, val inboxToken: String? = null)
 
 object Registry {
-    val checkLabels = mapOf("dashboard" to "Dashboard", "management" to "Management", "api" to "Chat API", "inbox" to "Mailbox", "connector" to "Connector")
+    val checkLabels = mapOf("dashboard" to "Dashboard", "management" to "Management", "api" to "Chat API", "inbox" to "Mailbox", "connector" to "Connector", "media" to "Media")
 
     /**
      * Builds the JSON fields to send for a form. On edit, blank write-only fields are omitted so the hub keeps

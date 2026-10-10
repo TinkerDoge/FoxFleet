@@ -362,5 +362,22 @@
   "screen.alt": "Alt",
   "screen.shift": "Shift",
   "screen.rightClick": "Right-click",
-  "screen.help": "Tap = click · long-press = right-click · two fingers = scroll · pinch = zoom"
+  "screen.help": "Tap = click · long-press = right-click · two fingers = scroll · pinch = zoom",
+  "media.err.outside": "Not available: outside shared folders",
+  "media.err.denied": "Not available: that location is never shared",
+  "media.err.missing": "The file is gone from the agent's machine",
+  "media.err.too_big": "Too large to send (over the size limit)",
+  "media.err.type": "This file type isn't delivered",
+  "media.err.rate": "Too many files at once. Try again in a minute",
+  "media.err.machine_offline": "The agent's machine is offline",
+  "media.err.hub_too_old": "Your hub needs an update to show agent media",
+  "media.err.not_offered": "The hub doesn't know this file yet. Reopen the chat",
+  "media.err.no_connector": "This agent can't send local files (no connector)",
+  "media.err.auth_expired": "Sign in again to see this file",
+  "media.err.hub_unreachable": "Can't reach your hub",
+  "media.err.expired": "This link expired. Reopen the chat",
+  "media.err.generic": "Not available",
+  "media.hint.outside": "Share its folder with: {command}",
+  "media.copyFix": "Copy fix",
+  "media.copied": "Copied"
 }

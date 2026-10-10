@@ -8,7 +8,7 @@ import { RequestCards } from './RequestCards';
 import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { AssistantText, Message } from './Message';
-import { MediaContext } from './MediaCards';
+import { MediaContext, DiagnoseContext } from './MediaCards';
 import { parseStreaming } from '../lib/mediaTags';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
@@ -70,8 +70,9 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   const [live, setLive] = useState(false); // entrance animation only for messages that arrive after the history has loaded
   useEffect(() => { setLive(false); if (c.loading) return; const id = setTimeout(() => setLive(true), 700); return () => clearTimeout(id); }, [c.loading, c.session]);
   const resolveMedia = useMemo(() => (ref: string) => client.media(agent.name, ref), [client, agent.name]);
+  const diagnoseMedia = useMemo(() => (url: string) => client.mediaDiagnose(url), [client]);
   return (
-    <MediaContext.Provider value={resolveMedia}>
+    <MediaContext.Provider value={resolveMedia}><DiagnoseContext.Provider value={diagnoseMedia}>
     <section class="chat" aria-label={name}>
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</div>
       <header class="chat-head">
@@ -126,7 +127,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })} />
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>
-    </MediaContext.Provider>
+    </DiagnoseContext.Provider></MediaContext.Provider>
   );
 }
 export { chatOf };

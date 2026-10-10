@@ -210,15 +210,28 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // The only agent shape clients get: no host, port, URL, profile path or upstream version strings.
   // Negotiation order: native UI gateway (through the machine connector) > HTTP /v1/runs > /v1/chat/completions.
   const nativeUi = (m) => Boolean(kindOf(m) === 'hermes' && m.machineId && connectors.ui(m.machineId)?.caps(m.profile)?.native);
+  // Who can deliver this agent's media: the hub (this build), the connector on the agent's machine (needs >= 0.3.5 to report a version; older ones still serve files), and the agent itself.
+  function mediaInfo(m) {
+    const mach = m.machineId ? machines.get(m.machineId) : null, kind = kindOf(m);
+    return { hub: true, hubVersion: HUB_VERSION, local: Boolean(m.machineId), connector: mach ? { version: mach.connectorVersion ?? null, online: connectors.isOnline(m.machineId), media: mach.connectorFeatures?.includes('media') ?? false } : null,
+      agent: kind === 'hermes' ? (nativeUi(m) ? 'native' : 'http') : kind === 'mcp-inbox' ? 'mcp' : 'chat', tags: true, toolMedia: nativeUi(m) };
+  }
   function agentView(m, p, index) {
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: { ...capabilitiesOf(m), busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs) },
+      capabilities: { ...capabilitiesOf(m), busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
-      checks: Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])) };
+      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), ...(isChatKind(kindOf(m)) ? {} : { media: mediaCheck(m) }) } };
+  }
+  /** The "Media" row: can pictures, videos and files from this agent reach the chat? Names versions, never paths. */
+  function mediaCheck(m) {
+    const i = mediaInfo(m), parts = [`hub ${i.hubVersion}`];
+    if (i.connector) { parts.push(i.connector.version ? `connector ${i.connector.version}` : 'connector older than 0.3.5'); if (!i.connector.online) return { ok: false, message: `${parts.join(' · ')} · the machine is offline, so local files cannot be fetched` }; }
+    parts.push(i.agent === 'native' ? 'agent: native (media tags, and files its tools make)' : i.agent === 'http' ? 'agent: media tags in replies' : 'agent: media tags in replies');
+    return { ok: true, message: parts.join(' · ') };
   }
   /** The agent-list fields, per user: when, what and which chat was last active, pin state, and whether the agent works or waits for an answer. Never an address. */
   function withActivity(ctx, m, view) {
@@ -711,7 +724,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         const machine = token ? machines.authenticate(token) : null;
         if (!machine) return deny(401, 'Unauthorized');
         await machines.touch(machine.id);
-        return void connectors.attach(machine.id, wsAccept(req, socket, { protocol: 'foxfleet.v1' }), { onProfiles: (msg, link) => { machines.touch(machine.id, { os: ['linux', 'darwin', 'win32'].includes(msg.os) ? msg.os : undefined }).catch(() => {}); return syncProfiles(machine, msg, link); } });
+        return void connectors.attach(machine.id, wsAccept(req, socket, { protocol: 'foxfleet.v1' }), { onProfiles: (msg, link) => { machines.touch(machine.id, { os: ['linux', 'darwin', 'win32'].includes(msg.os) ? msg.os : undefined, connectorVersion: typeof msg.version === 'string' && /^[\w.+-]{1,32}$/.test(msg.version) ? msg.version : undefined, connectorFeatures: Array.isArray(msg.features) ? msg.features.filter((f) => typeof f === 'string' && /^\w{1,24}$/.test(f)).slice(0, 12) : undefined }).catch(() => {}); return syncProfiles(machine, msg, link); } });
       }
       if (!(parts.length === 5 && parts[0] === 'api' && parts[1] === 'agents' && parts[3] === 'screen' && parts[4] === 'ws')) return deny(404, 'Not Found');
       // A browser always sends Origin on a WebSocket upgrade: it must be this hub, or the Android

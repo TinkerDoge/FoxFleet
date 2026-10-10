@@ -5,7 +5,7 @@
 //     URLs through the SSRF-guarded fetcher. Results sit in a small size-bounded cache so replays and range requests are cheap.
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { fault } from './config.js';
-import { parseMedia, kindOf, nameOf, isUrl, DELIVERABLE } from './media-tags.js';
+import { parseMedia, kindOf, nameOf, isUrl, isData, DELIVERABLE } from './media-tags.js';
 import { fetchImage, MEDIA_TYPES } from './media-proxy.js';
 
 const b64 = (b) => Buffer.from(b).toString('base64url');
@@ -19,7 +19,7 @@ export function mediaHub({ connectors, fetchUrl = fetchImage, now = () => Date.n
   /** Remember every ref in this reply text (so a client may later ask for exactly these). */
   function note(scope, agent, text) {
     if (typeof text !== 'string' || (!text.includes('MEDIA:') && !text.includes('](') && !text.includes('http'))) return 0;
-    const refs = parseMedia(text).media.map((m) => m.ref); if (!refs.length) return 0;
+    const refs = parseMedia(text).media.map((m) => m.ref).filter((r) => !isData(r)); if (!refs.length) return 0; // data: pictures carry their own bytes: nothing to fetch, nothing to remember
     const k = key(scope, agent), bag = mentioned.get(k) ?? mentioned.set(k, new Map()).get(k), t = now();
     for (const r of refs) { bag.delete(r); bag.set(r, t); } // re-insert = most recent last
     for (const [r, at] of bag) { if (bag.size <= maxMentions && t - at < mentionTtlMs) break; bag.delete(r); }

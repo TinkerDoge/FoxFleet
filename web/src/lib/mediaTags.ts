@@ -16,6 +16,7 @@ const TERM = '[\\s`"\'*_,;:)\\]}\\[（）〈〉《》：，。；！？、\u201c
 const ANCHOR = '(?:~\\/|\\/|[A-Za-z]:[\\/\\\\]|https?:\\/\\/)';
 const KNOWN_TAG = new RegExp(`[\`"'*_]{0,3}MEDIA:\\s*(\`[^\`\\n]+?\`|"[^"\\n]+?"|'[^'\\n]+?'|${ANCHOR}\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${KNOWN}))(?=${TERM}|MEDIA:|\\.(?:\\s|$)|$)[\`"'*_]{0,3}\\.?`, 'gi');
 const BARE_TAG = new RegExp(`[\`"'*_]{0,3}MEDIA:\\s*(\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${ANCHOR}[^\\s\`"']+?)(?=[\`"'\\s,;:)\\]}]|MEDIA:|$)[\`"'*_]{0,3}`, 'gi');
+const MD_DATA_IMG = /!\[[^\]\n]*\]\(\s*(data:image\/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+\/=]{16,4000000})\s*\)/g; // Hermes' API server and some models inline pictures as data: URLs
 const MD_LOCAL_IMG = /!\[[^\]\n]*\]\(\s*((?:~\/|\/|[A-Za-z]:[\/\\])[^)\s]+)\s*\)/g;
 const MD_LINK_MEDIA = /\[[^\]\n]*\]\(\s*(https?:\/\/[^)\s]+)\s*\)|(?<![(\w\/"'=])(https?:\/\/[^\s<>)"'\]]+)/g;
 const MAX_TAGS = 24;
@@ -34,17 +35,18 @@ const normalize = (raw: unknown) => {
   return p.replace(/^[`"']+/, '').replace(/[`"',.;:)}\]]+$/, '');
 };
 const extOf = (ref: string) => { let p = ref; if (/^https?:\/\//i.test(p)) { try { p = decodeURIComponent(new URL(p).pathname); } catch { p = p.split(/[?#]/)[0]; } } else p = p.split(/[?#]/)[0]; const m = /\.([A-Za-z0-9]{1,8})$/.exec(p); return m ? m[1].toLowerCase() : ''; };
-export const kindOf = (ref: string): MediaKind => { const e = extOf(ref); return IMAGE_EXTS.includes(e) ? 'image' : VIDEO_EXTS.includes(e) ? 'video' : AUDIO_EXTS.includes(e) ? 'audio' : 'file'; };
-export const nameOf = (ref: string) => { let p = ref; if (/^https?:\/\//i.test(p)) { try { p = decodeURIComponent(new URL(p).pathname); } catch { p = p.split(/[?#]/)[0]; } } const b = p.split(/[\\/]/).filter(Boolean).pop() ?? 'file'; return b.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 120) || 'file'; };
+export const isData = (ref: string) => /^data:image\//i.test(ref);
+export const kindOf = (ref: string): MediaKind => { if (isData(ref)) return 'image'; const e = extOf(ref); return IMAGE_EXTS.includes(e) ? 'image' : VIDEO_EXTS.includes(e) ? 'video' : AUDIO_EXTS.includes(e) ? 'audio' : 'file'; };
+export const nameOf = (ref: string) => { if (isData(ref)) return 'image'; let p = ref; if (/^https?:\/\//i.test(p)) { try { p = decodeURIComponent(new URL(p).pathname); } catch { p = p.split(/[?#]/)[0]; } } const b = p.split(/[\\/]/).filter(Boolean).pop() ?? 'file'; return b.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 120) || 'file'; };
 export const isUrl = (ref: string) => /^https?:\/\//i.test(ref);
 
 export function parseMedia(input: unknown): { text: string; media: MediaRef[] } {
   const text = typeof input === 'string' ? input : '';
-  if (!text.includes('MEDIA:') && !text.includes('[[') && !text.includes('](') && !text.includes('http')) return { text, media: [] };
+  if (!text.includes('MEDIA:') && !text.includes('[[') && !text.includes('](') && !text.includes('http') && !text.includes('data:image')) return { text, media: [] };
   const voice = text.includes('[[audio_as_voice]]'), asDoc = text.includes('[[as_document]]');
   const scan = mask(text), spans: [number, number][] = [], media: MediaRef[] = [], seen = new Set<string>();
   const add = (raw: unknown, span: [number, number] | null, { strip = true, onlyAv = false } = {}) => {
-    const ref = normalize(raw); if (!ref || ref.length > 2000 || /[\x00-\x08\x0e-\x1f]/.test(ref)) return false;
+    const ref = isData(String(raw)) ? String(raw) : normalize(raw); if (!ref || (ref.length > 2000 && !isData(ref)) || /[\x00-\x08\x0e-\x1f]/.test(ref)) return false;
     if (strip && span) spans.push(span);
     const kind = kindOf(ref); if (onlyAv && kind !== 'video' && kind !== 'audio') return false;
     if (!seen.has(ref) && media.length < MAX_TAGS) { seen.add(ref); media.push({ ref, kind: asDoc && kind === 'image' ? 'file' : kind, name: nameOf(ref), ...(voice && kind === 'audio' ? { voice: true } : {}) }); }
@@ -53,6 +55,7 @@ export function parseMedia(input: unknown): { text: string; media: MediaRef[] } 
   const taken = (a: number, b: number) => spans.some(([x, y]) => a < y && b > x);
   for (const m of scan.matchAll(KNOWN_TAG)) add(m[1], [m.index!, m.index! + m[0].length]);
   for (const m of scan.matchAll(BARE_TAG)) { const a = m.index!, b = a + m[0].length; if (taken(a, b)) continue; const ref = normalize(m[1]); if (/^https?:\/\//i.test(ref) || ref) add(m[1], [a, b] as [number, number]); }
+  for (const m of scan.matchAll(MD_DATA_IMG)) { const a = m.index!, b = a + m[0].length; if (!taken(a, b)) add(m[1], [a, b] as [number, number]); }
   for (const m of scan.matchAll(MD_LOCAL_IMG)) { const a = m.index!, b = a + m[0].length; if (!taken(a, b)) add(m[1], [a, b] as [number, number]); }
   for (const m of scan.matchAll(MD_LINK_MEDIA)) { const a = m.index!, b = a + m[0].length; if (!taken(a, b)) add(m[1] ?? m[2], null, { strip: false, onlyAv: true }); }
   let out = text;

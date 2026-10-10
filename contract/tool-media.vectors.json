@@ -1,0 +1,153 @@
+{
+  "about": "toolMedia(name, args, result) -> refs a tool itself reported (hub). Only structured result keys / known argument shapes are read; anything else yields nothing.",
+  "cases": [
+    {
+      "name": "image_generate url",
+      "tool": "image_generate",
+      "args": {
+        "prompt": "a fox"
+      },
+      "result": {
+        "success": true,
+        "image": "https://cdn.example.com/out/fox.png"
+      },
+      "refs": [
+        "https://cdn.example.com/out/fox.png"
+      ]
+    },
+    {
+      "name": "image_generate local path in a JSON string",
+      "tool": "image_generate",
+      "args": {},
+      "result": "{\"success\": true, \"image\": \"/home/u/.hermes/cache/images/fox.webp\"}",
+      "refs": [
+        "/home/u/.hermes/cache/images/fox.webp"
+      ]
+    },
+    {
+      "name": "failed tool yields nothing",
+      "tool": "image_generate",
+      "args": {},
+      "result": {
+        "success": false,
+        "image": "/tmp/x.png",
+        "error": "no key"
+      },
+      "refs": []
+    },
+    {
+      "name": "text_to_speech media tag",
+      "tool": "text_to_speech",
+      "args": {},
+      "result": {
+        "success": true,
+        "file_path": "/tmp/tts/hello.ogg",
+        "media_tag": "MEDIA:/tmp/tts/hello.ogg"
+      },
+      "refs": [
+        "/tmp/tts/hello.ogg"
+      ]
+    },
+    {
+      "name": "send_message with MEDIA tags in the message arg",
+      "tool": "send_message",
+      "args": {
+        "target": "telegram",
+        "message": "Look\nMEDIA:/tmp/a/cat.mp4\nMEDIA:/tmp/a/cat.png"
+      },
+      "result": {
+        "success": true
+      },
+      "refs": [
+        "/tmp/a/cat.mp4",
+        "/tmp/a/cat.png"
+      ]
+    },
+    {
+      "name": "computer_use screenshot summary text",
+      "tool": "computer_use",
+      "args": {},
+      "result": "ok (shareable screenshot saved to /tmp/cu/computer_use_0123456789abcdef0123456789abcdef.png)",
+      "refs": [
+        "/tmp/cu/computer_use_0123456789abcdef0123456789abcdef.png"
+      ]
+    },
+    {
+      "name": "write_file of a media file reports its path",
+      "tool": "write_file",
+      "args": {
+        "path": "/work/out/chart.png",
+        "content": "x"
+      },
+      "result": {
+        "bytes_written": 1
+      },
+      "refs": [
+        "/work/out/chart.png"
+      ]
+    },
+    {
+      "name": "write_file of source code is not media",
+      "tool": "write_file",
+      "args": {
+        "path": "/work/app.py",
+        "content": "print(1)"
+      },
+      "result": {
+        "bytes_written": 8
+      },
+      "refs": []
+    },
+    {
+      "name": "read-only tools never offer what they looked at",
+      "tool": "read_file",
+      "args": {
+        "path": "/home/u/photo.png"
+      },
+      "result": {
+        "content": "...",
+        "path": "/home/u/photo.png"
+      },
+      "refs": []
+    },
+    {
+      "name": "prose in a result is not scanned",
+      "tool": "web_search",
+      "args": {},
+      "result": {
+        "results": [
+          {
+            "snippet": "see /etc/passwd.png and https://x.example/a.png"
+          }
+        ]
+      },
+      "refs": []
+    },
+    {
+      "name": "directory result with unknown extension",
+      "tool": "terminal",
+      "args": {},
+      "result": {
+        "output": "done",
+        "exit_code": 0
+      },
+      "refs": []
+    },
+    {
+      "name": "list of images capped and de-duplicated",
+      "tool": "image_generate",
+      "args": {},
+      "result": {
+        "images": [
+          "https://a.example/1.png",
+          "https://a.example/1.png",
+          "https://a.example/2.jpg"
+        ]
+      },
+      "refs": [
+        "https://a.example/1.png",
+        "https://a.example/2.jpg"
+      ]
+    }
+  ]
+}

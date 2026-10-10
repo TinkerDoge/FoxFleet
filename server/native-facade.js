@@ -13,6 +13,7 @@ export function toFrames(e) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
     case 'reasoning': return [frame({ choices: [{ delta: { reasoning_content: e.text } }] })];
     case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress')];
+    case 'tool.end': return e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : []; // tool-made files ride the normal MEDIA: card pipeline
     case 'request.open': return [frame(e, 'foxfleet.request')];
     case 'request.cancel': return [frame({ request_id: e.request_id, reason: e.reason || 'cancelled' }, 'foxfleet.request_closed')];
     case 'request.answered': return [frame({ request_id: e.request_id, reason: 'answered' }, 'foxfleet.request_closed')];

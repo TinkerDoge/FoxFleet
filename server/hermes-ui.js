@@ -7,6 +7,7 @@
 //    as `uncertain` when that proves nothing. They are never resent automatically (no exactly-once promise);
 //  - one versioned event stream (`foxfleet.native/1`) per session with distinct session / turn / message / tool / request ids, a bounded
 //    replay log with a hub cursor, and any number of viewers: a viewer leaving never cancels anything.
+import { toolMedia, withMediaLines } from './media-tags.js';
 import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { fault } from './config.js';
@@ -20,14 +21,14 @@ export const MODES = ['auto', 'queue', 'steer', 'interrupt'];
 export function normalise(up, s) {
   const p = up.payload ?? {}, base = { v: 1, session_id: s.stored };
   switch (up.type) {
-    case 'message.start': s.turn = id('t'); s.running = true; s.partial = ''; return { ...base, type: 'turn.start', turn_id: s.turn };
+    case 'message.start': s.turn = id('t'); s.running = true; s.partial = ''; s.media = []; return { ...base, type: 'turn.start', turn_id: s.turn };
     case 'message.delta': s.partial += String(p.text ?? ''); return { ...base, type: 'message.delta', turn_id: s.turn, text: String(p.text ?? '') };
     case 'thinking.delta': case 'reasoning.available': return String(p.text ?? '').trim() && up.type === 'reasoning.available' ? { ...base, type: 'reasoning', turn_id: s.turn, text: String(p.text).slice(0, 20_000) } : null;
-    case 'message.complete': { s.running = false; const status = String(p.status ?? 'complete'); return { ...base, type: 'turn.end', turn_id: s.turn, status: /interrupt/.test(status) ? 'interrupted' : /error|fail/.test(status) ? 'failed' : 'complete', text: String(p.text ?? s.partial) }; }
+    case 'message.complete': { s.running = false; const status = String(p.status ?? 'complete'); return { ...base, type: 'turn.end', turn_id: s.turn, status: /interrupt/.test(status) ? 'interrupted' : /error|fail/.test(status) ? 'failed' : 'complete', text: withMediaLines(String(p.text ?? s.partial), s.media ?? []) }; }
     case 'tool.generating': return { ...base, type: 'tool.progress', turn_id: s.turn, name: String(p.name ?? 'tool').slice(0, 80) };
     case 'tool.start': return { ...base, type: 'tool.start', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
     case 'tool.progress': return { ...base, type: 'tool.progress', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
-    case 'tool.complete': return { ...base, type: 'tool.end', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(typeof p.duration_s === 'number' ? { duration_s: p.duration_s } : {}) };
+    case 'tool.complete': { const media = toolMedia(p.name, p.args, p.result).filter((m) => !(s.media ?? []).includes(m.ref)); if (media.length) s.media = [...(s.media ?? []), ...media.map((m) => m.ref)]; return { ...base, type: 'tool.end', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(media.length ? { media } : {}), ...(typeof p.duration_s === 'number' ? { duration_s: p.duration_s } : {}) }; }
     case 'request.cancel': return { ...base, type: 'request.cancel', request_id: String(p.id ?? ''), reason: String(p.reason ?? '') };
     case 'status.update': return p.text ? { ...base, type: 'status', level: String(p.kind ?? 'info'), text: String(p.text).slice(0, 300) } : null;
     case 'session.title': return p.title ? { ...base, type: 'session.title', title: String(p.title).slice(0, 300) } : null;

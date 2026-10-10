@@ -20,6 +20,7 @@ object MediaTags {
     private const val ANCHOR = """(?:~/|/|[A-Za-z]:[/\\]|https?://)"""
     private val knownTag = Regex("""[`"'*_]{0,3}MEDIA:\s*(`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|$ANCHOR\S+?(?:[^\S\n]+\S+?)*?\.(?:$known))(?=$TERM|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?""", RegexOption.IGNORE_CASE)
     private val bareTag = Regex("""[`"'*_]{0,3}MEDIA:\s*(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|$ANCHOR[^\s`"']+?)(?=[`"'\s,;:)\]}]|MEDIA:|$)[`"'*_]{0,3}""", RegexOption.IGNORE_CASE)
+    private val mdDataImg = Regex("""!\[[^\]\n]*]\(\s*(data:image/(?:png|jpe?g|gif|webp);base64,[A-Za-z0-9+/=]{16,4000000})\s*\)""")
     private val mdLocalImg = Regex("""!\[[^\]\n]*]\(\s*((?:~/|/|[A-Za-z]:[/\\])[^)\s]+)\s*\)""")
     private val mdLinkMedia = Regex("""\[[^\]\n]*]\(\s*(https?://[^)\s]+)\s*\)|(?<![(\w/"'=])(https?://[^\s<>)"'\]]+)""")
     private val fence = Regex("""(^|\n)([ \t]*)(```|~~~)[^\n]*\n[\s\S]*?(?:\n[ \t]*\3[^\n]*(?=\n|$)|$)""")
@@ -40,19 +41,21 @@ object MediaTags {
     }
     fun isUrl(ref: String) = Regex("^https?://", RegexOption.IGNORE_CASE).containsMatchIn(ref)
     private fun pathOf(ref: String): String = if (isUrl(ref)) runCatching { java.net.URLDecoder.decode(java.net.URI(ref).rawPath ?: "", "UTF-8") }.getOrElse { ref.split('?', '#')[0] } else ref.split('?', '#')[0]
+    fun isData(ref: String) = ref.startsWith("data:image/", ignoreCase = true)
     fun kindOf(ref: String): TagMedia.Kind {
+        if (isData(ref)) return TagMedia.Kind.Image
         val e = Regex("""\.([A-Za-z0-9]{1,8})$""").find(pathOf(ref))?.groupValues?.get(1)?.lowercase() ?: ""
         return when (e) { in imageExts -> TagMedia.Kind.Image; in videoExts -> TagMedia.Kind.Video; in audioExts -> TagMedia.Kind.Audio; else -> TagMedia.Kind.File }
     }
-    fun nameOf(ref: String): String = pathOf(ref).split('/', '\\').lastOrNull { it.isNotEmpty() }?.replace(Regex("[\\u0000-\\u001f\\u007f]"), "")?.take(120)?.ifEmpty { null } ?: "file"
+    fun nameOf(ref: String): String = if (isData(ref)) "image" else pathOf(ref).split('/', '\\').lastOrNull { it.isNotEmpty() }?.replace(Regex("[\\u0000-\\u001f\\u007f]"), "")?.take(120)?.ifEmpty { null } ?: "file"
 
     fun parse(input: String): ParsedMedia {
         val text = input
-        if (!text.contains("MEDIA:") && !text.contains("[[") && !text.contains("](") && !text.contains("http")) return ParsedMedia(text, emptyList())
+        if (!text.contains("MEDIA:") && !text.contains("[[") && !text.contains("](") && !text.contains("http") && !text.contains("data:image")) return ParsedMedia(text, emptyList())
         val voice = text.contains("[[audio_as_voice]]"); val asDoc = text.contains("[[as_document]]")
         val scan = mask(text); val spans = ArrayList<IntArray>(); val media = ArrayList<TagMedia>(); val seen = HashSet<String>()
         fun add(raw: String?, span: IntArray?, strip: Boolean = true, onlyAv: Boolean = false): Boolean {
-            val ref = normalize(raw); if (ref.isEmpty() || ref.length > 2000 || Regex("[\\u0000-\\u0008\\u000e-\\u001f]").containsMatchIn(ref)) return false
+            val ref = if (raw != null && isData(raw)) raw else normalize(raw); if (ref.isEmpty() || (ref.length > 2000 && !isData(ref)) || Regex("[\\u0000-\\u0008\\u000e-\\u001f]").containsMatchIn(ref)) return false
             if (strip && span != null) spans.add(span)
             val kind = kindOf(ref); if (onlyAv && kind != TagMedia.Kind.Video && kind != TagMedia.Kind.Audio) return false
             if (seen.add(ref) && media.size < MAX_TAGS) media.add(TagMedia(ref, if (asDoc && kind == TagMedia.Kind.Image) TagMedia.Kind.File else kind, nameOf(ref), voice && kind == TagMedia.Kind.Audio))
@@ -61,6 +64,7 @@ object MediaTags {
         fun taken(a: Int, b: Int) = spans.any { a < it[1] && b > it[0] }
         for (m in knownTag.findAll(scan)) add(m.groupValues[1], intArrayOf(m.range.first, m.range.last + 1))
         for (m in bareTag.findAll(scan)) { val a = m.range.first; val b = m.range.last + 1; if (taken(a, b)) continue; add(m.groupValues[1], intArrayOf(a, b)) }
+        for (m in mdDataImg.findAll(scan)) { val a = m.range.first; val b = m.range.last + 1; if (!taken(a, b)) add(m.groupValues[1], intArrayOf(a, b)) }
         for (m in mdLocalImg.findAll(scan)) { val a = m.range.first; val b = m.range.last + 1; if (!taken(a, b)) add(m.groupValues[1], intArrayOf(a, b)) }
         for (m in mdLinkMedia.findAll(scan)) { val a = m.range.first; val b = m.range.last + 1; if (!taken(a, b)) add(m.groupValues[1].ifEmpty { m.groupValues[2] }, null, strip = false, onlyAv = true) }
         var out = text

@@ -8,7 +8,7 @@
 // WebSocket to your hub for all of them. Nothing listens on this machine and no port has to be opened.
 // Dashboard passwords and API keys are read from each profile's own files and used locally; they are never sent to the hub.
 //
-// Commands: pair | run | profiles | status | doctor | install-service | uninstall-service | unpair | help
+// Commands: pair | run | profiles | status | doctor | allow-media | install-service | uninstall-service | unpair | help
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -17,7 +17,9 @@ import readline from 'node:readline';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.4-alpha';
+export const VERSION = '0.3.5-alpha';
+/** What this connector can do for the hub (reported in the profiles frame; the hub shows it as the Media row of an agent). */
+export const FEATURES = ['media', 'mediaRoots', 'mediaCheck'];
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const log = (...a) => console.log(...a);
@@ -208,7 +210,7 @@ function runLink(cfg, onState = () => {}) {
   function announce(force = false) {
     const names = scan(), key = names.join(',');
     if (!force && key === lastSent) return; lastSent = key;
-    send({ t: 'profiles', os: process.platform, profiles: names.map((profile) => ({ profile })) }); send({ t: 'ui-caps', caps: uiCaps() });
+    send({ t: 'profiles', os: process.platform, version: VERSION, features: FEATURES, profiles: names.map((profile) => ({ profile })) }); send({ t: 'ui-caps', caps: uiCaps() });
   }
   async function dashCookie(t, name) {
     if (cookies.has(name)) return cookies.get(name);
@@ -332,10 +334,33 @@ const MEDIA_DEFAULT_MAX = 25 * 1024 * 1024;
 const sub = (a, b) => { const r = path.relative(a, b); return r === '' || (!r.startsWith('..') && !path.isAbsolute(r)); };
 const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
 export function mediaRoots({ root, home, cfg = {}, env = process.env, tmp = os.tmpdir() } = {}) {
-  const names = ['image_cache', 'audio_cache', 'video_cache', 'document_cache', 'browser_screenshots', 'cache', 'workspace', 'media', 'outputs', 'output'];
-  const base = [home, root].filter(Boolean).flatMap((h) => names.map((n) => path.join(h, n)));
-  const extra = [...(Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []), ...String(env.FOXFLEET_MEDIA_ROOTS ?? '').split(path.delimiter), cfg.uiGatewayCwd].filter((x) => typeof x === 'string' && path.isAbsolute(x));
+  // Where Hermes writes what it makes: ~/.hermes/cache/{images,audio,videos,documents,screenshots,generated} and the older *_cache folders, in the root
+  // and in each profile's own home (profiles/<name>/...), plus the working folders agents commonly save into.
+  const names = ['image_cache', 'audio_cache', 'video_cache', 'document_cache', 'browser_screenshots', 'cache', 'workspace', 'media', 'outputs', 'output', 'generated', 'screenshots', 'downloads'];
+  const homes = [home, root, ...profileHomes(root)].filter(Boolean);
+  const base = homes.flatMap((h) => names.map((n) => path.join(h, n)));
+  const list = (v) => String(v ?? '').split(path.delimiter);
+  // HERMES_MEDIA_ALLOW_DIRS is Hermes' own operator allow-list for delivery: honour it so one setting covers both.
+  const extra = [...(Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []), ...list(env.FOXFLEET_MEDIA_ROOTS), ...list(env.HERMES_MEDIA_ALLOW_DIRS), cfg.uiGatewayCwd].filter((x) => typeof x === 'string' && path.isAbsolute(x));
   return [...new Set([...base, tmp, ...extra].map(real).filter(Boolean))];
+}
+function profileHomes(root) { try { return root ? fs.readdirSync(path.join(root, 'profiles'), { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => path.join(root, 'profiles', d.name)) : []; } catch { return []; } }
+/** `doctor` lines for media: what is shared, and what an agent would get stuck on. */
+export function mediaDoctor(cfg, { root, env = process.env } = {}) {
+  const out = [], roots = mediaRoots({ root, cfg, env }), custom = (Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []).filter((d) => !real(d));
+  out.push({ id: 'media', status: 'ok', message: `media: ${roots.length} shared folder(s) (Hermes caches, workspace, temp${cfg.mediaRoots?.length ? `, ${cfg.mediaRoots.length} of yours` : ''}); files up to ${Math.round((Number(cfg.mediaMaxBytes) || MEDIA_DEFAULT_MAX) / 1048576)} MB; connector ${VERSION}` });
+  for (const d of custom) out.push({ id: 'media-root', status: 'warn', message: `mediaRoots entry ${d} does not exist on this machine`, fix: 'Remove it from the connector config, or create the folder.' });
+  if (root && !roots.some((r) => /(^|[\\/])(cache|image_cache)$/.test(r))) out.push({ id: 'media-cache', status: 'warn', message: 'no Hermes image cache folder yet', fix: 'Normal until an agent makes its first picture. If an agent saves pictures elsewhere, run: foxfleet connector allow-media "<folder>"' });
+  return out;
+}
+/** `allow-media <dir>`: share one more folder (an absolute path that exists). Returns the new list. */
+export function allowMediaRoot(cfg, dir) {
+  const d = String(dir ?? '').trim(), rp = d && path.isAbsolute(d) ? real(d) : null;
+  if (!rp) throw new Error('Give an absolute path to a folder that exists on this machine, e.g. allow-media "/home/me/projects/out"');
+  if (!fs.statSync(rp).isDirectory()) throw new Error('That is a file; share its folder instead');
+  if (rp === path.parse(rp).root || rp === os.homedir()) throw new Error('Too broad: share a specific folder, not the whole disk or your home folder');
+  if (rp.split(path.sep).some((c) => MEDIA_DENY_DIRS.has(c))) throw new Error('That location holds credentials and is never shared');
+  const next = [...new Set([...(Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []), rp])]; return { ...cfg, mediaRoots: next };
 }
 /** Magic-number check: does this file's start really look like its extension says? Returns the mime to serve, or null. */
 export function sniffMedia(head, ext) {
@@ -604,9 +629,10 @@ export async function main(argv = process.argv.slice(2)) {
       log('Saved. A running connector picks the change up within its rescan interval (or restart the service).'); return;
     }
     if (cmd === 'doctor') { // checks for this machine's side: Hermes profiles and the native gateway
-      const checks = await nativeDoctor(cfg ?? {}); for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
+      const checks = [...await nativeDoctor(cfg ?? {}), ...mediaDoctor(cfg ?? {}, { root: hermesRoot({ override: cfg?.hermesHome }) })]; for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
       if (args.json) log(JSON.stringify(checks)); if (checks.some((c) => c.status === 'fail')) process.exit(1); return;
     }
+    if (cmd === 'allow-media') { const dir = args._?.[1] ?? args.dir ?? process.argv[3]; const next = allowMediaRoot(cfg, dir); saveConfig(next); log(`Shared with the hub: ${next.mediaRoots.at(-1)}\nAgents can now send files from there (a running connector picks this up on the next request).`); return; }
     if (cmd === 'status') { const root = hermesRoot({ override: cfg.hermesHome }); log(`Machine: ${cfg.name}\nHub: ${cfg.hub}\nConfig: ${configFile()} (0600)`); summary(root, discoverProfiles(root), cfg); return; }
     if (cmd === 'install-service') { installService(); return; }
     if (cmd === 'uninstall-service') { uninstallService(); return; }

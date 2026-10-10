@@ -81,4 +81,4 @@ export function moved<T>(items: T[], index: number, delta: number): T[] {
 export function scrubAddresses(s: string): string {
   return s.replace(/\bhttps?:\/\/\S+/gi, '[hidden]').replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[hidden]').replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:lan|local|internal|home\.arpa|io|com|net|org|dev|app|vn)(?::\d+)?\b/gi, '[hidden]');
 }
-export const CHECK_LABELS: Record<string, string> = { dashboard: 'Dashboard', management: 'Management', api: 'Chat API', inbox: 'Mailbox', connector: 'Connector' };
+export const CHECK_LABELS: Record<string, string> = { dashboard: 'Dashboard', management: 'Management', api: 'Chat API', inbox: 'Mailbox', connector: 'Connector', media: 'Media' };
