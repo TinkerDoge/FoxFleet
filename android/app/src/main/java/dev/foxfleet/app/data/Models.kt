@@ -41,7 +41,19 @@ data class AgentStatus(
     val label: String? = null,
     val description: String = "",
     val capabilities: Capabilities = Capabilities.forKind(kind),
+    /** Registry position on the hub: the tie-break for agents with no activity. */
+    val order: Int = 0,
+    /** Per-user list line (hub 0.3.4): when, what and which chat was last active; pin state; running / waiting flags. */
+    val lastActivityAt: Long? = null,
+    val lastSessionTitle: String? = null,
+    val lastMessagePreview: String? = null,
+    /** "user" or "assistant". */
+    val lastRole: String? = null,
+    val pinOrder: Int? = null,
+    val working: Boolean = false,
+    val needsInput: Boolean = false,
 ) {
+    val pinned get() = pinOrder != null
     val id get() = name
     val displayName get() = label ?: name
     val isHermes get() = kind == "hermes"

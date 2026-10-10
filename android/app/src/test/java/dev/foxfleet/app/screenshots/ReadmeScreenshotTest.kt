@@ -88,7 +88,7 @@ class ReadmeScreenshotTest {
     }
 
     private fun fleet(dark: Boolean) = shot("fleet", dark) {
-        FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {})
+        FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it.name == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {})
     }
 
     private val reply = """

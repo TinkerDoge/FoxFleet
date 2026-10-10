@@ -16,6 +16,7 @@ import dev.foxfleet.app.data.HubApiException
 import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.SettingsStore
 import dev.foxfleet.app.data.scrubAddresses
+import dev.foxfleet.app.ui.AgentList
 import dev.foxfleet.app.ui.chat.ChatState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -141,21 +142,42 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
     }
 
-    fun refreshFleet() {
+    /** Refresh the list. `silent` (the periodic poll, leaving a chat) shows no spinner and no error: the list just updates. */
+    fun refreshFleet(silent: Boolean = false) {
         if (fleetLoading) return
-        fleetLoading = true; fleetError = null
+        if (!silent) { fleetLoading = true; fleetError = null } else fleetLoading = false
         viewModelScope.launch {
             try {
-                agents = api.agents(); fleetLoadedOnce = true; restoreLastChat()
+                val fresh = api.agents()
+                val open = (route as? Route.Chat)?.agent
+                fresh.forEach { a -> if (a.name == open) settings.markSeen(a.name, a.lastActivityAt) else if (settings.seenAt(a.name) == null) settings.markSeen(a.name, a.lastActivityAt) } // a new device starts out read
+                agents = AgentList.sort(fresh); fleetLoadedOnce = true; restoreLastChat()
             } catch (e: AuthRequiredException) {
                 authed = false
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                fleetError = e.message?.let(::scrubAddresses) ?: "Fleet sync failed"
-            } finally { fleetLoading = false }
+                if (!silent) fleetError = e.message?.let(::scrubAddresses) ?: "Fleet sync failed"
+            } finally { if (!silent) fleetLoading = false }
+        }
+    }
+
+    /** Is there a reply in this agent's chat that you have not seen on this device? */
+    fun unreadFor(a: AgentStatus): Boolean = chatFor(a.name).unread || AgentList.unread(a, settings.seenAt(a.name), (route as? Route.Chat)?.agent == a.name)
+
+    /** Pin or unpin: the row moves at once; the hub's answer (or the next refresh) is the truth. */
+    fun pin(a: AgentStatus) {
+        val on = !a.pinned; val before = agents
+        agents = AgentList.sort(agents.map { x -> if (x.name == a.name) x.copy(pinOrder = if (on) (agents.maxOfOrNull { it.pinOrder ?: -1 } ?: -1) + 1 else null) else x })
+        viewModelScope.launch {
+            try { api.pinAgent(a.name, on); refreshFleet(silent = true) }
+            catch (e: AuthRequiredException) { authed = false }
+            catch (e: CancellationException) { throw e }
+            catch (e: Exception) { agents = before; fleetError = "Couldn't change the pin. Try again." }
         }
     }
 
     fun navigate(r: Route) {
+        val leaving = (route as? Route.Chat)?.agent
+        if (leaving != null && (r as? Route.Chat)?.agent != leaving) viewModelScope.launch { delay(900); refreshFleet(silent = true); delay(600); settings.markSeen(leaving, agents.firstOrNull { it.name == leaving }?.lastActivityAt) } // what arrived while you were in the chat is read
         if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent) }
         route = r
     }
@@ -167,7 +189,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         is Route.AgentEditor -> { route = Route.Agents; true }
         is Route.Machines -> { route = Route.Agents; true }
         Route.Fleet -> false
-        else -> { route = Route.Fleet; true }
+        else -> { navigate(Route.Fleet); true }
     }
 
     fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState().also { s -> s.persist = { c -> settings.saveChat(agent, c) } } }

@@ -147,9 +147,11 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
     when (route) {
         Route.Fleet -> FleetScreen(
             agents = vm.agents, loading = vm.fleetLoading, loadedOnce = vm.fleetLoadedOnce, error = vm.fleetError,
-            unread = { vm.chatFor(it).unread }, onRefresh = vm::refreshFleet,
+            unread = vm::unreadFor, onRefresh = { vm.refreshFleet() }, onPoll = { vm.refreshFleet(silent = true) },
             onOpen = { vm.navigate(Route.Chat(it.name)) }, onSettings = { vm.navigate(Route.Settings) },
-            onAvatarLongPress = { vm.avatarTarget = it },
+            onAvatarLongPress = { vm.avatarTarget = it }, onPin = vm::pin,
+            onAddAgent = if (vm.isOwner) ({ vm.navigate(Route.Agents) }) else null,
+            running = { vm.chatFor(it).streaming }, userInitials = dev.foxfleet.app.ui.components.initials(vm.username),
         )
         is Route.Chat -> {
             val agent = vm.agent(route.agent)

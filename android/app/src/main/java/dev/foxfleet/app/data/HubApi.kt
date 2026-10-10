@@ -9,6 +9,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -199,6 +200,11 @@ class HubApi(private val store: SettingsStore) {
         val obj = request("/api/agents", timeoutSec = 60)
         val arr = obj["agents"]?.jsonArray ?: throw HubApiException(0, "Invalid response from the relay")
         arr.map { parseAgent(it.jsonObject) }
+    }
+
+    /** Pin or unpin an agent for the signed-in user; pinned agents stay on top in the order they were pinned. */
+    suspend fun pinAgent(agent: String, pinned: Boolean): Unit = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/pin", "PUT", buildJsonObject { put("pinned", pinned) }.toString()); Unit
     }
 
     // ---- agent registry (owner) ----
@@ -590,6 +596,11 @@ class HubApi(private val store: SettingsStore) {
                 kind = kind,
                 label = (a.str("displayName") ?: a.str("label"))?.takeIf { it.isNotBlank() && it != (a.str("id") ?: a.str("name")) },
                 description = a.str("description").orEmpty(),
+                order = a["order"]?.let { runCatching { it.jsonPrimitive.intOrNull }.getOrNull() } ?: 0,
+                lastActivityAt = a["last_activity_at"]?.let { runCatching { it.jsonPrimitive.longOrNull }.getOrNull() },
+                lastSessionTitle = a.str("last_session_title"), lastMessagePreview = a.str("last_message_preview"), lastRole = a.str("last_role"),
+                pinOrder = a["pin_order"]?.let { runCatching { it.jsonPrimitive.intOrNull }.getOrNull() },
+                working = a.bool("working") ?: false, needsInput = a.bool("needs_input") ?: false,
                 capabilities = if (caps != null && caps.containsKey("chat")) Capabilities(
                     chat = caps.bool("chat") ?: true, images = caps.bool("images") ?: false, files = caps.bool("files") ?: false,
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,

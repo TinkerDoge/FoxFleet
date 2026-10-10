@@ -51,7 +51,7 @@ class V04ScreenshotTest {
     }
 
     private fun fleet(dark: Boolean) = shot("fleet-bridged", dark) {
-        FleetScreen(fleet04, loading = false, loadedOnce = true, error = null, unread = { it == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {})
+        FleetScreen(fleet04, loading = false, loadedOnce = true, error = null, unread = { it.name == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {})
     }
 
     private fun files(dark: Boolean) {

@@ -61,7 +61,7 @@ class ScreensScreenshotTest {
     }
 
     private fun fleet(dark: Boolean) = shot("fleet", dark) {
-        FleetScreen(agents, loading = false, loadedOnce = true, error = null, unread = { it == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {})
+        FleetScreen(agents, loading = false, loadedOnce = true, error = null, unread = { it.name == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {})
     }
 
     private fun chat(dark: Boolean) {

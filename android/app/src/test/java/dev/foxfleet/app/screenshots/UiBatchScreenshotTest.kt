@@ -81,8 +81,8 @@ class UiBatchScreenshotTest {
     @Test fun providersPaged360Light() = shot("03-model-providers-paged-360dp", false, w = 360, h = 740) { Box(Modifier.fillMaxSize().background(LocalHubColors.current.surface)) { ModelPickerContent(controls, true, {}, {}) } }
     @Test fun providersPaged411Dark() = shot("03-model-providers-paged-411dp", true) { Box(Modifier.fillMaxSize().background(LocalHubColors.current.surface)) { ModelPickerContent(controls, true, {}, {}) } }
     @Test fun models360Light() = shot("04-model-models-360dp", false, w = 360, h = 740) { Box(Modifier.fillMaxSize().background(LocalHubColors.current.surface)) { ModelPickerContent(controls, true, {}, {}, startProvider = "openrouter") } }
-    @Test fun fleet360Light() = shot("05-agents-360dp", false, w = 360, h = 740) { FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
-    @Test fun fleet411Dark() = shot("05-agents-411dp", true) { FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
+    @Test fun fleet360Light() = shot("05-agents-360dp", false, w = 360, h = 740) { FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it.name == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
+    @Test fun fleet411Dark() = shot("05-agents-411dp", true) { FleetScreen(fleetAgents, loading = false, loadedOnce = true, error = null, unread = { it.name == "Nova" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
     @Test fun settings360Light() = shot("06-settings-360dp", false, w = 360, h = 740) { SettingsScreen(AppPrefs(theme = ThemeMode.Light, accent = 0), {}, {}, {}) }
     @Test fun settings411Dark() = shot("06-settings-411dp", true) { SettingsScreen(AppPrefs(theme = ThemeMode.Dark, accent = 0), {}, {}, {}) }
 }

@@ -88,7 +88,12 @@ class SettingsStore(private val prefs: SharedPreferences) {
             .apply()
 
     /** Sign out locally: drop the session token, keep the hub. */
-    fun clearSession() { sessionToken = null; forgetChats() }
+    fun clearSession() { sessionToken = null; forgetChats(); forgetSeen() }
+
+    /** Per hub and agent: the hub timestamp of the last reply you have seen on this device (drives the unread dot in the list). */
+    fun seenAt(agent: String): Long? = prefs.getLong("seen_${activeHubId}_$agent", -1L).takeIf { it >= 0 }
+    fun markSeen(agent: String, at: Long?) { if (at != null && at > (seenAt(agent) ?: -1L)) prefs.edit().putLong("seen_${activeHubId}_$agent", at).apply() }
+    private fun forgetSeen() { val e = prefs.edit(); prefs.all.keys.filter { it.startsWith("seen_${activeHubId}_") }.forEach { e.remove(it) }; e.apply() }
 
     companion object {
         const val ACCENT_COUNT = 5

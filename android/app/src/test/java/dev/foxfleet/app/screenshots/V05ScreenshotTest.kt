@@ -88,7 +88,7 @@ class V05ScreenshotTest {
         AgentEditorScreen(kinds05, existing, {}, noTest, noSave, {}, {}, initialKind = kind, initialTest = test, initialToken = token)
     }
 
-    @Test fun fleetLight() = shot("fleet", false) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { it == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
+    @Test fun fleetLight() = shot("fleet", false) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { it.name == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
     @Test fun fleetDark() = shot("fleet", true) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { false }, onRefresh = {}, onOpen = {}, onSettings = {}) }
     @Test fun settingsLight() = shot("settings", false) { SettingsScreen(AppPrefs(), {}, {}, {}, {}) }
     @Test fun agentsLight() = shot("agents", false) { AgentsScreen(saved05, null, {}, {}, {}, { _, _ -> }) }

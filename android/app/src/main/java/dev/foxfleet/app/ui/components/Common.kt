@@ -46,7 +46,7 @@ fun SoftIconButton(
 ) {
     val src = remember { MutableInteractionSource() }
     Box(
-        modifier.size(40.dp).pressScale(src, 0.9f).clip(CircleShape).background(background)
+        modifier.size(44.dp).pressScale(src, 0.9f).clip(CircleShape).background(background)
             .clickable(interactionSource = src, indication = null, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) { Icon(icon, contentDescription, tint = tint, modifier = Modifier.size(22.dp)) }
