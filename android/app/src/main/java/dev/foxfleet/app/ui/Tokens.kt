@@ -51,4 +51,13 @@ object Tokens {
     const val motionFastMs = 120
     const val motionBaseMs = 200
     const val motionSlowMs = 320
+    const val motionPressMs = 90
+    const val motionMessageInMs = 180
+    const val motionStatusMs = 180
+    const val motionPanelInMs = 240
+    const val motionPanelOutMs = 150
+    const val motionTypingPhaseMs = 150
+    const val motionTypingLoopMs = 600
+    /** Minimum touch target (dp). */
+    const val touchTarget = 44
 }

@@ -1,0 +1,155 @@
+{
+  "$comment": "Shared by the hub (server/activity.js), the web app (web/src/lib/agentList.ts) and Android (AgentList.kt). now = 2026-10-10T12:00:00Z read in UTC; times are formatted for locale en-US in UTC.",
+  "now": 1791633600000,
+  "sort": {
+    "input": [
+      {
+        "name": "quiet2",
+        "order": 3
+      },
+      {
+        "name": "old",
+        "order": 0,
+        "last_activity_at": 100
+      },
+      {
+        "name": "p2",
+        "order": 5,
+        "pin_order": 1,
+        "last_activity_at": 1
+      },
+      {
+        "name": "new",
+        "order": 1,
+        "last_activity_at": 900
+      },
+      {
+        "name": "p1",
+        "order": 6,
+        "pin_order": 0
+      },
+      {
+        "name": "quiet1",
+        "order": 2
+      }
+    ],
+    "expect": [
+      "p1",
+      "p2",
+      "new",
+      "old",
+      "quiet1",
+      "quiet2"
+    ]
+  },
+  "preview": [
+    {
+      "agent": {
+        "working": true,
+        "last_message_preview": "x",
+        "last_role": "assistant"
+      },
+      "expect": {
+        "kind": "typing",
+        "text": "",
+        "you": false
+      }
+    },
+    {
+      "agent": {
+        "needs_input": true,
+        "working": true,
+        "last_message_preview": "x"
+      },
+      "expect": {
+        "kind": "approval",
+        "text": "",
+        "you": false
+      }
+    },
+    {
+      "agent": {
+        "last_message_preview": "Done",
+        "last_role": "user"
+      },
+      "expect": {
+        "kind": "text",
+        "text": "Done",
+        "you": true
+      }
+    },
+    {
+      "agent": {
+        "last_message_preview": "Done",
+        "last_role": "assistant"
+      },
+      "expect": {
+        "kind": "text",
+        "text": "Done",
+        "you": false
+      }
+    },
+    {
+      "agent": {
+        "last_session_title": "Release notes"
+      },
+      "expect": {
+        "kind": "text",
+        "text": "Release notes",
+        "you": false
+      }
+    },
+    {
+      "agent": {
+        "description": "Release engineer\nsecond line"
+      },
+      "expect": {
+        "kind": "empty",
+        "text": "Release engineer",
+        "you": false
+      }
+    },
+    {
+      "agent": {},
+      "expect": {
+        "kind": "empty",
+        "text": "",
+        "you": false
+      }
+    }
+  ],
+  "time": [
+    {
+      "at": 1791631800000,
+      "expect": "11:30 AM"
+    },
+    {
+      "at": 1791547200000,
+      "expect": "Yesterday"
+    },
+    {
+      "at": 1791374400000,
+      "expect": "Wed"
+    },
+    {
+      "at": 1791201600000,
+      "expect": "Mon"
+    },
+    {
+      "at": 1790942400000,
+      "expect": "Oct 2"
+    },
+    {
+      "at": 1788523200000,
+      "expect": "Sep 4"
+    },
+    {
+      "at": 1756987200000,
+      "expect": "Sep 4, 2025"
+    },
+    {
+      "at": null,
+      "expect": ""
+    }
+  ]
+}

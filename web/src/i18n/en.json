@@ -324,5 +324,21 @@
   "chat.reconnectReply": "Reconnect to reply",
   "chat.reconnectHint": "Check existing work before sending again. Reconnecting does not send a second task.",
   "chat.checkRequest": "Check request status",
-  "chat.checkHistory": "Check history"
+  "chat.checkHistory": "Check history",
+  "list.search": "Search agents",
+  "list.pinned": "Pinned",
+  "list.all": "All agents",
+  "list.typing": "Typing",
+  "list.needsApproval": "Needs approval",
+  "list.you": "You: ",
+  "list.noMessages": "No messages yet",
+  "list.unread": "Unread",
+  "list.pin": "Pin to top",
+  "list.unpin": "Unpin",
+  "list.pinNamed": "Pin {name}",
+  "list.unpinNamed": "Unpin {name}",
+  "list.noMatch": "No agent matches",
+  "list.pinFailed": "Couldn't change the pin. Try again.",
+  "nav.tools": "Account and tools",
+  "nav.theme": "Switch theme"
 }

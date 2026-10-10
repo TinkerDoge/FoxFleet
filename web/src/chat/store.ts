@@ -33,6 +33,8 @@ let account = Symbol();
 const selection = (agent: string) => { let key = selections.get(agent); if (!key) { key = Symbol(); selections.set(agent, key); } return key; };
 const select = (agent: string) => { const key = Symbol(); selections.set(agent, key); return key; };
 const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0, queue: [], halted: false, requests: [], toolLog: [], canCancel: true });
+/** Tells the agent list that a message went out or a reply ended, so it can refresh its last-message line. */
+const announce = (agent: string) => { try { window.dispatchEvent(new CustomEvent('foxfleet:activity', { detail: { agent } })); } catch { /* not a browser */ } };
 export const chatOf = (agent: string): ChatState => { let s = states.get(agent); if (!s) { s = fresh(agent); states.set(agent, s); } return s; };
 function patch(agent: string, p: Partial<ChatState>) { states.set(agent, { ...chatOf(agent), ...p }); subs.forEach((f) => f()); }
 export function useChat(agent: string): ChatState {
@@ -124,7 +126,7 @@ function settle(agent: string, ctrl: AbortController, base: UiMessage[], acc: Ac
   const interrupted = stoppedBy.has(ctrl) || acc.state === 'stopped';
   const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
   patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', tool: undefined, toolLog: [], requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
-  return true;
+  announce(agent); return true;
 }
 
 /** Follows a hub run (a reply that was already running, or the next queued message that just started) and keeps it in the transcript. */
@@ -239,7 +241,7 @@ export async function send(client: Client, agent: string, text: string, images: 
   if (cur.loading) return;
   if (cur.streaming || cur.queue.some((q) => PENDING.has(q.state))) return submitBusy(client, agent, user, mode, onAuthLost);
   const base = [...cur.messages, user];
-  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' });
+  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' }); announce(agent);
   const ctrl = new AbortController(); aborts.set(agent, ctrl);
   saveChat(agent, { user: user.content, started: Date.now(), run: undefined });
   const acc: Acc = { reply: '', reasoning: '', selection: selection(agent) }, sentAt = Date.now();

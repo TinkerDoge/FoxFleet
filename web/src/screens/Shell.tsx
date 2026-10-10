@@ -10,6 +10,8 @@ import { resetChats } from '../chat/store';
 import { setDraftScope, wipeDrafts } from '../chat/drafts';
 import { Manage } from '../agents/Manage';
 import { Admin } from '../admin/Admin';
+import { AgentList } from '../agents/AgentList';
+import { markSeen, seedSeen, setSeenScope, forgetSeen, sortAgents } from '../lib/agentList';
 import { Account } from '../admin/Account';
 import { Settings } from '../admin/Settings';
 import { ScreenView } from '../screen/ScreenView';
@@ -26,7 +28,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const owner = info.user?.role === 'owner';
-  setDraftScope(info.user?.id); // unsent text is stored per signed-in user (set before the chat reads its draft)
+  setSeenScope(info.user?.id); setDraftScope(info.user?.id); // unsent text is stored per signed-in user (set before the chat reads its draft)
   const main = useRef<HTMLElement>(null);
   const sidebar = useRef<HTMLElement>(null), menu = useRef<HTMLButtonElement>(null), topbar = useRef<HTMLElement>(null), skip = useRef<HTMLAnchorElement>(null);
   const modal = open && mobile;
@@ -59,11 +61,24 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const lost = () => { resetChats(); onSignedOut(); };
   const load = () => { setError(null); client.agents().then(setAgents).catch((e) => { if (e instanceof AuthRequiredError) lost(); else setError(t('home.failed')); }); };
   useEffect(load, []);
-  useEffect(() => { const id = setInterval(() => client.agents().then(setAgents).catch(() => {}), 30000); return () => clearInterval(id); }, []);
-  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); wipeDrafts(); lost(); }
+  useEffect(() => { // keep the list fresh: every 12 s while the tab is visible, and soon after any chat sends or finishes (the hub records it first)
+    const refresh = () => { if (document.visibilityState !== 'hidden') client.agents().then(setAgents).catch(() => {}); };
+    let soon: ReturnType<typeof setTimeout> | undefined; const bump = () => { clearTimeout(soon); soon = setTimeout(refresh, 700); };
+    const id = setInterval(refresh, 12000); window.addEventListener('foxfleet:activity', bump); document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(id); clearTimeout(soon); window.removeEventListener('foxfleet:activity', bump); document.removeEventListener('visibilitychange', refresh); };
+  }, []);
+  async function pin(a: AgentSummary) {
+    const on = !a.pinned, before = agents; // optimistic: the row moves at once; the hub's answer (or a reload) is the truth
+    setAgents((list) => list && sortAgents(list.map((x) => x.name === a.name ? { ...x, pinned: on, pin_order: on ? (list.reduce((m, y) => Math.max(m, y.pin_order ?? -1), -1) + 1) : null } : x)));
+    try { await client.pinAgent(a.name, on); load(); } catch (e) { if (e instanceof AuthRequiredError) lost(); else { setAgents(before); setError(t('list.pinFailed')); setTimeout(() => setError(null), 4000); } }
+  }
+  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); forgetSeen(); wipeDrafts(); lost(); }
   const PAGES = ['manage', 'admin', 'account', 'settings'];
   const requested = route.params.get('agent');
   const selected = !PAGES.includes(route.name) ? requested ? agents?.find((a) => a.name === requested) : agents?.find((a) => a.name === lastAgent()) ?? agents?.[0] : undefined;
+  useEffect(() => { // opening a chat marks it read; an agent first seen on this device starts out read
+    for (const a of agents ?? []) (a.name === selected?.name ? markSeen : seedSeen)(a.name, a.last_activity_at);
+  }, [agents, selected?.name]);
   const go = () => setOpen(false);
   return (
     <div class={`shell${open ? ' drawer-open' : ''}`}>
@@ -72,26 +87,17 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
       <aside class="sidebar" ref={sidebar} id="sidebar" aria-label="Navigation" role={modal ? 'dialog' : undefined} aria-modal={modal ? 'true' : undefined}>
         <button class="icon-btn drawer-close" aria-label={t('nav.closeMenu')} onClick={() => setOpen(false)}><Icon name="close" /></button>
         <Wordmark height={34} />
-        <nav aria-label={t('nav.recent')}>
-          <span class="nav-label">{t('nav.recent')}</span>
-          {agents?.map((a) => (
-            <a key={a.name} href={`#/chat?agent=${encodeURIComponent(a.name)}`} class={selected?.name === a.name ? 'active' : ''} aria-current={selected?.name === a.name ? 'page' : undefined} onClick={go}>
-              <Icon name="agents" size={18} /><span class={`dot ${a.online ? 'on' : 'off'}`} aria-label={a.online ? t('chat.online') : t('chat.offline')} /><span class="grow">{a.displayName || a.name}</span>
-            </a>
-          ))}
-        </nav>
-        <nav aria-label="Account and tools" class="tools">
-          {owner && <a href="#/manage" class={route.name === 'manage' ? 'active' : ''} aria-current={route.name === 'manage' ? 'page' : undefined} onClick={go}><Icon name="agents" size={18} />{t('nav.manage')}</a>}
-          {owner && <a href="#/admin" class={route.name === 'admin' ? 'active' : ''} aria-current={route.name === 'admin' ? 'page' : undefined} onClick={go}><Icon name="shield" size={18} />{t('nav.admin')}</a>}
-          <a href="#/account" class={route.name === 'account' ? 'active' : ''} aria-current={route.name === 'account' ? 'page' : undefined} onClick={go}><Icon name="user" size={18} />{t('nav.account')}</a>
-          <a href="#/settings" class={route.name === 'settings' ? 'active' : ''} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={go}><Icon name="settings" size={18} />{t('nav.settings')}</a>
-        </nav>
+        <AgentList agents={agents} selectedName={selected?.name} onPick={go} onPin={pin} />
         <div class="sidebar-foot">
-          <span class="muted small">{info.user?.username}{owner ? ' · Owner' : ''}</span>
-          <div class="row">
-            <button class="btn text" onClick={() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')}><Icon name="moon" size={18} />Theme</button>
-            <button class="btn text" onClick={signOut}><Icon name="logout" size={18} />{t('nav.signOut')}</button>
-          </div>
+          <nav aria-label={t('nav.tools')} class="tools">
+            {owner && <a class={`icon-btn round${route.name === 'manage' ? ' active' : ''}`} href="#/manage" aria-label={t('nav.manage')} title={t('nav.manage')} aria-current={route.name === 'manage' ? 'page' : undefined} onClick={go}><Icon name="agents" size={20} /></a>}
+            {owner && <a class={`icon-btn round${route.name === 'admin' ? ' active' : ''}`} href="#/admin" aria-label={t('nav.admin')} title={t('nav.admin')} aria-current={route.name === 'admin' ? 'page' : undefined} onClick={go}><Icon name="shield" size={20} /></a>}
+            <a class={`icon-btn round${route.name === 'account' ? ' active' : ''}`} href="#/account" aria-label={t('nav.account')} title={t('nav.account')} aria-current={route.name === 'account' ? 'page' : undefined} onClick={go}><Icon name="user" size={20} /></a>
+            <a class={`icon-btn round${route.name === 'settings' ? ' active' : ''}`} href="#/settings" aria-label={t('nav.settings')} title={t('nav.settings')} aria-current={route.name === 'settings' ? 'page' : undefined} onClick={go}><Icon name="settings" size={20} /></a>
+            <button type="button" class="icon-btn round" aria-label={t('nav.theme')} title={t('nav.theme')} onClick={() => setTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark')}><Icon name="moon" size={20} /></button>
+            <button type="button" class="icon-btn round" aria-label={t('nav.signOut')} title={t('nav.signOut')} onClick={signOut}><Icon name="logout" size={20} /></button>
+          </nav>
+          <span class="muted small who">{info.user?.username}{owner ? ' · Owner' : ''}</span>
         </div>
       </aside>
       <div class="scrim" onClick={go} />

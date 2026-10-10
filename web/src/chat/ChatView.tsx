@@ -67,6 +67,8 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     else openHistory(true);
   };
   const secondary = [...(agent.capabilities?.screen && agent.online ? [{ icon: 'screen' as const, label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { icon: 'add' as const, label: t('chat.new'), onSelect: startNew }];
+  const [live, setLive] = useState(false); // entrance animation only for messages that arrive after the history has loaded
+  useEffect(() => { setLive(false); if (c.loading) return; const id = setTimeout(() => setLive(true), 700); return () => clearTimeout(id); }, [c.loading, c.session]);
   const resolveMedia = useMemo(() => (ref: string) => client.media(agent.name, ref), [client, agent.name]);
   return (
     <MediaContext.Provider value={resolveMedia}>
@@ -86,9 +88,9 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
           }).catch(failHistory)} />}
       </header>
       {c.runState && <p class={`run-status ${c.runState}`} role="status">{t(('chat.run.' + c.runState) as K)}</p>}
-      <div class="messages" ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
+      <div class={`messages${live ? ' live' : ''}`} ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
-        {c.loading && <p class="muted center">{t('home.loading')}</p>}
+        {c.loading && <div class="msg-skeleton" role="status" aria-label={t('home.loading')}><i class="sk-bubble w60" /><i class="sk-bubble me w40" /><i class="sk-bubble w75" /></div>}
         {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><Icon name="chat" size={48} class="icon-hero" /><p>{t('chat.empty', { agent: name })}</p></div>}
         {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} />)}
         {c.streaming && (
@@ -96,7 +98,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
             {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{parseStreaming(c.streamReasoning).text}</div></details>}
             {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
             {c.toolLog.length > 1 && <details class="tools"><summary>{t('chat.toolsDone', { n: c.toolLog.length })}</summary><ul>{c.toolLog.map((x, i) => <li key={i}>{i === c.toolLog.length - 1 && c.tool ? '… ' : '✓ '}{x}</li>)}</ul></details>}
-            {status && <p class="status shimmer" role="status" aria-live="polite">{status}<span class="dots" aria-hidden="true" /></p>}
+            {status && <p class="status shimmer" key={status} role="status" aria-live="polite">{status}<span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></p>}
           </div>
         )}
         {c.queue.length > 0 && (

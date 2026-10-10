@@ -46,6 +46,13 @@
   --motion-fast: 120ms;
   --motion-base: 200ms;
   --motion-slow: 320ms;
+  --motion-press: 90ms;
+  --motion-message-in: 180ms;
+  --motion-status: 180ms;
+  --motion-panel-in: 240ms;
+  --motion-panel-out: 150ms;
+  --motion-typing-phase: 150ms;
+  --motion-typing-loop: 600ms;
 }
 :root[data-accent="ember"] {
   --accent: #BE4A21;
@@ -145,4 +152,4 @@
   --accent: #E6E6E6;
   --on-accent: #111111;
 }
-@media (prefers-reduced-motion: reduce) { :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; } }
+@media (prefers-reduced-motion: reduce) { :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; --motion-press: 0ms; --motion-message-in: 0ms; --motion-status: 0ms; --motion-panel-in: 0ms; --motion-panel-out: 0ms; --motion-typing-phase: 0ms; --motion-typing-loop: 0ms; } }

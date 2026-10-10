@@ -21,6 +21,10 @@ test('previews are one short plain line: no Markdown, no MEDIA tags, no secrets,
   assert.equal(previewOf('a\u0000b\tc\n\nd'), 'a b c d'); assert.equal(previewOf(null), '');
 });
 
+import { readFileSync } from 'node:fs';
+const vectors = JSON.parse(readFileSync(new URL('../../contract/agent-list.vectors.json', import.meta.url), 'utf8'));
+test('conformance vectors: hub ordering matches the clients', () => { assert.deepEqual(sortAgents(vectors.sort.input).map((a) => a.name), vectors.sort.expect); });
+
 test('order: pinned first in pin order, then newest activity, then quiet agents in registry order', () => {
   const l = [{ name: 'quiet2', order: 3 }, { name: 'old', order: 0, last_activity_at: 100 }, { name: 'p2', order: 5, pin_order: 1, last_activity_at: 1 }, { name: 'new', order: 1, last_activity_at: 900 }, { name: 'p1', order: 6, pin_order: 0 }, { name: 'quiet1', order: 2 }];
   assert.deepEqual(sortAgents(l).map((a) => a.name), ['p1', 'p2', 'new', 'old', 'quiet1', 'quiet2']);

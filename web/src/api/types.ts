@@ -11,6 +11,10 @@ export interface AuthInfo {
 export interface AgentSummary {
   id: string; name: string; displayName?: string; kind: string; description?: string;
   online: boolean; chatReady: boolean; capabilities?: Partial<Capabilities>;
+  order?: number; avatar?: string | null;
+  /** The agent list line (per signed-in user): see contract/openapi.json. */
+  last_activity_at?: number | null; last_session_title?: string | null; last_message_preview?: string | null; last_role?: 'user' | 'assistant' | null;
+  pinned?: boolean; pin_order?: number | null; working?: boolean; needs_input?: boolean;
 }
 export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean; busy?: ('queue' | 'steer' | 'interrupt')[]; nativeRuns?: boolean; nativeUi?: boolean }
 export interface SessionInfo { id: string; title?: string; updated?: number; preview?: string; messages?: number; pinned?: boolean }

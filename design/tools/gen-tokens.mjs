@@ -28,7 +28,7 @@ ${Object.entries(t.space).map(([k, v]) => `  --space-${kebab(k)}: ${v}px;`).join
   --font: ${t.type.family};
   --font-mono: ${t.type.mono};
 ${Object.entries(s).map(([k, v]) => `  --text-${kebab(k)}: ${v.size}px/${v.line}px;\n  --weight-${kebab(k)}: ${v.weight};`).join('\n')}
-${Object.entries(t.motion).map(([k, v]) => `  --motion-${k}: ${v}ms;`).join('\n')}
+${Object.entries(t.motion).map(([k, v]) => `  --motion-${k.replace(/[A-Z]/g, (c) => '-' + c.toLowerCase())}: ${v}ms;`).join('\n')}
 }
 ${accents('light', ':root')}
 @media (prefers-color-scheme: dark) {
@@ -45,7 +45,7 @@ ${accent('dark', t.accents[0])}
 ${bubble('dark')}
 }
 ${accents('dark', ':root[data-theme="dark"]')}
-@media (prefers-reduced-motion: reduce) { :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; } }
+@media (prefers-reduced-motion: reduce) { :root { --motion-fast: 0ms; --motion-base: 0ms; --motion-slow: 0ms; --motion-press: 0ms; --motion-message-in: 0ms; --motion-status: 0ms; --motion-panel-in: 0ms; --motion-panel-out: 0ms; --motion-typing-phase: 0ms; --motion-typing-loop: 0ms; } }
 `;
 }
 
@@ -74,6 +74,8 @@ ${group('dark')}
     }
 ${Object.entries(t.radius).map(([k, v]) => `    const val radius${k[0].toUpperCase() + k.slice(1)} = ${v}`).join('\n')}
 ${Object.entries(t.motion).map(([k, v]) => `    const val motion${k[0].toUpperCase() + k.slice(1)}Ms = ${v}`).join('\n')}
+    /** Minimum touch target (dp). */
+    const val touchTarget = ${t.touch}
 }
 `;
 }
