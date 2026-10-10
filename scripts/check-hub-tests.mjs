@@ -15,7 +15,7 @@ const p = spawn(process.execPath, ['--test', '--test-timeout=120000', ...files],
 let out = '';
 p.stdout.on('data', (d) => { out += d; process.stdout.write(d); });
 p.on('exit', (code) => {
-  const n = (k) => Number((out.match(new RegExp(`^# ${k} (\\d+)`, 'm')) ?? [])[1] ?? NaN);
+  const n = (k) => Number((out.match(new RegExp(`^(?:# |ℹ ) ?${k} (\\d+)`, 'm')) ?? [])[1] ?? NaN);
   const tests = n('tests'), pass = n('pass'), fail = n('fail'), cancelled = n('cancelled');
   console.log(`\nhub tests: ${tests} ran, ${pass} passed, ${fail} failed, ${cancelled} cancelled (minimum ${min})`);
   const bad = [];

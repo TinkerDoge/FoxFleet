@@ -3,9 +3,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const root = new URL('../../', import.meta.url);
-test('npm test has a per-test timeout and force-exits after the last test', () => {
-  const script = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts.test;
-  assert.match(script, /--test-timeout=\d+/); assert.match(script, /--test-force-exit/);
+test('npm test runs the count guard, which keeps a per-test timeout and no force-exit', () => {
+  const pkg = JSON.parse(readFileSync(new URL('package.json', root), 'utf8')).scripts;
+  assert.equal(pkg.test, 'node scripts/check-hub-tests.mjs');
+  const guard = readFileSync(new URL('scripts/check-hub-tests.mjs', root), 'utf8');
+  assert.match(guard, /--test-timeout=\d+/); assert.doesNotMatch(guard, /spawn\([^)]*--test-force-exit/);
+  assert.match(pkg['test:raw'], /--test-timeout=\d+/);
+  assert.ok(Number(readFileSync(new URL('scripts/hub-tests.min', root), 'utf8')) >= 280);
 });
 test('the server workflow job has a timeout', () => {
   assert.match(readFileSync(new URL('.github/workflows/server.yml', root), 'utf8'), /timeout-minutes:\s*\d+/);
