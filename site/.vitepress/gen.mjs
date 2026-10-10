@@ -81,6 +81,7 @@ const ENV = {
   HERMES_REAL_GATEWAY_TEST: ['Tests only: JSON with a real Hermes gateway command (`cmd`, `cwd`, `config`) so the native-session tests run against it instead of the built-in fake.', 'unset', 'tests'],
   FOXFLEET_ALLOW_INSECURE_HUB: ['Allow plain `http://` to a non-loopback hub. Trusted LAN only.', 'unset', 'connector'],
   FOXFLEET_LINK_SILENT_MS: ['Connector: close and reopen the hub link when nothing (not even a ping) arrived for this long. The hub pings every 25 s.', '75000', 'connector'],
+  DEMO_SLOW: ['Test helper only (`server/test/media-demo-hub.js`): stream a long reply so a network blip can be shown mid-turn.', '-', 'tests'],
   FAKE_LLM_PORT: ['Test helper only: port for the fake model in `server/test/media-real.test.js`.', '-', 'tests'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
