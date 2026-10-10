@@ -387,14 +387,13 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
     val c = LocalHubColors.current
     if (m.role == "user") {
         Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
-            m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Attached image", contentScale = ContentScale.Crop, modifier = Modifier.padding(bottom = 6.dp).size(180.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+            m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 6.dp).size(180.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
             if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
                 m.images.forEach { img ->
-                    AsyncImage(
-                        model = java.io.File(img.localPath), contentDescription = "Attached image", contentScale = ContentScale.Crop,
-                        modifier = Modifier.size(if (m.images.size == 1) 180.dp else 96.dp).clip(RoundedCornerShape(14.dp))
-                            .background(c.surfaceAlt).clickable { onOpen(MediaRef(java.io.File(img.localPath).toURI().toString(), MediaRef.Kind.Image)) },
-                    )
+                    // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
+                    val src: Any = remember(img.localPath) { java.io.File(img.localPath).takeIf { it.exists() && it.length() > 0 } ?: img.dataUrl }
+                    dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 180.dp else 96.dp).clip(RoundedCornerShape(14.dp)),
+                        onClick = { onOpen(MediaRef(java.io.File(img.localPath).toURI().toString(), MediaRef.Kind.Image)) })
                 }
             }
             val (bodyText, files) = remember(m.content) { FileMarker.split(m.content) }
@@ -408,7 +407,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
             AgentAvatar(agentName, null, 28.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                if (m.reasoning.isNotBlank()) Reasoning(MediaTags.parseStreaming(m.reasoning).text, live = false)
+                if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
                 if (m.steps.isNotEmpty()) ToolSteps(m.steps)
                 m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
                     modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
@@ -429,7 +428,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
         AgentAvatar(agentName, null, 28.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f).animateContentSize()) {
-            if (state.streamReasoning.isNotBlank()) Reasoning(MediaTags.parseStreaming(state.streamReasoning).text, live = true)
+            if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
             val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
             val text = parsedStream.text
             val status = if (state.reconnecting) "Reconnecting…" else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
@@ -468,20 +467,6 @@ private fun ToolSteps(steps: List<dev.foxfleet.app.data.ToolStep>) {
                 if (t.result.isNotBlank()) Text(t.result, style = MaterialTheme.typography.bodySmall, color = c.textFaint, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
-    }
-}
-
-@Composable
-private fun Reasoning(text: String, live: Boolean) {
-    val c = LocalHubColors.current
-    var open by rememberSaveable { mutableStateOf(live) }
-    Column(
-        Modifier.padding(bottom = 8.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt)
-            .clickable { open = !open }.animateContentSize().padding(horizontal = 12.dp, vertical = 8.dp),
-    ) {
-        Text(if (open) "Reasoning ▾" else "Reasoning ▸", style = MaterialTheme.typography.labelMedium, color = c.textMuted)
-        if (open) Text(text, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = if (live) 6 else Int.MAX_VALUE,
-            overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 4.dp))
     }
 }
 

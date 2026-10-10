@@ -53,6 +53,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -118,6 +120,11 @@ fun ScreenScreen(
     /** Screenshot tests only: show this problem's overlay. */
     initialProblem: ScreenProblem? = null,
     initialMods: Set<String> = emptySet(),
+    /** Settings > Screen debug: start with the diagnostic strip on (a long-press on the title also toggles it). */
+    debug: Boolean = false,
+    hubVersion: String? = null,
+    /** Screenshot tests only. */
+    initialEmpty: Boolean = false,
 ) {
     val c = LocalHubColors.current
     val ctx = LocalContext.current
@@ -137,6 +144,11 @@ fun ScreenScreen(
     var pageReady by remember { mutableStateOf(false) }
     var viewerError by remember { mutableStateOf<String?>(null) }
     var pendingUrl by remember { mutableStateOf<String?>(null) }
+    var emptyDesktop by remember { mutableStateOf(initialEmpty) }
+    var noPicture by remember { mutableStateOf(false) }
+    var debugOn by remember { mutableStateOf(debug) }
+    var copied by remember { mutableStateOf(false) }
+    val consoleLog = remember { mutableListOf<String>() }
     val reduce = reduceMotion()
 
     // No screenshots, screen recording or recents thumbnail of the agent's desktop.
@@ -198,6 +210,28 @@ fun ScreenScreen(
         guarded { api?.screen(agentName, "handback"); if (phase == ScreenPhase.Control) phase = ScreenPhase.Watching }
     }
 
+    fun restartDesktop() = scope.launch { guarded { emptyDesktop = false; noPicture = false; problem = null; phase = ScreenPhase.Starting; api?.screen(agentName, "restart"); observe() } }
+    fun reconnect() = scope.launch { guarded { emptyDesktop = false; noPicture = false; observe() } }
+    fun sendDiagnostics() {
+        val w = web
+        val finish = { page: String ->
+            val webv = runCatching { android.webkit.WebView.getCurrentWebViewPackage()?.let { "${it.packageName} ${it.versionName}" } }.getOrNull() ?: "unknown"
+            val report = buildString {
+                appendLine("Foxfleet bot-screen report")
+                appendLine("app: ${dev.foxfleet.app.BuildConfig.VERSION_NAME} (${dev.foxfleet.app.BuildConfig.VERSION_CODE}) hub: ${hubVersion ?: "unknown (older than 0.3.5)"}")
+                appendLine("device: ${android.os.Build.MANUFACTURER} ${android.os.Build.MODEL}, Android ${android.os.Build.VERSION.RELEASE} (API ${android.os.Build.VERSION.SDK_INT}), WebView $webv")
+                appendLine("phase: $phase problem: ${problem?.kind?.key ?: "-"} empty: $emptyDesktop noPicture: $noPicture viewerError: ${viewerError ?: "-"} note: ${note ?: "-"}")
+                appendLine("page: $page")
+                appendLine("console:"); consoleLog.takeLast(25).forEach { appendLine("  $it") }
+            }
+            (ctx.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager).setPrimaryClip(android.content.ClipData.newPlainText("Foxfleet screen diagnostics", dev.foxfleet.app.data.scrubAddresses(report)))
+            copied = true
+        }
+        if (w == null || !pageReady) finish("(viewer page not ready)") else w.evaluateJavascript("hub.diagnostics()") { raw -> finish(runCatching { org.json.JSONTokener(raw).nextValue() as? String }.getOrNull() ?: raw ?: "") }
+    }
+    LaunchedEffect(copied) { if (copied) { delay(2500); copied = false } }
+    LaunchedEffect(debugOn, pageReady) { if (pageReady) js("hub.setDebug($debugOn)") }
+
     LaunchedEffect(Unit) { if (!preview) open() }
     // The viewer page must report ready quickly; if it never does (blocked asset, script error, old WebView) say so instead of showing a blank view.
     LaunchedEffect(pageReady) { if (!preview && !pageReady) { delay(10_000); if (!pageReady && problem == null) { problem = ScreenProblem(ScreenProblemKind.ViewerFailed); problemDetail = viewerError; phase = ScreenPhase.Failed } } }
@@ -215,7 +249,7 @@ fun ScreenScreen(
         Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
             SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = Color.White)
             Spacer(Modifier.width(6.dp))
-            Column(Modifier.weight(1f)) {
+            Column(Modifier.weight(1f).pointerInput(Unit) { detectTapGestures(onLongPress = { debugOn = !debugOn }) }) {
                 Text("$agentName's screen", style = MaterialTheme.typography.titleMedium, color = Color.White)
                 Text(
                     if (phase == ScreenPhase.Control && handBackAt > 0) "Auto hand-back in ${handBackCountdown(handBackAt - now)}" else "Xfce desktop · view only until you take over",
@@ -248,6 +282,8 @@ fun ScreenScreen(
                         settings.setSupportZoom(false); settings.builtInZoomControls = false; settings.displayZoomControls = false
                         webChromeClient = object : android.webkit.WebChromeClient() {
                             override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                                android.util.Log.d("FoxfleetScreen", "${m.messageLevel()} ${m.message()} (${m.sourceId()}:${m.lineNumber()})")
+                                main.post { consoleLog.add("${m.messageLevel()} ${m.message().take(200)} @${m.sourceId().substringAfterLast('/')}:${m.lineNumber()}"); if (consoleLog.size > 40) consoleLog.removeAt(0) }
                                 if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) main.post { viewerError = m.message().take(80) }
                                 return true
                             }
@@ -265,8 +301,10 @@ fun ScreenScreen(
                         addJavascriptInterface(object {
                             @JavascriptInterface fun onEvent(type: String, detail: String) = main.post {
                                 when (type) {
-                                    "ready" -> { pageReady = true; pendingUrl?.let { u -> pendingUrl = null; evaluateJavascript("hub.connect(${JSONObject.quote(u)})", null) } }
-                                    "connected" -> if (phase != ScreenPhase.Control) phase = ScreenPhase.Watching
+                                    "ready" -> { pageReady = true; if (debugOn) evaluateJavascript("hub.setDebug(true)", null); pendingUrl?.let { u -> pendingUrl = null; evaluateJavascript("hub.connect(${JSONObject.quote(u)})", null) } }
+                                    "connected" -> { emptyDesktop = false; noPicture = false; if (phase != ScreenPhase.Control) phase = ScreenPhase.Watching }
+                                    "blank" -> emptyDesktop = detail == "true" && (phase == ScreenPhase.Watching || phase == ScreenPhase.Control)
+                                    "noframes" -> noPicture = true
                                     "disconnected" -> if (phase in setOf(ScreenPhase.Watching, ScreenPhase.Control, ScreenPhase.Connecting)) { phase = ScreenPhase.Disconnected; handBackAt = 0 }
                                     "error" -> if (detail.startsWith("js: ")) viewerError = detail.removePrefix("js: ") else note = detail.take(120)
                                     "state" -> runCatching { org.json.JSONObject(detail) }.getOrNull()?.let { o ->
@@ -282,6 +320,19 @@ fun ScreenScreen(
                 },
                 modifier = Modifier.fillMaxSize(),
             )
+            if ((emptyDesktop || noPicture) && (phase == ScreenPhase.Watching || phase == ScreenPhase.Control)) {
+                val p = ScreenProblem(if (emptyDesktop) ScreenProblemKind.EmptyDesktop else ScreenProblemKind.NoPicture)
+                Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(10.dp).clip(RoundedCornerShape(14.dp)).background(Color(0xE6101012)).padding(14.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(screenProblemText(p), style = MaterialTheme.typography.bodySmall, color = Color.White)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Box(Modifier.clip(RoundedCornerShape(18.dp)).background(Color.White).clickable(enabled = !busy) { restartDesktop() }.padding(horizontal = 16.dp, vertical = 9.dp)) { Text("Restart desktop", color = Color.Black, fontWeight = FontWeight.SemiBold) }
+                        Box(Modifier.clip(RoundedCornerShape(18.dp)).background(Color.White.copy(alpha = 0.14f)).clickable(enabled = !busy) { reconnect() }.padding(horizontal = 16.dp, vertical = 9.dp)) { Text("Reconnect", color = Color.White) }
+                    }
+                }
+            }
+            if (debugOn) Box(Modifier.align(Alignment.BottomEnd).padding(10.dp).clip(RoundedCornerShape(18.dp)).background(Color(0xCC000000)).clickable { sendDiagnostics() }.padding(horizontal = 14.dp, vertical = 8.dp)) {
+                Text(if (copied) "Copied. Paste it to us" else "Send diagnostics", color = Color(0xFFBFFFCF), style = MaterialTheme.typography.labelMedium)
+            }
             when (phase) {
                 ScreenPhase.Checking, ScreenPhase.Connecting, ScreenPhase.Starting ->
                     CircularProgressIndicator(Modifier.size(28.dp), color = Color.White.copy(alpha = 0.7f), strokeWidth = 2.dp)

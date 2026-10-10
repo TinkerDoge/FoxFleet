@@ -109,6 +109,8 @@ function chatBody(data) {
   if (data.session_id !== undefined) sessionId(data.session_id);
   return { model: data.model || 'hermes-agent', messages: data.messages, stream: true };
 }
+/** data:image/...;base64 pictures from a user message (what the apps send). Only these can be handed to Hermes' image.attach_bytes. */
+export function userImages(flat) { return (flat?.images ?? []).filter((u) => typeof u === 'string' && /^data:image\/(?:png|jpe?g|gif|webp|bmp|heic|heif|avif);base64,[A-Za-z0-9+\/=]+$/i.test(u)).slice(0, 4); }
 const safeFileName = (value) => {
   const base = String(value || '').split(/[\\/]/).pop().normalize('NFC').replace(/[\x00-\x1f\x7f]/g, '').replace(/[^\p{L}\p{N} ._()+-]/gu, '_').replace(/^\.+/, '').slice(-120).trim();
   return base || 'file';
@@ -575,7 +577,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
           const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
           if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
-          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id }); ctx.reg.activity.touch(m.name, { role: 'user', text, session: data.session_id });
+          const images = userImages(flat), r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: images.length ? (flat.text.trim() || 'Look at the attached image.') : text, images, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id }); ctx.reg.activity.touch(m.name, { role: 'user', text, session: data.session_id });
           return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
         }
         if (route === 'messages' && parts.length === 4 && req.method === 'POST' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) {
@@ -664,12 +666,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const action = parts[4];
           if (m.machineId && !connectors.isOnline(m.machineId)) throw fault(503, 'This agent\'s machine is offline. Start the Foxfleet connector there and try again.', 'machine_offline');
           if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
-          if (req.method === 'POST' && ['start', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
+          if (req.method === 'POST' && ['start', 'stop', 'restart', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
         }
         if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: userText || '(attachment)', mode: 'auto', idleOnly: true }); ctx.reg.activity.touch(m.name, { role: 'user', text: userText || '(attachment)', session: data.session_id });
+          const images = userImages(flat), r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: images.length ? (flat.text.trim() || 'Look at the attached image.') : userText || '(attachment)', images, mode: 'auto', idleOnly: true }); ctx.reg.activity.touch(m.name, { role: 'user', text: userText || '(attachment)', session: data.session_id });
           if (!r.run) throw fault(409, 'Hermes did not start a reply for this message; check the conversation');
           return runs.attach(req, res, r.run);
         }

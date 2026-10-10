@@ -25,6 +25,7 @@ async function turn(s, text) {
     const id = 'srq-' + (++srq).toString(16).padStart(12, '0'), params = { session_id: s.rt, prompt: 'sudo password' }; open.set(id, { id, method: 'sudo', params, s, hidden: true });
     out({ jsonrpc: '2.0', id, method: 'sudo', params }); await new Promise((res) => { open.get(id).done = res; }); const was = open.get(id); open.delete(id); const note = was.answer === null ? 'sudo-refused ' : 'sudo-answered '; s.partial += note; ev(s, 'message.delta', { text: note });
   }
+  if (/\[with \d+ image/.test(text)) { s.partial += text + ' '; ev(s, 'message.delta', { text: text + ' ' }); } // echo what the picture attach did
   const words = /slow/.test(text) ? 30 : 3;
   for (let i = 0; i < words && !s.interrupted; i++) { s.partial += `w${i} `; ev(s, 'message.delta', { text: `w${i} ` }); await sleep(/slow/.test(text) ? 100 : 5); }
   finish(s, s.interrupted ? 'interrupted' : 'done');
@@ -56,7 +57,9 @@ const handlers = {
   'session.resume': (id, p) => { const s = [...sessions.values()].find((x) => x.stored === p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, { ...snapshot(s), resumed: true }); },
   'session.activate': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, snapshot(s)); },
   'session.events.since': (id, p) => { if (typeof p.last_seen !== 'number' && p.last_seen !== undefined) return err(id, 4000, 'invalid params'); const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, { events: s.events.filter((e) => e.seq > (p.last_seen ?? 0)), latest_seq: s.seq, truncated: false, count: 0, epoch: 'epoch-' + process.pid, open_requests: snapshot(s).open_requests }); },
-  'prompt.submit': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found');
+  'image.attach_bytes': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); if (!p.content_base64) return err(id, 4015, 'content_base64 required'); const bytes = Buffer.from(p.content_base64, 'base64'); if (!bytes.length) return err(id, 4015, 'image is empty'); (s.attached ??= []).push(bytes.length); ok(id, { attached: true, path: '/tmp/upload-' + s.attached.length + '.png', count: s.attached.length, bytes: bytes.length }); },
+  'prompt.submit': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); if (/^<foxfleet-note>[\s\S]*?<\/foxfleet-note>\s*/.test(p.text)) { s.noted = (s.noted ?? 0) + 1; p = { ...p, text: p.text.replace(/^<foxfleet-note>[\s\S]*?<\/foxfleet-note>\s*/, '') }; } // the connector's first-message awareness note: not the user's words
+    if (s.attached?.length) { p = { ...p, text: `${p.text} [with ${s.attached.length} image(s): ${s.attached.join(',')} bytes]` }; s.attached = []; }
     if (s.running) { if (p.queued || s.busyMode === 'queue' || !s.busyMode) { s.queue.push(p.text); return ok(id, { status: 'queued' }); } s.corrections.push(p.text); return ok(id, { status: s.busyMode === 'steer' ? 'steered' : 'redirected' }); }
     ok(id, { status: 'streaming', user_row_id: s.messages.length + 1 }); void turn(s, p.text); },
   'session.steer': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); if (!s.running) return ok(id, { status: 'rejected', text: p.text }); s.corrections.push(p.text); ok(id, { status: 'queued', text: p.text }); },

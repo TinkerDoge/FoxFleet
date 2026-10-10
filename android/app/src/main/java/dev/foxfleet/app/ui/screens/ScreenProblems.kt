@@ -7,7 +7,7 @@ import dev.foxfleet.app.data.HubApiException
 enum class ScreenProblemKind(val key: String) {
     AuthExpired("auth_expired"), HubUnreachable("hub_unreachable"), MachineOffline("machine_offline"), HermesTooOld("hermes_too_old"),
     NotInstalled("not_installed"), NoVnc("no_vnc"), Blocked("blocked"), DashboardUnreachable("dashboard_unreachable"), Timeout("timeout"),
-    Reopen("reopen"), HubTooOld("hub_too_old"), ViewerFailed("viewer_failed"), Generic("generic");
+    Reopen("reopen"), HubTooOld("hub_too_old"), ViewerFailed("viewer_failed"), EmptyDesktop("empty_desktop"), NoPicture("no_picture"), Generic("generic");
 
     companion object { fun byKey(k: String) = entries.firstOrNull { it.key == k } }
 }
@@ -17,6 +17,8 @@ data class ScreenProblem(val kind: ScreenProblemKind, val update: Boolean = fals
 fun screenProblem(status: Int? = null, code: String? = null, state: String? = null, network: Boolean = false, hubKnown: Boolean = true): ScreenProblem {
     fun mk(k: ScreenProblemKind, update: Boolean = false) = ScreenProblem(k, update)
     return when {
+        state == "empty" -> mk(ScreenProblemKind.EmptyDesktop)
+        state == "no_picture" -> mk(ScreenProblemKind.NoPicture)
         network -> mk(ScreenProblemKind.HubUnreachable)
         status == 401 -> mk(ScreenProblemKind.AuthExpired)
         code == "machine_offline" -> mk(ScreenProblemKind.MachineOffline)
@@ -53,6 +55,8 @@ fun screenProblemText(p: ScreenProblem, detail: String? = null, missing: List<St
         ScreenProblemKind.Reopen -> "The screen session expired. Reconnect, then take over."
         ScreenProblemKind.HubTooOld -> "Your hub is too old for Bot Screen. Update your hub."
         ScreenProblemKind.ViewerFailed -> "The screen viewer could not start on this phone" + (detail?.let { " ($it)" } ?: "") + ". Update the app or WebView and try again."
+        ScreenProblemKind.EmptyDesktop -> "Connected, but the machine's screen is empty. Its desktop (window manager and wallpaper) may not have started. Restart the desktop to fix it."
+        ScreenProblemKind.NoPicture -> "Connected, but no picture arrived from the machine. Reconnect, or restart the desktop."
         ScreenProblemKind.Generic -> detail?.takeIf { it.isNotBlank() }?.let { "The screen is unavailable right now: $it" } ?: "The screen is unavailable right now."
     }
     return if (p.update && p.kind != ScreenProblemKind.HubTooOld) "$base Your hub is older than this app; update it for clearer screen errors." else base

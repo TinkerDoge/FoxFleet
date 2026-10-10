@@ -79,6 +79,8 @@ data class UiMessage(
     val role: String,
     val content: String,
     val reasoning: String = "",
+    /** How long the agent thought (ms) when known: shown in the Reasoning header. */
+    val reasoningMs: Long = 0L,
     val tools: List<String> = emptyList(),
     val steps: List<ToolStep> = emptyList(),
     /** Message time (ms) for history; 0 for messages typed in this session. */

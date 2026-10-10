@@ -186,7 +186,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             }
         }
         is Route.Screen -> dev.foxfleet.app.ui.screens.ScreenScreen(
-            agentName = route.agent, api = vm.api, onBack = { vm.back() }, hubKnown = vm.hubKnown,
+            agentName = route.agent, api = vm.api, onBack = { vm.back() }, hubKnown = vm.hubKnown, debug = vm.prefs.screenDebug, hubVersion = vm.hubVersion,
             onLeaveInControl = { vm.handBackScreen(route.agent) },
         )
         Route.Settings -> SettingsScreen(

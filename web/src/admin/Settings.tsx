@@ -1,5 +1,5 @@
 import { useState } from 'preact/hooks';
-import { displayHub, getPrefs, setAccent, setMotion, setTextSize, setTheme, type Prefs } from '../state';
+import { displayHub, getPrefs, setAccent, setMotion, setReasoning, setTextSize, setTheme, type Prefs } from '../state';
 import { t } from '../i18n/t';
 import { hubIsOld, type HubInfo } from '../lib/hubCompat';
 
@@ -23,6 +23,7 @@ export function Settings({ hub, hubInfo }: { hub: string; hubInfo?: HubInfo }) {
           <div class="chips" role="radiogroup" aria-label={t('settings.accent')}>{ACCENTS.map((a) => <button key={a.id} type="button" role="radio" aria-checked={p.accent === a.id} aria-label={a.name} title={a.name} class={`swatch${p.accent === a.id ? ' on' : ''}`} style={{ background: a.color }} onClick={() => upd(() => setAccent(a.id))} />)}</div></fieldset>
         <Choice label={t('settings.text')} value={p.text} options={[['small', t('settings.small')], ['normal', t('settings.normal')], ['large', t('settings.large')]]} onPick={(v) => upd(() => setTextSize(v))} />
         <Choice label={t('settings.motion')} value={p.motion} options={[['system', t('settings.motionSystem')], ['reduce', t('settings.motionReduce')]]} onPick={(v) => upd(() => setMotion(v))} />
+        <Choice label={t('settings.reasoning')} value={p.reasoning ? 'on' : 'off'} options={[['on', t('settings.on')], ['off', t('settings.off')]]} onPick={(v) => upd(() => setReasoning(v === 'on'))} />
       </section>
       <section class="card stack"><h2>{t('settings.hub')}</h2><p class="muted">{displayHub(hub)}</p><p class="muted small">{t('settings.about')}</p>{hubInfo?.version && <p class="muted small">{t('settings.hubVersion', { version: hubInfo.version })}</p>}{hubIsOld(hubInfo) && <p class="muted small hub-old" role="note">{t('settings.hubOld')}</p>}</section>
     </div>

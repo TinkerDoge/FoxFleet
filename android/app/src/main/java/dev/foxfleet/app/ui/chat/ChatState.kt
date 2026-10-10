@@ -1,6 +1,7 @@
 package dev.foxfleet.app.ui.chat
 
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import dev.foxfleet.app.data.AgentStatus
@@ -27,6 +28,12 @@ class ChatState {
         private set
     var toolLabel by mutableStateOf<String?>(null)
         private set
+    /** When the first reasoning chunk of this reply arrived, and how long the thinking lasted (until the first reply text or the end). */
+    var reasoningStart by mutableLongStateOf(0L)
+        private set
+    var reasoningMs by mutableLongStateOf(0L)
+        private set
+    private fun reasoningDuration(): Long = if (reasoningMs > 0) reasoningMs else if (reasoningStart > 0) System.currentTimeMillis() - reasoningStart else 0L
     var error by mutableStateOf<String?>(null)
         private set
     var sessionId by mutableStateOf<String?>(null)
@@ -92,7 +99,7 @@ class ChatState {
     fun push(m: UiMessage) { messages = messages + m }
 
     private fun resetStream() {
-        streaming = false; streamText = ""; streamReasoning = ""; toolLabel = null; toolLog = emptyList(); requests = emptyList()
+        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); requests = emptyList()
     }
 
     fun adopt(sessionId: String?) {
@@ -128,7 +135,7 @@ class ChatState {
 
     private fun callbacks(g: Int) = HubApi.StreamCallbacks(
         onReconnecting = { if (g == gen) reconnecting = true },
-        onContent = { if (g == gen) { reconnecting = false; streamText += it } }, onReasoning = { if (g == gen) streamReasoning += it }, onTool = { if (g == gen) { toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
+        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -179,20 +186,20 @@ class ChatState {
 
     private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
         val g = ++gen
-        streaming = true; error = null; streamText = ""; streamReasoning = ""; toolLabel = null
+        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null
         try {
             val text = block(callbacks(g))
             if (g != gen) return // another chat is open now: this stream's end changes nothing
             toolLabel = null
-            if (text.isNotEmpty() || streamReasoning.isNotEmpty()) push(UiMessage(role = "assistant", content = text))
+            if (text.isNotEmpty() || streamReasoning.isNotEmpty()) push(UiMessage(role = "assistant", content = text, reasoning = streamReasoning, reasoningMs = reasoningDuration()))
             resetStream(); finishRun()
         } catch (e: CancellationException) {
             // The app left the screen or the process is going away. The hub keeps the run alive, so keep what we have and
             // leave the saved run id in place: the next launch reattaches and fills in the rest.
-            val partial = streamText
+            val partial = streamText; val thinking = streamReasoning; val took = reasoningDuration()
             if (g != gen) throw e
             resetStream()
-            if (partial.isNotBlank()) push(UiMessage(role = "assistant", content = partial))
+            if (partial.isNotBlank() || thinking.isNotBlank()) push(UiMessage(role = "assistant", content = partial, reasoning = thinking, reasoningMs = took))
             throw e
         } catch (e: AuthRequiredException) {
             if (g == gen) resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) }; throw e

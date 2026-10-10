@@ -134,6 +134,14 @@ fun SettingsScreen(
                     ToggleRow("Notifications", "Not available yet: the hub has no push API.", false, enabled = false) {}
                 }
             }
+            SectionLabel("Chat & screen")
+            SoftCard(Modifier.fillMaxWidth()) {
+                Column {
+                    ToggleRow("Show reasoning", "Show the agent's thinking as a collapsed block above its replies.", prefs.showReasoning) { onChange(prefs.copy(showReasoning = it)) }
+                    Hairline(Modifier.padding(start = 16.dp))
+                    ToggleRow("Screen debug", "Show a status strip over the bot screen (connection, size, frames, errors) and a Send diagnostics button.", prefs.screenDebug) { onChange(prefs.copy(screenDebug = it)) }
+                }
+            }
             SectionLabel("Account")
             SoftCard(Modifier.fillMaxWidth()) {
                 Column {

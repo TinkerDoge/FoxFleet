@@ -14,7 +14,7 @@ The machine token (`<machineId>.<secret>`) is obtained once by `POST /api/machin
 Right after connecting (and whenever the set changes) the connector sends which profiles it shares; the hub creates, keeps or removes the matching agents and answers with the agent names it assigned:
 
 ```json
-{"t":"profiles","os":"linux","version":"0.3.5-alpha","features":["media","mediaRoots","mediaCheck"],"profiles":[{"profile":"default"},{"profile":"coder"}]}
+{"t":"profiles","os":"linux","version":"0.3.6-alpha","features":["media","mediaRoots","mediaCheck","agentNote"],"profiles":[{"profile":"default"},{"profile":"coder"}]}
 {"t":"registered","agents":[{"profile":"default","agent":"default"},{"profile":"coder","agent":"coder"}]}
 ```
 

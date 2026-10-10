@@ -12,6 +12,8 @@
     { "in": { "status": 502, "code": "dashboard_auth" }, "kind": "dashboard_unreachable" },
     { "in": { "status": 504, "code": "timeout" }, "kind": "timeout" },
     { "in": { "status": 409, "code": "reopen" }, "kind": "reopen" },
+    { "in": { "state": "empty" }, "kind": "empty_desktop" },
+    { "in": { "state": "no_picture" }, "kind": "no_picture" },
     { "in": { "status": 404 }, "kind": "hub_too_old", "update": true },
     { "in": { "status": 500 }, "kind": "generic" },
     { "in": { "status": 502, "hubKnown": false }, "kind": "generic", "update": true }

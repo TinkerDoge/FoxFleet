@@ -11,12 +11,12 @@ import dev.foxfleet.app.ui.LocalHubColors
 
 /** Markdown for agent replies: headings, lists, code, tables, links, inline images (Coil 3). */
 @Composable
-fun RichText(text: String, modifier: Modifier = Modifier) {
+fun RichText(text: String, modifier: Modifier = Modifier, muted: Boolean = false) {
     val c = LocalHubColors.current
     Markdown(
         content = text,
         colors = markdownColor(
-            text = c.text,
+            text = if (muted) c.textMuted else c.text,
             codeBackground = c.surfaceAlt,
             inlineCodeBackground = c.surfaceAlt,
             dividerColor = c.hairline,
@@ -29,8 +29,8 @@ fun RichText(text: String, modifier: Modifier = Modifier) {
             h4 = MaterialTheme.typography.labelLarge,
             h5 = MaterialTheme.typography.labelLarge,
             h6 = MaterialTheme.typography.labelLarge,
-            text = MaterialTheme.typography.bodyLarge,
-            paragraph = MaterialTheme.typography.bodyLarge,
+            text = if (muted) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
+            paragraph = if (muted) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
         ),
         imageTransformer = Coil3ImageTransformerImpl,
         modifier = modifier,

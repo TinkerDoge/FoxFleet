@@ -343,7 +343,7 @@ class HubApi(private val store: SettingsStore) {
 
     suspend fun screen(agent: String, action: String): JsonObject = withContext(Dispatchers.IO) {
         if (action == "status") request(agentPath(agent) + "/screen/status", timeoutSec = 30)
-        else request(agentPath(agent) + "/screen/" + action, "POST", "{}", timeoutSec = if (action == "start") 95 else 45)
+        else request(agentPath(agent) + "/screen/" + action, "POST", "{}", timeoutSec = if (action == "start" || action == "restart") 95 else 45)
     }
 
     fun parseScreen(obj: JsonObject) = ScreenStatus(

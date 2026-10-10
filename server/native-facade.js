@@ -12,6 +12,7 @@ export function toFrames(e) {
   switch (e.type) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
     case 'reasoning': return [frame({ choices: [{ delta: { reasoning_content: e.text } }] })];
+    case 'turn.end': return e.reasoning ? [frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] })] : []; // a provider that only reports its reasoning with the final message
     case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress')];
     case 'tool.end': return e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : []; // tool-made files ride the normal MEDIA: card pipeline
     case 'request.open': return [frame(e, 'foxfleet.request')];
@@ -62,11 +63,11 @@ export function nativeFacade({ runs }) {
       this.remember(nat, scope, m, stored); return stored;
     },
     /** Send; if this started a turn, follow it as a run. */
-    async send(nat, { scope, m, session, text, mode, clientId, idleOnly }) {
+    async send(nat, { scope, m, session, text, mode, clientId, idleOnly, images }) {
       const stored = await this.session(nat, scope, m, session), m0 = MODE_IN[mode] ?? 'auto';
       if (!nat.isRunning(m.machineId, m.profile, stored) && session) await nat.attach(scope, m.machineId, m.profile, stored); // learn the real state of a session we have not seen yet
       if (idleOnly && nat.isRunning(m.machineId, m.profile, stored)) throw fault(409, 'The agent is already replying; send with /messages to queue, steer or interrupt');
-      const bk = akey(scope, m.name, stored), b0 = began.get(bk) ?? 0, from = nat.cursor(m.machineId, m.profile, stored), r = await nat.send(scope, m.machineId, m.profile, stored, { text, mode: m0, clientId });
+      const bk = akey(scope, m.name, stored), b0 = began.get(bk) ?? 0, from = nat.cursor(m.machineId, m.profile, stored), r = await nat.send(scope, m.machineId, m.profile, stored, { text, mode: m0, clientId, images });
       let run = activeRun(scope, m.name, stored);
       if (!run && starting.has(akey(scope, m.name, stored))) run = await starting.get(akey(scope, m.name, stored));
       if (!run && (began.get(bk) ?? 0) > b0) run = active.get(bk) ?? null; // the turn began and already ended while the ack was on its way: that run is the answer

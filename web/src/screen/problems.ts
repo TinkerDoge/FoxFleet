@@ -1,11 +1,13 @@
 /** Which message a Bot Screen failure gets. Mirrors android ScreenProblems.kt; both are checked against contract/screen-problems.vectors.json. */
-export type ScreenProblemKind = 'auth_expired' | 'hub_unreachable' | 'machine_offline' | 'hermes_too_old' | 'not_installed' | 'no_vnc' | 'blocked' | 'dashboard_unreachable' | 'timeout' | 'reopen' | 'hub_too_old' | 'generic';
+export type ScreenProblemKind = 'auth_expired' | 'hub_unreachable' | 'machine_offline' | 'hermes_too_old' | 'not_installed' | 'no_vnc' | 'blocked' | 'dashboard_unreachable' | 'timeout' | 'reopen' | 'hub_too_old' | 'viewer_failed' | 'empty_desktop' | 'no_picture' | 'generic';
 export interface ScreenProblemInput { status?: number; code?: string; state?: string; network?: boolean; /** false when /api/auth had no hub block (a hub older than 0.3.5) */ hubKnown?: boolean }
 export interface ScreenProblem { kind: ScreenProblemKind; update: boolean }
 
 export function screenProblem(i: ScreenProblemInput): ScreenProblem {
   const old = i.hubKnown === false;
   const mk = (kind: ScreenProblemKind, update = false): ScreenProblem => ({ kind, update });
+  if (i.state === 'empty') return mk('empty_desktop');
+  if (i.state === 'no_picture') return mk('no_picture');
   if (i.network) return mk('hub_unreachable');
   if (i.status === 401) return mk('auth_expired');
   if (i.code === 'machine_offline') return mk('machine_offline');

@@ -418,6 +418,8 @@ export const UI_OPS = {
   sessions: () => ['session.list', {}],
   'events.since': (p) => ['session.events.since', { session_id: need(str(p.session_id), 'session_id'), last_seen: Number.isInteger(p.last_seen) ? p.last_seen : 0 }],
   submit: (p) => { if (typeof p.text !== 'string' || !p.text.trim() || p.text.length > MAX_TEXT) throw Object.assign(new Error('text is required'), { code: 'bad_params' }); return ['prompt.submit', { session_id: need(str(p.session_id), 'session_id'), text: p.text, ...(p.queued === true ? { queued: true } : {}) }]; },
+  // A picture the user sent: Hermes (image.attach_bytes) keeps it for the next prompt.submit of this session. Base64 only, size-capped (the tunnel frame limit is 4 MB).
+  attachimg: (p) => { const b = need(str(p.content_base64, 3_400_000), 'content_base64'); if (!/^[A-Za-z0-9+/=\r\n]+$/.test(b)) throw Object.assign(new Error('content_base64 is not base64'), { code: 'bad_params' }); return ['image.attach_bytes', { session_id: need(str(p.session_id), 'session_id'), content_base64: b, ...(str(p.ext, 8) && /^[a-z0-9]+$/i.test(p.ext) ? { ext: p.ext.toLowerCase() } : {}), ...(str(p.filename, 120) ? { filename: p.filename.replace(/[^\w.-]/g, '_') } : {}) }]; },
   steer: (p) => ['session.steer', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
   redirect: (p) => ['session.redirect', { session_id: need(str(p.session_id), 'session_id'), text: need(str(p.text, MAX_TEXT), 'text') }],
   interrupt: (p) => ['session.interrupt', { session_id: need(str(p.session_id), 'session_id') }],

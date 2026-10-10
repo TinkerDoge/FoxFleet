@@ -6,6 +6,7 @@ import { splitFiles } from '../lib/files';
 import type { MediaItem } from '../components/MediaViewer';
 import { parseMedia, parseStreaming } from '../lib/mediaTags';
 import { MediaCards } from './MediaCards';
+import { Reasoning } from './Reasoning';
 import { t } from '../i18n/t';
 
 export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaItem) => void }) {
@@ -61,7 +62,7 @@ export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia
   }
   return (
     <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}`}>
-      {m.reasoning && <details class="reasoning"><summary>{t('chat.reasoning')}</summary><div class="md plain">{parseStreaming(m.reasoning).text}</div></details>}
+      {m.reasoning && <Reasoning text={m.reasoning} ms={m.reasoningMs} />}
       <Tools m={m} />
       {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
       <AssistantText text={m.content} onMedia={onMedia} />

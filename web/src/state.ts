@@ -1,7 +1,7 @@
 import { createClient, type Client } from './api/client';
 import { hubName } from './lib/hubAddress';
 
-const KEY = 'foxfleet.hub', THEME = 'foxfleet.theme', ACCENT = 'foxfleet.accent', TEXT = 'foxfleet.text', MOTION = 'foxfleet.motion';
+const KEY = 'foxfleet.hub', THEME = 'foxfleet.theme', ACCENT = 'foxfleet.accent', TEXT = 'foxfleet.text', MOTION = 'foxfleet.motion', REASON = 'foxfleet.reasoning';
 const store = (): Storage | null => { try { return localStorage; } catch { return null; } };
 
 /** '' means same origin as the page (the normal case: the hub serves this app). */
@@ -20,13 +20,16 @@ export function applyPrefs() {
   if (motion === 'reduce') r.dataset.motion = 'reduce'; else delete r.dataset.motion;
 }
 export type TextSize = 'small' | 'normal' | 'large';
-export interface Prefs { theme: 'light' | 'dark' | 'system'; accent: string; text: TextSize; motion: 'system' | 'reduce' }
+export interface Prefs { theme: 'light' | 'dark' | 'system'; accent: string; text: TextSize; motion: 'system' | 'reduce'; reasoning: boolean }
+/** Settings > Show reasoning (default on, always collapsed until tapped). Stored on this device, like the other display settings. */
+export const showReasoning = (): boolean => store()?.getItem(REASON) !== 'off';
 export function getPrefs(): Prefs {
   const s = store(), g = (k: string) => s?.getItem(k);
-  return { theme: g(THEME) === 'light' || g(THEME) === 'dark' ? (g(THEME) as 'light' | 'dark') : 'system', accent: g(ACCENT) || 'ember', text: g(TEXT) === 'small' || g(TEXT) === 'large' ? (g(TEXT) as TextSize) : 'normal', motion: g(MOTION) === 'reduce' ? 'reduce' : 'system' };
+  return { theme: g(THEME) === 'light' || g(THEME) === 'dark' ? (g(THEME) as 'light' | 'dark') : 'system', accent: g(ACCENT) || 'ember', text: g(TEXT) === 'small' || g(TEXT) === 'large' ? (g(TEXT) as TextSize) : 'normal', motion: g(MOTION) === 'reduce' ? 'reduce' : 'system', reasoning: showReasoning() };
 }
 const put = (k: string, v: string | null) => { try { v === null ? store()?.removeItem(k) : store()?.setItem(k, v); } catch { /* private mode */ } applyPrefs(); };
 export const setAccent = (id: string) => put(ACCENT, id === 'ember' ? null : id);
 export const setTextSize = (t: TextSize) => put(TEXT, t === 'normal' ? null : t);
+export const setReasoning = (on: boolean) => put(REASON, on ? null : 'off');
 export const setMotion = (m: 'system' | 'reduce') => put(MOTION, m === 'system' ? null : m);
 export function setTheme(mode: 'light' | 'dark' | 'system') { try { mode === 'system' ? store()?.removeItem(THEME) : store()?.setItem(THEME, mode); } catch { /* ignore */ } applyPrefs(); }

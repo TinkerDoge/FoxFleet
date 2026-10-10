@@ -1,6 +1,7 @@
 // Chat runs: the upstream agent stream is decoupled from the client connection.
 // A run keeps reading from the agent even if the phone or browser goes away, buffers the events in a bounded log, and
 // lets a reconnecting client resume from a cursor (Last-Event-ID / ?after=N). Only an explicit stop cancels the agent.
+import { normaliseSse } from './reasoning.js';
 import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 
@@ -46,7 +47,7 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
       const headers = check(up);
       const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', link: link || null, stopping: false, done: false, stopped: false, started: now(), finished: 0, log: [], text: '', onFinish, next: 1, bytes: 0, subs: new Set() };
       r.timer = setTimeout(() => { abort.abort(); }, maxRunMs); r.timer.unref?.();
-      runs.set(r.id, r); void pump(r, up.body); return r;
+      runs.set(r.id, r); void pump(r, link || !/text\/event-stream/.test(up.headers?.get?.('content-type') ?? '') ? up.body : normaliseSse(up.body)); return r;
     },
     /** Called for every run that ends (any agent, any user): the agent list's last-activity line uses it. */
     onFinish(fn) { finishListeners.push(fn); },

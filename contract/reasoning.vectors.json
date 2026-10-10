@@ -1,0 +1,16 @@
+{
+  "about": "Shared reasoning normalisation cases. `deltas` are the choices[0].delta objects of a streamed chat completion (any provider); after the hub, the visible reply is the concatenation of content and the thinking is the concatenation of reasoning_content. Clients only read those two fields.",
+  "cases": [
+    { "name": "plain reply", "deltas": [{ "content": "Hello " }, { "content": "world" }], "content": "Hello world", "reasoning": "" },
+    { "name": "reasoning_content field", "deltas": [{ "reasoning_content": "Let me " }, { "reasoning_content": "think." }, { "content": "42" }], "content": "42", "reasoning": "Let me think." },
+    { "name": "reasoning field (OpenRouter)", "deltas": [{ "reasoning": "Hmm. " }, { "content": "Yes." }], "content": "Yes.", "reasoning": "Hmm. " },
+    { "name": "reasoning_text and thinking fields", "deltas": [{ "reasoning_text": "a" }, { "thinking": "b" }, { "content": "c" }], "content": "c", "reasoning": "ab" },
+    { "name": "think tags in one chunk", "deltas": [{ "content": "<think>step 1\nstep 2</think>\n\nThe answer is 4." }], "content": "The answer is 4.", "reasoning": "step 1\nstep 2" },
+    { "name": "think tag split across chunks", "deltas": [{ "content": "<thi" }, { "content": "nk>pondering" }, { "content": "</thi" }, { "content": "nk>done" }], "content": "done", "reasoning": "pondering" },
+    { "name": "thinking tag (GLM style)", "deltas": [{ "content": "<thinking>x</thinking>ok" }], "content": "ok", "reasoning": "x" },
+    { "name": "a lone < is not a tag", "deltas": [{ "content": "a < b and <b>bold</b>" }], "content": "a < b and <b>bold</b>", "reasoning": "" },
+    { "name": "tag held back at the very end is released", "deltas": [{ "content": "x <thi" }, { "content": "s is text" }], "content": "x <this is text", "reasoning": "" },
+    { "name": "unterminated think at the end is reasoning, not reply", "deltas": [{ "content": "<think>never closed" }], "content": "", "reasoning": "never closed" },
+    { "name": "reasoning object with text", "deltas": [{ "reasoning": { "text": "obj" } }, { "content": "r" }], "content": "r", "reasoning": "obj" }
+  ]
+}

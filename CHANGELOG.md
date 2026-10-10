@@ -14,6 +14,23 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Connector:* if you decline, or Hermes has no `platform_hints`, the same note rides once on the first message of each new chat (the hub hides it again in the transcript).
 - Note wording: `contract/agent-note.golden.txt`. Details: docs/AGENT-AWARENESS.md.
 
+### Fixed: pictures you send now reach the agent and show in chat (Android + web)
+- *Hub:* on native Hermes chats a picture you attached was turned into the text "[image]" and never sent. It is now handed to Hermes (`image.attach_bytes` through the connector's new `attachimg` op) together with your message. *Needs hub and connector 0.3.6.*
+- *Android:* pictures use one loader (`ChatImage`) with a spinner, a "Couldn't load this picture" tile with **Retry**, and a fallback to the embedded copy when the cached file is gone (history reloads no longer show a blank bubble).
+
+### Fixed: Bot computer view still black
+- A black picture is often a truly empty remote desktop (virtual display with no window manager or wallpaper). The viewer now samples the canvas and says "Connected, but the machine's screen is empty" with **Restart desktop** (new hub `stop`/`restart` screen actions) and **Reconnect**; "no picture arrived" is its own message.
+- **Screen debug** (Settings, or long-press the title): on-screen strip with state, size, frames, bytes, last error; **Send diagnostics** copies a report (app, WebView, console log). JavaScript console messages are written to logcat.
+- The viewer page sizes itself with `100dvh` and a resize observer, so a WebView that reports 0x0 before layout no longer leaves a zero-size canvas. Starting a desktop waits up to 95 s.
+- Not verified on a phone: no emulator was available here. See docs/TROUBLESHOOTING.md.
+
+### Added: reasoning (thinking) shown above replies
+- Collapsed "Reasoning" block (lightbulb, "Thought for 8 s", shimmering "Thinking…" while streaming), tap to expand, muted Markdown, limited height with "Show all", Copy; open state is remembered per message. Settings > **Show reasoning** (default on).
+- *Hub:* `reasoning_content`, `reasoning`, `reasoning_text`, `thinking` fields and `<think>`/`<thinking>` tags (even split across chunks) are normalised into `reasoning_content`; native Hermes `reasoning.delta`, `reasoning.available` and `message.complete.reasoning` are merged without repeats. It is never part of the reply text. Vectors: `contract/reasoning.vectors.json`. Details: docs/REASONING.md.
+
+### Changed: tests
+- `npm test` now runs `scripts/check-hub-tests.mjs`: fails if fewer tests ran than `scripts/hub-tests.min`, or any was cancelled or failed. `--test-force-exit` was dropped (`--test-timeout` stays); `npm run test:raw` is the plain runner.
+
 ## 0.3.5-alpha (unreleased, Android versionCode 13)
 
 Fixes from testing 0.3.3 / 0.3.4 on a phone against a self-hosted hub behind Cloudflare. **The hub needs the new build** for the items marked *hub*; apps and connectors tell you when it is older.

@@ -13,6 +13,10 @@ data class AppPrefs(
     val textSize: TextSize = TextSize.Medium,
     val reduceMotion: Boolean = false,
     val haptics: Boolean = true,
+    /** Bot screen: show the diagnostic strip (connection, resolution, frames, last error) over the viewer. */
+    val screenDebug: Boolean = false,
+    /** Show the agent's reasoning as a collapsed block above replies. */
+    val showReasoning: Boolean = true,
 )
 
 /** Persisted app settings. Passwords are NEVER stored — only a per-hub session token. */
@@ -78,6 +82,8 @@ class SettingsStore(private val prefs: SharedPreferences) {
             textSize = enumOr(prefs.getString("text_size", null), TextSize.Medium),
             reduceMotion = prefs.getBoolean("reduce_motion", false),
             haptics = prefs.getBoolean("haptics", true),
+            screenDebug = prefs.getBoolean("screen_debug", false),
+            showReasoning = prefs.getBoolean("show_reasoning", true),
         )
         set(v) = prefs.edit()
             .putString("theme", v.theme.name)
@@ -85,6 +91,8 @@ class SettingsStore(private val prefs: SharedPreferences) {
             .putString("text_size", v.textSize.name)
             .putBoolean("reduce_motion", v.reduceMotion)
             .putBoolean("haptics", v.haptics)
+            .putBoolean("screen_debug", v.screenDebug)
+            .putBoolean("show_reasoning", v.showReasoning)
             .apply()
 
     /** Sign out locally: drop the session token, keep the hub. */

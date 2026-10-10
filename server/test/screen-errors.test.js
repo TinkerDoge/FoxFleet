@@ -33,6 +33,15 @@ test('a Hermes without display.* is "display_unsupported", an unreachable dashbo
   await assert.rejects(fresh.takeover(m), (e) => e.status === 409 && e.code === 'reopen');
 });
 
+test('restart: stops the desktop (forced) and starts it again; an already stopped one is fine; a Hermes without display.* says so', async (t) => {
+  const calls = []; let stopFails = false;
+  const relay = screenRelay(upstream, { connect: gatewayReturning((r) => { calls.push(r.method); return r.method === 'display.stop' && stopFails ? { error: { code: -32000, message: 'not running' } } : { result: { supported: true, installed: true, running: r.method === 'display.start' } }; }) }); t.after(() => relay.clear());
+  const a = await relay.restart(m); assert.deepEqual(calls, ['display.stop', 'display.start']); assert.equal(a.state, 'ok');
+  calls.length = 0; stopFails = true; assert.equal((await relay.restart(m)).state, 'ok'); assert.deepEqual(calls, ['display.stop', 'display.start']);
+  const old = screenRelay(upstream, { connect: gatewayReturning(() => ({ error: { code: -32601, message: 'method not found' } })) }); t.after(() => old.clear());
+  await assert.rejects(old.restart(m), (e) => e.status === 501 && e.code === 'display_unsupported');
+});
+
 test('hub: /api/auth lists the hub version and features', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-screen-err-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   const mock = await mockHermes(t, { onUpgrade: fakeDashboard([]) });

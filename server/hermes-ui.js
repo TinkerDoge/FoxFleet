@@ -21,10 +21,13 @@ export const MODES = ['auto', 'queue', 'steer', 'interrupt'];
 export function normalise(up, s) {
   const p = up.payload ?? {}, base = { v: 1, session_id: s.stored };
   switch (up.type) {
-    case 'message.start': s.turn = id('t'); s.running = true; s.partial = ''; s.media = []; return { ...base, type: 'turn.start', turn_id: s.turn };
+    case 'message.start': s.turn = id('t'); s.running = true; s.partial = ''; s.media = []; s.reasoned = false; return { ...base, type: 'turn.start', turn_id: s.turn };
     case 'message.delta': s.partial += String(p.text ?? ''); return { ...base, type: 'message.delta', turn_id: s.turn, text: String(p.text ?? '') };
-    case 'thinking.delta': case 'reasoning.available': return String(p.text ?? '').trim() && up.type === 'reasoning.available' ? { ...base, type: 'reasoning', turn_id: s.turn, text: String(p.text).slice(0, 20_000) } : null;
-    case 'message.complete': { s.running = false; const status = String(p.status ?? 'complete'); return { ...base, type: 'turn.end', turn_id: s.turn, status: /interrupt/.test(status) ? 'interrupted' : /error|fail/.test(status) ? 'failed' : 'complete', text: withMediaLines(String(p.text ?? s.partial), s.media ?? []) }; }
+    // reasoning.delta streams the model's thinking; reasoning.available is the finished block (providers that do not stream) and would repeat it. thinking.delta is only the TUI's spinner wording.
+    case 'reasoning.delta': { const t = String(p.text ?? ''); if (!t) return null; s.reasoned = true; return { ...base, type: 'reasoning', turn_id: s.turn, text: t.slice(0, 20_000) }; }
+    case 'reasoning.available': { if (s.reasoned || !String(p.text ?? '').trim()) return null; s.reasoned = true; return { ...base, type: 'reasoning', turn_id: s.turn, text: String(p.text).slice(0, 20_000) }; }
+    case 'thinking.delta': return null;
+    case 'message.complete': { s.running = false; const status = String(p.status ?? 'complete'); return { ...base, type: 'turn.end', turn_id: s.turn, ...(!s.reasoned && typeof p.reasoning === 'string' && p.reasoning.trim() ? { reasoning: p.reasoning.slice(0, 20_000) } : {}), status: /interrupt/.test(status) ? 'interrupted' : /error|fail/.test(status) ? 'failed' : 'complete', text: withMediaLines(String(p.text ?? s.partial), s.media ?? []) }; }
     case 'tool.generating': return { ...base, type: 'tool.progress', turn_id: s.turn, name: String(p.name ?? 'tool').slice(0, 80) };
     case 'tool.start': return { ...base, type: 'tool.start', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
     case 'tool.progress': return { ...base, type: 'tool.progress', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
@@ -116,7 +119,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     /** How many approval / clarification requests are open for this user's sessions of one profile (the agent list shows "Needs approval"). */
     openRequests(scope, machineId, agent) { let n = 0; for (const s of sessions.values()) if (s.scope === scope && s.machineId === machineId && s.agent === agent) n += s.requests.size; return n; },
     // Admission: journal first, then upstream, then record what Hermes actually said.
-    async send(scope, machineId, agent, stored, { text, mode = 'auto', clientId }) {
+    async send(scope, machineId, agent, stored, { text, mode = 'auto', clientId, images = [] }) {
       own(scope, stored); if (!MODES.includes(mode)) throw fault(400, 'That send mode is not available for this agent');
       if (typeof text !== 'string' || !text.trim()) throw fault(400, 'Empty message'); if (text.length > 100_000) throw fault(413, 'Message too long');
       const dup = clientId && journal.messages.find((m) => m.client === clientId && m.agent === agent && m.session === stored); if (dup) return { message: msgView(dup), duplicate: true };
@@ -124,6 +127,12 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       const m = { id: id('m'), agent, session: stored, scope, text, mode, state: 'sending', ack: null, created: now(), ...(clientId ? { client: clientId } : {}) }; journal.messages.push(m); await save();
       const rt = s.runtime; let r;
       try {
+        // Pictures first: Hermes queues them for the next prompt.submit of this session (image.attach_bytes). A failure is the user's to see, never a silent drop.
+        for (const [i, url] of images.entries()) {
+          const mm = /^data:image\/([a-z0-9+.-]+);base64,(.+)$/is.exec(url); if (!mm) continue;
+          try { await ui.call(agent, 'attachimg', { session_id: rt, content_base64: mm[2], ext: mm[1].replace('jpeg', 'jpg'), filename: `photo-${i + 1}.${mm[1].replace('jpeg', 'jpg')}` }); }
+          catch (e) { const err = fault(e.code === 'not_allowed' ? 501 : 502, e.code === 'not_allowed' ? 'This machine\'s connector is too old to deliver pictures; update the Foxfleet connector there' : `The picture could not be delivered to the agent: ${String(e.message).slice(0, 160)}`, 'image_not_delivered'); m.state = 'failed'; m.error = err.message; await save(); throw err; }
+        }
         if (mode === 'queue') r = await ui.call(agent, 'submit', { session_id: rt, text, queued: true });
         else if (mode === 'steer') { r = await ui.call(agent, 'steer', { session_id: rt, text }); if (r.status === 'rejected') r = await ui.call(agent, 'submit', { session_id: rt, text }); } // idle: Hermes says rejected so the client sends it as a normal turn
         else if (mode === 'interrupt') { r = await ui.call(agent, 'redirect', { session_id: rt, text }); if (r.status === 'rejected') { m.state = 'rejected'; m.ack = 'rejected'; m.note = 'This agent cannot redirect the running turn right now. Use Queue, Steer, or Stop and send again'; await save(); return { message: msgView(m) }; } }

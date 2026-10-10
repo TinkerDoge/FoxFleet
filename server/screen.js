@@ -67,6 +67,13 @@ export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlM
   return {
     async status(m) { return view(await (await gateway(m)).call('display.status')); },
     async start(m) { return view(await (await gateway(m)).call('display.start', {}, { timeoutMs: START_TIMEOUT_MS })); },
+    async stop(m) { return view(await (await gateway(m)).call('display.stop', { force: false })); },
+    /** Stop then start: the cure for a desktop whose X server runs but whose Xfce session never painted (the viewer shows a flat colour). */
+    async restart(m) {
+      const g = await gateway(m); clearHold(m.name);
+      try { await g.call('display.stop', { force: true }); } catch (e) { if (e.status === 501) throw e; /* already stopped */ }
+      g.viewerId = null; return view(await g.call('display.start', {}, { timeoutMs: START_TIMEOUT_MS }));
+    },
     async observe(m) {
       const g = await gateway(m);
       const r = await g.call('display.observe', g.viewerId ? { viewer_id: g.viewerId } : {});

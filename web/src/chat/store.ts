@@ -13,7 +13,7 @@ import { rememberLast } from '../lib/localLast';
 
 export interface ChatState {
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
-  streamText: string; streamReasoning: string; tool?: string; error?: string; sessions: SessionInfo[]; sessionsTotal: number; sessionsLoading: boolean; sessionsError?: string; skills: string[]; loading: boolean;
+  streamText: string; streamReasoning: string; reasoningMs?: number; tool?: string; error?: string; sessions: SessionInfo[]; sessionsTotal: number; sessionsLoading: boolean; sessionsError?: string; skills: string[]; loading: boolean;
   runState?: 'submitting' | 'accepted' | 'working' | 'completed' | 'failed' | 'stopped' | 'disconnected' | 'reconnecting' | 'unknown';
   recovery?: 'reload' | 'reconnect' | 'check' | 'retry';
   hasOlder: boolean; loadingOlder: boolean; olderOffset: number;
@@ -110,8 +110,8 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     onRun: (id: string) => { if (!live()) return; runIds.set(agent, id); saveChat(agent, { run: id }); patch(agent, { runState: 'accepted' }); },
     onReconnecting: () => { if (live()) patch(agent, { runState: 'reconnecting' }); },
     onGap: () => { if (!live()) return; acc.reply = ''; patch(agent, { streamText: '' }); },
-    onContent: (d: string) => { if (!live()) return; acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
-    onReasoning: (d: string) => { if (!live()) return; acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning, runState: 'working' }); },
+    onContent: (d: string) => { if (!live()) return; if (acc.t0 && !acc.ms) { acc.ms = Date.now() - acc.t0; patch(agent, { reasoningMs: acc.ms }); } acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
+    onReasoning: (d: string) => { if (!live()) return; if (!acc.t0) acc.t0 = Date.now(); acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning, runState: 'working' }); },
     onTool: (label: string) => { if (live()) { const log = chatOf(agent).toolLog; patch(agent, { tool: label, runState: 'working', toolLog: log[log.length - 1] === label ? log : [...log, label].slice(-12) }); } },
     // cards come and go with the agent's own events; the id is the only key, so a late or repeated event changes nothing
     onRequest: (r: OpenRequest) => { if (live() && !chatOf(agent).requests.some((x) => x.id === r.id)) patch(agent, { requests: [...chatOf(agent).requests, r] }); },
@@ -120,14 +120,14 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     onRunState: (state: string) => { if (live()) acc.state = state; },
   };
 };
-interface Acc { reply: string; reasoning: string; state?: string; selection: symbol }
+interface Acc { reply: string; reasoning: string; state?: string; selection: symbol; t0?: number; ms?: number }
 /** Ends a stream: the partial or full reply is kept (marked interrupted if it was stopped); a stale stream (another chat is open now) changes nothing. */
 function settle(agent: string, ctrl: AbortController, base: UiMessage[], acc: Acc, extra: Partial<ChatState> = {}): boolean {
   if (selections.get(agent) !== acc.selection || (aborts.get(agent) !== ctrl && !stoppedBy.has(ctrl))) return false;
   const interrupted = stoppedBy.has(ctrl) || acc.state === 'stopped';
-  const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
+  const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning, ...(acc.t0 ? { reasoningMs: acc.ms ?? Date.now() - acc.t0 } : {}) } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
   if (acc.reply) rememberLast(agent, 'assistant', acc.reply);
-  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', tool: undefined, toolLog: [], requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
+  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', reasoningMs: undefined, tool: undefined, toolLog: [], requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
   announce(agent); return true;
 }
 

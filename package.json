@@ -1,6 +1,6 @@
 {
   "name": "foxfleet",
-  "version": "0.3.5-alpha",
+  "version": "0.3.6-alpha",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -8,7 +8,8 @@
   "engines": { "node": ">=22" },
   "scripts": {
     "start": "node server/index.js",
-    "test": "node --test --test-timeout=120000 --test-force-exit server/test/*.test.js",
+    "test": "node scripts/check-hub-tests.mjs",
+    "test:raw": "node --test --test-timeout=120000 server/test/*.test.js",
     "tokens": "node design/tools/gen-tokens.mjs",
     "web:build": "npm --prefix web ci && npm --prefix web run build",
     "web:test": "npm --prefix web test"
