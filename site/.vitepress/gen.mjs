@@ -86,6 +86,8 @@ const ENV = {
   FOXFLEET_DEBUG: ['Hub diagnostics: one JSON line per event on stdout (for example `activity.seed`); never message text or addresses.', '-', 'ops'],
   UPDATE_FIXTURE: ['Test helper only: rewrites `contract/agents-activity.sample.json` from a real hub answer.', '-', 'tests'],
   VNC_PORT: ['Test helper only: the VNC port of the demo hub in `server/test/screen-demo-hub.js`.', '-', 'tests'],
+  NOTE_PYTHON: ['Test helper only (`server/test/agent-note.test.js`): Python with PyYAML used to check the `config.yaml` edit round trip.', '/tmp/hv/bin/python', 'tests'],
+  UPDATE_GOLDEN: ['Test helper only: rewrites `contract/agent-note.golden.txt` from the generated agent note.', '-', 'tests'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
 };

@@ -128,7 +128,6 @@ test('real gateway: the model receives the FoxFleet note (and not the TUI text),
   const systemOf = (text) => { const m = reqFor(text).messages.find((q) => q.role === 'system'); return typeof m.content === 'string' ? m.content : JSON.stringify(m.content); };
   const turn = async (rt, text) => { const n = x.events.filter((e) => e.type === 'message.complete' && e.session_id === rt).length; await ui.call(agent, 'submit', { session_id: rt, text }); await waitFor(async () => (x.events.filter((e) => e.type === 'message.complete' && e.session_id === rt).length > n ? true : null), { tries: 300, ms: 100 }); };
   const c = await ui.call(agent, 'create', {}); await turn(c.session_id, 'where am I?'); await turn(c.session_id, 'and now?');
-  if (process.env.DUMP) fs.writeFileSync('/tmp/llm-log.json', JSON.stringify(llm.log));
   const s0 = systemOf('where am I?'), s1 = systemOf('and now?');
   assert.ok(s0.includes('You are chatting through FoxFleet') && s0.includes('(foxfleet-note v' + hash + ')'), 'note present');
   assert.ok(!/terminal UI \(TUI\)/.test(s0) && !/You are in a plain terminal/.test(s0), 'the TUI hint is gone');
