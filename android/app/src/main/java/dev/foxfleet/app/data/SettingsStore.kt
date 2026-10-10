@@ -93,7 +93,13 @@ class SettingsStore(private val prefs: SharedPreferences) {
     /** Per hub and agent: the hub timestamp of the last reply you have seen on this device (drives the unread dot in the list). */
     fun seenAt(agent: String): Long? = prefs.getLong("seen_${activeHubId}_$agent", -1L).takeIf { it >= 0 }
     fun markSeen(agent: String, at: Long?) { if (at != null && at > (seenAt(agent) ?: -1L)) prefs.edit().putLong("seen_${activeHubId}_$agent", at).apply() }
-    private fun forgetSeen() { val e = prefs.edit(); prefs.all.keys.filter { it.startsWith("seen_${activeHubId}_") }.forEach { e.remove(it) }; e.apply() }
+    /** Per hub and agent: the last message this device sent or received ("at|role|text"), the agent list's fallback. */
+    fun lastLocal(agent: String): dev.foxfleet.app.ui.LocalLast.Entry? = dev.foxfleet.app.ui.LocalLast.decode(prefs.getString("last_${activeHubId}_$agent", null))
+    fun rememberLast(agent: String, role: String, text: String, at: Long = System.currentTimeMillis()) {
+        val p = dev.foxfleet.app.ui.LocalLast.preview(text); if (p.isEmpty()) return
+        prefs.edit().putString("last_${activeHubId}_$agent", dev.foxfleet.app.ui.LocalLast.encode(dev.foxfleet.app.ui.LocalLast.Entry(at, role, p))).apply()
+    }
+    private fun forgetSeen() { val e = prefs.edit(); prefs.all.keys.filter { it.startsWith("seen_${activeHubId}_") || it.startsWith("last_${activeHubId}_") }.forEach { e.remove(it) }; e.apply() }
 
     companion object {
         const val ACCENT_COUNT = 5

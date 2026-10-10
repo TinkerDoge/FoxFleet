@@ -1,0 +1,69 @@
+{
+  "agents": [
+    {
+      "id": "fixture",
+      "name": "fixture",
+      "displayName": "Fixture",
+      "kind": "hermes",
+      "order": 0,
+      "description": "",
+      "avatar": null,
+      "status": "ready",
+      "online": true,
+      "chatReady": true,
+      "managementReady": true,
+      "capabilities": {
+        "chat": true,
+        "images": true,
+        "files": true,
+        "screen": true,
+        "voice": true,
+        "skills": true,
+        "sessions": true,
+        "mailbox": false,
+        "busy": [
+          "queue",
+          "interrupt"
+        ],
+        "nativeUi": false,
+        "nativeRuns": false,
+        "media": {
+          "hub": true,
+          "hubVersion": "0.3.5-alpha",
+          "local": false,
+          "connector": null,
+          "agent": "http",
+          "tags": true,
+          "toolMedia": false
+        }
+      },
+      "activeSessions": 2,
+      "checks": {
+        "dashboard": {
+          "ok": true,
+          "message": "Dashboard reachable"
+        },
+        "management": {
+          "ok": true,
+          "message": "Management authenticated"
+        },
+        "api": {
+          "ok": true,
+          "message": "Chat API authenticated"
+        },
+        "media": {
+          "ok": true,
+          "message": "hub 0.3.5-alpha · agent: media tags in replies"
+        }
+      },
+      "last_activity_at": 1791407520500,
+      "last_session_title": "real session",
+      "last_message_preview": "Here is the plan we agreed on",
+      "last_role": "assistant",
+      "pinned": false,
+      "pin_order": null,
+      "working": false,
+      "needs_input": false
+    }
+  ]
+}

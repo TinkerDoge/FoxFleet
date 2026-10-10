@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { AgentSummary } from '../api/types';
 import { Icon } from '../components/Icon';
+import { withLocalLast } from '../lib/localLast';
 import { avatarSeed, isUnread, listTime, previewLine, sortAgents } from '../lib/agentList';
 import { chatOf } from '../chat/store';
 import { t } from '../i18n/t';
@@ -57,10 +58,10 @@ function Row({ a, selected, onPick, onMenu, onPin }: { a: AgentSummary; selected
 }
 
 export function AgentList({ agents, selectedName, onPick, onPin }: { agents: AgentSummary[] | null; selectedName?: string; onPick: () => void; onPin: (a: AgentSummary) => void }) {
-  const [q, setQ] = useState(''), [menu, setMenu] = useState<{ x: number; y: number; a: AgentSummary } | null>(null), [, tick] = useState(0);
+  const stamp = Math.floor(Date.now() / 60_000), [q, setQ] = useState(''), [menu, setMenu] = useState<{ x: number; y: number; a: AgentSummary } | null>(null), [, tick] = useState(0);
   const host = useRef<HTMLUListElement>(null), menuEl = useRef<HTMLDivElement>(null);
   useEffect(() => { const id = setInterval(() => tick((n) => n + 1), 60_000); return () => clearInterval(id); }, []);
-  const sorted = useMemo(() => sortAgents(agents ?? []), [agents]);
+  const sorted = useMemo(() => sortAgents((agents ?? []).map(withLocalLast)), [agents, stamp]);
   const needle = q.trim().toLowerCase(), shown = needle ? sorted.filter((a) => `${a.displayName ?? ''} ${a.name} ${a.last_message_preview ?? ''}`.toLowerCase().includes(needle)) : sorted;
   useFlip(host, shown.map((a) => a.name).join('|'));
   useLayoutEffect(() => {

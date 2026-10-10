@@ -153,7 +153,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (!silent) { fleetLoading = true; fleetError = null } else fleetLoading = false
         viewModelScope.launch {
             try {
-                val fresh = api.agents()
+                val fresh = api.agents().map { dev.foxfleet.app.ui.LocalLast.merge(it, settings.lastLocal(it.name)) }
                 val open = (route as? Route.Chat)?.agent
                 fresh.forEach { a -> if (a.name == open) settings.markSeen(a.name, a.lastActivityAt) else if (settings.seenAt(a.name) == null) settings.markSeen(a.name, a.lastActivityAt) } // a new device starts out read
                 agents = AgentList.sort(fresh); fleetLoadedOnce = true; restoreLastChat()
@@ -236,9 +236,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             }
             return
         }
+        settings.rememberLast(agent, "user", text.trim())
         jobs[agent] = viewModelScope.launch {
             try {
                 state.send(api, agent, text.trim(), images)
+                state.messages.lastOrNull()?.takeIf { it.role == "assistant" }?.let { settings.rememberLast(agent, "assistant", it.content) }
                 if ((route as? Route.Chat)?.agent != agent) state.markUnread()
                 state.syncQueue(api, agent)
             } catch (e: CancellationException) {

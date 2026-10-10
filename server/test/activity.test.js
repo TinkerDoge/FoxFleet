@@ -2,7 +2,7 @@
 import test from 'node:test';
 import { waitFor } from './machine-helpers.js';
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { previewOf, activityStore, sortAgents } from '../activity.js';
@@ -79,4 +79,10 @@ test('hub: a Hermes agent whose chats live in its own session list is seeded onc
   assert.ok(seeded, 'activity seeded from the newest Hermes session');
   assert.equal(seeded.last_activity_at, 1791407520500); assert.equal(seeded.last_session_title, 'real session'); assert.equal(seeded.last_message_preview, 'Here is the plan we agreed on');
   assert.ok(!/127\.0\.0\.1|localhost/.test(JSON.stringify(seeded).replace(/"description":"[^"]*"/, '')));
+  // The clients' tests parse a REAL /api/agents answer, not hand-written vectors: this is that answer (UPDATE_FIXTURE=1 rewrites it), and the hub must keep matching it.
+  const sample = { agents: [{ ...seeded, id: 'fixture', name: 'fixture', displayName: 'Fixture', description: '' }] }, file = new URL('../../contract/agents-activity.sample.json', import.meta.url);
+  if (process.env.UPDATE_FIXTURE) await writeFile(file, JSON.stringify(sample, null, 2) + '\n');
+  const want = JSON.parse(await readFile(file, 'utf8')).agents[0], keys = (o) => Object.keys(o).sort();
+  assert.deepEqual(keys(want), keys(sample.agents[0]), 'the agent list shape the clients are tested against');
+  assert.equal(want.last_activity_at, 1791407520500); assert.equal(want.last_message_preview, 'Here is the plan we agreed on');
 });

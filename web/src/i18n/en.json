@@ -379,5 +379,7 @@
   "media.err.generic": "Not available",
   "media.hint.outside": "Share its folder with: {command}",
   "media.copyFix": "Copy fix",
-  "media.copied": "Copied"
+  "media.copied": "Copied",
+  "settings.hubVersion": "Hub version {version}",
+  "settings.hubOld": "Update your hub for previews, media and clearer screen errors. Everything else keeps working."
 }

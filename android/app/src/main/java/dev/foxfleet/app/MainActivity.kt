@@ -192,7 +192,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
         Route.Settings -> SettingsScreen(
             prefs = vm.prefs, onChange = vm::updatePrefs,
             onSignOut = vm::signOut, onBack = { vm.back() }, onAgents = { vm.navigate(Route.Agents) },
-            hubName = vm.hubName, username = vm.username, isOwner = vm.isOwner, onAdmin = { vm.navigate(Route.Admin) }, onHubs = { vm.navigate(Route.Hubs) }, onDevices = { vm.navigate(Route.Devices) },
+            hubName = vm.hubName, hubVersion = vm.hubVersion, hubOld = dev.foxfleet.app.ui.HubCompat.isOld(vm.hubVersion, vm.hubFeatures), username = vm.username, isOwner = vm.isOwner, onAdmin = { vm.navigate(Route.Admin) }, onHubs = { vm.navigate(Route.Hubs) }, onDevices = { vm.navigate(Route.Devices) },
         )
         Route.Hubs -> dev.foxfleet.app.ui.screens.HubsScreen(
             hubs = vm.settings.hubs, activeId = vm.settings.activeHubId, onBack = { vm.back() },

@@ -11,6 +11,7 @@ import { setDraftScope, wipeDrafts } from '../chat/drafts';
 import { Manage } from '../agents/Manage';
 import { Admin } from '../admin/Admin';
 import { AgentList } from '../agents/AgentList';
+import { setLastScope, forgetLast } from '../lib/localLast';
 import { markSeen, seedSeen, setSeenScope, forgetSeen, sortAgents } from '../lib/agentList';
 import { Account } from '../admin/Account';
 import { Settings } from '../admin/Settings';
@@ -28,7 +29,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
   const [agents, setAgents] = useState<AgentSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const owner = info.user?.role === 'owner';
-  setSeenScope(info.user?.id); setDraftScope(info.user?.id); // unsent text is stored per signed-in user (set before the chat reads its draft)
+  setSeenScope(info.user?.id); setLastScope(info.user?.id); setDraftScope(info.user?.id); // unsent text is stored per signed-in user (set before the chat reads its draft)
   const main = useRef<HTMLElement>(null);
   const sidebar = useRef<HTMLElement>(null), menu = useRef<HTMLButtonElement>(null), topbar = useRef<HTMLElement>(null), skip = useRef<HTMLAnchorElement>(null);
   const modal = open && mobile;
@@ -72,7 +73,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
     setAgents((list) => list && sortAgents(list.map((x) => x.name === a.name ? { ...x, pinned: on, pin_order: on ? (list.reduce((m, y) => Math.max(m, y.pin_order ?? -1), -1) + 1) : null } : x)));
     try { await client.pinAgent(a.name, on); load(); } catch (e) { if (e instanceof AuthRequiredError) lost(); else { setAgents(before); setError(t('list.pinFailed')); setTimeout(() => setError(null), 4000); } }
   }
-  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); forgetSeen(); wipeDrafts(); lost(); }
+  async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); forgetSeen(); forgetLast(); wipeDrafts(); lost(); }
   const PAGES = ['manage', 'admin', 'account', 'settings'];
   const requested = route.params.get('agent');
   const selected = !PAGES.includes(route.name) ? requested ? agents?.find((a) => a.name === requested) : agents?.find((a) => a.name === lastAgent()) ?? agents?.[0] : undefined;
@@ -111,7 +112,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {route.name === 'manage' && owner && <Manage client={client} onChanged={load} onAuthLost={lost} />}
         {route.name === 'admin' && owner && <Admin client={client} onAuthLost={lost} />}
         {route.name === 'account' && <Account client={client} onAuthLost={lost} />}
-        {route.name === 'settings' && <Settings hub={loadHub()} />}
+        {route.name === 'settings' && <Settings hub={loadHub()} hubInfo={info.hub} />}
         {!PAGES.includes(route.name) && agents && agents.length === 0 && (
           <div class="empty-home"><Icon name="agents" size={48} class="icon-hero" /><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}

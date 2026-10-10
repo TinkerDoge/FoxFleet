@@ -63,6 +63,8 @@ fun SettingsScreen(
     onBack: () -> Unit,
     onAgents: () -> Unit = {},
     hubName: String = "",
+    hubVersion: String? = null,
+    hubOld: Boolean = false,
     username: String = "",
     onHubs: () -> Unit = {},
     onDevices: () -> Unit = {},
@@ -87,6 +89,8 @@ fun SettingsScreen(
                     Column(Modifier.weight(1f)) {
                         Text(username.ifBlank { "Signed in" }, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
                         Text(hubName.ifBlank { "Connected hub" } + if (isOwner) " · Owner" else "", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
+                        if (hubVersion != null) Text("Hub version $hubVersion", style = MaterialTheme.typography.labelSmall, color = c.textFaint, maxLines = 1)
+                        if (hubOld) Text("Update your hub for previews, media and clearer screen errors. Everything else keeps working.", style = MaterialTheme.typography.labelSmall, color = c.textFaint)
                     }
                     dev.foxfleet.app.ui.components.FoxIcon("chevronRight", tint = c.textFaint)
                 }

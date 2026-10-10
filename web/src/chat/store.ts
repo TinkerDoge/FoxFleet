@@ -9,6 +9,7 @@ import { scrubAddresses } from '../lib/registry';
 import { t } from '../i18n/t';
 import { discardDraft, draftKey, moveDraft, resetDrafts, restoreDraft } from './drafts';
 import { clearSaved, loadSaved, saveChat } from '../lib/persist';
+import { rememberLast } from '../lib/localLast';
 
 export interface ChatState {
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
@@ -125,6 +126,7 @@ function settle(agent: string, ctrl: AbortController, base: UiMessage[], acc: Ac
   if (selections.get(agent) !== acc.selection || (aborts.get(agent) !== ctrl && !stoppedBy.has(ctrl))) return false;
   const interrupted = stoppedBy.has(ctrl) || acc.state === 'stopped';
   const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
+  if (acc.reply) rememberLast(agent, 'assistant', acc.reply);
   patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', tool: undefined, toolLog: [], requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
   announce(agent); return true;
 }
@@ -240,7 +242,7 @@ export async function send(client: Client, agent: string, text: string, images: 
   const cur = chatOf(agent), user: UiMessage = { role: 'user', content: composeWithFiles(text, files), ...(images.length ? { images } : {}) };
   if (cur.loading) return;
   if (cur.streaming || cur.queue.some((q) => PENDING.has(q.state))) return submitBusy(client, agent, user, mode, onAuthLost);
-  const base = [...cur.messages, user];
+  const base = [...cur.messages, user]; rememberLast(agent, 'user', user.content);
   patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' }); announce(agent);
   const ctrl = new AbortController(); aborts.set(agent, ctrl);
   saveChat(agent, { user: user.content, started: Date.now(), run: undefined });
