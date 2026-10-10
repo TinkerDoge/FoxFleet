@@ -267,24 +267,33 @@ function runLink(cfg, onState = () => {}) {
     else if (m.t === 'ws-close' && e) { e.cancelled = true; (e.sock ?? e.up)?.destroy(); reqs.delete(m.id); }
     else if (m.t === 'cancel' && e) { e.cancelled = true; e.up?.destroy(); reqs.delete(m.id); }
   }
+  // The tunnel in front of the hub can drop silently (a half-open socket after a proxy restart). The hub pings every 25 s, so 75 s of
+  // silence means the link is dead: drop it and reconnect (the Hermes gateways below keep running, so agent turns are not restarted).
+  const SILENT_MS = Number(process.env.FOXFLEET_LINK_SILENT_MS) || 75_000;
+  const jitter = (ms) => Math.round(ms * (0.5 + Math.random() / 2));
   function connect() {
     if (stopped) return;
-    ws = new WebSocket(wsUrl, ['foxfleet.v1', cfg.token]);
-    ws.onopen = () => { delay = 1000; everOpened = true; refusals = 0; onState('connected'); log('Connected to the hub.'); lastSent = ''; announce(true); };
-    ws.onmessage = (ev) => {
+    const sock = ws = new WebSocket(wsUrl, ['foxfleet.v1', cfg.token]);
+    let lastRx = Date.now(), over = false, watch;
+    const lost = () => {
+      if (over) return; over = true; clearInterval(watch);
+      for (const e of reqs.values()) { e.cancelled = true; try { (e.sock ?? e.up)?.destroy(); } catch {} } reqs.clear();
+      if (stopped) return;
+      if (!everOpened && ++refusals >= 3) log('The hub keeps refusing this machine (it may have been removed or its token rotated). Create a new pairing code in the app and run: node foxfleet-connector.mjs pair --hub <hub> --code <code>');
+      else log(`Disconnected; retrying in ${Math.round(delay / 100) / 10}s`);
+      everOpened = false; setTimeout(connect, jitter(delay)); delay = Math.min(delay * 2, 60000);
+    };
+    sock.onopen = () => { delay = 1000; everOpened = true; refusals = 0; lastRx = Date.now(); onState('connected'); log('Connected to the hub.'); lastSent = ''; announce(true);
+      watch = setInterval(() => { if (Date.now() - lastRx > SILENT_MS) { log('The hub link went quiet; reconnecting.'); try { sock.close(); } catch {} setTimeout(lost, 2000).unref?.(); } }, Math.max(1000, Math.min(15_000, SILENT_MS / 3))); watch.unref?.(); };
+    sock.onmessage = (ev) => {
+      lastRx = Date.now();
       let m; try { m = JSON.parse(String(ev.data)); } catch { return; }
       if (m.t === 'ping') return send({ t: 'pong' });
       if (m.t === 'registered') { onState('registered', m); if (m.agents?.length) log(`Sharing ${m.agents.length} profile(s): ${m.agents.map((a) => (a.agent === a.profile ? a.profile : `${a.profile} (as ${a.agent})`)).join(', ')}`); else log('Connected; no profiles are shared yet. Run: node foxfleet-connector.mjs profiles'); return; }
       handle(m).catch(() => send({ t: 'error', id: m.id }));
     };
-    ws.onclose = () => {
-      for (const e of reqs.values()) { e.cancelled = true; try { (e.sock ?? e.up)?.destroy(); } catch {} } reqs.clear();
-      if (stopped) return;
-      if (!everOpened && ++refusals >= 3) log('The hub keeps refusing this machine (it may have been removed or its token rotated). Create a new pairing code in the app and run: node foxfleet-connector.mjs pair --hub <hub> --code <code>');
-      else log(`Disconnected; retrying in ${delay / 1000}s`);
-      everOpened = false; setTimeout(connect, delay); delay = Math.min(delay * 2, 60000);
-    };
-    ws.onerror = () => {};
+    sock.onclose = lost;
+    sock.onerror = () => { setTimeout(lost, 1500).unref?.(); }; // a failed handshake (a 502 from the tunnel) must also lead to a retry, whatever the runtime reports
   }
   connect(); timer = setInterval(() => announce(false), Math.max(30, Number(cfg.rescanSeconds) || 300) * 1000); timer.unref?.();
   return { stop() { stopped = true; clearInterval(timer); for (const g of gateways.values()) g.stop(); try { ws.close(); } catch {} } };

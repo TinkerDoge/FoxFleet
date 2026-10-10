@@ -17,7 +17,7 @@ async function setup(t, connection) {
 }
 const frame = (c) => `data: ${JSON.stringify({ choices: [{ delta: { content: c } }] })}\n\n`;
 const post = (base, signal) => fetch(base + '/api/agents/fixture/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal });
-const events = (text) => text.split('\n\n').filter((e) => e.trim() && !e.startsWith(':'));
+const events = (text) => text.split('\n\n').filter((e) => e.trim() && !e.startsWith(':') && !e.startsWith('retry:'));
 const idOf = (e) => Number(/^id: (\d+)/m.exec(e)?.[1]);
 
 test('a client that disconnects mid-stream does not stop the run; a reconnect resumes after its cursor', async (t) => {
@@ -51,7 +51,7 @@ test('the replay log is bounded and says when events were dropped; finished runs
   const body = new ReadableStream({ start(c) { for (let i = 0; i < 50; i++) c.enqueue(new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: 'x'.repeat(20) + i } }] })}\n\n`)); c.close(); } });
   const run = await reg.start({ scope: 'u', agent: 'a', open: async () => new Response(body, { status: 200 }), timeoutMs: 1000, check: () => ({}) });
   await new Promise((r) => setTimeout(r, 30)); assert.equal(run.state, 'done'); assert.ok(run.log.length < 20 && run.next === 51);
-  const out = []; const res = { writeHead() {}, write: (x) => out.push(x), end() {}, once() {} }; reg.attach({}, res, run, 0); assert.ok(out[0].startsWith('event: foxfleet.gap'));
+  const out = []; const res = { writeHead() {}, write: (x) => out.push(x), end() {}, once() {} }; reg.attach({}, res, run, 0); assert.match(out[0], /^retry: \d+/); assert.ok(out[1].startsWith('event: foxfleet.gap'));
   assert.ok(run.text.endsWith('x'.repeat(20) + '49')); assert.throws(() => reg.get('other', 'a', run.id), /gone/);
   t = 5000; assert.throws(() => reg.get('u', 'a', run.id), /gone/);
 });

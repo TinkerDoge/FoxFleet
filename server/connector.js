@@ -11,6 +11,7 @@ const HOP = new Set(['host', 'connection', 'keep-alive', 'proxy-connection', 'tr
 
 export function connectorHub() {
   const links = new Map(); // connectorId -> link
+  const upListeners = new Set(); // called when a (re)connected machine has announced its native capabilities
   function forwarder(link, agent, svc) {
     const server = http.createServer((creq, cres) => {
       if (link.streams.size >= MAX_STREAMS) { cres.writeHead(503); return cres.end(); }
@@ -39,6 +40,8 @@ export function connectorHub() {
   }
   return {
     ui: (id) => links.get(id)?.ui ?? null,
+    /** fn(machineId) runs each time a machine (re)connects and announces itself: the hub re-attaches live native sessions then. */
+    onUp(fn) { upListeners.add(fn); return () => upListeners.delete(fn); },
     drop: (id) => links.get(id)?.close(),
     isOnline: (id) => links.has(id),
     lastSeen: (id) => links.get(id)?.seen ?? null,
@@ -70,7 +73,7 @@ export function connectorHub() {
       links.set(connectorId, link);
       ws.on('message', (text) => {
         link.seen = Date.now(); let m; try { m = JSON.parse(text); } catch { return; }
-        if (m.t === 'ui-caps') { link.uiCaps = m.caps && typeof m.caps === 'object' ? m.caps : {}; return; }
+        if (m.t === 'ui-caps') { link.uiCaps = m.caps && typeof m.caps === 'object' ? m.caps : {}; for (const fn of upListeners) { try { fn(connectorId); } catch { /* a listener must not break the tunnel */ } } return; }
         if (m.t === 'ui-ev') { for (const fn of link.uiListeners) { try { fn(m.agent, m.ev); } catch { /* listener bugs must not break the tunnel */ } } return; }
         if (m.t === 'ui-res') { const p = link.uiPending.get(m.id); if (!p) return; link.uiPending.delete(m.id); clearTimeout(p.timer); if (m.ok) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'failed').slice(0, 300)), { code: m.code || 'error', ...(m.rpc !== undefined ? { rpc: m.rpc } : {}) })); return; }
         if (m.t === 'profiles') { Promise.resolve(hooks.onProfiles?.(m, link)).then((reply) => reply && link.send({ t: 'registered', ...reply })).catch(() => link.send({ t: 'registered', agents: [], error: 'sync failed' })); return; }

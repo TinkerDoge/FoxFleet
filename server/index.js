@@ -466,7 +466,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             if (what === 'model' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.setModel(scope, mid, prof, sid, b.model)); }
             if (what === 'events' && req.method === 'GET') { // SSE: hub cursor, replay + live, any number of viewers
               const after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0), n = Number.isInteger(after) && after > 0 ? after : 0;
-              res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+              res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.write('retry: 3000\n\n');
               const write = (e) => res.write(`id: ${e.seq}\nevent: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`);
               const f = nat.follow(scope, mid, prof, sid, n, write); if (f.truncated) res.write(`event: foxfleet.gap\ndata: ${JSON.stringify({ cursor: f.cursor })}\n\n`); for (const e of f.events) write(e);
               const ka = setInterval(() => res.write(': keep-alive\n\n'), 15_000); ka.unref?.(); res.once('close', () => { clearInterval(ka); f.unsubscribe(); }); return;

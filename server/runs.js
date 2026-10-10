@@ -4,6 +4,8 @@
 import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 
+/** Reconnect hint sent at the start of every event stream. */
+export const RETRY_MS = 3000;
 const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', 'X-Accel-Buffering': 'no' };
 
 export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, maxRunMs = 30 * 60_000, maxActive = 8, keepAliveMs = 15_000, now = () => Date.now() } = {}) {
@@ -67,6 +69,7 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
     /** Streams the run's events after cursor `after` to the client and follows it live. Client disconnect only detaches. */
     attach(req, res, r, after = 0) {
       res.writeHead(200, { ...SSE_HEADERS, ...r.headers, 'X-Foxfleet-Run': r.id });
+      res.write(`retry: ${RETRY_MS}\n\n`); // clients that reconnect on their own wait this long (ms); the first byte also defeats proxy buffering
       let cursor = after, closed = false, ka;
       const pull = () => {
         if (closed) return;

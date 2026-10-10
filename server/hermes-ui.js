@@ -80,7 +80,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     for (const m of journal.messages) if (m.session === s.stored && m.agent === s.agent && ['sending', 'uncertain'].includes(m.state)) { if (seen.has(m.text)) { m.state = 'acked'; m.ack = m.ack || 'reconciled'; delete m.note; } else m.note = m.note || 'Not found in the transcript; it may not have been delivered. Send it again if you still want it'; }
   }
 
-  return {
+  const api = {
     CONTRACT,
     onTurnStart: (fn) => { hooks.push(fn); },
     cursor: (machineId, agent, stored) => (sessions.get(key(machineId, agent, stored))?.next ?? 1) - 1,
@@ -154,5 +154,13 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     async flush() { await save(); await writing; },
     _journal: () => journal,
   };
+  // The tunnel to a machine flapped and came back (Cloudflare blip): the gateway kept running, and events sent while the link was down
+  // were lost. Re-attach every session that has a live runtime: its snapshot + events.since fill the gap, the journal reconciles
+  // uncertain messages, nothing is sent again, and viewers get a link up/down marker.
+  connectors.onUp?.((machineId) => {
+    const set = byMachine.get(machineId); if (!set) return;
+    for (const k of [...set]) { const s = sessions.get(k); if (!s || !s.runtime) continue; publish(s, { v: 1, session_id: s.stored, type: 'link', state: 'up' }); api.attach(s.scope, machineId, s.agent, s.stored).catch(() => { /* the next client attach tries again */ }); }
+  });
+  return api;
 }
 const msgView = (m) => ({ id: m.id, session_id: m.session, mode: m.mode, state: m.state, ack: m.ack, text: m.text, created: m.created, ...(m.note ? { note: m.note } : {}), ...(m.error ? { error: m.error } : {}) });
