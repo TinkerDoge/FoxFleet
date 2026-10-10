@@ -50,6 +50,8 @@ import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.chat.MediaRef
 import dev.foxfleet.app.ui.chat.MediaTags
 import dev.foxfleet.app.ui.chat.TagMedia
+import dev.foxfleet.app.ui.chat.TagMediaData
+import androidx.compose.foundation.layout.defaultMinSize
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -58,10 +60,13 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 
 /** What the cards need from the app: turn a MEDIA: ref into a hub link, and an HTTP client that carries the sign-in. */
-class MediaHost(val client: OkHttpClient, val resolve: suspend (agent: String, ref: String) -> MediaLink)
+class MediaHost(val client: OkHttpClient, val resolve: suspend (agent: String, ref: String) -> MediaLink) {
+    /** Checks a resolved link before it is drawn so a failure can say why (null = fine). Null here = do not check. */
+    var diagnose: (suspend (url: String) -> HubFailure?)? = null
+}
 val LocalMediaHost = compositionLocalOf<MediaHost?> { null }
 
-private sealed interface Card { object Loading : Card; object Failed : Card; data class Ready(val link: MediaLink) : Card }
+private sealed interface Card { object Loading : Card; data class Failed(val why: MediaProblem) : Card; data class Ready(val link: MediaLink) : Card }
 
 /** The hub learns a ref when the reply is stored; a card shown a moment earlier asks again briefly instead of failing. */
 internal suspend fun resolveWithRetry(host: MediaHost, agent: String, ref: String): MediaLink {
@@ -89,8 +94,17 @@ private fun MediaCardFor(agent: String, m: TagMedia, onOpen: (MediaRef) -> Unit)
     var tick by remember { mutableIntStateOf(0) }
     val state by produceState<Card>(Card.Loading, m.ref, tick, host) {
         value = Card.Loading
-        if (host == null) { value = Card.Failed; return@produceState }
-        value = try { Card.Ready(resolveWithRetry(host, agent, m.ref)) } catch (e: Exception) { if (e is kotlinx.coroutines.CancellationException) throw e; Card.Failed }
+        if (host == null) { value = Card.Failed(MediaProblem.Generic); return@produceState }
+        if (TagMediaData.isData(m.ref)) { value = Card.Ready(MediaLink(m.ref, "image", m.name)); return@produceState } // a data: picture carries its own bytes
+        value = try {
+            val link = resolveWithRetry(host, agent, m.ref)
+            val bad = host.diagnose?.invoke(link.url) // the link exists; does the machine really deliver it?
+            if (bad != null) Card.Failed(mediaProblem(bad)) else Card.Ready(link)
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            val h = e as? HubApiException
+            Card.Failed(mediaProblem(HubFailure(h?.status ?: 0, h?.code, h?.message, network = h?.network == true || h == null)))
+        }
     }
     val shape = RoundedCornerShape(14.dp)
     when (val s = state) {
@@ -98,9 +112,21 @@ private fun MediaCardFor(agent: String, m: TagMedia, onOpen: (MediaRef) -> Unit)
             Icon(FoxIcons.get(if (m.kind == TagMedia.Kind.Image) "image" else "file"), null, tint = c.textFaint, modifier = Modifier.size(22.dp)); Spacer(Modifier.width(8.dp))
             Text(m.name, style = MaterialTheme.typography.bodyMedium, color = c.textFaint, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
-        Card.Failed -> Row(Modifier.clip(shape).background(c.surfaceAlt).clickable { tick++ }.padding(horizontal = 14.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-            Icon(FoxIcons.get("retry"), null, tint = c.textMuted, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
-            Column { Text(m.name, style = MaterialTheme.typography.bodyMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis); Text("Not available. Tap to try again", style = MaterialTheme.typography.labelSmall, color = c.textMuted) }
+        is Card.Failed -> {
+            val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+            val cmd = if (s.why == MediaProblem.Outside) allowMediaCommand(m.ref) else ""
+            var copied by remember { mutableStateOf(false) }
+            Column(Modifier.clip(shape).background(c.surfaceAlt).padding(horizontal = 14.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(FoxIcons.get("attach"), null, tint = c.textMuted, modifier = Modifier.size(20.dp)); Spacer(Modifier.width(8.dp))
+                    Column { Text(m.name, style = MaterialTheme.typography.bodyMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis); Text(s.why.text, style = MaterialTheme.typography.labelSmall, color = c.textMuted) }
+                }
+                if (cmd.isNotEmpty()) Text("Share its folder with: $cmd", style = MaterialTheme.typography.labelSmall, color = c.textFaint)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (cmd.isNotEmpty()) Text(if (copied) "Copied" else "Copy fix", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.defaultMinSize(minHeight = 44.dp).clickable { clipboard.setText(androidx.compose.ui.text.AnnotatedString(cmd)); copied = true }.padding(vertical = 12.dp))
+                    if (s.why != MediaProblem.HubTooOld) Text("Try again", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.defaultMinSize(minHeight = 44.dp).clickable { tick++ }.padding(vertical = 12.dp))
+                }
+            }
         }
         is Card.Ready -> when (s.link.kind) {
             "image" -> AsyncImage(s.link.url, m.name, contentScale = ContentScale.Fit, modifier = Modifier.clip(shape).background(c.surfaceAlt).heightIn(min = 80.dp, max = 280.dp).clickable { onOpen(MediaRef(s.link.url, MediaRef.Kind.Image, m.name)) })

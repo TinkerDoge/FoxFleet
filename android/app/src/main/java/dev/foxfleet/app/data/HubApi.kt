@@ -454,6 +454,18 @@ class HubApi(private val store: SettingsStore) {
         MediaLink(store.baseUrl.trimEnd('/') + path, kind, r["name"]?.jsonPrimitive?.contentOrNull ?: "file")
     }
 
+    /** First byte of a media link, to learn WHY a card cannot load. Null when it works; otherwise what the hub said. */
+    suspend fun mediaDiagnose(url: String): dev.foxfleet.app.ui.components.HubFailure? = withContext(Dispatchers.IO) {
+        try {
+            val call = client.newCall(Request.Builder().url(url).header("Range", "bytes=0-0").build()); call.timeout().timeout(40, TimeUnit.SECONDS)
+            await(call).use { r ->
+                if (r.isSuccessful) return@withContext null
+                val (msg, code) = errorParts(r)
+                dev.foxfleet.app.ui.components.HubFailure(r.code, code, msg)
+            }
+        } catch (e: CancellationException) { throw e } catch (e: Exception) { dev.foxfleet.app.ui.components.HubFailure(network = true) }
+    }
+
     suspend fun stopRun(agent: String, run: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/runs/" + enc(run) + "/stop", "POST", "{}"); Unit }
 
     /** A message the hub holds for a conversation: queued, waiting for a stop, or guidance accepted by the run. */

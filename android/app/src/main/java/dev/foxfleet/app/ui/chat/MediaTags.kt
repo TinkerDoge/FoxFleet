@@ -81,3 +81,6 @@ object MediaTags {
         return r.copy(text = r.text.replace(Regex("""\[\[[a-z_]*]?$"""), "").trimEnd())
     }
 }
+
+/** Helpers the cards use without depending on the parser's internals. */
+object TagMediaData { fun isData(ref: String) = MediaTags.isData(ref) }

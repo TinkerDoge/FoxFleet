@@ -21,6 +21,11 @@ export function fakeLlm({ tokenMs = 120 } = {}) {
       res.write(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'clarify', arguments: JSON.stringify({ questions: [{ question: 'Which environment?', choices: ['staging', 'production'] }] }) } }] }));
       res.write(chunk({}, 'tool_calls')); res.write('data: [DONE]\n\n'); return res.end();
     }
+    const write = /\btool-write (\S+)/.exec(text); // "tool-write <path>": call Hermes' real write_file tool, so a REAL tool.complete event carries a file the tool made
+    if (write && last.role === 'user' && (b.tools || []).some((t) => t.function?.name === 'write_file')) {
+      res.write(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_w', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: write[1], content: 'a,b\n1,2\n' }) } }] }));
+      res.write(chunk({}, 'tool_calls')); res.write('data: [DONE]\n\n'); return res.end();
+    }
     const media = /\bsend-media (.+)/.exec(text);
     if (media && last.role === 'user') { res.write(chunk({ role: 'assistant', content: '' })); res.write(chunk({ content: 'Here is your file\n' + media[1].trim().split(/\s+/).map((f) => (f.endsWith('.ogg') ? '[[audio_as_voice]]\n' : '') + `MEDIA:${f}\n`).join('') })); res.write(chunk({}, 'stop')); res.write('data: [DONE]\n\n'); return res.end(); }
     const slow = /slow/i.test(text), n = slow ? 30 : 3;

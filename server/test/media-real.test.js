@@ -31,3 +31,19 @@ test('real gateway: a MEDIA: tag in the model reply reaches the hub as text and 
     const got = await fetch(x.base + info.url); assert.equal(got.status, 200); assert.equal(got.headers.get('content-type'), mime); assert.deepEqual(Buffer.from(await got.arrayBuffer()), fs.readFileSync(f));
   }
 });
+
+test('real gateway: a file a TOOL wrote (write_file) reaches the chat as a card without the model writing any tag', async (t) => {
+  if (!REAL || !process.env.FAKE_LLM_PORT) return t.skip('set HERMES_REAL_GATEWAY_TEST and FAKE_LLM_PORT');
+  const llm = fakeLlm(); await llm.listen(Number(process.env.FAKE_LLM_PORT)); t.after(() => llm.close());
+  const dir = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'ff-real-tool-')); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'report.csv');
+  const x = await setup(t);
+  const post = (route, data) => fetch(x.base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const agent = (await waitFor(async () => { const a = (await (await fetch(x.base + '/api/agents')).json()).agents; return a.length && a[0].capabilities?.nativeUi ? a[0] : null; }, { tries: 200, ms: 200 })); assert.ok(agent);
+  const chat = await post(`/api/agents/${agent.name}/chat`, { messages: [{ role: 'user', content: `tool-write ${file}` }] }); assert.equal(chat.status, 200);
+  const stream = await chat.text(); const text = [...stream.matchAll(/"content":"((?:[^"\\]|\\.)*)"/g)].map((m) => JSON.parse(`"${m[1]}"`)).join('');
+  assert.ok(fs.existsSync(file), 'the real write_file tool ran: ' + JSON.stringify(x.events.filter((e) => e.type === 'message.complete')).slice(0, 1500));
+  assert.ok(text.includes(`MEDIA:${file}`), 'the hub turned the real tool.complete into a MEDIA line: ' + text + ' / ' + stream.slice(0, 600));
+  const info = await (await post(`/api/agents/${agent.name}/media`, { ref: file })).json(); assert.equal(info.kind, 'file'); assert.match(info.url, /^\/api\/media\//);
+  const got = await fetch(x.base + info.url); assert.equal(got.status, 200); assert.equal((await got.text()).trim(), 'a,b\n1,2'.trim());
+});
