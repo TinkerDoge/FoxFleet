@@ -112,6 +112,8 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       else { try { const since = await ui.call(agent, 'events.since', { session_id: r.session_id, last_seen: 0 }); s.up = Math.max(s.up, since.latest_seq ?? 0); s.epoch = since.epoch ?? s.epoch; } catch { /* optional */ } }
       reconcile(s, r); await save(); return snapshotView(s, r);
     },
+    /** How many approval / clarification requests are open for this user's sessions of one profile (the agent list shows "Needs approval"). */
+    openRequests(scope, machineId, agent) { let n = 0; for (const s of sessions.values()) if (s.scope === scope && s.machineId === machineId && s.agent === agent) n += s.requests.size; return n; },
     // Admission: journal first, then upstream, then record what Hermes actually said.
     async send(scope, machineId, agent, stored, { text, mode = 'auto', clientId }) {
       own(scope, stored); if (!MODES.includes(mode)) throw fault(400, 'That send mode is not available for this agent');

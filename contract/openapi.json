@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.3-alpha",
+    "version": "0.3.4-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -3989,6 +3989,73 @@
           }
         }
       }
+    },
+    "/api/agents/{name}/pin": {
+      "put": {
+        "operationId": "pinAgent",
+        "summary": "Pin or unpin an agent for the signed-in user. Pinned agents stay on top of the list in the order they were pinned (max 50).",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "pinned"
+                ],
+                "properties": {
+                  "pinned": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New pin state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pinned": {
+                      "type": "boolean"
+                    },
+                    "pins": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4526,6 +4593,57 @@
           },
           "capabilities": {
             "$ref": "#/components/schemas/Capabilities"
+          },
+          "last_activity_at": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "Unix ms of the last message sent to or received from this agent by THIS user (null: none yet). The agents list is returned sorted: pinned first (pin_order), then newest activity."
+          },
+          "last_session_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Title of the chat that was last active, when the hub knows it"
+          },
+          "last_message_preview": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 140,
+            "description": "One plain line (no Markdown, no MEDIA: tags, secrets or addresses removed; a picture-only reply reads Photo, Video, Voice message or File: name)"
+          },
+          "last_role": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "user",
+              "assistant",
+              null
+            ]
+          },
+          "pinned": {
+            "type": "boolean"
+          },
+          "pin_order": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "0-based, in the order the user pinned"
+          },
+          "working": {
+            "type": "boolean",
+            "description": "A reply is running for this user right now"
+          },
+          "needs_input": {
+            "type": "boolean",
+            "description": "An approval or clarification request is open (native Hermes)"
           }
         }
       },

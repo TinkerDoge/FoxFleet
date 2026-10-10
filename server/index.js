@@ -20,6 +20,7 @@ import { nativeHub } from './hermes-ui.js';
 import { nativeFacade, viewOf } from './native-facade.js';
 import { applyLive, catalogFor, readLiveCatalog } from './commands.js';
 import { historyStore, newSessionId, validSessionId } from './history.js';
+import { activityStore, sortAgents } from './activity.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
 import { openaiClient } from './openai.js';
 import { readFileSync } from 'node:fs';
@@ -139,12 +140,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const runs = runRegistry(), facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(); runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
-      const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')) };
+      const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')), activity: await activityStore(path.join(dir, 'activity.json')) };
       reg.mcp = mcpHandler(reg.inbox); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
     })());
     return registries.get(userId);
@@ -213,6 +214,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       checks: Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])) };
   }
+  /** The agent-list fields, per user: when, what and which chat was last active, pin state, and whether the agent works or waits for an answer. Never an address. */
+  function withActivity(ctx, m, view) {
+    const reg = ctx.reg, scope = scopeOf(ctx); let a = reg.activity.get(m.name);
+    if (!a && isChatKind(kindOf(m))) { // chats from before this feature: take the newest stored session
+      const top = reg.history.list(m.name, { limit: 1 }).sessions?.[0];
+      if (top) { const last = reg.history.messages(m.name, top.id, { limit: 1 }).messages?.at(-1); reg.activity.seed(m.name, { at: top.updated, role: last?.role === 'user' ? 'user' : 'assistant', text: last?.content ?? top.preview ?? '', title: top.title, session: top.id }); a = reg.activity.get(m.name); }
+    }
+    const pins = reg.activity.pins(), pinIndex = pins.indexOf(m.name);
+    const needs = kindOf(m) === 'hermes' && nativeUi(m) && m.machineId ? reg.native.openRequests(scope, m.machineId, m.profile) > 0 : false;
+    return { ...view, last_activity_at: a?.at ?? null, last_session_title: a?.title || null, last_message_preview: a?.preview || null, last_role: a?.role ?? null,
+      pinned: pinIndex >= 0, pin_order: pinIndex >= 0 ? pinIndex : null, working: runs.working(scope, m.name), needs_input: needs };
+  }
   function probeAny(m) {
     if (isChatKind(kindOf(m))) return openai.probe(m);
     if (kindOf(m) === 'mcp-inbox') { const seen = inbox.lastSeen(m.name); return Promise.resolve({ name: m.name, kind: 'mcp-inbox', label: m.label, online: seen > Date.now() - 24 * 3600 * 1000, chatReady: true, managementReady: false, lastSeen: seen ? new Date(seen).toISOString() : null, checks: { inbox: { ok: true, message: seen ? 'Agent checked in' : 'Waiting for the agent to connect' } }, capabilities: { object: 'foxfleet.bridge', features: { chat_completions: true, mailbox: true, images: false, files: false, screen: false, sessions: true } } }); }
@@ -234,6 +247,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     const reg = ctx.reg, scope = scopeOf(ctx);
     return { async launch(item, { rebuild }) {
       const isChat = isChatKind(kindOf(m)), hist = reg.history;
+      reg.activity.touch(m.name, { role: 'user', text: item.text, session: item.session || undefined });
       if (isChat) {
         const sid = validSessionId(item.session) ? item.session : newSessionId();
         let messages = item.body?.messages;
@@ -443,11 +457,15 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         return sendJson(res, 200, { retentionDays: history.retentionDays });
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
-        const agents = await Promise.all(originalConnections.map(async (m, i) => agentView(m, await probeAny(m), i))); originalConnections.forEach(current); return sendJson(res, 200, { agents }); }
-      if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = agentView(m, await probeAny(m), originalConnections.indexOf(m)); current(m); return sendJson(res, 200, { agent: view }); }
+        const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, agentView(m, await probeAny(m), i)))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
+      if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned
+          const b = await readJson(req, 512); if (typeof b?.pinned !== 'boolean') throw fault(400, 'pinned must be true or false');
+          const pins = await ctx.reg.activity.pin(m.name, b.pinned); return sendJson(res, 200, { pinned: pins.includes(m.name), pins });
+        }
         if (route === 'media' && parts.length === 4 && req.method === 'POST') { // a ref the agent mentioned in a reply -> a short-lived link for THIS user
           const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const t of runs.texts(scope, m.name)) media.note(scope, m.name, t);
           return sendJson(res, 200, media.resolve({ scope, agent: m.name, machineId: m.machineId, profile: m.profile, ref: b?.ref }));
@@ -519,7 +537,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
           const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
           if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
-          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id });
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id }); ctx.reg.activity.touch(m.name, { role: 'user', text, session: data.session_id });
           return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
         }
         if (route === 'messages' && parts.length === 4 && req.method === 'POST' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) {
@@ -612,7 +630,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: userText || '(attachment)', mode: 'auto', idleOnly: true });
+          const r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: userText || '(attachment)', mode: 'auto', idleOnly: true }); ctx.reg.activity.touch(m.name, { role: 'user', text: userText || '(attachment)', session: data.session_id });
           if (!r.run) throw fault(409, 'Hermes did not start a reply for this message; check the conversation');
           return runs.attach(req, res, r.run);
         }

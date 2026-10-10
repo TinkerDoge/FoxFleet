@@ -10,6 +10,7 @@ const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-
 
 export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, maxRunMs = 30 * 60_000, maxActive = 8, keepAliveMs = 15_000, now = () => Date.now() } = {}) {
   const runs = new Map(); // id -> run
+  const finishListeners = [];
 
   function sweep() { const t = now(); for (const [id, r] of runs) if (r.done && t - r.finished > ttlMs) runs.delete(id); }
   const push = (r, text) => {
@@ -18,7 +19,7 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
     while (r.bytes > maxBytes && r.log.length > 1) r.bytes -= r.log.shift().text.length;
     for (const fn of r.subs) fn();
   };
-  const finish = (r, state) => { if (r.done) return; r.done = true; r.state = state; r.finished = now(); clearTimeout(r.timer); try { r.onFinish?.(r, state); } catch { /* history is best effort */ } if (state !== 'done') push(r, `event: foxfleet.run\ndata: ${JSON.stringify({ state })}`); for (const fn of r.subs) fn(); };
+  const finish = (r, state) => { if (r.done) return; r.done = true; r.state = state; r.finished = now(); clearTimeout(r.timer); try { r.onFinish?.(r, state); } catch { /* history is best effort */ } for (const f of finishListeners) { try { f(r, state); } catch { /* listeners are best effort */ } } if (state !== 'done') push(r, `event: foxfleet.run\ndata: ${JSON.stringify({ state })}`); for (const fn of r.subs) fn(); };
 
   async function pump(r, body) {
     const reader = body.getReader(), dec = new TextDecoder(); let buf = '';
@@ -47,6 +48,10 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
       r.timer = setTimeout(() => { abort.abort(); }, maxRunMs); r.timer.unref?.();
       runs.set(r.id, r); void pump(r, up.body); return r;
     },
+    /** Called for every run that ends (any agent, any user): the agent list's last-activity line uses it. */
+    onFinish(fn) { finishListeners.push(fn); },
+    /** Is a reply running for this user and agent right now? */
+    working(scope, agent) { for (const r of runs.values()) if (r.scope === scope && r.agent === agent && !r.done) return true; return false; },
     /** Reply text of this user's runs for an agent (running or just finished): lets the media hub know about a tag the moment it is written. */
     texts(scope, agent) { sweep(); return [...runs.values()].filter((r) => r.scope === scope && r.agent === agent).map((r) => r.text).filter(Boolean); },
     get(scope, agent, id) { sweep(); const r = runs.get(id); if (!r || r.scope !== scope || r.agent !== agent) throw fault(404, 'That run is gone (finished runs are kept for a few minutes)'); return r; },
