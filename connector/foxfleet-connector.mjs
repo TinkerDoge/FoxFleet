@@ -608,7 +608,7 @@ export async function main(argv = process.argv.slice(2)) {
   const cfg = loadConfig();
   try {
     if (cmd === 'help' || args.help) {
-      log(`Foxfleet connector ${VERSION}\n\n  doctor                   check Hermes profiles and the native gateway (what was found, whether it starts, how to fix)\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
+      log(`Foxfleet connector ${VERSION}\n\n  allow-media <folder>     share one more folder so agents can send files from it\n  doctor                   check Hermes profiles and the native gateway (what was found, whether it starts, how to fix)\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
     }
     if (cmd === 'pair') {
       const hub = checkHub(args.hub || process.env.FOXFLEET_HUB || ''), code = args.code || process.env.FOXFLEET_CODE;
@@ -632,7 +632,7 @@ export async function main(argv = process.argv.slice(2)) {
       const checks = [...await nativeDoctor(cfg ?? {}), ...mediaDoctor(cfg ?? {}, { root: hermesRoot({ override: cfg?.hermesHome }) })]; for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
       if (args.json) log(JSON.stringify(checks)); if (checks.some((c) => c.status === 'fail')) process.exit(1); return;
     }
-    if (cmd === 'allow-media') { const dir = args._?.[1] ?? args.dir ?? process.argv[3]; const next = allowMediaRoot(cfg, dir); saveConfig(next); log(`Shared with the hub: ${next.mediaRoots.at(-1)}\nAgents can now send files from there (a running connector picks this up on the next request).`); return; }
+    if (cmd === 'allow-media') { const dir = args._?.[1] ?? args.dir ?? process.argv[3]; if (!cfg) throw new Error('This computer is not paired yet. Run: foxfleet connector pair --hub URL --code CODE'); const next = allowMediaRoot(cfg, dir); saveConfig(next); log(`Shared with the hub: ${next.mediaRoots.at(-1)}\nAgents can now send files from there (a running connector picks this up on the next request).`); return; }
     if (cmd === 'status') { const root = hermesRoot({ override: cfg.hermesHome }); log(`Machine: ${cfg.name}\nHub: ${cfg.hub}\nConfig: ${configFile()} (0600)`); summary(root, discoverProfiles(root), cfg); return; }
     if (cmd === 'install-service') { installService(); return; }
     if (cmd === 'uninstall-service') { uninstallService(); return; }

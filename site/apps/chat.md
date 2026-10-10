@@ -57,3 +57,10 @@ When the agent's machine has the Hermes checkout (see [Hermes](../agents/hermes.
 - **What Hermes did with your message.** A message sent while it works shows Hermes's own answer: *started*, *queued*, *accepted as guidance*, *switched to it* or *did not accept it*. A queued message cannot be taken back, because Hermes holds the queue; the button says so.
 - **Model and profile setting.** `/model` opens the picker described above; the profile-wide busy default is in the agent settings.
 - **Tools.** The tools used during a reply are listed under the status line.
+
+
+## Scrolling
+
+- Opening a chat puts you at the newest message, again after the history loads and after pictures and cards change height. While you are at the bottom a streaming reply keeps you there.
+- Scroll up more than about 120 px and a round **arrow** appears above the composer. If a message (or a reply starting to stream) arrives while you are scrolled up, it becomes a **New message** pill (with a count when there are several) and the view does not move. Tap it to glide down. Your own message always takes you to the bottom.
+- **Load earlier messages** keeps your place. Switching chats resets everything. The keyboard opening keeps a view that was at the bottom at the bottom. With reduced motion the jump is instant and the button does not animate.

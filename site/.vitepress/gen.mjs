@@ -83,6 +83,9 @@ const ENV = {
   FOXFLEET_LINK_SILENT_MS: ['Connector: close and reopen the hub link when nothing (not even a ping) arrived for this long. The hub pings every 25 s.', '75000', 'connector'],
   DEMO_SLOW: ['Test helper only (`server/test/media-demo-hub.js`): stream a long reply so a network blip can be shown mid-turn.', '-', 'tests'],
   FAKE_LLM_PORT: ['Test helper only: port for the fake model in `server/test/media-real.test.js`.', '-', 'tests'],
+  FOXFLEET_DEBUG: ['Hub diagnostics: one JSON line per event on stdout (for example `activity.seed`); never message text or addresses.', '-', 'ops'],
+  UPDATE_FIXTURE: ['Test helper only: rewrites `contract/agents-activity.sample.json` from a real hub answer.', '-', 'tests'],
+  VNC_PORT: ['Test helper only: the VNC port of the demo hub in `server/test/screen-demo-hub.js`.', '-', 'tests'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
 };

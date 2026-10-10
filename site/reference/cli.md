@@ -61,3 +61,8 @@ foxfleet doctor --json | jq -r '.checks[] | select(.status!="ok") | "\(.status):
 ## Settings it reads
 
 `FOXFLEET_DATA`, `FOXFLEET_CONFIG`, `FOXFLEET_PORT`/`PORT`, `FOXFLEET_HOST`, `FOXFLEET_UNIT`, `FOXFLEET_BACKUPS`, `FOXFLEET_ENV_FILE`, `FOXFLEET_PUBLIC_URL`, `FOXFLEET_TRUSTED_ORIGINS`, `FOXFLEET_SETUP_CODE` (from the environment first, then the env file) and, for mirrors and tests, `FOXFLEET_RELEASES_API`, `FOXFLEET_APPS_DIR`.
+
+
+## `foxfleet connector allow-media <folder>`
+
+Shares one more folder with the hub so agents can send files from it (an absolute path to an existing folder). It refuses the whole disk, your home folder and credential folders. A running connector picks it up on the next request. `foxfleet connector doctor` lists every shared folder and warns about entries that do not exist.

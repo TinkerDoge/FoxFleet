@@ -14,7 +14,7 @@ The machine token (`<machineId>.<secret>`) is obtained once by `POST /api/machin
 Right after connecting (and whenever the set changes) the connector sends which profiles it shares; the hub creates, keeps or removes the matching agents and answers with the agent names it assigned:
 
 ```json
-{"t":"profiles","os":"linux","profiles":[{"profile":"default"},{"profile":"coder"}]}
+{"t":"profiles","os":"linux","version":"0.3.5-alpha","features":["media","mediaRoots","mediaCheck"],"profiles":[{"profile":"default"},{"profile":"coder"}]}
 {"t":"registered","agents":[{"profile":"default","agent":"default"},{"profile":"coder","agent":"coder"}]}
 ```
 
@@ -24,7 +24,7 @@ IDs (`id`) are random hex chosen by the hub per stream. `b` is base64.
 
 | Direction | Frame | Fields | Meaning |
 | --- | --- | --- | --- |
-| agent → hub | `profiles` | `os, profiles[{profile}]` | The profiles this machine shares now. |
+| agent → hub | `profiles` | `os, version?, features?, profiles[{profile}]` | The profiles this machine shares now. |
 | hub → agent | `registered` | `agents[{profile, agent}]` | The agents the hub created or kept for them. |
 | hub → agent | `req` | `id, agent, svc, method, url, headers` | Start an HTTP request for one profile. `svc` is `dashboard` or `api`; the connector resolves it to that profile's local port and **adds that profile's credentials itself**. |
 | hub → agent | `body` | `id, b` | Request body chunk (≤ 48 KiB). |

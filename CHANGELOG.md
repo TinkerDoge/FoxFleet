@@ -6,6 +6,32 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
+## 0.3.5-alpha (unreleased, Android versionCode 13)
+
+Fixes from testing 0.3.3 / 0.3.4 on a phone against a self-hosted hub behind Cloudflare. **The hub needs the new build** for the items marked *hub*; apps and connectors tell you when it is older.
+
+### Fixed: Bot computer view (screen takeover)
+- *Hub:* starting a virtual desktop on a cold machine took longer than the 20 s call limit and failed with a blank viewer; it now waits up to 90 s. A gateway restart that forgot the viewer now answers `reopen` and the apps reopen once on their own.
+- *Hub:* screen failures carry a machine-readable `code` (`machine_offline`, `display_unsupported`, `gateway_unreachable`, `dashboard_auth`, `timeout`, `reopen`), and `GET /api/auth` reports `hub.version` and `hub.features`.
+- *Apps:* the viewer never stays blank: named messages for offline machine, no VNC / not installed, Hermes too old, expired sign-in, unreachable hub, timeout and **hub too old**, plus a timeout when the WebView page never starts. Shared vectors: `contract/screen-problems.vectors.json`.
+- *Apps:* touch controls: tap = click, long-press = right-click, drag, two-finger scroll, pinch zoom with Fit / 100%, a keyboard button and a key row with Esc, Tab, Enter, arrows and sticky Ctrl, Alt and Shift.
+- Docker image and release tarball now include `package.json`, so the hub reports its real version.
+
+### Fixed: agents sending pictures, videos and files
+- *Hub:* media made by tools reaches the chat even when the model writes no tag: paths in tool results (image generation, screenshots, files a tool wrote or sent), Markdown pictures and `data:image/…` pictures become cards. Checked against a real Hermes `tui_gateway` with a fake model (a real `write_file` call).
+- *Connector 0.3.5:* shares every profile's own cache folders and `HERMES_MEDIA_ALLOW_DIRS`; new `foxfleet connector allow-media <folder>`; `doctor` lists shared folders and warns about bad entries; reports its version and features to the hub.
+- *Apps:* a card that cannot load says why ("Not available: outside shared folders" with a **Copy fix** command, file gone, too large, wrong type, machine offline, hub too old, sign in again) instead of a generic message. Each agent's test shows a **Media** row with the hub and connector versions.
+
+### Fixed: no time or preview on agent cards
+- *Hub:* Hermes agents are seeded once from their newest session (any profile, connector or old `/chat` path); ISO session times are understood. `FOXFLEET_DEBUG=1` logs `activity.seed` lines.
+- *Apps:* the last message each device sent or received is kept locally as a fallback; Settings shows a quiet "Update your hub" note when the hub reports no features. Tested against a real `/api/agents` answer (`contract/agents-activity.sample.json`).
+
+### Fixed: chat scroll
+- Web and Android: open at the newest message (also after history and late layout changes), a round go-to-bottom arrow after scrolling up, a **New message** pill with a count that never moves the view, pinned streaming, "load earlier" keeps your place, resets on chat switch, reduced motion respected. Shared vectors: `contract/scroll-follow.vectors.json`.
+
+### Docs
+- Screen takeover and media troubleshooting, a hub / connector / app compatibility table, scrolling, agent list fallbacks, `allow-media`.
+
 ## 0.3.4-alpha (unreleased, Android versionCode 12)
 
 ### Added: a Telegram-style agent list, sorted by activity, with pins

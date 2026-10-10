@@ -31,3 +31,24 @@ Cards are drawn from the reply text, so earlier conversations show them again wh
 ## For agent authors
 
 Write the tag on its own line, with an absolute path, and make sure the file exists when you send the reply. Keep files under 25 MiB. Details: [Connect an agent](/agents/hermes#sending-pictures-video-and-files).
+
+
+## Troubleshooting: a card says "Not available"
+
+A card that cannot load now says why, and for some reasons offers a fix.
+
+| Card says | Why | Fix |
+| --- | --- | --- |
+| **Not available: outside shared folders** | The file is in a folder the machine does not share with the hub. | Tap **Copy fix** and run it on that machine: `foxfleet connector allow-media "/path/to/folder"`. Hermes caches, the workspace and the temp folder are shared already; a folder named in `HERMES_MEDIA_ALLOW_DIRS` too. |
+| **That location is never shared** | Credentials folders (`.ssh`, `.aws`, …) are refused on purpose. | Move the file elsewhere. |
+| **The file is gone from the agent's machine** | It was deleted or is a temp file that was cleaned up. | Ask the agent to send it again. |
+| **Too large / file type isn't delivered** | Over the size limit (default 25 MB, `mediaMaxBytes`) or not a picture, video, audio or document. | Send a smaller file or another format. |
+| **The agent's machine is offline** | The connector is not connected. | Start it. |
+| **Your hub needs an update to show agent media** | The hub is older than 0.3.3 (no media endpoints). | Update the hub. |
+| **This agent can't send local files** | The agent is not connected through a connector (HTTP-only agents can only send links). | Connect it with the connector, or send a link or a data: picture. |
+
+Check everything at once with `foxfleet connector doctor` on the agent's machine: it lists the shared folders, folders that do not exist, and the connector version. An agent's **Media** row (Manage > the agent > Test) shows the hub version, the connector version and how the agent sends media.
+
+### What FoxFleet turns into a card
+
+`MEDIA:` lines, pictures a tool made (image generation, screenshots, files a tool wrote or sent: the paths in the tool's result), Markdown pictures (`![](/path/or/https://…)`) and `data:image/…;base64,…` pictures. A bare path in prose is **not** turned into a card unless a tool made the file in the same turn.

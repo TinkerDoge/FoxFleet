@@ -52,3 +52,20 @@ The `foxfleet-data` volume is kept. Back it up first ([how](./backups)). Rolling
 ## Compatibility promise (alpha)
 
 `config.json` v3 is stable within `0.1.x`. Until `1.0` there is no guarantee for other files; read the [changelog](/project/changelog) before upgrading.
+
+
+## Compatibility
+
+Apps and connectors keep working with an older hub and tell you what is missing (Settings shows a quiet "Update your hub" note; a card or a screen error names the feature). Hubs older than 0.3.5 report no version.
+
+| Feature | Needs hub | Needs connector | Needs app |
+| --- | --- | --- | --- |
+| Chat, sessions, commands | any 0.3.x | 0.3.x | any |
+| Agent media cards (`MEDIA:`), image proxy | 0.3.3 | 0.3.3 | 0.3.3 |
+| Media from tool results, `data:` pictures, "outside shared folders" reason + fix | **0.3.5** | 0.3.3 (`allow-media`, doctor media rows and the Media row's connector version need **0.3.5**) | 0.3.5 |
+| Last-activity time and preview on agent cards | 0.3.4 (seeding from existing Hermes chats: **0.3.5**) | none | 0.3.4 (offline fallback: 0.3.5) |
+| Screen takeover | 0.3.x | 0.3.x, Hermes with display support | any |
+| Screen errors that say why (machine offline, hub too old, …) | **0.3.5** | none | 0.3.5 |
+| Version and feature report (`/api/auth` `hub`) | **0.3.5** | none | 0.3.5 |
+
+The hub's features (`GET /api/auth` → `hub.features`): `screenErrors`, `media`, `mediaTags`, `agentActivity`, `pin`, `hubInfo`. To upgrade the hub, follow the steps above and redeploy: a build from before 0.3.5 will not report them.

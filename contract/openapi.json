@@ -4135,6 +4135,23 @@
                 }
               }
             }
+          },
+          "connector": {
+            "type": "object",
+            "properties": {
+              "version": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
           }
         }
       },
@@ -4213,6 +4230,10 @@
         "properties": {
           "error": {
             "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes."
           }
         }
       },
@@ -4286,6 +4307,34 @@
           },
           "user": {
             "$ref": "#/components/schemas/User"
+          },
+          "hub": {
+            "type": "object",
+            "description": "What this hub is (0.3.5+). Absent on older hubs: clients treat that as 'hub needs an update' and say so.",
+            "required": [
+              "version",
+              "features"
+            ],
+            "properties": {
+              "version": {
+                "type": "string",
+                "example": "0.3.5-alpha"
+              },
+              "features": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "screenErrors",
+                    "media",
+                    "mediaTags",
+                    "agentActivity",
+                    "pin",
+                    "hubInfo"
+                  ]
+                }
+              }
+            }
           }
         }
       },
@@ -4552,6 +4601,59 @@
           "nativeUi": {
             "type": "boolean",
             "description": "The machine connector can drive a native Hermes UI gateway for this profile (preferred over /v1/runs and chat completions)"
+          },
+          "media": {
+            "type": "object",
+            "description": "Who can deliver this agent's pictures, videos and files (0.3.5+). Shown as the Media row of the agent's test. Never contains paths or addresses.",
+            "properties": {
+              "hub": {
+                "type": "boolean"
+              },
+              "hubVersion": {
+                "type": "string"
+              },
+              "local": {
+                "type": "boolean",
+                "description": "The agent runs on a paired machine (files come from its disk through the connector)"
+              },
+              "connector": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "version": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "null = a connector older than 0.3.5 that does not report one"
+                  },
+                  "online": {
+                    "type": "boolean"
+                  },
+                  "media": {
+                    "type": "boolean"
+                  }
+                }
+              },
+              "agent": {
+                "type": "string",
+                "enum": [
+                  "native",
+                  "http",
+                  "mcp",
+                  "chat"
+                ]
+              },
+              "tags": {
+                "type": "boolean"
+              },
+              "toolMedia": {
+                "type": "boolean",
+                "description": "Pictures and files made by tools (not only MEDIA: lines) become cards (native Hermes)"
+              }
+            }
           }
         }
       },
