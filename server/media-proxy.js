@@ -10,6 +10,8 @@ import { fault } from './config.js';
 
 export const MAX_BYTES = 8 * 1024 * 1024, TIMEOUT_MS = 10_000, MAX_REDIRECTS = 2;
 export const IMAGE_TYPES = new Set(['image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif']);
+/** What an agent's MEDIA:https://... tag may deliver through the hub (never HTML, SVG or scripts). */
+export const MEDIA_TYPES = new Set([...IMAGE_TYPES, 'video/mp4', 'video/webm', 'video/quicktime', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/x-wav', 'audio/mp4', 'audio/flac', 'audio/aac', 'application/pdf', 'text/plain', 'text/csv', 'application/zip']);
 
 const v4 = (ip) => ip.split('.').map(Number);
 const inV4 = (n, base, bits) => { const a = (n[0] * 2 ** 24) + (n[1] << 16) + (n[2] << 8) + n[3], b = v4(base), c = (b[0] * 2 ** 24) + (b[1] << 16) + (b[2] << 8) + b[3], size = 2 ** (32 - bits); return Math.floor(a / size) === Math.floor(c / size); };
@@ -49,14 +51,14 @@ async function pin(hostname, lookup) {
 }
 
 /** Fetches one image through the protections above. `lookup`/`request` are injectable for tests. */
-export async function fetchImage(raw, { lookup = dns.lookup, request = https.request, maxBytes = MAX_BYTES, timeoutMs = TIMEOUT_MS } = {}) {
+export async function fetchImage(raw, { lookup = dns.lookup, request = https.request, maxBytes = MAX_BYTES, timeoutMs = TIMEOUT_MS, types = IMAGE_TYPES } = {}) {
   const deadline = Date.now() + timeoutMs; let target = parseTarget(raw);
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     const addr = await pin(target.hostname, lookup);
     const res = await new Promise((resolve, reject) => {
       const left = deadline - Date.now(); if (left <= 0) return reject(fault(504, 'Image request timed out'));
       const req = request({ host: addr.address, family: addr.family, port: 443, method: 'GET', path: target.pathname + target.search, servername: net.isIP(target.hostname) ? undefined : target.hostname,
-        headers: { Host: target.host, Accept: 'image/png,image/jpeg,image/gif,image/webp,image/avif', 'User-Agent': 'Foxfleet-media-proxy', 'Accept-Encoding': 'identity' }, timeout: left }, resolve);
+        headers: { Host: target.host, Accept: types === IMAGE_TYPES ? 'image/png,image/jpeg,image/gif,image/webp,image/avif' : [...types].join(','), 'User-Agent': 'Foxfleet-media-proxy', 'Accept-Encoding': 'identity' }, timeout: left }, resolve);
       req.on('timeout', () => req.destroy(fault(504, 'Image request timed out'))); req.on('error', (e) => reject(e.status ? e : fault(502, 'Could not fetch the image'))); req.end();
     });
     if ([301, 302, 303, 307, 308].includes(res.statusCode) && res.headers.location) {
@@ -66,7 +68,7 @@ export async function fetchImage(raw, { lookup = dns.lookup, request = https.req
     }
     if (res.statusCode !== 200) { res.resume(); throw fault(502, 'The image host refused the request'); }
     const type = String(res.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-    if (!IMAGE_TYPES.has(type)) { res.resume(); throw fault(415, 'Not a supported image type'); }
+    if (!types.has(type)) { res.resume(); throw fault(415, 'Not a supported media type'); }
     if (Number(res.headers['content-length']) > maxBytes) { res.resume(); throw fault(413, 'Image is too large'); }
     const chunks = []; let size = 0;
     for await (const c of res) { size += c.length; if (size > maxBytes) { res.destroy(); throw fault(413, 'Image is too large'); } chunks.push(c); }

@@ -21,12 +21,14 @@ export function fakeLlm({ tokenMs = 120 } = {}) {
       res.write(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'clarify', arguments: JSON.stringify({ questions: [{ question: 'Which environment?', choices: ['staging', 'production'] }] }) } }] }));
       res.write(chunk({}, 'tool_calls')); res.write('data: [DONE]\n\n'); return res.end();
     }
+    const media = /\bsend-media (\S+)/.exec(text);
+    if (media && last.role === 'user') { res.write(chunk({ role: 'assistant', content: '' })); res.write(chunk({ content: `Here is your file\nMEDIA:${media[1]}\n` })); res.write(chunk({}, 'stop')); res.write('data: [DONE]\n\n'); return res.end(); }
     const slow = /slow/i.test(text), n = slow ? 30 : 3;
     res.write(chunk({ role: 'assistant', content: '' }));
     const answerTo = last.role === 'tool' ? `got: ${text.slice(0, 60)}` : `ok: ${text.slice(0, 60)}`;
     for (let i = 0; i < n && !closed; i++) { res.write(chunk({ content: slow ? `w${i} ` : (i === 0 ? answerTo : '') })); if (slow) await sleep(tokenMs); }
     if (!closed) { res.write(chunk({}, 'stop')); res.write('data: [DONE]\n\n'); res.end(); }
   });
-  return { log, server, listen: () => new Promise((r) => server.listen(0, '127.0.0.1', () => r(server.address().port))), close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
+  return { log, server, listen: (port = 0) => new Promise((r) => server.listen(port, '127.0.0.1', () => r(server.address().port))), close: () => new Promise((r) => { server.closeAllConnections?.(); server.close(r); }) };
 }
 if (process.argv[1].endsWith('fake-llm.js')) { const f = fakeLlm(); f.listen().then((p) => console.log(p)); }

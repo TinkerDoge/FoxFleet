@@ -40,6 +40,7 @@ export function connectorHub() {
   }
   return {
     ui: (id) => links.get(id)?.ui ?? null,
+    fetchMedia: (id, agent, filePath, o) => { const l = links.get(id); if (!l) return Promise.reject(Object.assign(new Error('The machine is offline'), { safe: true, status: 503 })); return l.fetchMedia(agent, filePath, o); },
     /** fn(machineId) runs each time a machine (re)connects and announces itself: the hub re-attaches live native sessions then. */
     onUp(fn) { upListeners.add(fn); return () => upListeners.delete(fn); },
     drop: (id) => links.get(id)?.close(),
@@ -48,7 +49,7 @@ export function connectorHub() {
     async attach(connectorId, ws, hooks = {}) {
       links.get(connectorId)?.close(); // a new connection replaces the old one
       const link = { streams: new Map(), seen: Date.now(), servers: [], agents: new Set(), send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
-        close() { for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
+        close() { for (const [, p] of this.mediaPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { safe: true, status: 503 })); } this.mediaPending?.clear(); for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
       // Profiles the machine exposes: one pair of loopback forwarders each, replaced wholesale on every `profiles` frame.
       link.expose = async (names) => {
         const want = new Set(names);
@@ -59,7 +60,13 @@ export function connectorHub() {
         }
       };
       // Native Hermes UI gateway, reached through the connector's allowlist (see connector `ui-call`). One call = one frame out, one frame back.
-      link.uiPending = new Map(); link.uiListeners = new Set(); link.uiCaps = {};
+      link.uiPending = new Map(); link.uiListeners = new Set(); link.uiCaps = {}; link.mediaPending = new Map();
+      // Ask the machine for one local file an agent named in a MEDIA: tag. The machine decides (roots, type, size); we only cap and collect.
+      link.fetchMedia = (agent, filePath, { maxBytes = 25 * 1024 * 1024, timeoutMs = 60_000 } = {}) => new Promise((resolve, reject) => {
+        const id = randomBytes(6).toString('hex'), p = { chunks: [], size: 0, meta: null, resolve, reject, maxBytes };
+        p.timer = setTimeout(() => { link.mediaPending.delete(id); reject(Object.assign(new Error('The machine did not deliver the file in time'), { safe: true, status: 504 })); }, timeoutMs); p.timer.unref?.();
+        link.mediaPending.set(id, p); link.send({ t: 'media-get', id, agent, path: filePath });
+      });
       link.ui = {
         caps: (agent) => link.uiCaps[agent] ?? null,
         call(agent, op, params = {}, timeoutMs = 35_000) {
@@ -74,6 +81,13 @@ export function connectorHub() {
       ws.on('message', (text) => {
         link.seen = Date.now(); let m; try { m = JSON.parse(text); } catch { return; }
         if (m.t === 'ui-caps') { link.uiCaps = m.caps && typeof m.caps === 'object' ? m.caps : {}; for (const fn of upListeners) { try { fn(connectorId); } catch { /* a listener must not break the tunnel */ } } return; }
+        if (m.t === 'media-meta' || m.t === 'media-data' || m.t === 'media-end') {
+          const p = link.mediaPending.get(m.id); if (!p) return; const done = (fn) => { link.mediaPending.delete(m.id); clearTimeout(p.timer); fn(); };
+          if (m.t === 'media-meta') { if (!m.ok) return done(() => p.reject(Object.assign(new Error(String(m.error || 'The machine would not deliver that file').slice(0, 200)), { safe: true, status: m.code === 'missing' ? 404 : m.code === 'too_big' ? 413 : m.code === 'rate' ? 429 : m.code === 'type' || m.code === 'sniff' ? 415 : 403, code: m.code }))); if (Number(m.size) > p.maxBytes) return done(() => p.reject(Object.assign(new Error('File is too large'), { safe: true, status: 413 }))); p.meta = { size: Number(m.size) || 0, mime: String(m.mime || 'application/octet-stream'), name: String(m.name || 'file') }; return; }
+          if (m.t === 'media-data' && p.meta) { const b = Buffer.from(String(m.b || ''), 'base64'); p.size += b.length; if (p.size > p.maxBytes) return done(() => p.reject(Object.assign(new Error('File is too large'), { safe: true, status: 413 }))); p.chunks.push(b); return; }
+          if (m.t === 'media-end' && p.meta) return done(() => p.resolve({ ...p.meta, body: Buffer.concat(p.chunks) }));
+          return;
+        }
         if (m.t === 'ui-ev') { for (const fn of link.uiListeners) { try { fn(m.agent, m.ev); } catch { /* listener bugs must not break the tunnel */ } } return; }
         if (m.t === 'ui-res') { const p = link.uiPending.get(m.id); if (!p) return; link.uiPending.delete(m.id); clearTimeout(p.timer); if (m.ok) p.resolve(m.result); else p.reject(Object.assign(new Error(String(m.error || 'failed').slice(0, 300)), { code: m.code || 'error', ...(m.rpc !== undefined ? { rpc: m.rpc } : {}) })); return; }
         if (m.t === 'profiles') { Promise.resolve(hooks.onProfiles?.(m, link)).then((reply) => reply && link.send({ t: 'registered', ...reply })).catch(() => link.send({ t: 'registered', agents: [], error: 'sync failed' })); return; }

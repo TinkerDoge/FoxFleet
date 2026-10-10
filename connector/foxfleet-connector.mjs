@@ -204,6 +204,7 @@ function runLink(cfg, onState = () => {}) {
     agents = next; return [...next.keys()];
   }
   const send = (o) => { if (ws?.readyState === 1) ws.send(JSON.stringify(o)); };
+  const mediaOk = mediaLimiter(Number(cfg.mediaPerMinute) || 60);
   function announce(force = false) {
     const names = scan(), key = names.join(',');
     if (!force && key === lastSent) return; lastSent = key;
@@ -220,6 +221,17 @@ function runLink(cfg, onState = () => {}) {
     return '';
   }
   async function handle(m) {
+    if (m.t === 'media-get') { // hub -> connector: one local file the agent named in a MEDIA: tag
+      if (!mediaOk()) return send({ t: 'media-meta', id: m.id, ok: false, code: 'rate', error: 'Too many files requested; try again in a minute' });
+      const cur = loadConfig() ?? cfg, prof = discoverProfiles(root).find((p) => p.profile === m.agent), home = prof?.home;
+      const c = checkMedia(m.path, mediaRoots({ root, home, cfg: cur }), { maxBytes: Number(cur.mediaMaxBytes) || MEDIA_DEFAULT_MAX });
+      if (!c.ok) return send({ t: 'media-meta', id: m.id, ok: false, code: c.code, error: c.error });
+      send({ t: 'media-meta', id: m.id, ok: true, size: c.size, mime: c.mime, name: c.name });
+      const rs = fs.createReadStream(c.path, { highWaterMark: 48 * 1024 }); let sent = 0;
+      rs.on('data', (b) => { sent += b.length; if (sent <= c.size + 1024) send({ t: 'media-data', id: m.id, b: b.toString('base64') }); });
+      rs.on('end', () => send({ t: 'media-end', id: m.id })); rs.on('error', () => send({ t: 'media-meta', id: m.id, ok: false, code: 'io', error: 'Read failed' }));
+      return;
+    }
     if (m.t === 'ui-call') { // hub -> connector: one allowlisted action for one shared profile
       const g = gatewayFor(m.agent); if (!g) return send({ t: 'ui-res', id: m.id, ok: false, error: 'This profile has no native Hermes gateway on this machine', code: 'unavailable' });
       try { send({ t: 'ui-res', id: m.id, ok: true, result: await g.call(m.op, m.params ?? {}) }); }
@@ -299,6 +311,66 @@ function runLink(cfg, onState = () => {}) {
   return { stop() { stopped = true; clearInterval(timer); for (const g of gateways.values()) g.stop(); try { ws.close(); } catch {} } };
 }
 
+
+// ---------- local media for MEDIA: tags (the hub cannot read this machine's disk, so it asks here) ----------
+// An agent that writes `MEDIA:/path/chart.png` means a file on THIS computer. The hub only asks for paths the agent itself mentioned in
+// a reply for that user; this side still decides, and says no unless: the real path (symlinks resolved) is inside an allowed root,
+// the extension is a deliverable media/document type, the file is a regular file under the size cap, and its first bytes really look like
+// that type (an HTML page named x.png is refused). Secrets directories are never served, whatever the roots say.
+export const MEDIA_MIME = {
+  png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif',
+  mp4: 'video/mp4', m4v: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm', mkv: 'video/x-matroska', avi: 'video/x-msvideo', '3gp': 'video/3gpp',
+  mp3: 'audio/mpeg', m2a: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', opus: 'audio/ogg', m4a: 'audio/mp4', flac: 'audio/flac', aac: 'audio/aac',
+  pdf: 'application/pdf', txt: 'text/plain', md: 'text/plain', csv: 'text/csv', tsv: 'text/plain', rtf: 'application/rtf', epub: 'application/epub+zip',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  doc: 'application/msword', xls: 'application/vnd.ms-excel', ppt: 'application/vnd.ms-powerpoint', odt: 'application/vnd.oasis.opendocument.text', ods: 'application/vnd.oasis.opendocument.spreadsheet', odp: 'application/vnd.oasis.opendocument.presentation',
+  zip: 'application/zip', tar: 'application/x-tar', gz: 'application/gzip', tgz: 'application/gzip', '7z': 'application/x-7z-compressed',
+  kml: 'application/vnd.google-earth.kml+xml', kmz: 'application/vnd.google-earth.kmz', gpx: 'application/gpx+xml', geojson: 'application/geo+json',
+};
+const MEDIA_DENY_DIRS = new Set(['.ssh', '.gnupg', '.aws', '.kube', '.docker', '.git', '.password-store']);
+const MEDIA_DEFAULT_MAX = 25 * 1024 * 1024;
+const sub = (a, b) => { const r = path.relative(a, b); return r === '' || (!r.startsWith('..') && !path.isAbsolute(r)); };
+const real = (p) => { try { return fs.realpathSync(p); } catch { return null; } };
+export function mediaRoots({ root, home, cfg = {}, env = process.env, tmp = os.tmpdir() } = {}) {
+  const names = ['image_cache', 'audio_cache', 'video_cache', 'document_cache', 'browser_screenshots', 'cache', 'workspace', 'media', 'outputs', 'output'];
+  const base = [home, root].filter(Boolean).flatMap((h) => names.map((n) => path.join(h, n)));
+  const extra = [...(Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []), ...String(env.FOXFLEET_MEDIA_ROOTS ?? '').split(path.delimiter), cfg.uiGatewayCwd].filter((x) => typeof x === 'string' && path.isAbsolute(x));
+  return [...new Set([...base, tmp, ...extra].map(real).filter(Boolean))];
+}
+/** Magic-number check: does this file's start really look like its extension says? Returns the mime to serve, or null. */
+export function sniffMedia(head, ext) {
+  const at = (o, s) => head.length >= o + s.length && head.subarray(o, o + s.length).toString('latin1') === s, hex = (h) => head.subarray(0, h.length / 2).toString('hex') === h;
+  const riff = (t) => at(0, 'RIFF') && at(8, t), ftyp = at(4, 'ftyp');
+  const ok = {
+    png: () => hex('89504e47'), jpg: () => hex('ffd8ff'), jpeg: () => hex('ffd8ff'), gif: () => at(0, 'GIF8'), webp: () => riff('WEBP'), bmp: () => at(0, 'BM'), avif: () => ftyp,
+    mp4: () => ftyp, m4v: () => ftyp, '3gp': () => ftyp, mov: () => ftyp || ['moov', 'mdat', 'wide', 'free', 'skip'].some((t) => at(4, t)), webm: () => hex('1a45dfa3'), mkv: () => hex('1a45dfa3'), avi: () => riff('AVI '),
+    mp3: () => at(0, 'ID3') || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0), m2a: () => at(0, 'ID3') || (head[0] === 0xff && (head[1] & 0xe0) === 0xe0), wav: () => riff('WAVE'), ogg: () => at(0, 'OggS'), opus: () => at(0, 'OggS'),
+    m4a: () => ftyp, aac: () => head[0] === 0xff && (head[1] & 0xf0) === 0xf0, flac: () => at(0, 'fLaC'),
+    pdf: () => at(0, '%PDF'), rtf: () => at(0, '{\\rtf'), zip: () => at(0, 'PK'), docx: () => at(0, 'PK'), xlsx: () => at(0, 'PK'), pptx: () => at(0, 'PK'), odt: () => at(0, 'PK'), ods: () => at(0, 'PK'), odp: () => at(0, 'PK'), epub: () => at(0, 'PK'), kmz: () => at(0, 'PK'),
+    doc: () => hex('d0cf11e0'), xls: () => hex('d0cf11e0'), ppt: () => hex('d0cf11e0'), gz: () => hex('1f8b'), tgz: () => hex('1f8b'), '7z': () => at(0, '7z'), tar: () => true,
+  }[ext];
+  if (ok) return ok() ? MEDIA_MIME[ext] : null;
+  return MEDIA_MIME[ext] && !head.includes(0) ? MEDIA_MIME[ext] : null; // text-like types: no NUL bytes
+}
+/** Decides whether `raw` (a path the agent wrote) may leave this machine. */
+export function checkMedia(raw, roots, { maxBytes = MEDIA_DEFAULT_MAX, home = os.homedir() } = {}) {
+  let p = String(raw ?? '').trim(); if (!p || p.length > 4096 || p.includes('\0')) return { ok: false, code: 'bad_path', error: 'Not a usable path' };
+  if (p === '~' || p.startsWith('~/')) p = path.join(home, p.slice(1));
+  if (!path.isAbsolute(p) || (process.platform !== 'win32' && /^[A-Za-z]:[\\/]/.test(p))) return { ok: false, code: 'bad_path', error: 'Not an absolute path on this machine' };
+  const ext = path.extname(p).slice(1).toLowerCase(); if (!MEDIA_MIME[ext]) return { ok: false, code: 'type', error: 'This file type is not delivered' };
+  const rp = real(p); if (!rp) return { ok: false, code: 'missing', error: 'File not found on this machine' };
+  if (!roots.some((r) => sub(r, rp))) return { ok: false, code: 'outside', error: 'That location is not shared with the hub (set mediaRoots in the connector config)' };
+  if (rp.split(path.sep).some((c) => MEDIA_DENY_DIRS.has(c))) return { ok: false, code: 'denied', error: 'Denied' };
+  if (!MEDIA_MIME[path.extname(rp).slice(1).toLowerCase()]) return { ok: false, code: 'type', error: 'This file type is not delivered' }; // a symlink may not smuggle a different type
+  let st; try { st = fs.statSync(rp); } catch { return { ok: false, code: 'missing', error: 'File not found on this machine' }; }
+  if (!st.isFile()) return { ok: false, code: 'type', error: 'Not a regular file' };
+  if (st.size > maxBytes) return { ok: false, code: 'too_big', error: `File is larger than ${Math.round(maxBytes / 1048576)} MB` };
+  let head = Buffer.alloc(0); try { const fd = fs.openSync(rp, 'r'); try { const b = Buffer.alloc(4096); head = b.subarray(0, fs.readSync(fd, b, 0, 4096, 0)); } finally { fs.closeSync(fd); } } catch { return { ok: false, code: 'missing', error: 'File not readable' }; }
+  const mime = sniffMedia(head, ext); if (!mime) return { ok: false, code: 'sniff', error: 'The file does not look like its extension says' };
+  return { ok: true, path: rp, size: st.size, mime, name: path.basename(rp) };
+}
+/** At most `perMinute` fetches a minute, so a looping agent cannot drain the disk or the tunnel. */
+export function mediaLimiter(perMinute = 60, now = () => Date.now()) { let tokens = perMinute, last = now(); return () => { const t = now(); tokens = Math.min(perMinute, tokens + ((t - last) / 60000) * perMinute); last = t; if (tokens < 1) return false; tokens -= 1; return true; }; }
 
 // ---------- Hermes UI gateway bridge (native sessions, see design/notes/hermes-ui-gateway.md) ----------
 // One long-lived `python -m tui_gateway.entry` per shared profile (newline-delimited JSON-RPC on stdio), owned by this connector so

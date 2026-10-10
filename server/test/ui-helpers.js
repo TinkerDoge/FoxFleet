@@ -11,8 +11,8 @@ import { fakeHermesHome, runConnector, tmpDir, readJson, waitFor } from './machi
 export const FAKE = path.join(import.meta.dirname, 'fake-gateway.mjs');
 export const REAL = process.env.HERMES_REAL_GATEWAY_TEST ? JSON.parse(process.env.HERMES_REAL_GATEWAY_TEST) : null;
 
-export async function setup(t, { gateway = true, proxy = false, env = {} } = {}) {
-  const main = await mockHermes(t), root = await fakeHermesHome(t, main, { profiles: [] });
+export async function setup(t, { gateway = true, proxy = false, env = {}, mock = {} } = {}) {
+  const main = await mockHermes(t, mock), root = await fakeHermesHome(t, main, { profiles: [] });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-ui-')), cfgDir = await tmpDir();
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
   t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });

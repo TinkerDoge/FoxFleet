@@ -29,6 +29,7 @@ import { machineStore, normalizeCode, validCode, formatCode } from './machines.j
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
+import { mediaHub } from './media.js';
 import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
@@ -180,6 +181,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${hub}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${hub} --code ${made.code}` } };
   }
   const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
+  const media = mediaHub({ connectors }); // MEDIA: tags -> cards (see media.js)
   const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n)) n = `${base}-${i++}`; return n; };
   // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
   async function syncProfiles(machine, msg, link) {
@@ -378,6 +380,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
       }
+      if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await media.serve({ token: parts[2], scope: scopeOf(ctx), req, res });
       if (req.method === 'GET' && url.pathname === '/api/media-proxy') {
         const img = await fetchImage(url.searchParams.get('url'));
         res.writeHead(200, { 'Content-Type': img.type, 'Content-Length': img.body.length, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cross-Origin-Resource-Policy': 'same-origin' });
@@ -441,6 +444,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
+        if (route === 'media' && parts.length === 4 && req.method === 'POST') { // a ref the agent mentioned in a reply -> a short-lived link for THIS user
+          const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const t of runs.texts(scope, m.name)) media.note(scope, m.name, t);
+          return sendJson(res, 200, media.resolve({ scope, agent: m.name, machineId: m.machineId, profile: m.profile, ref: b?.ref }));
+        }
         if (route === 'native') { // native Hermes UI gateway (see hermes-ui.js): sessions, journaled sends, shared event stream, approvals/clarifications
           if (kindOf(m) !== 'hermes' || !nativeUi(m)) { if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { native: false }); throw fault(409, 'This agent has no native Hermes gateway; use the standard chat'); }
           const nat = ctx.reg.native, scope = scopeOf(ctx), mid = m.machineId, prof = m.profile, sidOf = (v) => { if (!/^[\w.:-]{1,120}$/.test(v ?? '')) throw fault(400, 'Invalid session'); return v; };
@@ -539,7 +546,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           }
           if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
             if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
-            if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }));
+            if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') { const page = history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }); for (const x of page?.messages ?? []) if (x.role === 'assistant' && typeof x.content === 'string') media.note(scopeOf(ctx), m.name, x.content); return sendJson(res, 200, page); }
             if (parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); return sendJson(res, 200, await history.rename(m.name, sessionId(parts[4]), b.title)); }
             if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); return sendJson(res, 200, { ok: true }); }
           }
@@ -638,7 +645,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         }
         if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
           const limit = pageInt(url.searchParams.get('limit'), 1, 200, 80), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), raw = (await upstream.messages(m, sessionId(parts[4]), { limit, offset })).messages;
-          return sendJson(res, 200, agentData(m, route, { messages: normalizeTranscript(raw), offset, limit, has_more: raw.length >= limit }, originalConnections));
+          const msgs = normalizeTranscript(raw); for (const x of msgs) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content); // old chats keep their pictures
+          return sendJson(res, 200, agentData(m, route, { messages: msgs, offset, limit, has_more: raw.length >= limit }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
         if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); return sendJson(res, 200, { ok: true }); }

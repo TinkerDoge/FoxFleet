@@ -1,0 +1,326 @@
+{
+ "about": "Conformance vectors for MEDIA: tag parsing. Node (server/media-tags.js), the web client and the Android app must all produce exactly this.",
+ "vectors": [
+  {
+   "name": "single png",
+   "input": "Here you go\nMEDIA:/tmp/out/chart.png",
+   "text": "Here you go",
+   "media": [
+    {
+     "ref": "/tmp/out/chart.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "inline sentence end",
+   "input": "I saved it MEDIA:/home/u/report.pdf.",
+   "text": "I saved it",
+   "media": [
+    {
+     "ref": "/home/u/report.pdf",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "two tags",
+   "input": "MEDIA:/a/one.png\nMEDIA:/a/two.jpg\ndone",
+   "text": "done",
+   "media": [
+    {
+     "ref": "/a/one.png",
+     "kind": "image"
+    },
+    {
+     "ref": "/a/two.jpg",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "glued tags",
+   "input": "MEDIA:/a/x.pngMEDIA:/a/y.png",
+   "text": "",
+   "media": [
+    {
+     "ref": "/a/x.png",
+     "kind": "image"
+    },
+    {
+     "ref": "/a/y.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "same file twice",
+   "input": "MEDIA:/a/x.png and again MEDIA:/a/x.png",
+   "text": "and again",
+   "media": [
+    {
+     "ref": "/a/x.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "spaces in path",
+   "input": "MEDIA:/home/u/My Photos/cat picture.png ok",
+   "text": "ok",
+   "media": [
+    {
+     "ref": "/home/u/My Photos/cat picture.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "backtick quoted path",
+   "input": "MEDIA:`/home/u/My Photos/a b.jpg`",
+   "text": "",
+   "media": [
+    {
+     "ref": "/home/u/My Photos/a b.jpg",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "double quoted",
+   "input": "MEDIA:\"/tmp/a b.mp4\"",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/a b.mp4",
+     "kind": "video"
+    }
+   ]
+  },
+  {
+   "name": "bold wrapped",
+   "input": "**MEDIA:/tmp/doc.pdf**",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/doc.pdf",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "url image",
+   "input": "MEDIA:https://example.com/img/cat.png",
+   "text": "",
+   "media": [
+    {
+     "ref": "https://example.com/img/cat.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "url with query",
+   "input": "Look: MEDIA:https://cdn.example.com/v/clip.mp4?sig=abc&x=1",
+   "text": "Look:",
+   "media": [
+    {
+     "ref": "https://cdn.example.com/v/clip.mp4?sig=abc&x=1",
+     "kind": "video"
+    }
+   ]
+  },
+  {
+   "name": "voice directive",
+   "input": "[[audio_as_voice]]\nMEDIA:/tmp/say.ogg",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/say.ogg",
+     "kind": "audio",
+     "voice": true
+    }
+   ]
+  },
+  {
+   "name": "voice directive does not flag images",
+   "input": "[[audio_as_voice]] MEDIA:/tmp/p.png",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/p.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "as_document makes an image a file",
+   "input": "[[as_document]]\nMEDIA:/tmp/big.png",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/big.png",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "unknown extension still a file card",
+   "input": "Config: MEDIA:/home/u/notes.weird",
+   "text": "Config:",
+   "media": [
+    {
+     "ref": "/home/u/notes.weird",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "no extension",
+   "input": "MEDIA:/home/u/Caddyfile",
+   "text": "",
+   "media": [
+    {
+     "ref": "/home/u/Caddyfile",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "home relative",
+   "input": "MEDIA:~/Pictures/a.webp",
+   "text": "",
+   "media": [
+    {
+     "ref": "~/Pictures/a.webp",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "windows path",
+   "input": "MEDIA:C:\\Users\\me\\a.png",
+   "text": "",
+   "media": [
+    {
+     "ref": "C:\\Users\\me\\a.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "cjk terminator",
+   "input": "文件在这里 MEDIA:/tmp/早报.pdf（782 KB）",
+   "text": "文件在这里 （782 KB）",
+   "media": [
+    {
+     "ref": "/tmp/早报.pdf",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "tag in fenced code is an example, not a delivery",
+   "input": "Use it like:\n```\nMEDIA:/tmp/example.png\n```\nthanks",
+   "text": "Use it like:\n```\nMEDIA:/tmp/example.png\n```\nthanks",
+   "media": []
+  },
+  {
+   "name": "tag in inline code",
+   "input": "Write `MEDIA:/tmp/x.png` to send",
+   "text": "Write `MEDIA:/tmp/x.png` to send",
+   "media": []
+  },
+  {
+   "name": "tag in blockquote",
+   "input": "> MEDIA:/tmp/x.png\nreal",
+   "text": "> MEDIA:/tmp/x.png\nreal",
+   "media": []
+  },
+  {
+   "name": "path traversal is kept as written (the connector refuses it)",
+   "input": "MEDIA:/tmp/../etc/passwd.txt",
+   "text": "",
+   "media": [
+    {
+     "ref": "/tmp/../etc/passwd.txt",
+     "kind": "file"
+    }
+   ]
+  },
+  {
+   "name": "relative path is not a tag",
+   "input": "MEDIA:relative/path.png",
+   "text": "MEDIA:relative/path.png",
+   "media": []
+  },
+  {
+   "name": "markdown image with a local path",
+   "input": "See ![chart](/tmp/c.png) here",
+   "text": "See  here",
+   "media": [
+    {
+     "ref": "/tmp/c.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "markdown https image stays for the renderer",
+   "input": "![cat](https://example.com/c.png)",
+   "text": "![cat](https://example.com/c.png)",
+   "media": []
+  },
+  {
+   "name": "video link becomes a card, link text stays",
+   "input": "Clip: [watch](https://example.com/a.mp4) enjoy",
+   "text": "Clip: [watch](https://example.com/a.mp4) enjoy",
+   "media": [
+    {
+     "ref": "https://example.com/a.mp4",
+     "kind": "video"
+    }
+   ]
+  },
+  {
+   "name": "bare audio url",
+   "input": "Listen https://example.com/s.mp3 now",
+   "text": "Listen https://example.com/s.mp3 now",
+   "media": [
+    {
+     "ref": "https://example.com/s.mp3",
+     "kind": "audio"
+    }
+   ]
+  },
+  {
+   "name": "bare image url is left to the markdown renderer",
+   "input": "See https://example.com/p.png",
+   "text": "See https://example.com/p.png",
+   "media": []
+  },
+  {
+   "name": "plain text untouched",
+   "input": "Nothing here. MEDIA is a word.",
+   "text": "Nothing here. MEDIA is a word.",
+   "media": []
+  },
+  {
+   "name": "tag text followed by prose on the same line",
+   "input": "MEDIA:/tmp/a.png Here is the picture",
+   "text": "Here is the picture",
+   "media": [
+    {
+     "ref": "/tmp/a.png",
+     "kind": "image"
+    }
+   ]
+  },
+  {
+   "name": "control chars refused",
+   "input": "MEDIA:/tmp/a\u0001b.png",
+   "text": "MEDIA:/tmp/a\u0001b.png",
+   "media": []
+  }
+ ]
+}
