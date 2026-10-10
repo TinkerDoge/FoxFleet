@@ -85,7 +85,8 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
       throw new AuthRequiredError(message);
     }
     if (res.status === 429) throw new RateLimitedError(message, Number(res.headers.get('retry-after')) || Number(data?.retryAfter) || 60);
-    throw new ApiError(res.status, isTransientStatus(res.status) ? 'The hub is reconnecting' : message);
+    // An error the hub classified itself (data.code) keeps its own words even on a 502/503/504: "machine offline" is not "the hub is reconnecting".
+    throw new ApiError(res.status, isTransientStatus(res.status) && !data?.code ? 'The hub is reconnecting' : message, typeof data?.code === 'string' ? data.code : undefined);
   }
   const normalize = (o: any): AuthInfo => {
     if (typeof o?.required !== 'boolean') throw new ApiError(502, 'Not a Foxfleet hub', 'not_hub');
@@ -93,6 +94,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     required: o.required, authenticated: Boolean(o?.authenticated), setupRequired: Boolean(o?.setupRequired),
     setupCodeRequired: Boolean(o?.setupCodeRequired), registration: (['closed', 'invite', 'open'].includes(o?.registration) ? o.registration : 'closed') as Registration,
     termsVersion: typeof o?.termsVersion === 'string' ? o.termsVersion : undefined,
+    hub: o?.hub && typeof o.hub.version === 'string' ? { version: o.hub.version, features: Array.isArray(o.hub.features) ? o.hub.features.filter((x: unknown) => typeof x === 'string') : [] } : undefined,
     user: o?.user && typeof o.user.username === 'string' ? { id: String(o.user.id ?? ''), username: o.user.username, role: o.user.role === 'owner' ? 'owner' : 'user' } : undefined,
     };
   };

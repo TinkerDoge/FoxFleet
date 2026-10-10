@@ -49,6 +49,10 @@ const DEFAULT_AVATAR_DIR = path.join(WEB_DIR, 'avatars');
 export const LIMITS = { json: 4 * 1024 * 1024, chat: 10 * 1024 * 1024, transcribe: 12 * 1024 * 1024, file: 90 * 1024 * 1024 };
 const BODY_LIMIT = LIMITS.json, SESSION_AGE = 30 * 24 * 60 * 60 * 1000;
 export const APP_ORIGIN = 'https://appassets.androidplatform.net';
+// What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
+export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo'];
+const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
+export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
 const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
 const loopback = (host) => ['localhost', '127.0.0.1', '::1'].includes(host);
 const digest = (value) => createHash('sha256').update(value).digest();
@@ -346,7 +350,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const originalConnections = auth ? store.all() : [];
       const body0 = () => readJson(req, 64 * 1024), deviceMeta = (b, client) => ({ name: typeof b.deviceName === 'string' && b.deviceName.trim() ? b.deviceName.trim() : client === 'app' ? 'Android app' : 'Web browser', kind: client, ip: clientIp(req), ua: req.headers['user-agent'] });
       const clientOf = (b) => b.client === 'app' ? 'app' : 'web';
-      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), termsVersion: TERMS_VERSION, authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
+      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), termsVersion: TERMS_VERSION, hub: HUB_INFO, authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
       if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
         authThrottle(req); const b = await body0();
         if (singleUser || !accounts.needsSetup()) throw fault(409, 'Setup is already complete');
@@ -626,6 +630,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         }
         if (route === 'screen' && parts.length === 5) {
           const action = parts[4];
+          if (m.machineId && !connectors.isOnline(m.machineId)) throw fault(503, 'This agent\'s machine is offline. Start the Foxfleet connector there and try again.', 'machine_offline');
           if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
           if (req.method === 'POST' && ['start', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
         }
@@ -688,7 +693,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       return await serveStatic(url, res, avatarBase);
     } catch (error) {
       if (res.headersSent) { if (!res.destroyed) res.destroy(); return; }
-      sendJson(res, error.safe ? error.status : 500, { error: error.safe ? error.message : 'Hub request failed' }, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
+      sendJson(res, error.safe ? error.status : 500, { error: error.safe ? error.message : 'Hub request failed', ...(error.safe && error.code ? { code: error.code } : {}) }, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
     }
   }));
   // Whole-request timeout must cover a 90 MB upload on a slow phone link; headers stay strict.

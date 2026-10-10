@@ -126,3 +126,12 @@
 /* pages: cards on one page share one width and are separated (Manage agents had a narrow card above a wide one, touching) */
 .page .stack { max-width: none; }
 .page > .card + .card, .page > section + .card, .page > .card + section { margin-top: 16px; }
+
+/* Bot Screen: actionable errors, key bar */
+.screen-problem{background:rgba(11,11,12,.88);padding:20px}
+.screen-problem-card{max-width:360px;display:grid;gap:10px;text-align:center;justify-items:center;color:#f2f2f2}
+.screen-problem-card p{margin:0}
+.keys{align-items:center}.keys .chip-btn{min-height:44px;min-width:44px;touch-action:manipulation}
+.keys .chip-btn.on{background:var(--accent);color:var(--on-accent,#fff)}
+.keys-help{flex-basis:100%;margin:0}
+.screen-host{touch-action:none}

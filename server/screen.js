@@ -11,7 +11,8 @@ import { wsConnect } from './ws.js';
 
 export const TICKET_TTL_MS = 30_000;
 export const TAKEOVER_MAX_MS = 15 * 60_000;   // auto hand-back after 15 min of control
-const RPC_TIMEOUT_MS = 20_000;                 // display.start can block while Xvnc boots
+const RPC_TIMEOUT_MS = 20_000;
+const START_TIMEOUT_MS = 90_000;               // display.start blocks until Xvnc + Xfce are up (cold start is slow); Cloudflare allows ~100 s per request
 
 export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlMs = TICKET_TTL_MS, connect = wsConnect } = {}) {
   const gateways = new Map(), tickets = new Map(), holds = new Map(), live = new Set();
@@ -29,17 +30,17 @@ export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlM
     } catch { /* fall through */ }
     const origin = new URL(base(m, 'dashboard')).origin;
     const query = ticket ? `ticket=${encodeURIComponent(ticket)}` : m.dashboardWsToken ? `token=${encodeURIComponent(m.dashboardWsToken)}` : null;
-    if (!query) throw fault(502, 'Agent screen unavailable: dashboard refused a gateway ticket');
+    if (!query) throw fault(502, 'Agent screen unavailable: the dashboard refused a gateway ticket (sign-in to the Hermes dashboard failed)', 'dashboard_auth');
     let ws;
     try { ws = await connect(origin.replace(/^http/, 'ws') + '/api/ws?' + query, { headers: { Origin: origin }, timeoutMs: 8000 }); }
-    catch { throw fault(502, 'Agent screen unavailable: gateway socket refused'); }
+    catch { throw fault(502, 'Agent screen unavailable: the agent\'s dashboard did not accept a connection (is Hermes running on that machine?)', 'gateway_unreachable'); }
     const pending = new Map(); let seq = 0;
     const g = { conn: m, closed: false, viewerId: null,
-      call(method, params = {}) {
+      call(method, params = {}, { timeoutMs = RPC_TIMEOUT_MS } = {}) {
         return new Promise((resolve, reject) => {
           if (g.closed) return reject(fault(502, 'Agent screen connection closed'));
           const id = `hub-${++seq}`;
-          const timer = setTimeout(() => { pending.delete(id); reject(fault(504, 'Agent screen request timed out')); }, RPC_TIMEOUT_MS); timer.unref?.();
+          const timer = setTimeout(() => { pending.delete(id); reject(fault(504, 'The agent screen took too long to answer. If the desktop was just starting, wait a moment and retry.', 'timeout')); }, timeoutMs); timer.unref?.();
           pending.set(id, { resolve, reject, timer });
           ws.send(JSON.stringify({ jsonrpc: '2.0', id, method, params: { profile: m.profile, ...params } }));
         });
@@ -50,7 +51,7 @@ export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlM
       let msg; try { msg = JSON.parse(text); } catch { return; }
       const p = msg && pending.get(msg.id); if (!p) return;
       pending.delete(msg.id); clearTimeout(p.timer);
-      if (msg.error) p.reject(fault(409, String(msg.error.message || 'Screen request refused').slice(0, 200)));
+      if (msg.error) p.reject(/method not found|unknown method|not implemented/i.test(String(msg.error.message)) || msg.error.code === -32601 ? fault(501, 'This Hermes has no Bot Screen (display.* is missing). Update Hermes on the agent machine.', 'display_unsupported') : fault(409, String(msg.error.message || 'Screen request refused').slice(0, 200), 'refused'));
       else p.resolve(msg.result);
     });
     ws.on('close', () => { if (!g.closed) g.dispose(); });
@@ -58,12 +59,14 @@ export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlM
     return g;
   }
 
-  const view = (r) => r && ({ running: r.running === true, supported: r.supported !== false, installed: r.installed !== false, geometry: typeof r.geometry === 'string' ? r.geometry : null, blocker: typeof r.blocker === 'string' ? r.blocker : null, lease: r.lease ? { holder: r.lease.holder, epoch: r.lease.epoch, since: r.lease.since } : null });
+  // state: the one word a client needs to pick its message. ok | stopped | no_vnc (the platform cannot host a screen) | not_installed (Xvnc/Xfce packages missing) | blocked (host memory)
+  const stateOf = (r) => r.supported === false ? 'no_vnc' : r.installed === false ? 'not_installed' : r.blocker ? 'blocked' : r.running === true ? 'ok' : 'stopped';
+  const view = (r) => r && ({ state: stateOf(r), missing: Array.isArray(r.missing) ? r.missing.filter((x) => typeof x === 'string').slice(0, 12).map((x) => x.slice(0, 40)) : [], running: r.running === true, supported: r.supported !== false, installed: r.installed !== false, geometry: typeof r.geometry === 'string' ? r.geometry : null, blocker: typeof r.blocker === 'string' ? r.blocker : null, lease: r.lease ? { holder: r.lease.holder, epoch: r.lease.epoch, since: r.lease.since } : null });
   function clearHold(name) { const h = holds.get(name); if (h) { clearTimeout(h.timer); holds.delete(name); } }
 
   return {
     async status(m) { return view(await (await gateway(m)).call('display.status')); },
-    async start(m) { return view(await (await gateway(m)).call('display.start')); },
+    async start(m) { return view(await (await gateway(m)).call('display.start', {}, { timeoutMs: START_TIMEOUT_MS })); },
     async observe(m) {
       const g = await gateway(m);
       const r = await g.call('display.observe', g.viewerId ? { viewer_id: g.viewerId } : {});
@@ -76,7 +79,7 @@ export function screenRelay(upstream, { takeoverMs = TAKEOVER_MAX_MS, ticketTtlM
     },
     async takeover(m) {
       const g = await gateway(m);
-      if (!g.viewerId) throw fault(409, 'Open the screen before taking over');
+      if (!g.viewerId) throw fault(409, 'The screen session expired. Reopen the screen, then take over.', 'reopen');
       const r = await g.call('display.lease.acquire', { viewer_id: g.viewerId, reason: 'Foxfleet mobile takeover' });
       clearHold(m.name);
       const timer = setTimeout(() => { holds.delete(m.name); g.call('display.lease.release', { viewer_id: g.viewerId }).catch(() => {}); }, takeoverMs); timer.unref?.();

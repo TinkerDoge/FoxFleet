@@ -5,7 +5,7 @@ import { isIP } from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 export const identifier = (value) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(value) && value !== '..';
-export const fault = (status, message) => Object.assign(new Error(message), { status, safe: true });
+export const fault = (status, message, code) => Object.assign(new Error(message), { status, safe: true, ...(code ? { code } : {}) });
 export function validHost(value) {
   return typeof value === 'string' && value.length <= 253 && (isIP(value) !== 0 || value.split('.').every((part) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(part)));
 }

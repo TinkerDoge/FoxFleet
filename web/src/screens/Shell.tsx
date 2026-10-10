@@ -115,7 +115,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {!PAGES.includes(route.name) && agents && agents.length === 0 && (
           <div class="empty-home"><Icon name="agents" size={48} class="icon-hero" /><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}
-        {route.name === 'screen' && selected && <ScreenView key={selected.name} client={client} agent={selected} onAuthLost={lost} onClose={() => navigate('chat', { agent: selected.name })} />}
+        {route.name === 'screen' && selected && <ScreenView key={selected.name} client={client} agent={selected} hubKnown={Boolean(info.hub)} onAuthLost={lost} onClose={() => navigate('chat', { agent: selected.name })} />}
         {route.name !== 'screen' && !PAGES.includes(route.name) && selected && <ChatView key={selected.name} client={client} agent={selected} onAuthLost={lost} session={route.params.get('new') === '1' ? '' : route.params.get('session') ?? undefined} />}
       </main>
     </div>

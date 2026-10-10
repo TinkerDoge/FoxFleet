@@ -1,0 +1,19 @@
+{
+  "about": "Shared by the hub, web and Android: which message a Bot Screen failure gets. kind is the stable key clients map to text; update=true adds a 'update your hub' note.",
+  "cases": [
+    { "in": { "status": 401 }, "kind": "auth_expired" },
+    { "in": { "network": true }, "kind": "hub_unreachable" },
+    { "in": { "status": 503, "code": "machine_offline" }, "kind": "machine_offline" },
+    { "in": { "status": 501, "code": "display_unsupported" }, "kind": "hermes_too_old" },
+    { "in": { "state": "not_installed" }, "kind": "not_installed" },
+    { "in": { "state": "no_vnc" }, "kind": "no_vnc" },
+    { "in": { "state": "blocked" }, "kind": "blocked" },
+    { "in": { "status": 502, "code": "gateway_unreachable" }, "kind": "dashboard_unreachable" },
+    { "in": { "status": 502, "code": "dashboard_auth" }, "kind": "dashboard_unreachable" },
+    { "in": { "status": 504, "code": "timeout" }, "kind": "timeout" },
+    { "in": { "status": 409, "code": "reopen" }, "kind": "reopen" },
+    { "in": { "status": 404 }, "kind": "hub_too_old", "update": true },
+    { "in": { "status": 500 }, "kind": "generic" },
+    { "in": { "status": 502, "hubKnown": false }, "kind": "generic", "update": true }
+  ]
+}

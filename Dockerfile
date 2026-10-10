@@ -9,6 +9,7 @@ RUN npm run build
 
 FROM node:22-alpine
 WORKDIR /app
+COPY package.json ./package.json
 COPY server ./server
 COPY connector ./connector
 COPY docs/CONNECT-AGENT.md ./docs/CONNECT-AGENT.md

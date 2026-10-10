@@ -6,6 +6,8 @@ export interface AuthInfo {
   setupCodeRequired: boolean;
   registration: Registration;
   termsVersion?: string;
+  /** Absent on a hub older than 0.3.5: clients then say "update your hub" instead of failing silently. */
+  hub?: { version: string; features: string[] };
   user?: { id: string; username: string; role: 'owner' | 'user' };
 }
 export interface AgentSummary {
@@ -28,5 +30,5 @@ export interface MachineProfile { profile: string; agent: string }
 export interface Machine { id: string; name: string; os: string; online: boolean; paired: boolean; created: number; lastSeen: number | null; profiles: MachineProfile[] }
 export interface Pairing { code: string; display: string; expires: number; url: string; link: string; rows: string[] | null; commands: { sh: string; powershell: string; node: string } }
 export type PairingState = { state: 'waiting' | 'expired' } | { state: 'paired'; machine?: Machine };
-export interface ScreenStatus { running: boolean; supported: boolean; blocker: string | null; lease: { holder: string; epoch: number } | null }
+export interface ScreenStatus { state?: 'ok' | 'stopped' | 'no_vnc' | 'not_installed' | 'blocked'; missing?: string[]; running: boolean; supported: boolean; blocker: string | null; lease: { holder: string; epoch: number } | null }
 export interface ScreenTicket { ticket: string; expiresInMs: number }
