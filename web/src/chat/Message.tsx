@@ -61,7 +61,7 @@ export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia
   }
   return (
     <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}`}>
-      {m.reasoning && <details class="reasoning"><summary>{t('chat.reasoning')}</summary><div class="md plain">{m.reasoning}</div></details>}
+      {m.reasoning && <details class="reasoning"><summary>{t('chat.reasoning')}</summary><div class="md plain">{parseStreaming(m.reasoning).text}</div></details>}
       <Tools m={m} />
       {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
       <AssistantText text={m.content} onMedia={onMedia} />

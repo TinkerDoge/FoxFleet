@@ -14,7 +14,7 @@ export async function faultProxy(t, target) {
     const up = net.connect(target.port, target.host ?? '127.0.0.1'); live.add(up); up.on('close', () => { live.delete(up); c.destroy(); }); up.on('error', () => up.destroy());
     c.on('close', () => up.destroy()); up.on('data', (d) => { if (!frozen) c.write(d); });
     // the hub only answers its own loopback Host: put it back, as a tunnel would put the public name back
-    c.on('data', (d) => { if (frozen) return; const x = d.toString('latin1'); up.write(/^host:/im.test(x) ? Buffer.from(x.replace(/^host:.*$/im, `Host: 127.0.0.1:${target.port}`), 'latin1') : d); });
+    c.on('data', (d) => { if (frozen) return; const x = d.toString('latin1'); up.write(/^host:/im.test(x) ? Buffer.from(x.replace(/^host:.*$/im, `Host: 127.0.0.1:${target.port}`).replace(/^origin: http:\/\/127\.0\.0\.1:\d+\r$/im, `Origin: http://127.0.0.1:${target.port}\r`), 'latin1') : d); });
   });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const p = { port: server.address().port, base: `http://127.0.0.1:${server.address().port}`,

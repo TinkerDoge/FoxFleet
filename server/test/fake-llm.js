@@ -21,8 +21,8 @@ export function fakeLlm({ tokenMs = 120 } = {}) {
       res.write(chunk({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'clarify', arguments: JSON.stringify({ questions: [{ question: 'Which environment?', choices: ['staging', 'production'] }] }) } }] }));
       res.write(chunk({}, 'tool_calls')); res.write('data: [DONE]\n\n'); return res.end();
     }
-    const media = /\bsend-media (\S+)/.exec(text);
-    if (media && last.role === 'user') { res.write(chunk({ role: 'assistant', content: '' })); res.write(chunk({ content: `Here is your file\nMEDIA:${media[1]}\n` })); res.write(chunk({}, 'stop')); res.write('data: [DONE]\n\n'); return res.end(); }
+    const media = /\bsend-media (.+)/.exec(text);
+    if (media && last.role === 'user') { res.write(chunk({ role: 'assistant', content: '' })); res.write(chunk({ content: 'Here is your file\n' + media[1].trim().split(/\s+/).map((f) => (f.endsWith('.ogg') ? '[[audio_as_voice]]\n' : '') + `MEDIA:${f}\n`).join('') })); res.write(chunk({}, 'stop')); res.write('data: [DONE]\n\n'); return res.end(); }
     const slow = /slow/i.test(text), n = slow ? 30 : 3;
     res.write(chunk({ role: 'assistant', content: '' }));
     const answerTo = last.role === 'tool' ? `got: ${text.slice(0, 60)}` : `ok: ${text.slice(0, 60)}`;

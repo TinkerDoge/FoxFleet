@@ -9,6 +9,7 @@ import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { AssistantText, Message } from './Message';
 import { MediaContext } from './MediaCards';
+import { parseStreaming } from '../lib/mediaTags';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
@@ -92,7 +93,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} />)}
         {c.streaming && (
           <div class="msg assistant">
-            {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{c.streamReasoning}</div></details>}
+            {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{parseStreaming(c.streamReasoning).text}</div></details>}
             {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
             {c.toolLog.length > 1 && <details class="tools"><summary>{t('chat.toolsDone', { n: c.toolLog.length })}</summary><ul>{c.toolLog.map((x, i) => <li key={i}>{i === c.toolLog.length - 1 && c.tool ? '… ' : '✓ '}{x}</li>)}</ul></details>}
             {status && <p class="status shimmer" role="status" aria-live="polite">{status}<span class="dots" aria-hidden="true" /></p>}

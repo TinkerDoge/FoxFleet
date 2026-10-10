@@ -81,3 +81,16 @@ test('end to end: the agent says MEDIA:<file> -> chat reply -> media link -> byt
   const etc = await post(`/api/agents/${agent.name}/media`, { ref: '/etc/hostname.txt' }); assert.equal(etc.status, 200, 'mentioned, so a link exists...'); assert.ok([403, 404].includes((await fetch(x.base + (await etc.json()).url)).status), '...but the machine refuses a file outside its roots');
   assert.equal((await fetch(x.base + '/api/media/not-a-token')).status, 404);
 });
+
+test('security: nothing that can run in a browser is deliverable; hostile names cannot break headers; documents are attachments, never inline', async () => {
+  const { MEDIA_TYPES } = await import('../media-proxy.js');
+  for (const bad of ['image/svg+xml', 'text/html', 'application/xhtml+xml', 'application/javascript', 'text/xml']) assert.ok(!MEDIA_TYPES.has(bad), bad);
+  const hostile = '/tmp/we;ird é <b>x</b> %0d%0a.txt';
+  const hub = mediaHub({ connectors: stubConnectors({ [hostile]: { body: Buffer.from('hi'), mime: 'text/plain', name: 'evil"\r\nSet-Cookie: x=1.txt' } }) });
+  hub.note('u', 'a', `MEDIA:"${hostile}"`); hub.note('u', 'a', 'MEDIA:"/tmp/a\r\nSet-Cookie: x.txt"'); assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a\r\nSet-Cookie: x.txt' }), /not offered/, 'control characters in a path are never a tag');
+  const r = hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: hostile }), res = mkRes();
+  await hub.serve({ token: r.url.split('/').pop(), scope: 'u', req: { headers: {}, method: 'GET' }, res });
+  const cd = res.headers['Content-Disposition']; assert.match(cd, /^attachment; filename\*=UTF-8''/); assert.ok(!/[\r\n"]/.test(cd), cd);
+  assert.equal(res.headers['X-Content-Type-Options'], 'nosniff'); assert.match(res.headers['Content-Security-Policy'], /sandbox/);
+  for (const svg of ['/tmp/a.svg', '/tmp/a.html', '/tmp/a.js']) { hub.note('u', 'a', `MEDIA:${svg}`); assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: svg }), /not offered|not delivered/); }
+});

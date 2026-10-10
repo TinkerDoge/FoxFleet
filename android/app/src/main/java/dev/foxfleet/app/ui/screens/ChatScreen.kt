@@ -367,7 +367,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
             AgentAvatar(agentName, null, 28.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                if (m.reasoning.isNotBlank()) Reasoning(m.reasoning, live = false)
+                if (m.reasoning.isNotBlank()) Reasoning(MediaTags.parseStreaming(m.reasoning).text, live = false)
                 if (m.steps.isNotEmpty()) ToolSteps(m.steps)
                 m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
                     modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
@@ -388,7 +388,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
         AgentAvatar(agentName, null, 28.dp)
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f).animateContentSize()) {
-            if (state.streamReasoning.isNotBlank()) Reasoning(state.streamReasoning, live = true)
+            if (state.streamReasoning.isNotBlank()) Reasoning(MediaTags.parseStreaming(state.streamReasoning).text, live = true)
             val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
             val text = parsedStream.text
             val status = if (state.reconnecting) "Reconnecting…" else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())

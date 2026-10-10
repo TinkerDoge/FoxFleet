@@ -56,3 +56,9 @@ it('client.media returns the hub link and refuses anything that is not a hub med
   const evil = vi.fn(async () => new Response(JSON.stringify({ url: 'https://evil.example/x', kind: 'image', name: 'x' }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
   await expect(createClient({ fetch: evil as never }).media('a', '/tmp/x.png')).rejects.toThrow();
 });
+
+it('a tag echoed into the reasoning block is not shown either', async () => {
+  const { Message } = await import('../src/chat/Message');
+  await act(() => render(<MediaContext.Provider value={async () => { throw new Error('x'); }}><Message m={{ role: 'assistant', content: 'ok', reasoning: 'thinking\nMEDIA:/tmp/a.png\n[[audio_as_voice]]' } as never} onMedia={() => {}} grouped={false} /></MediaContext.Provider>, host));
+  expect(host.querySelector('.reasoning')?.textContent).not.toMatch(/MEDIA:|\[\[/); expect(host.querySelector('.reasoning')?.textContent).toContain('thinking');
+});

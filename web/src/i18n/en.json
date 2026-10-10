@@ -63,7 +63,6 @@
   "media.unavailable": "Not available",
   "media.retry": "Try again",
   "media.loading": "Loading {name}",
-  "media.fullscreen": "Fullscreen",
   "media.voice": "Voice message",
   "media.download": "Download",
   "chat.placeholder": "Message {agent}",
