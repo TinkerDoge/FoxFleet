@@ -61,8 +61,8 @@ features:
 
 | | |
 | --- | --- |
-| **Android app** (`dev.foxfleet.app`, Android 10+) | [GitHub Releases](https://github.com/TinkerDoge/FoxFleet/releases) (release-signed `.apk` with `SHA256SUMS`; once the first release is published) |
-| **Hub** | Clone the repository, or build the [Docker image](/hosting/docker) yourself. No published image yet. |
+| **Android app** (`dev.foxfleet.app`, Android 10+) | [GitHub Releases](https://github.com/TinkerDoge/FoxFleet/releases) (release-signed `.apk` with `SHA256SUMS`). The current alpha is **v0.3.3-alpha**. GitHub's "latest release" link skips pre-releases, so open the [releases page](https://github.com/TinkerDoge/FoxFleet/releases) and pick the newest `v…-alpha` entry |
+| **Hub** | The `foxfleet-server-<version>.tar.gz` bundle on the [releases page](https://github.com/TinkerDoge/FoxFleet/releases), or clone the repository, or build the [Docker image](/hosting/docker) yourself. No published image yet. |
 | **Web app** | Served by your own hub. Nothing to download. |
 
 ::: warning Status: alpha
