@@ -53,7 +53,7 @@ fun screenProblemText(p: ScreenProblem, detail: String? = null, missing: List<St
         ScreenProblemKind.Reopen -> "The screen session expired. Reconnect, then take over."
         ScreenProblemKind.HubTooOld -> "Your hub is too old for Bot Screen. Update your hub."
         ScreenProblemKind.ViewerFailed -> "The screen viewer could not start on this phone" + (detail?.let { " ($it)" } ?: "") + ". Update the app or WebView and try again."
-        ScreenProblemKind.Generic -> detail?.takeIf { it.isNotBlank() } ?: "The screen is unavailable right now."
+        ScreenProblemKind.Generic -> detail?.takeIf { it.isNotBlank() }?.let { "The screen is unavailable right now: $it" } ?: "The screen is unavailable right now."
     }
     return if (p.update && p.kind != ScreenProblemKind.HubTooOld) "$base Your hub is older than this app; update it for clearer screen errors." else base
 }

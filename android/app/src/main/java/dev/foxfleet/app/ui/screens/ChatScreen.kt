@@ -6,6 +6,12 @@ import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.draw.shadow
+import dev.foxfleet.app.ui.chat.ScrollFollow
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
@@ -277,9 +283,25 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
     // composer grows the list shrinks from the top, never hiding the latest reply.
-    LaunchedEffect(state.messages.size) {
-        if (list.firstVisibleItemIndex <= 1) list.animateScrollToItem(0)
+    // "Follow" rules (shared with the web app): pinned = stay at the newest message; scrolled up = a round arrow, or a "New message" pill that never yanks the view.
+    val follow = remember(agentName, state.sessionId) { ScrollFollow() }
+    var ui by remember(follow) { mutableStateOf(ScrollFollow.Result(true, false, 0, false)) }
+    var lastKeyBase by remember(follow) { mutableStateOf(state.keyBase) }
+    val reduce = dev.foxfleet.app.ui.motion.reduceMotion()
+    val scope = rememberCoroutineScope()
+    LaunchedEffect(follow) {
+        snapshotFlow { list.firstVisibleItemIndex to list.firstVisibleItemScrollOffset }.collect { (i, off) ->
+            // reverseLayout: index 0 is the newest; each hidden newer item is at least a line high, so count it as ~150px
+            val r = follow.scroll(off + i * 150f); if (r.pinned != ui.pinned || r.far != ui.far || r.unread != ui.unread) ui = r
+        }
     }
+    LaunchedEffect(state.messages.size, state.streaming, state.loading, state.keyBase, state.streamText.length > 0) {
+        val prepending = state.keyBase < lastKeyBase; lastKeyBase = state.keyBase
+        val r = follow.content(state.messages.size, state.streaming, state.messages.lastOrNull()?.role, prepending, state.loading)
+        ui = r
+        if (r.scroll) list.scrollToItem(0)
+    }
+    LaunchedEffect(state.streamText) { if (ui.pinned && state.streaming) list.scrollToItem(0) }
     // Long conversations load in pages: reaching the oldest loaded message fetches the next older page.
     val nearTop by remember { derivedStateOf { list.layoutInfo.let { it.totalItemsCount > 0 && (it.visibleItemsInfo.lastOrNull()?.index ?: 0) >= it.totalItemsCount - 3 } } }
     LaunchedEffect(nearTop, state.hasOlder, state.messages.size) { if (nearTop && state.hasOlder && !state.loadingOlder) onLoadOlder() }
@@ -294,8 +316,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
     }
     var baseline by remember { mutableStateOf<Int?>(null) }
     androidx.compose.runtime.LaunchedEffect(state.loading, state.messages.isNotEmpty()) { if (!state.loading && baseline == null) { kotlinx.coroutines.delay(700); baseline = state.keyBase + state.messages.size } }
+    Box(modifier.fillMaxWidth()) {
     LazyColumn(
-        state = list, reverseLayout = true, modifier = modifier.fillMaxWidth(),
+        state = list, reverseLayout = true, modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
     ) {
@@ -343,6 +366,19 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             MessageRow(agentName, rev[i], Modifier.animateItem().messageEnter(isNew), onOpen)
         }
         if (state.loadingOlder) item(key = "older") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
+    }
+    val kind = if (ui.pinned) "none" else if (ui.unread > 0) "pill" else if (ui.far) "arrow" else "none"
+    AnimatedVisibility(kind != "none", modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp),
+        enter = if (reduce) fadeIn(snap()) else fadeIn(tween(150)) + scaleIn(tween(150), initialScale = 0.85f), exit = if (reduce) fadeOut(snap()) else fadeOut(tween(150)) + scaleOut(tween(150), targetScale = 0.85f)) {
+        val label = if (ui.unread > 1) "${ui.unread} new messages" else if (ui.unread == 1) "New message" else "Go to the latest message"
+        Row(Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp).shadow(4.dp, CircleShape).clip(CircleShape).background(if (kind == "pill") c.accent else c.surfaceAlt)
+            .semantics { contentDescription = label }
+            .clickable { ui = follow.jump(); scope.launch { if (reduce) list.scrollToItem(0) else list.animateScrollToItem(0) } }
+            .padding(horizontal = if (kind == "pill") 14.dp else 0.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
+            if (kind == "pill") { Text(if (ui.unread > 1) "${ui.unread} new messages" else "New message", style = MaterialTheme.typography.labelLarge, color = androidx.compose.ui.graphics.Color.White); Spacer(Modifier.width(4.dp)) }
+            Icon(FoxIcons.get("chevronDown"), null, tint = if (kind == "pill") androidx.compose.ui.graphics.Color.White else c.text, modifier = Modifier.size(22.dp))
+        }
+    }
     }
 }
 

@@ -12,7 +12,7 @@ export type FollowEvent =
 export type Follow = { pinned: boolean; far: boolean; unread: number; action: 'none' | 'scroll' };
 
 export function createFollow() {
-  let pinned = true, far = false, unread = 0, count = 0, streaming = false, ready = false;
+  let pinned = true, far = false, unread = 0, count = 0, streaming = false, ready = false, counted = false; // counted: the reply now streaming already added to `unread`
   const snap = (action: Follow['action']): Follow => ({ pinned, far, unread, action });
   const api = {
     /** The user scrolled (or the layout moved them): distance = px between the viewport's bottom and the end of the content. */
@@ -27,14 +27,19 @@ export function createFollow() {
       if (o.prepending) { count = o.count; streaming = o.streaming; return snap('none'); } // older messages above: the caller keeps the scroll position
       const added = Math.max(0, o.count - count), startedStreaming = o.streaming && !streaming, committed = streaming && !o.streaming && added > 0;
       if (added > 0 && o.lastRole === 'user') { pinned = true; far = false; unread = 0; } // your own message always takes you to the bottom
-      else if (!pinned) unread += committed ? Math.max(0, added - 1) : added + (startedStreaming && added === 0 ? 1 : 0); // a streamed reply counts once, when it starts
+      else if (!pinned) {
+        const fromStream = committed && counted ? 1 : 0; // a streamed reply counts once: when it starts, or when it is committed if you scrolled away meanwhile
+        unread += Math.max(0, added - fromStream) + (startedStreaming && added === 0 ? 1 : 0);
+        if (startedStreaming && added === 0) counted = true;
+      }
+      if (!o.streaming || startedStreaming && pinned) counted = false;
       count = o.count; streaming = o.streaming;
       return snap(pinned ? 'scroll' : 'none');
     },
     /** The button was tapped. */
     jump(): Follow { pinned = true; far = false; unread = 0; return snap('scroll'); },
     /** Another chat was opened. */
-    reset(): Follow { pinned = true; far = false; unread = 0; count = 0; streaming = false; ready = false; return snap('none'); },
+    reset(): Follow { pinned = true; far = false; unread = 0; count = 0; streaming = false; ready = false; counted = false; return snap('none'); },
   };
   return api;
 }

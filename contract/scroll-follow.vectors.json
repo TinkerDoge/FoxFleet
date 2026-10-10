@@ -22,6 +22,12 @@
       { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 1, "control": "pill", "action": "none" } },
       { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 1 } },
       { "e": "content", "count": 5, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1, "control": "pill" } } ] },
+    { "name": "a reply that started streaming while pinned, then you scrolled away: it counts once when committed", "steps": [
+      { "e": "content", "count": 4, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll" } },
+      { "e": "content", "count": 5, "streaming": true, "lastRole": "user", "expect": { "pinned": true, "unread": 0 } },
+      { "e": "scroll", "distance": 700, "expect": { "control": "arrow" } },
+      { "e": "content", "count": 5, "streaming": true, "lastRole": "user", "expect": { "unread": 0, "action": "none" } },
+      { "e": "content", "count": 6, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1, "control": "pill", "action": "none" } } ] },
     { "name": "pinned: streaming keeps scrolling, nothing is counted", "steps": [
       { "e": "content", "count": 4, "streaming": false, "lastRole": "user", "expect": { "action": "scroll" } },
       { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 0, "action": "scroll", "control": "none" } },
