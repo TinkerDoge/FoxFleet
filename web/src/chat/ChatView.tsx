@@ -9,6 +9,7 @@ import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { AssistantText, Message } from './Message';
 import { MediaContext, DiagnoseContext } from './MediaCards';
+import { control, createFollow, type Follow, type Role } from './scrollFollow';
 import { parseStreaming } from '../lib/mediaTags';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
@@ -35,7 +36,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     void client.setModel(agent.name, c.session, args).then((r) => notice(agent.name, r?.confirm_required ? String(r.confirm_message ?? '') : t('picker.modelSet', { model: String(r?.model ?? args) }))).catch(() => notice(agent.name, t('error.generic')));
   };
   const [viewer, setViewer] = useState<MediaItem | null>(null), [sessionsOpen, setSessionsOpen] = useState(false), [historyError, setHistoryError] = useState('');
-  const scroller = useRef<HTMLDivElement>(null), stick = useRef(true);
+  const scroller = useRef<HTMLDivElement>(null), stick = useRef(true), follow = useRef(createFollow()), [jumpUi, setJumpUi] = useState<{ far: boolean; unread: number; pinned: boolean }>({ far: false, unread: 0, pinned: true });
   useEffect(() => { rememberAgent(agent.name); if (agent.capabilities?.sessions !== false) void loadAgent(client, agent.name, onAuthLost); }, [agent.name]);
   useEffect(() => { void restore(client, agent.name, session, onAuthLost); }, [agent.name, session]);
   // The URL always names the open chat, so a reload, a bookmark or the back button returns to it.
@@ -50,10 +51,28 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   const openHistory = (open: boolean) => { setSessionsOpen(open); if (open) { setHistoryError(''); void loadSessions(client, agent.name, false, onAuthLost); } };
   const startNew = () => { newChat(agent.name); navigate('chat', { agent: agent.name, new: '1' }); };
   const selectSession = (id: string) => { navigate('chat', { agent: agent.name, session: id }); void restore(client, agent.name, id, onAuthLost); };
-  const before = useRef(0);
-  useEffect(() => { const el = scroller.current; if (!el) return; if (before.current) { el.scrollTop += el.scrollHeight - before.current; before.current = 0; } else if (stick.current) el.scrollTop = el.scrollHeight; }, [c.messages, c.streamText, c.streamReasoning, c.tool, agent.name]);
-  useEffect(() => { stick.current = true; }, [c.session]); // a freshly opened conversation starts at the bottom
-  const older = () => { const el = scroller.current; if (el && c.hasOlder && !c.loadingOlder) { before.current = el.scrollHeight; void loadOlder(client, agent.name, onAuthLost); } };
+  const before = useRef(0), reduced = () => document.documentElement.dataset.motion === 'reduce' || window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  const show = (f: Follow) => { stick.current = f.pinned; setJumpUi((u) => (u.far === f.far && u.unread === f.unread && u.pinned === f.pinned ? u : { far: f.far, unread: f.unread, pinned: f.pinned })); };
+  const toEnd = (smooth = false) => { const el = scroller.current; if (!el) return; if (smooth && !reduced() && el.scrollTo) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); else { el.style.scrollBehavior = 'auto'; el.scrollTop = el.scrollHeight; el.style.scrollBehavior = ''; } };
+  const lastRole = c.messages[c.messages.length - 1]?.role as Role | undefined;
+  useEffect(() => { // history, a sent message, a reply (streaming or finished): follow only while pinned; otherwise count it for the pill
+    const el = scroller.current; if (!el) return;
+    const prepending = before.current > 0, f = follow.current.content({ count: c.messages.length, streaming: c.streaming, lastRole, prepending, loading: c.loading });
+    if (prepending) { el.scrollTop += el.scrollHeight - before.current; before.current = 0; }
+    else if (f.action === 'scroll') toEnd();
+    show(f);
+  }, [c.messages, c.streaming, c.streamText, c.streamReasoning, c.tool, c.loading]);
+  useEffect(() => { show(follow.current.reset()); }, [c.session, agent.name]); // a freshly opened conversation starts at the bottom
+  // Late layout shifts (pictures and cards finishing, the keyboard opening, the composer growing) keep a pinned view at the bottom.
+  useEffect(() => {
+    const el = scroller.current; if (!el || typeof ResizeObserver === 'undefined') return;
+    const fix = () => { if (stick.current && before.current === 0) toEnd(); }, ro = new ResizeObserver(fix), watch = () => { ro.disconnect(); ro.observe(el); for (const k of Array.from(el.children)) ro.observe(k); };
+    watch(); const mo = new MutationObserver(watch); mo.observe(el, { childList: true });
+    const vv = window.visualViewport; vv?.addEventListener('resize', fix);
+    return () => { ro.disconnect(); mo.disconnect(); vv?.removeEventListener('resize', fix); };
+  }, [agent.name]);
+  const jump = () => { show(follow.current.jump()); toEnd(true); };
+  const older = () => { const el = scroller.current; if (el && c.hasOlder && !c.loadingOlder) { before.current = el.scrollHeight; void Promise.resolve(loadOlder(client, agent.name, onAuthLost)).finally(() => setTimeout(() => { before.current = 0; }, 400)); } };
   const local = (cmd: LocalCommand, args = '') => { if (cmd === 'new') startNew(); else if (cmd === 'stop') stop(agent.name, client); else if (cmd === 'retry') void retryLast(client, agent.name, onAuthLost); else if (cmd === 'title') { if (c.session) void renameSession(client, agent.name, c.session, args).catch(() => {}); } else openHistory(true); };
   const last = c.messages[c.messages.length - 1];
   // Screen readers get one announcement when a reply starts and one when it ends, never a token-by-token flood.
@@ -89,7 +108,8 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
           }).catch(failHistory)} />}
       </header>
       {c.runState && <p class={`run-status ${c.runState}`} role="status">{t(('chat.run.' + c.runState) as K)}</p>}
-      <div class={`messages${live ? ' live' : ''}`} ref={scroller} onLoadCapture={() => { const el = scroller.current; if (el && stick.current) el.scrollTop = el.scrollHeight; }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80; if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
+      <div class="messages-host">
+      <div class={`messages${live ? ' live' : ''}`} ref={scroller} onLoadCapture={() => { if (stick.current) toEnd(); }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; if (before.current === 0) show(follow.current.scroll(el.scrollHeight - el.scrollTop - el.clientHeight)); if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <div class="msg-skeleton" role="status" aria-label={t('home.loading')}><i class="sk-bubble w60" /><i class="sk-bubble me w40" /><i class="sk-bubble w75" /></div>}
         {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><Icon name="chat" size={48} class="icon-hero" /><p>{t('chat.empty', { agent: name })}</p></div>}
@@ -122,6 +142,9 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
           {c.recovery && <><p class="muted small">{t(c.recovery === 'retry' ? 'chat.retryHint' : c.recovery === 'reload' ? 'chat.reloadHint' : 'chat.reconnectHint')}</p>
             <button class="btn text" disabled={c.loading || c.streaming} onClick={recovery}>{t(c.recovery === 'retry' ? 'chat.retryRequest' : c.recovery === 'reload' ? 'chat.reloadHistory' : c.recovery === 'reconnect' ? 'chat.reconnectReply' : c.session ? 'chat.checkRequest' : 'chat.checkHistory')}</button></>}
         </div>}
+      </div>
+      {(() => { const k = control(jumpUi), on = k !== 'none'; return <button type="button" class={`to-bottom ${k}${on ? ' show' : ''}`} aria-hidden={on ? undefined : 'true'} tabIndex={on ? 0 : -1} onClick={jump}
+        aria-label={k === 'pill' ? (jumpUi.unread > 1 ? t('chat.newMessages', { n: String(jumpUi.unread) }) : t('chat.newMessage')) : t('chat.toBottom')}>{k === 'pill' ? <><span>{jumpUi.unread > 1 ? t('chat.newMessages', { n: String(jumpUi.unread) }) : t('chat.newMessage')}</span><Icon name="chevronDown" size={18} /></> : <Icon name="chevronDown" size={22} />}</button>; })()}
       </div>
       <Composer key={draftKey(agent.name, c.session)} client={client} agent={agent} history={c.messages} streaming={c.streaming} disabled={c.loading} skills={c.skills} draftKey={draftKey(agent.name, c.session)} session={c.session} queue={c.queue} onCancelQueued={(id) => void cancelQueued(client, agent.name, id)}
         onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })} />

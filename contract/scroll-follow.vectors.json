@@ -1,0 +1,45 @@
+{
+  "note": "Rules for 'stay at the bottom' and the go-to-bottom control. Each case is a fresh chat; after every event the listed fields must equal the result. Run by web/tests/scroll-follow.test.ts and android ScrollFollowTest.",
+  "cases": [
+    { "name": "opening a chat: loading keeps quiet, the first loaded list scrolls to the bottom", "steps": [
+      { "e": "content", "count": 0, "streaming": false, "loading": true, "expect": { "pinned": true, "action": "none", "control": "none" } },
+      { "e": "content", "count": 40, "streaming": false, "lastRole": "assistant", "expect": { "pinned": true, "action": "scroll", "unread": 0, "control": "none" } } ] },
+    { "name": "scrolling up past 120px shows the arrow; 80..120 holds the previous state", "steps": [
+      { "e": "content", "count": 10, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 100, "expect": { "pinned": false, "far": false, "control": "none" } },
+      { "e": "scroll", "distance": 300, "expect": { "pinned": false, "far": true, "control": "arrow" } },
+      { "e": "scroll", "distance": 100, "expect": { "far": true, "control": "arrow" } },
+      { "e": "scroll", "distance": 50, "expect": { "pinned": true, "far": false, "control": "none" } } ] },
+    { "name": "a reply arriving while scrolled up becomes a pill and does not scroll", "steps": [
+      { "e": "content", "count": 10, "streaming": false, "lastRole": "user", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 500, "expect": { "control": "arrow" } },
+      { "e": "content", "count": 11, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1, "action": "none", "control": "pill" } },
+      { "e": "content", "count": 13, "streaming": false, "lastRole": "assistant", "expect": { "unread": 3, "action": "none", "control": "pill" } },
+      { "e": "jump", "expect": { "unread": 0, "pinned": true, "action": "scroll", "control": "none" } } ] },
+    { "name": "a streaming reply counts once when it starts, not again when it is committed", "steps": [
+      { "e": "content", "count": 4, "streaming": false, "lastRole": "user", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 400, "expect": { "control": "arrow" } },
+      { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 1, "control": "pill", "action": "none" } },
+      { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 1 } },
+      { "e": "content", "count": 5, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1, "control": "pill" } } ] },
+    { "name": "pinned: streaming keeps scrolling, nothing is counted", "steps": [
+      { "e": "content", "count": 4, "streaming": false, "lastRole": "user", "expect": { "action": "scroll" } },
+      { "e": "content", "count": 4, "streaming": true, "lastRole": "user", "expect": { "unread": 0, "action": "scroll", "control": "none" } },
+      { "e": "content", "count": 5, "streaming": false, "lastRole": "assistant", "expect": { "unread": 0, "action": "scroll" } } ] },
+    { "name": "sending your own message while scrolled up goes to the bottom at once", "steps": [
+      { "e": "content", "count": 20, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 900, "expect": { "control": "arrow" } },
+      { "e": "content", "count": 21, "streaming": false, "lastRole": "user", "expect": { "pinned": true, "action": "scroll", "unread": 0, "control": "none" } } ] },
+    { "name": "loading older history never counts as new and does not scroll", "steps": [
+      { "e": "content", "count": 20, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 2000, "expect": { "control": "arrow" } },
+      { "e": "content", "count": 40, "streaming": false, "lastRole": "assistant", "prepending": true, "expect": { "unread": 0, "action": "none", "control": "arrow" } },
+      { "e": "content", "count": 41, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1, "control": "pill" } } ] },
+    { "name": "switching chats resets everything", "steps": [
+      { "e": "content", "count": 20, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll" } },
+      { "e": "scroll", "distance": 900, "expect": {} },
+      { "e": "content", "count": 21, "streaming": false, "lastRole": "assistant", "expect": { "unread": 1 } },
+      { "e": "reset", "expect": { "pinned": true, "far": false, "unread": 0, "control": "none" } },
+      { "e": "content", "count": 7, "streaming": false, "lastRole": "assistant", "expect": { "action": "scroll", "unread": 0 } } ] }
+  ]
+}

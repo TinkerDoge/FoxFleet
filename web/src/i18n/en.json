@@ -381,5 +381,8 @@
   "media.copyFix": "Copy fix",
   "media.copied": "Copied",
   "settings.hubVersion": "Hub version {version}",
-  "settings.hubOld": "Update your hub for previews, media and clearer screen errors. Everything else keeps working."
+  "settings.hubOld": "Update your hub for previews, media and clearer screen errors. Everything else keeps working.",
+  "chat.toBottom": "Go to the latest message",
+  "chat.newMessage": "New message",
+  "chat.newMessages": "{n} new messages"
 }
