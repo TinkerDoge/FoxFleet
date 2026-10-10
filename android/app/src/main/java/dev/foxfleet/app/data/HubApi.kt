@@ -36,7 +36,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 class AuthRequiredException(message: String = "Login required") : Exception(message)
-class HubApiException(val status: Int, message: String, val network: Boolean = false, val refused: Boolean = false) : Exception(scrubAddresses(message)) {
+class HubApiException(val status: Int, message: String, val network: Boolean = false, val refused: Boolean = false, val code: String? = null) : Exception(scrubAddresses(message)) {
     /** A gateway or tunnel hiccup (502/503/504/52x, timeout, reset): never a verdict about the login or the request. */
     val transient: Boolean get() = network || (!refused && isTransientStatus(status))
 }
@@ -89,12 +89,15 @@ class HubApi(private val store: SettingsStore) {
         cont.invokeOnCancellation { call.cancel() }
     }
 
-    private fun errorBody(response: Response): String {
-        val raw = runCatching { response.body?.string() }.getOrNull() ?: return ""
+    private fun errorBody(response: Response): String = errorParts(response).first
+
+    /** The hub's error text and, when it classified the failure itself, its stable code ("machine_offline", "display_unsupported", ...). */
+    private fun errorParts(response: Response): Pair<String, String?> {
+        val raw = runCatching { response.body?.string() }.getOrNull() ?: return "" to null
         return runCatching {
             val obj = json.parseToJsonElement(raw).jsonObject
-            obj["error"]?.jsonPrimitive?.content?.take(250)
-        }.getOrNull() ?: raw.take(250)
+            (obj["error"]?.jsonPrimitive?.content?.take(250) ?: raw.take(250)) to obj["code"]?.jsonPrimitive?.contentOrNull?.take(40)
+        }.getOrNull() ?: (raw.take(250) to null)
     }
 
     private enum class Session { VALID, GONE, UNKNOWN }
@@ -138,7 +141,7 @@ class HubApi(private val store: SettingsStore) {
         val response = await(call)
         response.use {
             if (it.code == 401 && !plain401) throw unauthorized(errorBody(it))
-            if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Request failed (${it.code})" })
+            if (!it.isSuccessful) { val (msg, code) = errorParts(it); throw HubApiException(it.code, msg.ifEmpty { "Request failed (${it.code})" }, refused = code != null, code = code) } // a classified error is the hub's verdict: never retried, never "reconnecting"
             val contentType = it.header("Content-Type") ?: ""
             if (!contentType.contains("application/json")) throw HubApiException(0, "Invalid response from the relay")
             val text = it.body?.string() ?: ""
@@ -340,12 +343,14 @@ class HubApi(private val store: SettingsStore) {
 
     suspend fun screen(agent: String, action: String): JsonObject = withContext(Dispatchers.IO) {
         if (action == "status") request(agentPath(agent) + "/screen/status", timeoutSec = 30)
-        else request(agentPath(agent) + "/screen/" + action, "POST", "{}", timeoutSec = 45)
+        else request(agentPath(agent) + "/screen/" + action, "POST", "{}", timeoutSec = if (action == "start") 95 else 45)
     }
 
     fun parseScreen(obj: JsonObject) = ScreenStatus(
         running = obj["running"]?.jsonPrimitive?.booleanOrNull ?: false,
         supported = obj["supported"]?.jsonPrimitive?.booleanOrNull ?: true,
+        state = obj["state"]?.jsonPrimitive?.contentOrNull,
+        missing = obj["missing"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList(),
         holder = runCatching { obj["lease"]?.jsonObject?.get("holder")?.jsonPrimitive?.contentOrNull }.getOrNull(),
         blocker = obj["blocker"]?.jsonPrimitive?.contentOrNull,
     )
@@ -615,7 +620,7 @@ class HubApi(private val store: SettingsStore) {
 
         fun parseAuthInfo(o: JsonObject) = AuthInfo(
             required = o.bool("required") ?: true, authenticated = o.bool("authenticated") ?: false, setupRequired = o.bool("setupRequired") ?: false,
-            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
+            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), hubVersion = o["hub"]?.jsonObject?.str("version"), hubFeatures = o["hub"]?.jsonObject?.get("features")?.jsonArray?.mapNotNull { f -> f.jsonPrimitive.contentOrNull } ?: emptyList(), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
         )
         fun parseMachine(o: JsonObject) = Machine(
             id = o.str("id") ?: "", name = o.str("name") ?: "Machine", online = o.bool("online") ?: false, lastSeen = o["lastSeen"]?.jsonPrimitive?.longOrNull,

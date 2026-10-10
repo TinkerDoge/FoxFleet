@@ -56,6 +56,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     var hubError by mutableStateOf<String?>(null); private set
     var username by mutableStateOf("")
     var isOwner by mutableStateOf(false); private set
+    /** What the hub says it can do (null version = a hub older than 0.3.5 that does not say). Refreshed whenever auth info is read. */
+    var hubVersion by mutableStateOf<String?>(null); private set
+    var hubFeatures by mutableStateOf<List<String>>(emptyList()); private set
+    val hubKnown get() = hubVersion != null
+    fun hubHas(feature: String) = feature in hubFeatures
     /** Invite code from an foxfleet://connect?...&invite= link; pre-fills the join form once the hub is connected. */
     var inviteDraft by mutableStateOf(""); private set
     val hubName get() = settings.hubs.firstOrNull { it.id == settings.activeHubId }?.name.orEmpty()
@@ -117,7 +122,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             var attempt = 0
             while (true) {
                 try {
-                    val info = api.authInfo(); username = info.username.orEmpty(); isOwner = info.isOwner
+                    val info = api.authInfo(); username = info.username.orEmpty(); isOwner = info.isOwner; hubVersion = info.hubVersion; hubFeatures = info.hubFeatures
                     authed = !info.required || info.authenticated; bootReconnecting = false; break
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     val transient = (e as? dev.foxfleet.app.data.HubApiException)?.transient == true
@@ -133,7 +138,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     fun updatePrefs(p: AppPrefs) { prefs = p; settings.appPrefs = p }
 
-    fun onLoggedIn() { authed = true; bootError = null; viewModelScope.launch { runCatching { val i = api.authInfo(); username = i.username.orEmpty(); isOwner = i.isOwner; inviteDraft = "" } }; refreshFleet() }
+    fun onLoggedIn() { authed = true; bootError = null; viewModelScope.launch { runCatching { val i = api.authInfo(); username = i.username.orEmpty(); isOwner = i.isOwner; hubVersion = i.hubVersion; hubFeatures = i.hubFeatures; inviteDraft = "" } }; refreshFleet() }
 
     fun signOut() {
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()

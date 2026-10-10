@@ -15,7 +15,10 @@ data class AuthInfo(
     val username: String? = null,
     val role: String? = null,
     val termsVersion: String? = null,
-) { val isOwner get() = role == "owner" }
+    /** Null on a hub older than 0.3.5 (it does not report them): the app then says "update your hub" instead of failing silently. */
+    val hubVersion: String? = null,
+    val hubFeatures: List<String> = emptyList(),
+) { val isOwner get() = role == "owner"; val hubKnown get() = hubVersion != null; fun hubHas(feature: String) = feature in hubFeatures }
 
 data class ConnectLink(val hub: String, val invite: String? = null)
 

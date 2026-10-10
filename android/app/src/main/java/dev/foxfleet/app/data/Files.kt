@@ -28,4 +28,4 @@ object FileMarker {
 }
 
 /** Screen relay state from the hub (GET/POST /api/agents/{name}/screen/...). */
-data class ScreenStatus(val running: Boolean, val supported: Boolean, val holder: String?, val blocker: String?)
+data class ScreenStatus(val running: Boolean, val supported: Boolean, val holder: String?, val blocker: String?, val state: String? = null, val missing: List<String> = emptyList())

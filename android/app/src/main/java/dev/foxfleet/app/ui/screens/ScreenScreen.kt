@@ -16,6 +16,12 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -107,17 +113,29 @@ fun ScreenScreen(
     initialHandBackAt: Long = 0L,
     /** Screenshot tests only: a picture of a desktop to show instead of the stand-in (WebView does not render under Robolectric). */
     previewFrame: android.graphics.Bitmap? = null,
+    /** False when the hub does not report its version (older than 0.3.5): errors then carry an "update your hub" note. */
+    hubKnown: Boolean = true,
+    /** Screenshot tests only: show this problem's overlay. */
+    initialProblem: ScreenProblem? = null,
+    initialMods: Set<String> = emptySet(),
 ) {
     val c = LocalHubColors.current
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     var phase by remember { mutableStateOf(initialPhase) }
     var note by remember { mutableStateOf<String?>(null) }
+    var problem by remember { mutableStateOf(initialProblem) }
+    var problemDetail by remember { mutableStateOf<String?>(null) }
+    var missing by remember { mutableStateOf<List<String>>(emptyList()) }
+    var mods by remember { mutableStateOf(initialMods) }
+    var zoomed by remember { mutableStateOf(false) }
+    var panning by remember { mutableStateOf(false) }
     var handBackAt by remember { mutableLongStateOf(initialHandBackAt) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var busy by remember { mutableStateOf(false) }
     var web by remember { mutableStateOf<WebView?>(null) }
     var pageReady by remember { mutableStateOf(false) }
+    var viewerError by remember { mutableStateOf<String?>(null) }
     var pendingUrl by remember { mutableStateOf<String?>(null) }
     val reduce = reduceMotion()
 
@@ -136,9 +154,11 @@ fun ScreenScreen(
 
     suspend fun guarded(block: suspend () -> Unit) {
         busy = true
-        try { block() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) {
-            phase = ScreenPhase.Failed; note = "Sign in again to view the screen"
-        } catch (e: Exception) { note = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Screen request failed" } finally { busy = false }
+        try { block() } catch (e: CancellationException) { throw e } catch (e: Exception) {
+            val p = screenProblemOf(e, hubKnown)
+            if (p.kind == ScreenProblemKind.Generic && phase in setOf(ScreenPhase.Control, ScreenPhase.Watching)) { note = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Screen request failed" } // a failed hand-back or take-over keeps the screen
+            else { problem = p; problemDetail = (e as? dev.foxfleet.app.data.HubApiException)?.message?.takeIf { p.kind == ScreenProblemKind.Generic }; phase = ScreenPhase.Failed }
+        } finally { busy = false }
     }
     suspend fun observe() {
         val a = api ?: return
@@ -149,19 +169,28 @@ fun ScreenScreen(
     }
     suspend fun open() = guarded {
         val a = api ?: return@guarded
+        problem = null
         val st = a.parseScreen(a.screen(agentName, "status"))
+        val state = st.state ?: if (!st.supported) "no_vnc" else null // an older hub does not send a state word
         when {
-            !st.supported -> { phase = ScreenPhase.Failed; note = "This agent has no Bot Screen" }
+            state == "no_vnc" || state == "not_installed" || state == "blocked" -> { problem = screenProblem(state = state, hubKnown = hubKnown); problemDetail = st.blocker; missing = st.missing; phase = ScreenPhase.Failed }
             !st.running -> phase = ScreenPhase.Stopped
             else -> observe()
         }
     }
-    fun start() = scope.launch { guarded { phase = ScreenPhase.Starting; api?.screen(agentName, "start"); observe() } }
+    fun start() = scope.launch { guarded { problem = null; phase = ScreenPhase.Starting; api?.screen(agentName, "start"); observe() } }
     fun takeOver() = scope.launch {
-        guarded {
-            val r = api?.screen(agentName, "takeover") ?: return@guarded
+        suspend fun once() {
+            val r = api?.screen(agentName, "takeover") ?: return
             handBackAt = r["autoHandBackAt"]?.jsonPrimitive?.longOrNull ?: (System.currentTimeMillis() + 15 * 60_000)
             phase = ScreenPhase.Control; js("hub.setControl(true)")
+        }
+        guarded {
+            try { once() } catch (e: dev.foxfleet.app.data.HubApiException) {
+                if (e.code != "reopen") throw e
+                observe() // the hub's session to the agent was recycled: open the screen again, then take over once more
+                delay(1500); once()
+            }
         }
     }
     fun handBack() = scope.launch {
@@ -170,6 +199,8 @@ fun ScreenScreen(
     }
 
     LaunchedEffect(Unit) { if (!preview) open() }
+    // The viewer page must report ready quickly; if it never does (blocked asset, script error, old WebView) say so instead of showing a blank view.
+    LaunchedEffect(pageReady) { if (!preview && !pageReady) { delay(10_000); if (!pageReady && problem == null) { problem = ScreenProblem(ScreenProblemKind.ViewerFailed); problemDetail = viewerError; phase = ScreenPhase.Failed } } }
     LaunchedEffect(phase) {
         while (phase == ScreenPhase.Control) {
             now = System.currentTimeMillis()
@@ -214,7 +245,20 @@ fun ScreenScreen(
                         settings.setSupportMultipleWindows(false)
                         settings.javaScriptCanOpenWindowsAutomatically = false
                         if ((api?.baseUrl ?: "").startsWith("http://")) settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                        settings.setSupportZoom(false); settings.builtInZoomControls = false; settings.displayZoomControls = false
+                        webChromeClient = object : android.webkit.WebChromeClient() {
+                            override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                                if (m.messageLevel() == android.webkit.ConsoleMessage.MessageLevel.ERROR) main.post { viewerError = m.message().take(80) }
+                                return true
+                            }
+                        }
                         webViewClient = object : WebViewClient() {
+                            override fun onReceivedError(view: WebView, request: WebResourceRequest, error: android.webkit.WebResourceError) {
+                                if (request.url.host == "appassets.androidplatform.net") main.post { viewerError = "${request.url.path} ${error.errorCode}" }
+                            }
+                            override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, errorResponse: WebResourceResponse) {
+                                if (request.url.host == "appassets.androidplatform.net") main.post { viewerError = "${request.url.path} ${errorResponse.statusCode}" }
+                            }
                             override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? = loader.shouldInterceptRequest(request.url)
                             override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest) = true // never navigate away
                         }
@@ -224,7 +268,11 @@ fun ScreenScreen(
                                     "ready" -> { pageReady = true; pendingUrl?.let { u -> pendingUrl = null; evaluateJavascript("hub.connect(${JSONObject.quote(u)})", null) } }
                                     "connected" -> if (phase != ScreenPhase.Control) phase = ScreenPhase.Watching
                                     "disconnected" -> if (phase in setOf(ScreenPhase.Watching, ScreenPhase.Control, ScreenPhase.Connecting)) { phase = ScreenPhase.Disconnected; handBackAt = 0 }
-                                    "error" -> note = detail.take(120)
+                                    "error" -> if (detail.startsWith("js: ")) viewerError = detail.removePrefix("js: ") else note = detail.take(120)
+                                    "state" -> runCatching { org.json.JSONObject(detail) }.getOrNull()?.let { o ->
+                                        zoomed = o.optString("zoom") == "100"; panning = o.optBoolean("pan")
+                                        val m = o.optJSONObject("mods"); mods = setOf("ctrl", "alt", "shift").filter { k -> m?.optBoolean(k) == true }.toSet()
+                                    }
                                 }
                             }
                         }, "FoxfleetBridge")
@@ -239,22 +287,22 @@ fun ScreenScreen(
                     CircularProgressIndicator(Modifier.size(28.dp), color = Color.White.copy(alpha = 0.7f), strokeWidth = 2.dp)
                 ScreenPhase.Stopped -> Overlay("$agentName's desktop is off", "Start it to watch what the agent does.", "Start screen", busy) { start() }
                 ScreenPhase.Disconnected -> Overlay("Disconnected", "The screen connection closed.", "Reconnect", busy) { scope.launch { guarded { observe() } } }
-                ScreenPhase.Failed -> Overlay("Screen unavailable", note ?: "Check that the agent has Bot Screen (TigerVNC + Xfce).", "Retry", busy) { scope.launch { open() } }
+                ScreenPhase.Failed -> {
+                    val p = problem ?: ScreenProblem(ScreenProblemKind.Generic, !hubKnown)
+                    val signIn = p.kind == ScreenProblemKind.AuthExpired
+                    Overlay(if (signIn) "Signed out" else "Screen unavailable", screenProblemText(p, problemDetail, missing), if (signIn) "Back" else "Retry", busy) { if (signIn) onBack() else scope.launch { open() } }
+                }
                 else -> {}
             }
         }
         note?.takeIf { phase != ScreenPhase.Failed }?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = Color.White.copy(alpha = 0.7f), modifier = Modifier.padding(start = 16.dp, top = 8.dp))
         }
-        if (phase == ScreenPhase.Control) Row(
-            Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            listOf("Keyboard" to "hub.showKeyboard()", "Esc" to "hub.key('Escape')", "Tab" to "hub.key('Tab')", "Enter" to "hub.key('Enter')", "⌫" to "hub.key('Backspace')").forEach { (label, code) ->
-                Text(label, style = MaterialTheme.typography.labelLarge, color = Color.White,
-                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).background(Color.White.copy(alpha = 0.12f)).clickable { js(code) }.padding(horizontal = 12.dp, vertical = 8.dp))
-            }
-        }
+        if (phase == ScreenPhase.Control) ControlBar(
+            mods = mods, zoomed = zoomed, panning = panning,
+            onKey = { js("hub.press('$it')") }, onMod = { js("hub.toggleMod('$it')") }, onKeyboard = { js("hub.showKeyboard()") },
+            onZoom = { js("hub.setZoom('${if (zoomed) "fit" else "100"}')") }, onPan = { js("hub.setPan(${!panning})") }, onCad = { js("hub.ctrlAltDel()") },
+        )
         val canAct = phase == ScreenPhase.Watching || phase == ScreenPhase.Control
         val control = phase == ScreenPhase.Control
         Box(
@@ -267,6 +315,33 @@ fun ScreenScreen(
             else Text(if (control) "Hand back to $agentName" else "Take over", fontWeight = FontWeight.SemiBold,
                 color = if (!canAct) Color.White.copy(alpha = 0.35f) else if (control) Color.Black else Color.White)
         }
+    }
+}
+
+/** Keys a phone keyboard lacks: Esc/Tab/arrows, sticky Ctrl/Alt/Shift, zoom + pan, the soft keyboard. Every target is at least 44dp. */
+@Composable
+internal fun ControlBar(mods: Set<String>, zoomed: Boolean, panning: Boolean, onKey: (String) -> Unit, onMod: (String) -> Unit, onKeyboard: () -> Unit, onZoom: () -> Unit, onPan: () -> Unit, onCad: () -> Unit) {
+    @Composable fun Chip(label: String, on: Boolean = false, desc: String = label, click: () -> Unit) {
+        Box(
+            Modifier.defaultMinSize(minWidth = 44.dp, minHeight = 44.dp).clip(RoundedCornerShape(12.dp))
+                .background(if (on) Color.White else Color.White.copy(alpha = 0.12f)).semantics { contentDescription = desc; if (on) selected = true }
+                .clickable(onClick = click).padding(horizontal = 12.dp),
+            contentAlignment = Alignment.Center,
+        ) { Text(label, style = MaterialTheme.typography.labelLarge, color = if (on) Color.Black else Color.White) }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip("Esc") { onKey("Escape") }; Chip("Tab") { onKey("Tab") }; Chip("Enter") { onKey("Enter") }; Chip("⌫", desc = "Backspace") { onKey("Backspace") }
+            Chip("↑", desc = "Up") { onKey("Up") }; Chip("↓", desc = "Down") { onKey("Down") }; Chip("←", desc = "Left") { onKey("Left") }; Chip("→", desc = "Right") { onKey("Right") }
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Chip("Ctrl", "ctrl" in mods) { onMod("ctrl") }; Chip("Alt", "alt" in mods) { onMod("alt") }; Chip("Shift", "shift" in mods) { onMod("shift") }
+            Chip("Ctrl+Alt+Del") { onCad() }
+            Chip(if (zoomed) "Fit" else "100%", desc = if (zoomed) "Fit to screen" else "Zoom to 100 percent") { onZoom() }
+            if (zoomed) Chip("Pan", panning) { onPan() }
+            Chip("Keyboard") { onKeyboard() }
+        }
+        Text("Tap = click · long-press = right-click · two fingers = scroll · pinch = zoom", style = MaterialTheme.typography.labelSmall, color = Color.White.copy(alpha = 0.55f))
     }
 }
 
