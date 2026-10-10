@@ -51,7 +51,7 @@ test('route: needs a session and refuses bad targets without touching the networ
   const os = await import('node:os'), fs = await import('node:fs/promises'), path = await import('node:path');
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'foxfleet-mp-')); const { createHub } = await import(`../index.js?mp=${Math.random()}`);
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await fs.rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const base = `http://127.0.0.1:${server.address().port}`, q = (u) => fetch(`${base}/api/media-proxy?url=${encodeURIComponent(u)}`);
   assert.equal((await q('http://example.com/a.png')).status, 400); assert.equal((await q('https://127.0.0.1/a.png')).status, 403); assert.equal((await q('')).status, 400);
 });

@@ -10,7 +10,7 @@ const password = 'disposable-published-port-owner';
 async function setup(t, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-origin-'));
   const server = await createHub({ configPath: path.join(dir, 'config.json'), host: '0.0.0.0', ownerPassword: password, ...options });
-  t.after(async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   // A distinct local address and ephemeral listener model the container side;
   // the wire Host below represents the published port. Never bind to the LAN.
   await new Promise((done) => server.listen(0, '127.0.0.2', done));
@@ -76,7 +76,7 @@ test('trusted origins parse the comma-separated environment setting', async (t) 
 
 test('trusted origins reject malformed, credentialed, wildcard and oversized lists', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-invalid-origin-')), configPath = path.join(dir, 'config.json');
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   for (const trustedOrigins of [
     null, {}, 42, [42], [''], ['ftp://hub.test'], ['https://*.hub.test'], ['https://user:pass@hub.test'], ['https://@hub.test'],
     ['https://hub.test/path'], ['https://hub.test/path/..'], ['https://hub.test?query'], ['https://hub.test?'], ['https://hub.test#fragment'], ['https://hub.test#'],

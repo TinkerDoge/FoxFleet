@@ -15,7 +15,8 @@ export async function setup(t, { gateway = true, proxy = false, env = {}, mock =
   const main = await mockHermes(t, mock), root = await fakeHermesHome(t, main, { profiles: [] });
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-ui-')), cfgDir = await tmpDir();
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  const socks = new Set(); server.on('connection', (c) => { socks.add(c); c.once('close', () => socks.delete(c)); }); // WebSocket sockets escape closeAllConnections()
+  t.after(async () => { server.closeAllConnections(); for (const c of socks) c.destroy(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const px = proxy ? await faultProxy(t, { port: server.address().port }) : null, via = px ? px.base : base; // the connector reaches the hub through the fault proxy when asked
   const call = (route, data) => fetch(base + route, { method: data === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });

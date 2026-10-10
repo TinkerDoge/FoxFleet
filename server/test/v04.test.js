@@ -16,7 +16,7 @@ async function setup(t, connections = [], options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-v04-')), configPath = path.join(dir, 'config.json');
   if (connections.length) await writeFile(configPath, JSON.stringify({ machines: connections }));
   const server = await createHub({ configPath, singleUser: !options.ownerPassword, ...options }); const base = await listen(server);
-  t.after(async () => { await close(server); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await close(server); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const request = (route, data, method = 'GET', headers = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers }, ...(data === undefined ? {} : { body: typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data) }) });
   return { server, base, request };
 }

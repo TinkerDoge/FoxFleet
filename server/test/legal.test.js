@@ -11,7 +11,7 @@ async function hub(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-legal-'));
   const server = await createHub({ configPath: path.join(dir, 'config.json') }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const call = (route, { token, data, method = data === undefined ? 'GET' : 'POST' } = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, body: data === undefined ? undefined : JSON.stringify(data) });
   return { dir, call };
 }

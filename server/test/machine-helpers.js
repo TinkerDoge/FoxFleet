@@ -22,8 +22,10 @@ export async function fakeHermesHome(t, mock, { profiles = ['coder', 'research']
 export function runConnector(t, args, { hermes, configDir, env = {} } = {}) {
   const p = spawn(process.execPath, ['--experimental-websocket', CONNECTOR, ...args], { env: { ...process.env, FOXFLEET_CONFIG_DIR: configDir, FOXFLEET_HERMES_HOME: hermes, FOXFLEET_ALLOW_INSECURE_HUB: '1', ...env }, stdio: ['ignore', 'pipe', 'pipe'] });
   let out = ''; p.stdout.on('data', (c) => { out += c; }); p.stderr.on('data', (c) => { out += c; });
-  t.after(() => p.kill());
-  return { p, get out() { return out; }, done: new Promise((r) => p.on('close', (code) => r(code))) };
+  const done = new Promise((r) => p.on('close', (code) => r(code)));
+  // Teardown must not return until the child is really gone (and its pipes closed), or a slow exit keeps the test process alive: SIGTERM, then SIGKILL after 2s.
+  t.after(async () => { if (p.exitCode !== null || p.signalCode) return; p.kill(); const k = setTimeout(() => p.kill('SIGKILL'), 2000); await done; clearTimeout(k); });
+  return { p, get out() { return out; }, done };
 }
 export const tmpDir = (prefix = 'ff-cfg-') => mkdtemp(path.join(os.tmpdir(), prefix));
 export const readJson = async (f) => JSON.parse(await readFile(f, 'utf8'));

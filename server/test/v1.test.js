@@ -15,7 +15,7 @@ async function hub(t, { raw, ...options } = {}) {
   if (raw) await writeFile(configPath, JSON.stringify(raw));
   const server = await createHub({ configPath, ...options }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const call = (route, { token, data, method = data === undefined ? 'GET' : 'POST', headers = {} } = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}), ...headers }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   return { server, base, dir, configPath, call };
 }
@@ -68,7 +68,7 @@ test('devices: list, revoke one, sign out everywhere, password change signs out 
 
 test('tokens rotate: refresh issues a new token, the old one dies after the grace window', async (t) => {
   let clock = Date.now();
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-acc-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-acc-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   const acc = await accountStore(dir, { now: () => clock }), u = await acc.createUser('rotator', PW);
   const { token, deviceId } = await acc.createSession(u.id);
   const fresh = await acc.rotate(deviceId); assert.notEqual(fresh, token);
@@ -107,7 +107,7 @@ test('per-user registries: agents and secrets are isolated between users', async
 });
 
 test('setup code: a hub bound beyond loopback demands the printed setup code', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-lan-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-lan-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   const server = await createHub({ configPath: path.join(dir, 'config.json'), host: '0.0.0.0', trustedOrigins: 'http://127.0.0.1:1' });
   t.after(() => new Promise((r) => server.close(r))); assert.ok(server.setupCode.length >= 8);
   await new Promise((r) => server.listen(0, '127.0.0.1', r)); const port = server.address().port;

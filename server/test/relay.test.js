@@ -14,7 +14,7 @@ async function setup(t, connections = [], options = {}) {
   assert.equal(typeof relay.createHub, 'function', 'createHub is exported without starting on import');
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-test-')), configPath = path.join(dir, 'config.json');
   if (connections.length) await writeFile(configPath, JSON.stringify({ machines: connections }));
-  let server; t.after(async () => { if (server) await close(server); await rm(dir, { recursive: true, force: true }); });
+  let server; t.after(async () => { if (server) await close(server); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   server = await relay.createHub({ configPath, singleUser: !options.ownerPassword, ...options }); const base = await listen(server);
   const request = (route, data, method = 'GET', headers = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   return { server, base, request, configPath };
@@ -38,7 +38,7 @@ test('invalid, duplicate, malformed and oversized input is rejected', async (t) 
   assert.equal((await fetch(base + '/api/connections', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{bad' })).status, 400); assert.equal((await fetch(base + '/api/connections', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: 'x'.repeat(5 * 1024 * 1024) })).status, 413); assert.equal((await request('/api/agents/missing/chat', { messages: [] }, 'POST')).status, 404);
 });
 test('malformed saved config fails safely', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-invalid-')); t.after(() => rm(dir, { recursive: true, force: true })); const configPath = path.join(dir, 'config.json'); await writeFile(configPath, '{password secret');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-invalid-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 })); const configPath = path.join(dir, 'config.json'); await writeFile(configPath, '{password secret');
   assert.equal(typeof relay.createHub, 'function'); await assert.rejects(() => relay.createHub({ configPath, singleUser: true }), (e) => !e.message.includes('secret') && /configuration/i.test(e.message));
 });
 test('LAN bind requires owner password and strict sessions logout', async (t) => {

@@ -11,7 +11,7 @@ import { validate, operations } from '../../contract/validate.mjs';
 test('contract: the real hub honours contract/openapi.json', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-contract-'));
   const server = await createHub({ configPath: path.join(dir, 'config.json') }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const covered = await runContract(`http://127.0.0.1:${server.address().port}`);
   assert.ok(covered.length >= 22, `only ${covered.length} operations covered`);
 });

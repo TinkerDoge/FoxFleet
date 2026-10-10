@@ -13,8 +13,9 @@ import { discoverProfiles, parseEnv, yamlScalars, hermesRoot, serviceSpec, chose
 async function hub(t, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-machines-'));
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true, ...options }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const socks = new Set(); server.on('connection', (s) => { socks.add(s); s.once('close', () => socks.delete(s)); }); // upgraded (WebSocket) sockets are not covered by closeAllConnections()
   const base = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); for (const s of socks) s.destroy(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const call = (route, data, method = data === undefined ? 'GET' : 'POST') => fetch(base + route, { method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   return { base, dir, call, json: async (...a) => (await call(...a)).json() };
 }
@@ -37,7 +38,7 @@ test('pairing store: single use, 15-minute expiry, wrong-code lockout, bound to 
     assert.ok((await ms.redeem(c.code, {}, '4.4.4.4')).machineId, 'another address is not locked');
     assert.equal(normalizeCode(' abcde-fghjk '), 'ABCDEFGHJK'); assert.equal(validCode('ABCDEFGHJ0'), false);
     for (let i = 0; i < 5; i++) ms.createPairing('u9'); assert.throws(() => ms.createPairing('u9'), /Too many open pairing codes/);
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); }
 });
 
 test('connector discovery follows the Hermes layout: default + profiles/<id> with a marker, no tombstones, valid ids only', async (t) => {

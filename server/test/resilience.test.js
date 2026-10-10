@@ -13,7 +13,7 @@ async function setup(t, connection) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-res-')), configPath = path.join(dir, 'config.json');
   await writeFile(configPath, JSON.stringify({ machines: [connection] }));
   const server = await createHub({ configPath, singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   return { port: server.address().port, host: '127.0.0.1' };
 }
 const frame = (c) => `data: ${JSON.stringify({ choices: [{ delta: { content: c } }] })}\n\n`;

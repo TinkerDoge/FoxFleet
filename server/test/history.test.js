@@ -14,7 +14,7 @@ import { normalizeTranscript, sessionRow, flattenContent } from '../transcript.j
 async function setup(t, machines = []) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-hist-')), configPath = path.join(dir, 'config.json'); if (machines.length) await writeFile(configPath, JSON.stringify({ machines }));
   const server = await createHub({ configPath, singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (p, data, method = data === undefined ? 'GET' : 'POST') => fetch(base + p, { method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data) });
   return { dir, base, call };

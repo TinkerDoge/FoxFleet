@@ -8,7 +8,7 @@ import { createHub } from '../index.js';
 
 async function tempBase(t) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-avatars-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   return dir;
 }
 

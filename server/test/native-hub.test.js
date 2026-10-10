@@ -111,7 +111,7 @@ test('gateway crash: journal marks in-flight messages uncertain (never resent), 
 });
 
 test('an answer that arrives after the gateway went down is recorded as uncertain, never acked, and nothing is resent', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   let release; const gate = new Promise((r) => { release = r; }), calls = []; let listener;
   const ui = { caps: () => ({ native: true }), subscribe: (fn) => { listener = fn; }, call: async (agent, op, params) => { calls.push(op); if (op === 'submit') await gate; return stub.reply(op, params); } };
   const hub = await nativeHub({ connectors: { ui: () => ui }, file: path.join(dir, 'j.json') }); const s = await hub.create('u1', 'm1', 'p');
@@ -125,7 +125,7 @@ test('an answer that arrives after the gateway went down is recorded as uncertai
 });
 
 test('a stale attach snapshot taken before a turn ended does not revive that turn (it left a run open that never ended)', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   let release, gated = false; const gate = new Promise((r) => { release = r; }); let listener;
   const ui = { caps: () => ({ native: true }), subscribe: (fn) => { listener = fn; }, call: async (agent, op) => { if (op === 'attach' && gated) { await gate; return { session_id: 'rt1', running: true, messages: [] }; } return stub.reply(op); } };
   const hub = await nativeHub({ connectors: { ui: () => ui }, file: path.join(dir, 'j.json') }); const s = await hub.create('u1', 'm1', 'p');
@@ -144,7 +144,7 @@ function stub() {
 stub.reply = (op) => (op === 'create' ? { session_id: 'rt1', stored_session_id: 'S1' } : op === 'attach' ? { session_id: 'rt1', running: false, messages: [] } : op === 'events.since' ? { events: [], latest_seq: 0, epoch: 'e' } : op === 'submit' ? { status: 'streaming', user_row_id: 5 } : {});
 
 test('ownership: a session belongs to the account that created it; others are refused before any attach or send', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   const s = stub(), hub = await nativeHub({ connectors: s.connectors, file: path.join(dir, 'j.json') });
   const c = await hub.create('alice', 'M1', 'p'); assert.equal(c.session_id, 'S1');
   for (const fn of [() => hub.attach('bob', 'M1', 'p', 'S1'), () => hub.send('bob', 'M1', 'p', 'S1', { text: 'hi' }), () => hub.interrupt('bob', 'M1', 'p', 'S1'), () => hub.respond('bob', 'M1', 'p', 'S1', 'srq-1', { result: {} }), () => hub.follow('bob', 'M1', 'p', 'S1', 0, () => {})]) await assert.rejects(Promise.resolve().then(fn), (e) => e.status === 404);
@@ -153,7 +153,7 @@ test('ownership: a session belongs to the account that created it; others are re
 });
 
 test('restart: a message that was being sent when the hub stopped is uncertain, reconciled against the snapshot, never resent', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true })); const file = path.join(dir, 'j.json');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-nh-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 })); const file = path.join(dir, 'j.json');
   await writeFile(file, JSON.stringify({ owners: { S1: 'alice' }, messages: [{ id: 'm_1', agent: 'p', session: 'S1', scope: 'alice', text: 'in the transcript', mode: 'auto', state: 'sending', created: 1 }, { id: 'm_2', agent: 'p', session: 'S1', scope: 'alice', text: 'lost', mode: 'auto', state: 'sending', created: 2 }] }));
   const s = stub(); stub.reply = (op) => (op === 'attach' ? { session_id: 'rt9', running: false, messages: [{ role: 'user', content: 'in the transcript' }] } : op === 'events.since' ? { events: [], latest_seq: 0, epoch: 'e' } : {});
   const hub = await nativeHub({ connectors: s.connectors, file }); assert.deepEqual(hub.list('alice', 'p', 'S1').map((m) => m.state), ['uncertain', 'uncertain']);

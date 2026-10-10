@@ -18,7 +18,7 @@ async function hubWithWeb(t, withBuild = true) {
   const { createHub } = await import(`../index.js?web=${Math.random()}`);
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { delete process.env.FOXFLEET_WEB_DIR; server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { delete process.env.FOXFLEET_WEB_DIR; server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   return `http://127.0.0.1:${server.address().port}`;
 }
 

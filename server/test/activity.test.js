@@ -32,7 +32,7 @@ test('order: pinned first in pin order, then newest activity, then quiet agents 
 });
 
 test('store: touch keeps the last line, pins keep their order and survive a restart, old history seeds only once', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-act-')); t.after(() => rm(dir, { recursive: true, force: true })); const file = path.join(dir, 'activity.json');
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-act-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 })); const file = path.join(dir, 'activity.json');
   let now = 1000; const a = await activityStore(file, { now: () => now });
   a.touch('x', { role: 'user', text: 'hello there', session: 's1' }); now = 2000; a.touch('x', { role: 'assistant', text: 'hi!' });
   assert.deepEqual({ ...a.get('x') }, { at: 2000, role: 'assistant', preview: 'hi!', title: '', session: 's1' });
@@ -48,7 +48,7 @@ async function hubFor(t, connection) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-act-')), configPath = path.join(dir, 'config.json');
   await writeFile(configPath, JSON.stringify({ machines: [connection] }));
   const server = await createHub({ configPath, singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const base = `http://127.0.0.1:${server.address().port}`, call = (route, method = 'GET', data) => fetch(base + route, { method, headers: { 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   return { base, call };
 }

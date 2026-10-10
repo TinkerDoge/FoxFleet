@@ -11,7 +11,7 @@ import { configStore } from '../config.js';
 function deferred() { let resolve; const promise = new Promise((done) => { resolve = done; }); return { promise, resolve }; }
 test('the shipped example loads as the documented empty configuration', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-example-')), configPath = path.join(dir, 'config.json');
-  t.after(() => rm(dir, { recursive: true, force: true }));
+  t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   await writeFile(configPath, await readFile(new URL('../config.example.json', import.meta.url)));
   assert.deepEqual((await configStore(configPath)).all(), []);
 });
@@ -20,7 +20,7 @@ async function setup(t, connections = [], options = {}) {
   const configPath = path.join(dir, 'config.json');
   await writeFile(configPath, JSON.stringify({ machines: connections }));
   const server = await createHub({ configPath, singleUser: !options.ownerPassword, ...options });
-  t.after(async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((done) => server.close(done)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   await new Promise((done) => server.listen(0, done));
   const base = `http://127.0.0.1:${server.address().port}`;
   const request = (route, data, method = 'GET', headers = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });

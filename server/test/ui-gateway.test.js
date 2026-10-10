@@ -9,10 +9,10 @@ import { setup, REAL } from './ui-helpers.js';
 const sess = (x, rt) => x.events.filter((e) => e.kind === 'event' && e.session_id === rt);
 
 test('capability probe: native UI gateway is advertised only when a gateway command exists', async (t) => {
-  const on = await setup(t); await waitFor(async () => on.ui.caps('default'));
+  const on = await setup(t); await waitFor(async () => on.ui.caps('default'), { tries: 200, ms: 100 });
   assert.equal(on.ui.caps('default').native, true); assert.equal(on.ui.caps('default').protocol, 'tui-gateway-jsonrpc');
   assert.ok(on.ui.caps('default').ops.includes('submit') && !on.ui.caps('default').ops.includes('cli.exec'));
-  const off = await setup(t, { gateway: false }); await waitFor(async () => off.ui.caps('default'));
+  const off = await setup(t, { gateway: false }); await waitFor(async () => off.ui.caps('default'), { tries: 200, ms: 100 });
   assert.equal(off.ui.caps('default').native, false); await assert.rejects(off.ui.call('default', 'info'), (e) => e.code === 'unavailable');
 });
 

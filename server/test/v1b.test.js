@@ -14,7 +14,7 @@ async function hub(t, options = {}) {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-v1b-'));
   const server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true, ...options }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); await new Promise((r) => setTimeout(r, 20)); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); });
   const call = (route, data, method = data === undefined ? 'GET' : 'POST') => fetch(base + route, { method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
   return { base, call };
 }
@@ -63,7 +63,7 @@ test('qr: structure is valid (finders, timing, size by version) and long text is
 });
 
 test('admin: pairing link, invite link, user disable signs the user out', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-adm-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-adm-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }));
   const server = await createHub({ configPath: path.join(dir, 'config.json') }); await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(() => { server.closeAllConnections(); server.close(); });
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = (route, { token, data, method = data === undefined ? 'GET' : 'POST' } = {}) => fetch(base + route, { method, headers: { ...(data === undefined ? {} : { 'Content-Type': 'application/json' }), ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) });
