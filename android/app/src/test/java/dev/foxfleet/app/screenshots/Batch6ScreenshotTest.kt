@@ -104,7 +104,7 @@ class Batch6ScreenshotTest {
         chat(false, msgs = msgs) {
             settle(); settle()
             check(compose.onAllNodesWithContentDescription("Attached image").fetchSemanticsNodes().isNotEmpty())
-            check(compose.onAllNodesWithTag("image-failed").fetchSemanticsNodes().size == 1) { "the broken picture shows a failure tile" }; check(compose.onAllNodesWithTag("image-loading").fetchSemanticsNodes().isEmpty()) { "nothing spins forever" }
+            check(compose.onAllNodesWithText("Couldn't load this picture").fetchSemanticsNodes().size == 1) { "the broken picture shows a failure tile" }; check(compose.onAllNodesWithContentDescription("Loading picture").fetchSemanticsNodes().isEmpty()) { "nothing spins forever" }
             compose.onNodeWithContentDescription("Retry loading the picture").assertIsDisplayed().performClick(); settle()
             compose.onRoot().captureRoboImage("$OUT/images-1-user-pictures-light.png")
         }
