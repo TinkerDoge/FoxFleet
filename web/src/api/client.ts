@@ -8,7 +8,11 @@ import { SseParser } from '../lib/sse';
 import { BUNDLED_CATALOG, type Catalog } from '../lib/commands';
 
 type Fetch = typeof fetch;
-export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number }
+export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number; /** First retry delay for transient failures (ms); doubles with jitter. Tests use 1. */ retryBaseMs?: number }
+/** A gateway or tunnel hiccup (Cloudflare 502/503/504/52x, timeouts), never a verdict about the user's login or the request. */
+export const isTransientStatus = (s: number) => s === 408 || s === 502 || s === 503 || s === 504 || (s >= 520 && s <= 530);
+/** Exponential backoff with full jitter: 0.5x..1x of base*2^n, capped. */
+export const backoff = (n: number, base = 400, cap = 8000) => Math.round(Math.min(cap, base * 2 ** n) * (0.5 + Math.random() / 2));
 
 /** Typed hub client. Cookie session (HttpOnly, set by the hub), so no token handling in JS. */
 
@@ -29,21 +33,40 @@ export const parseRequest = (r: any): OpenRequest | null => {
 };
 export const parseQueued = (m: any): QueuedMessage => ({ id: String(m?.id ?? ''), state: String(m?.state ?? 'queued'), mode: MODES.includes(m?.mode) ? m.mode : 'queue', text: String(m?.text ?? ''), ...(m?.error ? { error: String(m.error) } : {}), ...(m?.note ? { note: String(m.note) } : {}), ...(m?.run_id ? { runId: String(m.run_id) } : {}), ...(ACKS.includes(m?.ack) ? { ack: m.ack as Ack } : {}) });
 export const parseQueue = (r: any): QueueState => ({ items: (Array.isArray(r?.items) ? r.items : []).map(parseQueued), recent: (Array.isArray(r?.recent) ? r.recent : []).map(parseQueued), halted: r?.halted === true, activeRun: typeof r?.active_run === 'string' ? r.active_run : null, modes: (Array.isArray(r?.modes) ? r.modes : []).filter((m: unknown): m is SendMode => MODES.includes(m as SendMode)), openRequests: (Array.isArray(r?.open_requests) ? r.open_requests : []).map(parseRequest).filter((x: OpenRequest | null): x is OpenRequest => !!x), canCancel: r?.can_cancel !== false });
-export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
+export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onReconnecting?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
 export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
-export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000 }: ClientOptions = {}) {
-  async function sessionStillValid(): Promise<boolean> {
-    try { const r = await f(base + '/api/auth', { credentials: 'same-origin' }); if (!r.ok) return false; return (await r.json())?.authenticated === true; } catch { return false; }
+export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000, retryBaseMs = 400 }: ClientOptions = {}) {
+  /** Asks the hub itself whether the login is still good. 'unknown' (hub unreachable, 5xx) must never sign anyone out. */
+  async function sessionState(): Promise<'valid' | 'gone' | 'unknown'> {
+    try {
+      const r = await f(base + '/api/auth', { credentials: 'same-origin' });
+      if (r.status === 401) return 'gone';
+      if (!r.ok) return 'unknown';
+      const j = await r.json(); return j?.authenticated === true ? 'valid' : j?.authenticated === false ? 'gone' : 'unknown';
+    } catch { return 'unknown'; }
   }
-  async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal } = {}): Promise<T> {
+  async function request<T>(path: string, init: { method?: string; body?: unknown; plain401?: boolean; signal?: AbortSignal; retries?: number } = {}): Promise<T> {
+    const method = init.method ?? (init.body === undefined ? 'GET' : 'POST');
+    // Idempotent reads ride out a tunnel blip quietly; writes are never replayed here (the store resends them with a client_id).
+    const retries = init.retries ?? (method === 'GET' ? 3 : 0);
+    for (let n = 0; ; n++) {
+      try { return await attempt<T>(path, method, init); }
+      catch (e) {
+        const transient = e instanceof NetworkError || (e instanceof ApiError && isTransientStatus(e.status) && e.code !== 'not_hub' && e.code !== 'agent_refused');
+        if (!transient || n >= retries || init.signal?.aborted) throw e;
+        await sleep(backoff(n, retryBaseMs, 4000), init.signal);
+      }
+    }
+  }
+  async function attempt<T>(path: string, method: string, init: { body?: unknown; plain401?: boolean; signal?: AbortSignal }): Promise<T> {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     init.signal?.addEventListener('abort', () => ctrl.abort());
     let res: Response;
     try {
       res = await f(base + path, {
-        method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
+        method,
         credentials: 'same-origin', signal: ctrl.signal,
         headers: init.body === undefined ? {} : { 'Content-Type': 'application/json' },
         body: init.body === undefined ? undefined : JSON.stringify(init.body),
@@ -55,12 +78,14 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     if (res.ok) return data as T;
     const message = String(data?.error?.message ?? data?.error ?? data?.detail ?? res.statusText ?? 'Request failed');
     if (res.status === 401 && !init.plain401) {
-      // A 401 from one agent's route is that agent refusing the hub, not the user's login ending. Only sign out when the hub itself says so.
-      if (path.startsWith('/api/agents/') && await sessionStillValid()) throw new ApiError(502, message);
+      // Only the hub saying so ends the session. A 401 from one agent's route, or while the hub itself cannot be reached, never does.
+      const state = await sessionState();
+      if (state === 'valid') throw new ApiError(502, message, 'agent_refused');
+      if (state === 'unknown') throw new NetworkError();
       throw new AuthRequiredError(message);
     }
     if (res.status === 429) throw new RateLimitedError(message, Number(res.headers.get('retry-after')) || Number(data?.retryAfter) || 60);
-    throw new ApiError(res.status, message);
+    throw new ApiError(res.status, isTransientStatus(res.status) ? 'The hub is reconnecting' : message);
   }
   const normalize = (o: any): AuthInfo => {
     if (typeof o?.required !== 'boolean') throw new ApiError(502, 'Not a Foxfleet hub', 'not_hub');
@@ -75,15 +100,30 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     let res: Response;
     try { res = await f(`${base}/api/agents/${enc(agent)}/runs/${enc(run)}/events?after=${after}`, { credentials: 'same-origin', signal }); }
     catch (e) { if ((e as Error).name === 'AbortError') throw e; throw new NetworkError(); }
-    if (res.status === 401) throw new AuthRequiredError();
+    if (res.status === 401) { const st = await sessionState(); if (st === 'gone') throw new AuthRequiredError(); throw new NetworkError(); }
+    if (isTransientStatus(res.status)) throw new NetworkError();
     if (!res.ok) throw new ApiError(res.status, 'That reply is no longer available');
     return res;
+  }
+  /**
+   * Opens the run's event stream again from the cursor, retrying through tunnel faults with exponential backoff and jitter
+   * (about three minutes in all). Returns undefined when the hub says the run is gone; throws only on abort, sign-out or giving up.
+   */
+  async function reopen(agent: string, run: string, cursor: () => number, opts: StreamOpts, start = 0): Promise<Response | undefined> {
+    for (let n = start; ; n++) {
+      if (n >= 14) throw new NetworkError();
+      opts.onReconnecting?.();
+      await sleep(backoff(n, retryBaseMs * 1.25, 15000), opts.signal);
+      try { return await openEvents(agent, run, cursor(), opts.signal); }
+      catch (e) { if (e instanceof AuthRequiredError || (e as Error).name === 'AbortError') throw e; if (e instanceof ApiError) { opts.onRunState?.('unavailable'); return undefined; } /* tunnel fault: try again */ }
+    }
   }
   /** Reads one SSE response; if the connection breaks (not an abort) before [DONE], reconnects to the run from the last event id. */
   async function pump(agent: string, first: Response, opts: StreamOpts, knownRun?: string, from = 0): Promise<string | undefined> {
     let res = first, run = knownRun, last = from, sid: string | undefined, attempts = 0;
     for (;;) {
-      if (res.status === 401) throw new AuthRequiredError();
+      if (res.status === 401) { const st = await sessionState(); if (st === 'gone') throw new AuthRequiredError(); throw new NetworkError(); }
+      if (isTransientStatus(res.status)) throw new NetworkError();
       if (!res.ok) { let m = 'Chat failed'; try { const d = await res.json(); m = String(d?.error?.message ?? d?.error ?? m); } catch { /* keep default */ } throw new ApiError(res.status, m); }
       if (!(res.headers.get('content-type') ?? '').includes('text/event-stream') || !res.body) throw new ApiError(0, 'Invalid reply stream');
       sid = res.headers.get('x-hermes-session-id') ?? sid;
@@ -117,11 +157,10 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
         if (!more) await reader.cancel().catch(() => {}); else parser.end();
       } catch (e) { if ((e as Error).name === 'AbortError' || e instanceof ApiError) throw e; /* connection dropped: fall through and resume */ }
       if (finished || !run) return sid;
-      if (progressed) attempts = 0;
-      if (++attempts > 8) throw new NetworkError();
-      await sleep(Math.min(500 * 2 ** (attempts - 1), 8000), opts.signal);
-      try { res = await openEvents(agent, run, last, opts.signal); }
-      catch (e) { if (e instanceof AuthRequiredError) throw e; if (e instanceof ApiError) { opts.onRunState?.('unavailable'); return sid; } /* keep partial text without implying completion */ if ((e as Error).name === 'AbortError') throw e; continue; }
+      attempts = progressed ? 0 : attempts + 1; // a stream that delivered something restarts the patience budget
+      const next = await reopen(agent, run!, () => last, opts, attempts);
+      if (!next) return sid; // the run is gone for good: keep what we have without implying completion
+      res = next;
     }
   }
 
@@ -214,7 +253,9 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     },
     /** Reattaches to a run (after a reload or a dropped connection) and replays it from the start (after = 0) or a cursor. */
     follow: async (agent: string, run: string, after: number, opts: StreamOpts): Promise<string | undefined> => {
-      const res = await openEvents(agent, run, after, opts.signal);
+      let res: Response | undefined;
+      try { res = await openEvents(agent, run, after, opts.signal); }
+      catch (e) { if (!(e instanceof NetworkError)) throw e; res = await reopen(agent, run, () => after, opts); if (!res) return undefined; }
       return pump(agent, res, opts, run, after);
     },
     runs: async (agent: string, session?: string): Promise<RunInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/runs${session ? '?session_id=' + enc(session) : ''}`)).runs ?? []) as RunInfo[],

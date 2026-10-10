@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { Client, OpenRequest, QueuedMessage, SendMode } from '../api/client';
+import { backoff, isTransientStatus } from '../api/client';
 import type { SessionInfo } from '../api/types';
 import { ApiError, AuthRequiredError, NetworkError } from '../api/errors';
 import type { UiMessage, UiImage } from '../lib/chat';
@@ -12,7 +13,7 @@ import { clearSaved, loadSaved, saveChat } from '../lib/persist';
 export interface ChatState {
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
   streamText: string; streamReasoning: string; tool?: string; error?: string; sessions: SessionInfo[]; sessionsTotal: number; sessionsLoading: boolean; sessionsError?: string; skills: string[]; loading: boolean;
-  runState?: 'submitting' | 'accepted' | 'working' | 'completed' | 'failed' | 'stopped' | 'disconnected' | 'unknown';
+  runState?: 'submitting' | 'accepted' | 'working' | 'completed' | 'failed' | 'stopped' | 'disconnected' | 'reconnecting' | 'unknown';
   recovery?: 'reload' | 'reconnect' | 'check' | 'retry';
   hasOlder: boolean; loadingOlder: boolean; olderOffset: number;
   /** Messages the hub holds for this conversation (queued, waiting for a stop, guidance accepted) and whether draining is paused. */
@@ -88,7 +89,7 @@ export function newChat(agent: string, preserveDraft = false) { select(agent); d
 /** Leaves the screen without cancelling anything: the hub keeps the agent running and the reply can be picked up later. */
 function detach(agent: string) { aborts.get(agent)?.abort(); aborts.delete(agent); runIds.delete(agent); }
 const stoppedBy = new WeakSet<AbortController>(), localImages = new Map<string, UiImage[]>(), submitting = new Map<string, number>();
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 /** The explicit Stop button: cancels the agent's run on the hub (which then pauses the queue), then closes the stream. The partial reply stays, marked interrupted. */
 export function stop(agent: string, client?: Client) {
   const run = runIds.get(agent), ctrl = aborts.get(agent);
@@ -104,6 +105,7 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     signal: ctrl.signal,
     onSession: (id: string) => { if (!live()) return; const prev = chatOf(agent).session; if (prev !== id) moveDraft(draftKey(agent, prev), draftKey(agent, id)); saveChat(agent, { session: id }); patch(agent, { session: id }); },
     onRun: (id: string) => { if (!live()) return; runIds.set(agent, id); saveChat(agent, { run: id }); patch(agent, { runState: 'accepted' }); },
+    onReconnecting: () => { if (live()) patch(agent, { runState: 'reconnecting' }); },
     onGap: () => { if (!live()) return; acc.reply = ''; patch(agent, { streamText: '' }); },
     onContent: (d: string) => { if (!live()) return; acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
     onReasoning: (d: string) => { if (!live()) return; acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning, runState: 'working' }); },
@@ -208,6 +210,30 @@ const uid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? cry
  * Send. Idle: start the reply and stream it. Busy (a reply is running, or messages are waiting): never dropped, never overwriting the
  * transcript: the hub stores it first and applies the chosen mode (steer / queue / interrupt & send).
  */
+const isTransient = (e: unknown) => e instanceof NetworkError || (e instanceof ApiError && !(e instanceof AuthRequiredError) && isTransientStatus(e.status));
+/**
+ * The submit call died in a tunnel blip before we ever saw a run id. The hub may or may not have started the run, so look first (a run
+ * that began after we sent is ours: follow it), and only otherwise send again through the idempotent /messages path (same client_id on
+ * every retry, so the hub keeps one copy). Shows a quiet "Reconnecting" meanwhile. Returns false when it gave up (the normal error path).
+ */
+async function autoResubmit(client: Client, agent: string, ctrl: AbortController, user: UiMessage, sentAt: number, acc: Acc, onAuthLost: () => void): Promise<boolean> {
+  const clientId = uid(); patch(agent, { runState: 'reconnecting', error: undefined, recovery: undefined });
+  for (let n = 0; n < 10; n++) {
+    try { await sleep(backoff(n, 600, 10_000), ctrl.signal); } catch { return false; }
+    if (selections.get(agent) !== acc.selection || aborts.get(agent) !== ctrl) return false;
+    try {
+      const sid = chatOf(agent).session;
+      const mine = (await client.runs(agent, sid)).find((r) => r.started >= sentAt - 3000);
+      if (mine) { await followRun(client, agent, mine.id, undefined, onAuthLost); return true; }
+      const r = await client.sendMessage(agent, { messages: [user], sessionId: sid, mode: 'queue', clientId });
+      if (r.sessionId) patch(agent, { session: r.sessionId });
+      if (r.runId) await followRun(client, agent, r.runId, undefined, onAuthLost); else void syncQueue(client, agent, onAuthLost);
+      return true;
+    } catch (e) { if (e instanceof AuthRequiredError) { onAuthLost(); return false; } if (!isTransient(e)) return false; }
+  }
+  return false;
+}
+
 export async function send(client: Client, agent: string, text: string, images: UiImage[], files: FileRef[], onAuthLost: () => void, mode: SendMode = 'interrupt') {
   const cur = chatOf(agent), user: UiMessage = { role: 'user', content: composeWithFiles(text, files), ...(images.length ? { images } : {}) };
   if (cur.loading) return;
@@ -216,12 +242,13 @@ export async function send(client: Client, agent: string, text: string, images: 
   patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' });
   const ctrl = new AbortController(); aborts.set(agent, ctrl);
   saveChat(agent, { user: user.content, started: Date.now(), run: undefined });
-  const acc: Acc = { reply: '', reasoning: '', selection: selection(agent) };
+  const acc: Acc = { reply: '', reasoning: '', selection: selection(agent) }, sentAt = Date.now();
   try {
     const sid = await client.chat(agent, base, { sessionId: cur.session, ...callbacks(agent, ctrl, acc) });
     if (settle(agent, ctrl, base, acc, sid ? { session: sid } : {})) { if (acc.state !== 'unavailable') clearRun(agent); void loadSessions(client, agent, false, onAuthLost); }
   } catch (e) {
     if ((e as Error).name === 'AbortError') settle(agent, ctrl, base, acc);
+    else if (isTransient(e) && !runIds.get(agent) && selections.get(agent) === acc.selection && await autoResubmit(client, agent, ctrl, user, sentAt, acc, onAuthLost)) { /* the hub came back and has the message exactly once */ }
     else { if (e instanceof AuthRequiredError) onAuthLost(); settle(agent, ctrl, base, acc, failure(agent, e)); if (selections.get(agent) === acc.selection && e instanceof ApiError && e.status === 409) void syncQueue(client, agent, onAuthLost); }
   } finally { if (aborts.get(agent) === ctrl) { aborts.delete(agent); runIds.delete(agent); } }
   if (selections.get(agent) === acc.selection && !chatOf(agent).error) void syncQueue(client, agent, onAuthLost);

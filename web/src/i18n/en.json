@@ -308,6 +308,8 @@
   "chat.run.stopped": "Stopped",
   "chat.run.disconnected": "Connection interrupted; task may still be running",
   "chat.run.unknown": "Request status unknown",
+  "chat.run.reconnecting": "Reconnecting…",
+  "boot.reconnecting": "Reconnecting to your hub…",
   "chat.runFailed": "The agent reported that this task failed.",
   "chat.runUnavailable": "This reply stream is no longer available. Check the conversation to confirm what happened.",
   "chat.retryRequest": "Retry request",
