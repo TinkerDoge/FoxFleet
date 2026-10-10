@@ -48,7 +48,7 @@ export function normalizeTranscript(rows) {
     }
     if (role !== 'user' && role !== 'assistant') continue;
     for (const tc of Array.isArray(m.tool_calls) ? m.tool_calls : []) if (tc?.id) { let a = tc?.function?.arguments ?? tc?.arguments; if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = {}; } } callInfo.set(tc.id, { name: tc?.function?.name ?? tc?.name, args: a }); }
-    const { text, images } = flattenContent(m.content), cleaned = cleanText(text);
+    const flat = flattenContent(m.content), images = flat.images, text = role === 'user' ? flat.text.replace(/^<foxfleet-note>[\s\S]*?<\/foxfleet-note>\s*/, '') : flat.text, cleaned = cleanText(text); // the connector's fallback awareness note is not the user's words
     const reasoning = [typeof m.reasoning_content === 'string' ? m.reasoning_content : typeof m.reasoning === 'string' ? m.reasoning : '', cleaned.reasoning].filter(Boolean).join('\n\n').trim();
     const tools = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => { const e = { name: String(tc?.function?.name ?? tc?.name ?? 'tool'), ...(argSummary(tc?.function?.arguments ?? tc?.arguments) ? { args: argSummary(tc?.function?.arguments ?? tc?.arguments) } : {}) }; if (tc?.id) pending.set(tc.id, e); return e; });
     const base = { role, content: cleaned.text, ...(reasoning ? { reasoning } : {}), ...(tools.length ? { tools } : {}), ...(images.length ? { images } : {}), ...(ms(m.timestamp) ? { ts: ms(m.timestamp) } : {}), ...(m.id != null ? { id: String(m.id) } : {}) };

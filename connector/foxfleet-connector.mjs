@@ -8,18 +8,19 @@
 // WebSocket to your hub for all of them. Nothing listens on this machine and no port has to be opened.
 // Dashboard passwords and API keys are read from each profile's own files and used locally; they are never sent to the hub.
 //
-// Commands: pair | run | profiles | status | doctor | allow-media | install-service | uninstall-service | unpair | help
+// Commands: pair | run | profiles | status | doctor [--fix [--yes]] | agent-note | allow-media | install-service | uninstall-service | unpair | help
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
+import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.5-alpha';
+export const VERSION = '0.3.6-alpha';
 /** What this connector can do for the hub (reported in the profiles frame; the hub shows it as the Media row of an agent). */
-export const FEATURES = ['media', 'mediaRoots', 'mediaCheck'];
+export const FEATURES = ['media', 'mediaRoots', 'mediaCheck', 'agentNote'];
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 const PROFILE_ID = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const log = (...a) => console.log(...a);
@@ -192,7 +193,7 @@ function runLink(cfg, onState = () => {}) {
   function gatewayFor(name) {
     let g = gateways.get(name); if (g) return g;
     const t = agents.get(name); const gw = t && gatewayCommand(root, loadConfig() ?? cfg); if (!gw) return null;
-    g = new HermesGateway({ profile: name, home: t.home, launch: defaultLaunch(gw), emit: (ev) => send({ t: 'ui-ev', agent: name, ev }), log });
+    g = new HermesGateway({ profile: name, home: t.home, launch: defaultLaunch(gw), emit: (ev) => send({ t: 'ui-ev', agent: name, ev }), log, note: () => fallbackNote(loadConfig() ?? cfg, root, t.home) });
     gateways.set(name, g); return g;
   }
   // Capability probe: cheap (no process is started); the hub prefers native UI > HTTP runs > chat completions.
@@ -203,6 +204,9 @@ function runLink(cfg, onState = () => {}) {
     const fresh = found.map((p) => p.profile).filter((n) => cur.expose !== 'all' && !(cur.profiles && n in cur.profiles));
     if (fresh.length) log(`New profile(s) found but not shared: ${fresh.join(', ')}. Share them with: node ${path.basename(process.argv[1])} profiles`);
     for (const [n, t] of next) if (t.dashboard.hashedOnly && !t.dashboard.pass) log(`Profile ${n}: the dashboard password is stored hashed, so sign-in cannot be automated. Set FOXFLEET_DASHBOARD_PASSWORD_${n.toUpperCase().replace(/-/g, '_')} (or dashboardPassword in connector.json).`);
+    if (cur.agentNote === true) for (const [n, t] of next) { // the user opted in: keep the installed note current after a connector upgrade
+      try { const note = profileNote(cur, root, t.home); if (noteStatus(t.home, note, cur).status === 'stale') { applyNote(t.home, note); log(`Profile ${n}: agent note updated to v${note.hash}.`); } } catch (e) { log(`Profile ${n}: agent note not updated: ${e.message}`); }
+    }
     agents = next; return [...next.keys()];
   }
   const send = (o) => { if (ws?.readyState === 1) ws.send(JSON.stringify(o)); };
@@ -410,7 +414,7 @@ const str = (v, max = 200) => (typeof v === 'string' && v.length > 0 && v.length
 const need = (v, what) => { if (v === null) throw Object.assign(new Error(`${what} is required`), { code: 'bad_params' }); return v; };
 // op -> (params) => [gateway method, params]. Anything not listed is refused.
 export const UI_OPS = {
-  create: (p) => ['session.create', { cols: 100, ...(str(p.title, 300) ? { title: p.title } : {}), ...(str(p.idempotency_key, 80) ? { idempotency_key: p.idempotency_key } : {}) }],
+  create: (p) => ['session.create', { cols: 100, source: SESSION_SOURCE, ...(str(p.title, 300) ? { title: p.title } : {}), ...(str(p.idempotency_key, 80) ? { idempotency_key: p.idempotency_key } : {}) }],
   sessions: () => ['session.list', {}],
   'events.since': (p) => ['session.events.since', { session_id: need(str(p.session_id), 'session_id'), last_seen: Number.isInteger(p.last_seen) ? p.last_seen : 0 }],
   submit: (p) => { if (typeof p.text !== 'string' || !p.text.trim() || p.text.length > MAX_TEXT) throw Object.assign(new Error('text is required'), { code: 'bad_params' }); return ['prompt.submit', { session_id: need(str(p.session_id), 'session_id'), text: p.text, ...(p.queued === true ? { queued: true } : {}) }]; },
@@ -427,6 +431,148 @@ export const UI_OPS = {
   models: (p) => ['model.options', { ...(str(p.session_id) ? { session_id: p.session_id } : {}), refresh: p.refresh === true }],
   lock: (p) => ['clarify.lock', { request_id: need(str(p.request_id), 'request_id'), question_id: need(str(p.question_id), 'question_id'), answer: typeof p.answer === 'string' ? p.answer.slice(0, 4000) : '' }],
 };
+
+// ---------- agent awareness: tell the Hermes agent it is in a FoxFleet chat (see docs/AGENT-AWARENESS.md) ----------
+// Sessions are created with source "foxfleet", so Hermes stops describing the chat as its terminal UI. The note below goes into the profile's
+// config.yaml as platform_hints.foxfleet.replace (a Hermes setting that lands in the cached system prompt), ONLY after the user said yes.
+// Without that, the same text is sent once with the first message of a new chat (fallback).
+export const SESSION_SOURCE = 'foxfleet';
+export const NOTE_BEGIN = '# foxfleet-agent-note:begin (managed by the Foxfleet connector; remove with: foxfleet-connector agent-note remove)';
+export const NOTE_END = '# foxfleet-agent-note:end';
+export const NOTE_TAG = ['<foxfleet-note>', '</foxfleet-note>'];
+const REMOTE_COMMANDS = [...DISPATCH_OK, 'model', 'busy'];
+const tilde = (p, home = os.homedir()) => (p === home ? '~' : p.startsWith(home + path.sep) ? '~' + p.slice(home.length) : p);
+/** The text Hermes shows the agent. Pure: same inputs, same bytes (it sits in the cached prompt prefix). `hash` changes when any word changes. */
+export function agentNote({ cfg = {}, roots = [], home = os.homedir(), features = FEATURES } = {}) {
+  const maxMb = Math.round((Number(cfg.mediaMaxBytes) || MEDIA_DEFAULT_MAX) / 1048576), upload = typeof cfg.uploadDir === 'string' && cfg.uploadDir ? cfg.uploadDir : '~/foxfleet-uploads';
+  const shown = [...new Set(roots.map((r) => tilde(r, home)))].sort().slice(0, 6);
+  const lines = [
+    'You are chatting through FoxFleet (web/Android app), not a terminal or the Hermes TUI. The user is often on a phone.',
+    'Formatting: Markdown renders (headings, lists, tables, code fences). Keep answers short and scannable; put long output in a file instead of pasting walls of text. ANSI colors, cursor control, clipboard access and TUI-only features (panes, keybindings, spinners) do not exist here.',
+    features.includes('media')
+      ? `Files: to show or send a file, write MEDIA:/absolute/path/to/file on its own line. Images and video render inline; other files become download cards. Only files under these shared folders can be delivered: ${shown.join(', ') || '(none yet)'}. Files over ${maxMb} MB or outside them show "Not available". Save what you want to deliver into one of those folders first. Remote images: ![alt](https://...).`
+      : 'Files: there is no attachment channel here; give the absolute file path as text.',
+    `Attachments from the user arrive as files in ${upload}; read them from there.`,
+    'Prompts: approvals and clarifying questions appear as tap-to-answer cards, so ask one clear question with short options and wait; never ask the user to type into a terminal prompt or press keys.',
+    `Commands: slash commands are typed as plain messages; only these work remotely: ${REMOTE_COMMANDS.map((c) => '/' + c).join(' ')}. Do not suggest TUI hotkeys or interactive terminal programs.`,
+  ];
+  const body = lines.join('\n'), hash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 8);
+  return { hash, text: `${lines[0]} (foxfleet-note v${hash})\n${lines.slice(1).join('\n')}`, version: hash };
+}
+const EOL = (t) => (t.includes('\r\n') ? '\r\n' : '\n');
+const markerRe = (w) => new RegExp(`^\\s*#\\s*foxfleet-agent-note:${w}\\b`);
+/** Pure text edit of config.yaml (no YAML library, everything outside our marked block is left byte-for-byte). action: 'install' | 'remove'. */
+export function editConfigYaml(src, noteText, action = 'install') {
+  const eol = EOL(src), lines = src.split(/\r?\n/), b = lines.findIndex((l) => markerRe('begin').test(l));
+  const e = b >= 0 ? lines.findIndex((l, i) => i > b && markerRe('end').test(l)) : -1;
+  const block = (ind) => [ind + NOTE_BEGIN, `${ind}foxfleet:`, `${ind}  replace: |-`, ...noteText.split('\n').map((l) => `${ind}    ${l}`), ind + NOTE_END];
+  const ownBlock = () => [NOTE_BEGIN, 'platform_hints:', ...block('  ').slice(1)];
+  const join = (ls) => ls.join(eol);
+  if (b >= 0 && e > b) {
+    const ind = /^\s*/.exec(lines[b])[0];
+    if (action === 'remove') {
+      const rest = [...lines.slice(0, b), ...lines.slice(e + 1)], k = b - 1;
+      if (k >= 0 && /^platform_hints\s*:\s*(#.*)?$/.test(rest[k]) && !(rest[k + 1] ?? '').startsWith(' ') ) rest[k] = 'platform_hints: {}';
+      return { text: join(rest), changed: true };
+    }
+    const own = /^platform_hints\s*:\s*$/.test(lines[b + 1] ?? ''); // the block owns the whole key when we created it
+    const next = [...lines.slice(0, b), ...(own ? ownBlock() : block(ind)), ...lines.slice(e + 1)]; const out = join(next); return { text: out, changed: out !== src };
+  }
+  if (b >= 0) throw Object.assign(new Error('the Foxfleet note block in config.yaml is damaged (a begin marker without its end)'), { code: 'damaged' });
+  if (action === 'remove') return { text: src, changed: false };
+  const k = lines.findIndex((l) => /^platform_hints\s*:/.test(l));
+  if (k < 0) {
+    const tail = src.length && !src.endsWith('\n') ? eol : ''; return { text: src + tail + join(ownBlock()) + eol, changed: true };
+  }
+  const rest = lines[k].replace(/^platform_hints\s*:/, '').replace(/\s+#.*$/, '').trim();
+  if (rest !== '' && rest !== '{}') throw Object.assign(new Error('platform_hints in config.yaml is written in a style the connector does not edit (inline or anchored)'), { code: 'unsupported-yaml' });
+  let j = k + 1; while (j < lines.length && (lines[j].trim() === '' || /^\s*#/.test(lines[j]))) j++;
+  const child = j < lines.length ? /^(\s+)\S/.exec(lines[j]) : null, ind = rest === '' && child ? child[1] : '  ';
+  if (rest === '' && child) for (let i = j; i < lines.length && (/^\s/.test(lines[i]) || lines[i] === ''); i++) if (new RegExp(`^${ind}foxfleet\\s*:`).test(lines[i])) throw Object.assign(new Error('config.yaml already has its own platform_hints.foxfleet (yours is kept)'), { code: 'user-owned' });
+  const head = rest === '{}' ? ['platform_hints:'] : [lines[k]];
+  const next = [...lines.slice(0, k), ...head, ...block(ind), ...lines.slice(k + 1)]; return { text: join(next), changed: true };
+}
+/** Reads the note back out of a config.yaml (only from our marked block). */
+export function readNote(src) {
+  const lines = src.split(/\r?\n/), b = lines.findIndex((l) => markerRe('begin').test(l)), e = lines.findIndex((l, i) => i > b && markerRe('end').test(l));
+  if (b < 0 || e < 0) return null; const r = lines.findIndex((l, i) => i > b && i < e && /^\s*replace:\s*\|-\s*$/.test(l)); if (r < 0) return null; const body = lines.slice(r + 1, e); const ind = /^\s*/.exec(body[0] ?? '')[0].length;
+  return body.map((l) => l.slice(ind)).join('\n');
+}
+/** One profile's state: installed | stale | missing | user-owned | disabled | unsupported. `present` is true when our block is in the file. */
+export function noteStatus(home, note, cfg = {}, support = null) {
+  const file = path.join(home, 'config.yaml'); let src = ''; try { src = fs.readFileSync(file, 'utf8'); } catch { /* none yet */ }
+  const cur = readNote(src), present = cur !== null;
+  const userOwned = !present && /^platform_hints\s*:\s*$/m.test(src) && /^\s+foxfleet\s*:/m.test(src.slice(src.search(/^platform_hints\s*:/m)));
+  let status = present ? (cur === note.text ? 'installed' : 'stale') : userOwned ? 'user-owned' : 'missing';
+  if (cfg.agentNote === false) status = 'disabled'; else if (support && support.hints === false) status = 'unsupported';
+  return { status, present, file };
+}
+/** Does the installed Hermes know platform_hints and take `source` on session.resume? true/false, or null when it cannot be asked. */
+export function hermesNoteSupport(gw, run = spawnSync) {
+  if (!gw || !/python/i.test(path.basename(gw.cmd))) return null;
+  const code = "import json;from hermes_cli.config_defaults import DEFAULT_CONFIG as C;from tui_gateway.contracts.sessions import SessionResumeParams as R,SessionCreateParams as S;print(json.dumps({'hints':'platform_hints' in C,'source':'source' in R.model_fields and 'source' in S.model_fields}))";
+  try { const r = run(gw.cmd, ['-c', code], { cwd: gw.cwd, timeout: 30_000, encoding: 'utf8' }); if (r.status !== 0) return null; return JSON.parse(r.stdout.trim().split('\n').pop()); } catch { return null; }
+}
+/** Writes (or removes) our block in one profile's config.yaml with a one-time backup and an atomic rename. Returns { changed, backup? }. */
+export function applyNote(home, note, action = 'install') {
+  const file = path.join(home, 'config.yaml'); let src = ''; try { src = fs.readFileSync(file, 'utf8'); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  const r = editConfigYaml(src, note.text, action); if (!r.changed) return { changed: false };
+  let backup; if (src && !fs.existsSync(file + '.foxfleet.bak')) { fs.copyFileSync(file, file + '.foxfleet.bak'); backup = file + '.foxfleet.bak'; }
+  const mode = (() => { try { return fs.statSync(file).mode & 0o777; } catch { return 0o600; } })(), tmp = `${file}.foxfleet.tmp`;
+  fs.writeFileSync(tmp, r.text, { mode }); fs.renameSync(tmp, file); return { changed: true, ...(backup ? { backup } : {}) };
+}
+/** What the fallback prepends to the first message of a NEW chat (the hub removes it again when it shows the transcript). */
+export const wrapNote = (note, text) => `${NOTE_TAG[0]}\n${note.text}\n${NOTE_TAG[1]}\n\n${text}`;
+/** The note to prepend to a new chat's first message, or null: opted out, or the profile's config.yaml already carries the current note. */
+export function fallbackNote(cfg, root, home) {
+  if (cfg.agentNote === false) return null;
+  const n = profileNote(cfg, root, home); return noteStatus(home, n, cfg).status === 'installed' ? null : n;
+}
+/** The folders the note names: derived from settings, never from what exists right now (a Hermes cache folder appears after the first image, and the note must not change then: it sits in the cached prompt). */
+export function noteRoots({ home, cfg = {}, tmp = os.tmpdir() } = {}) {
+  const extra = [...(Array.isArray(cfg.mediaRoots) ? cfg.mediaRoots : []), cfg.uiGatewayCwd].filter((x) => typeof x === 'string' && path.isAbsolute(x));
+  return [...new Set([path.join(home, 'cache'), path.join(home, 'workspace'), tmp, ...extra])];
+}
+export function profileNote(cfg, root, home) { return agentNote({ cfg, roots: noteRoots({ home, cfg }), home: os.homedir() }); }
+
+/** doctor rows: one per shared profile, saying whether Hermes is told it is in FoxFleet and how to change that. */
+export function noteDoctor(cfg, { root, support = null } = {}) {
+  const out = [], found = discoverProfiles(root), names = chosen(found, cfg);
+  for (const pr of found.filter((x) => names.includes(x.profile))) {
+    const note = profileNote(cfg, root, pr.home), st = noteStatus(pr.home, note, cfg, support), id = `agent-note:${pr.profile}`;
+    const fb = ' Until then the note rides on the first message of each new chat.';
+    if (st.status === 'installed') out.push({ id, status: 'ok', message: `profile ${pr.profile}: agent note installed (v${note.hash}) in ${st.file}` });
+    else if (st.status === 'disabled') out.push({ id, status: st.present ? 'warn' : 'ok', message: `profile ${pr.profile}: agent note is off (agentNote: false)${st.present ? ', but a block is still in config.yaml' : ''}`, ...(st.present ? { fix: 'node foxfleet-connector.mjs agent-note remove' } : {}) });
+    else if (st.status === 'stale') out.push({ id, status: 'warn', message: `profile ${pr.profile}: the installed agent note is out of date (this connector writes v${note.hash}).${fb}`, fix: 'node foxfleet-connector.mjs doctor --fix' });
+    else if (st.status === 'user-owned') out.push({ id, status: 'warn', message: `profile ${pr.profile}: config.yaml has its own platform_hints.foxfleet, so the connector leaves it alone.${fb}`, fix: 'Merge the text from: node foxfleet-connector.mjs agent-note show' });
+    else if (st.status === 'unsupported') out.push({ id, status: 'warn', message: `profile ${pr.profile}: this Hermes has no platform_hints setting.${fb}`, fix: 'Update Hermes (hermes update) to let the note live in the system prompt.' });
+    else out.push({ id, status: 'warn', message: `profile ${pr.profile}: agent note not installed; Hermes may think this chat is its terminal.${fb}`, fix: 'node foxfleet-connector.mjs doctor --fix   (asks first; or: agent-note install --yes)' });
+  }
+  return out;
+}
+/** `agent-note install` / `doctor --fix`: asks first unless --yes. Returns a list of result lines. */
+export async function installNotes(cfg, { root, yes = false, ask = confirm, gw = null, support = hermesNoteSupport(gw), save = saveConfig, explicit = true } = {}) {
+  const out = [];
+  if (cfg.agentNote === false && !explicit) return ['agent note is off (agentNote: false); not touching config.yaml. Turn it on with: agent-note install'];
+  const found = discoverProfiles(root), names = chosen(found, cfg), targets = found.filter((x) => names.includes(x.profile));
+  if (support && support.hints === false) return ['This Hermes has no platform_hints setting, so nothing was written. The note is sent with the first message of each new chat instead. Update Hermes to use the system prompt.'];
+  const note = profileNote(cfg, root, targets[0]?.home ?? root); // wording and shape; each profile gets its own folder names below
+  if (cfg.agentNote !== true && !yes) {
+    log(`The Foxfleet note tells Hermes agents they are in a FoxFleet chat (Markdown ok, MEDIA: files, cards, no terminal features):\n\n${note.text}\n\nIt would be added to config.yaml (platform_hints.foxfleet) of: ${targets.map((x) => x.profile).join(', ') || '(no shared profile)'}. A backup is kept as config.yaml.foxfleet.bak and you can undo it with: agent-note remove`);
+    if (!process.stdin.isTTY || !(await ask('Write it?', false))) { save({ ...cfg, agentNote: 'message' }); return ['Not written. The note will be sent with the first message of each new chat instead (turn that off with agentNote: false in the connector config).'];
+    }
+  }
+  for (const pr of targets) {
+    try { const mine = profileNote(cfg, root, pr.home), r = applyNote(pr.home, mine, 'install'); out.push(`profile ${pr.profile}: ${r.changed ? 'note written' + (r.backup ? ` (backup: ${r.backup})` : '') : 'already up to date'} (v${mine.hash})`); }
+    catch (e) { out.push(`profile ${pr.profile}: skipped: ${e.message}`); }
+  }
+  save({ ...cfg, agentNote: true }); return out;
+}
+export function removeNotes(cfg, { root, save = saveConfig } = {}) {
+  const out = [], found = discoverProfiles(root);
+  for (const pr of found) { try { const r = applyNote(pr.home, { text: '' }, 'remove'); if (r.changed) out.push(`profile ${pr.profile}: note removed`); } catch (e) { out.push(`profile ${pr.profile}: ${e.message}`); } }
+  save({ ...cfg, agentNote: false }); out.push('agentNote is now off: nothing is written and nothing is sent with new chats. Turn it back on with: agent-note install'); return out;
+}
 
 // Which command starts the gateway for a profile. Tried in order; the first hit wins and says where it came from:
 //  1. config `uiGatewayCommand` (array)            2. env FOXFLEET_HERMES_GATEWAY_CMD (JSON array)
@@ -482,8 +628,8 @@ async function defaultProbe(gw, home) {
 }
 
 export class HermesGateway {
-  constructor({ profile, home, launch, emit, log: lg = () => {}, readyMs = 60_000, callMs = 30_000 }) {
-    Object.assign(this, { profile, home, launch, emit, lg, readyMs, callMs }); this.state = 'stopped'; this.pending = new Map(); this.open = new Map(); this.runtime = new Map();
+  constructor({ profile, home, launch, emit, log: lg = () => {}, readyMs = 60_000, callMs = 30_000, note = () => null }) {
+    Object.assign(this, { profile, home, launch, emit, lg, readyMs, callMs, note }); this.fresh = new Map(); this.noSource = false; this.state = 'stopped'; this.pending = new Map(); this.open = new Map(); this.runtime = new Map();
     this.nid = 0; this.failures = 0; this.epoch = null; this.readyP = null; this.child = null;
   }
   // Start (or reuse) the gateway; resolves once `gateway.ready` arrived and client.capabilities was advertised.
@@ -548,6 +694,16 @@ export class HermesGateway {
       try { this.write({ jsonrpc: '2.0', id, method, params }); } catch (e) { this.pending.delete(id); clearTimeout(timer); reject(e); }
     });
   }
+  // `source` is how Hermes learns the chat surface. A Hermes that predates it rejects the unknown parameter (extra="forbid"): retry once without it and remember.
+  async withSource(method, p) {
+    const q = { ...p }; if (this.noSource) delete q.source; else q.source = SESSION_SOURCE;
+    try { return await this.rpc(method, q); } catch (e) {
+      if (!this.noSource && e.rpc === -32602 && /source|extra|unexpected|forbidden/i.test(String(e.message))) { this.noSource = true; this.lg(`This Hermes does not accept "source" on ${method}; continuing without it.`); delete q.source; return this.rpc(method, q); }
+      throw e;
+    }
+  }
+  /** Remember (for this runtime session) that its first prompt should carry the note. Only when the profile config does not already hold the current note. */
+  markFresh(sid) { let n = null; try { n = this.note(); } catch { /* never block a chat on this */ } if (n) this.fresh.set(sid, n); }
   // The allowlisted entry point.
   async call(op, params = {}) {
     if (op === 'info') { await this.ensure(); return { ready: true, epoch: this.epoch, open_requests: [...this.open.keys()] }; }
@@ -559,12 +715,16 @@ export class HermesGateway {
     if (op === 'attach') { // one owner per session: reuse the live runtime when we have it, otherwise resume the stored session
       const stored = need(str(params.stored_session_id), 'stored_session_id'), rt = this.runtime.get(stored);
       let r; if (rt) { try { r = await this.rpc('session.activate', { session_id: rt }); } catch (e) { if (e.rpc !== 4007) throw e; this.runtime.delete(stored); } }
-      if (!r) r = await this.rpc('session.resume', { session_id: stored, cols: 100 });
-      if (r?.session_id) this.runtime.set(stored, r.session_id); return r;
+      if (!r) r = await this.withSource('session.resume', { session_id: stored, cols: 100 });
+      if (r?.session_id) { this.runtime.set(stored, r.session_id); if (!r.message_count && !(r.messages?.length)) this.markFresh(r.session_id); } return r;
     }
     const build = Object.hasOwn(UI_OPS, op) ? UI_OPS[op] : null; if (!build) throw Object.assign(new Error(`${String(op).slice(0, 40)} is not an allowed action`), { code: 'not_allowed' });
-    const [method, p] = build(params); const r = await this.rpc(method, p);
-    if (op === 'create' && r?.stored_session_id && r?.session_id) this.runtime.set(r.stored_session_id, r.session_id);
+    const [method, p] = build(params);
+    if (op === 'submit' && typeof p.text === 'string' && this.fresh.has(p.session_id)) { // fallback awareness: the note rides on the first message of a new chat
+      const n = this.fresh.get(p.session_id); this.fresh.delete(p.session_id); if (n) p.text = wrapNote(n, p.text);
+    }
+    const r = method === 'session.create' ? await this.withSource(method, p) : await this.rpc(method, p);
+    if (op === 'create' && r?.stored_session_id && r?.session_id) { this.runtime.set(r.stored_session_id, r.session_id); this.markFresh(r.session_id); }
     return r;
   }
   stop() { this.state = 'down'; this.readyP = null; try { this.child?.kill(); } catch {} }
@@ -580,7 +740,7 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i++) {
     const t = argv[i]; if (!t.startsWith('--')) { a._.push(t); continue; }
     const k = t.slice(2), v = argv[i + 1];
-    if (['all', 'install-service', 'no-run', 'no-service', 'help'].includes(k)) a[k] = true; else { a[k] = v; i++; }
+    if (['all', 'install-service', 'no-run', 'no-service', 'help', 'fix', 'yes'].includes(k)) a[k] = true; else { a[k] = v; i++; }
   }
   return a;
 }
@@ -608,7 +768,7 @@ export async function main(argv = process.argv.slice(2)) {
   const cfg = loadConfig();
   try {
     if (cmd === 'help' || args.help) {
-      log(`Foxfleet connector ${VERSION}\n\n  allow-media <folder>     share one more folder so agents can send files from it\n  doctor                   check Hermes profiles and the native gateway (what was found, whether it starts, how to fix)\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
+      log(`Foxfleet connector ${VERSION}\n\n  allow-media <folder>     share one more folder so agents can send files from it\n  agent-note [status|show|install|remove]  tell Hermes agents they are in a FoxFleet chat (asks before touching config.yaml)\n  doctor [--fix]           check Hermes profiles and the native gateway (what was found, whether it starts, how to fix)\n  pair --hub URL --code CODE [--name N] [--all | --profiles a,b] [--install-service] [--hermes-home DIR] [--dashboard-port N]\n  run                      stay connected (what the background service runs)\n  profiles [--all | --profiles a,b]   choose which Hermes profiles to share\n  status | install-service | uninstall-service | unpair\n\nConfig: ${configFile()}`); return;
     }
     if (cmd === 'pair') {
       const hub = checkHub(args.hub || process.env.FOXFLEET_HUB || ''), code = args.code || process.env.FOXFLEET_CODE;
@@ -628,8 +788,18 @@ export async function main(argv = process.argv.slice(2)) {
       const root = hermesRoot({ override: cfg.hermesHome }), found = discoverProfiles(root); Object.assign(cfg, await choose(found, args, cfg)); saveConfig(cfg); summary(root, found, cfg);
       log('Saved. A running connector picks the change up within its rescan interval (or restart the service).'); return;
     }
+    if (cmd === 'agent-note') {
+      const root = hermesRoot({ override: cfg.hermesHome }), sub = args._[1] ?? 'status', gw = gatewayCommand(root, cfg, process.env, []);
+      if (sub === 'show') { const f = discoverProfiles(root)[0]; log(profileNote(cfg, root, f?.home).text); return; }
+      if (sub === 'install') { for (const l of await installNotes(cfg, { root, yes: Boolean(args.yes), gw })) log(l); return; }
+      if (sub === 'remove') { for (const l of removeNotes(cfg, { root })) log(l); return; }
+      if (sub === 'status') { const rows = noteDoctor(cfg, { root, support: hermesNoteSupport(gw) }); for (const c of rows) log(`${c.status === 'ok' ? '[ok]  ' : '[warn]'} ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`); if (args.json) log(JSON.stringify(rows)); return; }
+      throw new Error('Usage: agent-note [status|show|install [--yes]|remove]');
+    }
     if (cmd === 'doctor') { // checks for this machine's side: Hermes profiles and the native gateway
-      const checks = [...await nativeDoctor(cfg ?? {}), ...mediaDoctor(cfg ?? {}, { root: hermesRoot({ override: cfg?.hermesHome }) })]; for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
+      const droot = hermesRoot({ override: cfg?.hermesHome }), dgw = gatewayCommand(droot, cfg ?? {}, process.env, []);
+      if (args.fix) for (const l of await installNotes(cfg, { root: droot, yes: Boolean(args.yes), gw: dgw, explicit: false })) log(l);
+      const checks = [...await nativeDoctor(cfg ?? {}), ...mediaDoctor(cfg ?? {}, { root: droot }), ...noteDoctor(loadConfig() ?? cfg, { root: droot, support: hermesNoteSupport(dgw) })]; for (const c of checks) log(`${c.status === 'ok' ? '[ok]  ' : c.status === 'warn' ? '[warn]' : '[FAIL]'} ${c.id}: ${c.message}${c.fix ? `\n        fix: ${c.fix}` : ''}`);
       if (args.json) log(JSON.stringify(checks)); if (checks.some((c) => c.status === 'fail')) process.exit(1); return;
     }
     if (cmd === 'allow-media') { const dir = args._?.[1] ?? args.dir ?? process.argv[3]; if (!cfg) throw new Error('This computer is not paired yet. Run: foxfleet connector pair --hub URL --code CODE'); const next = allowMediaRoot(cfg, dir); saveConfig(next); log(`Shared with the hub: ${next.mediaRoots.at(-1)}\nAgents can now send files from there (a running connector picks this up on the next request).`); return; }

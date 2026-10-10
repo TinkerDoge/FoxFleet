@@ -31,5 +31,5 @@ export async function setup(t, { gateway = true, proxy = false, env = {}, mock =
   const ui = server.connectors.ui(machine.id); assert.ok(ui);
   const events = []; ui.subscribe((agent, ev) => events.push({ agent, ...ev }));
   const until = (pred, o = { tries: 150, ms: 100 }) => waitFor(async () => events.find(pred) ?? null, o);
-  return { server, ui, events, until, run, machine, call, base, px, agent: 'default' };
+  return { server, ui, events, until, run, machine, call, base, px, agent: 'default', root, cfgDir };
 }

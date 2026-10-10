@@ -6,6 +6,14 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
+## 0.3.6-alpha (unreleased, Android versionCode 14)
+
+### Added: agents know they are in FoxFleet
+- *Connector 0.3.6:* chats are now created and resumed with `source: "foxfleet"`, so Hermes no longer tells the agent it is in its terminal UI (which also told it `MEDIA:` files do not work). A Hermes that does not know `source` is detected and the call is retried without it.
+- *Connector:* a short, generated note (Markdown ok, `MEDIA:` files and which folders are shared, where attachments land, approval/clarify cards, which slash commands work, no terminal features) is written to the profile's `config.yaml` as `platform_hints.foxfleet` **only after you agree**: `foxfleet-connector doctor --fix` or `agent-note install` asks first (`--yes` to skip the question). A backup is kept once (`config.yaml.foxfleet.bak`), the edit is a marked block that touches nothing else, repeating it changes nothing, `agent-note remove` takes it out, and `agentNote: false` in the connector config turns the feature off. `doctor` and `agent-note status` report each profile (installed, out of date, missing, yours, unsupported, off).
+- *Connector:* if you decline, or Hermes has no `platform_hints`, the same note rides once on the first message of each new chat (the hub hides it again in the transcript).
+- Note wording: `contract/agent-note.golden.txt`. Details: docs/AGENT-AWARENESS.md.
+
 ## 0.3.5-alpha (unreleased, Android versionCode 13)
 
 Fixes from testing 0.3.3 / 0.3.4 on a phone against a self-hosted hub behind Cloudflare. **The hub needs the new build** for the items marked *hub*; apps and connectors tell you when it is older.
