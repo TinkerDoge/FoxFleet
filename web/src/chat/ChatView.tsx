@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'preact/hooks';
+import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import type { AgentSummary } from '../api/types';
 import { Composer } from './Composer';
@@ -7,7 +7,8 @@ import { SessionsMenu } from './SessionsMenu';
 import { RequestCards } from './RequestCards';
 import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
-import { Markdown, Message } from './Message';
+import { AssistantText, Message } from './Message';
+import { MediaContext } from './MediaCards';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
@@ -65,7 +66,9 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     else openHistory(true);
   };
   const secondary = [...(agent.capabilities?.screen && agent.online ? [{ icon: 'screen' as const, label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { icon: 'add' as const, label: t('chat.new'), onSelect: startNew }];
+  const resolveMedia = useMemo(() => (ref: string) => client.media(agent.name, ref), [client, agent.name]);
   return (
+    <MediaContext.Provider value={resolveMedia}>
     <section class="chat" aria-label={name}>
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</div>
       <header class="chat-head">
@@ -90,7 +93,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         {c.streaming && (
           <div class="msg assistant">
             {c.streamReasoning && <details class="reasoning" open={!c.streamText}><summary>{t('chat.reasoning')}</summary><div class="md plain">{c.streamReasoning}</div></details>}
-            {c.streamText && <Markdown text={c.streamText} onMedia={setViewer} />}
+            {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
             {c.toolLog.length > 1 && <details class="tools"><summary>{t('chat.toolsDone', { n: c.toolLog.length })}</summary><ul>{c.toolLog.map((x, i) => <li key={i}>{i === c.toolLog.length - 1 && c.tool ? '… ' : '✓ '}{x}</li>)}</ul></details>}
             {status && <p class="status shimmer" role="status" aria-live="polite">{status}<span class="dots" aria-hidden="true" /></p>}
           </div>
@@ -120,6 +123,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })} />
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>
+    </MediaContext.Provider>
   );
 }
 export { chatOf };

@@ -62,6 +62,8 @@ export function parseMedia(input) {
 
 /** While a reply is still streaming, hide a tag whose end has not arrived yet (it is never shown half-written). */
 export function parseStreaming(input) {
-  const r = parseMedia(input);
-  return { ...r, text: r.text.replace(/[`"'*_]{0,3}MEDIA:[^\n]*$/i, '').replace(/\[\[[a-z_]*\]?$/, '').trimEnd() };
+  // A tag is held back until its line is finished (a spaced path may still grow): never a half card, never a half-written path in the text.
+  const text = typeof input === 'string' ? input : '', cut = text.search(/[`"'*_]{0,3}MEDIA:[^\n]*$/i);
+  const r = parseMedia(cut >= 0 ? text.slice(0, cut) : text);
+  return { ...r, text: r.text.replace(/\[\[[a-z_]*\]?$/, '').trimEnd() };
 }

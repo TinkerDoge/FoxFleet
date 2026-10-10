@@ -259,6 +259,12 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
       return pump(agent, res, opts, run, after);
     },
     runs: async (agent: string, session?: string): Promise<RunInfo[]> => ((await request<any>(`/api/agents/${enc(agent)}/runs${session ? '?session_id=' + enc(session) : ''}`)).runs ?? []) as RunInfo[],
+    /** A file or picture the agent mentioned with MEDIA: -> a short-lived link for this user (the hub fetches it from the agent's machine). */
+    media: async (agent: string, ref: string): Promise<{ url: string; kind: 'image' | 'video' | 'audio' | 'file'; name: string }> => {
+      const r = await request<any>(`/api/agents/${enc(agent)}/media`, { body: { ref }, retries: 0 });
+      if (typeof r?.url !== 'string' || !r.url.startsWith('/api/media/')) throw new ApiError(502, 'Invalid media reply');
+      return { url: r.url, kind: ['image', 'video', 'audio'].includes(r.kind) ? r.kind : 'file', name: String(r.name ?? 'file') };
+    },
     /** The explicit Stop button: cancels the agent run itself (just closing the page never does). */
     stopRun: (agent: string, run: string) => request<any>(`/api/agents/${enc(agent)}/runs/${enc(run)}/stop`, { body: {} }),
     /** Send while the agent may be replying. The hub stores and acknowledges it first; mode says what to do if it is busy. */

@@ -4,6 +4,8 @@ import type { UiMessage } from '../lib/chat';
 import { enhance, isVideoUrl, renderMarkdown } from '../lib/markdown';
 import { splitFiles } from '../lib/files';
 import type { MediaItem } from '../components/MediaViewer';
+import { parseMedia, parseStreaming } from '../lib/mediaTags';
+import { MediaCards } from './MediaCards';
 import { t } from '../i18n/t';
 
 export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaItem) => void }) {
@@ -36,6 +38,12 @@ function Tools({ m }: { m: UiMessage }) {
 }
 const Time = ({ ts }: { ts?: number }) => (ts ? <time class="msg-time muted" dateTime={new Date(ts).toISOString()}>{clock(ts)}</time> : null);
 
+/** Reply text with MEDIA: tags removed from view and shown as picture / video / audio / file cards underneath. */
+export function AssistantText({ text, onMedia, streaming = false }: { text: string; onMedia: (m: MediaItem) => void; streaming?: boolean }) {
+  const parsed = useMemo(() => (streaming ? parseStreaming(text) : parseMedia(text)), [text, streaming]);
+  return <>{parsed.text && <Markdown text={parsed.text} onMedia={onMedia} />}<MediaCards media={parsed.media} onMedia={onMedia} /></>;
+}
+
 export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean }) {
   if (m.role === 'system') return <div class="msg notice" role="status"><small class="muted">{m.content}</small></div>;
   if (m.role === 'user') {
@@ -56,7 +64,7 @@ export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia
       {m.reasoning && <details class="reasoning"><summary>{t('chat.reasoning')}</summary><div class="md plain">{m.reasoning}</div></details>}
       <Tools m={m} />
       {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
-      {m.content && <Markdown text={m.content} onMedia={onMedia} />}
+      <AssistantText text={m.content} onMedia={onMedia} />
       {m.interrupted && <small class="interrupted muted">{t('chat.interrupted')}</small>}
       <Time ts={m.ts} />
     </div>
