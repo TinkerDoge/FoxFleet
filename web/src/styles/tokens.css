@@ -14,9 +14,30 @@
   --idle-text: #79520B;
   --offline: #C4BFB8;
   --danger: #C0392B;
+  --chat-solid-sand: #EDE6DA;
+  --chat-solid-sage: #DDE7DB;
+  --chat-solid-sky: #DCE8F2;
+  --chat-solid-blush: #F3DFDC;
+  --chat-solid-lilac: #E5E0F0;
+  --chat-solid-teal: #D8EBE8;
+  --chat-solid-butter: #F2EBCB;
+  --chat-solid-slate: #DEE1E6;
+  --chat-solid-ember: #F4DDD0;
+  --chat-solid-midnight: #DCE1EC;
+  --chat-pattern-dots-opacity: 0.14;
+  --chat-pattern-grid-opacity: 0.1;
+  --chat-pattern-lines-opacity: 0.1;
+  --chat-pattern-waves-opacity: 0.12;
+  --chat-pattern-paws-opacity: 0.14;
+  --chat-pattern-foxes-opacity: 0.14;
+  --chat-pattern-topography-opacity: 0.12;
+  --chat-pattern-stars-opacity: 0.16;
+  --chat-pattern-diamonds-opacity: 0.11;
+  --chat-pattern-doodles-opacity: 0.14;
   --accent: #BE4A21;
   --on-accent: #FFFFFF;
   --user-bubble: color-mix(in srgb, var(--accent) 12%, transparent);
+  --user-bubble-solid: color-mix(in srgb, var(--accent) 12%, var(--surface));
   --radius-card: 16px;
   --radius-control: 12px;
   --radius-small: 8px;
@@ -76,9 +97,9 @@
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #110F0E;
-    --surface: #1B1816;
-    --surface-alt: #25211E;
+    --bg: #181514;
+    --surface: #231F1D;
+    --surface-alt: #2D2825;
     --hairline: #FFFFFF1F;
     --text: #EDEDED;
     --text-muted: #A8A29C;
@@ -89,9 +110,30 @@
     --idle-text: #E0B04A;
     --offline: #4D4843;
     --danger: #FF6B5E;
+    --chat-solid-sand: #181410;
+    --chat-solid-sage: #111A13;
+    --chat-solid-sky: #0F1722;
+    --chat-solid-blush: #1F1414;
+    --chat-solid-lilac: #161424;
+    --chat-solid-teal: #0E1C19;
+    --chat-solid-butter: #1C180B;
+    --chat-solid-slate: #14171C;
+    --chat-solid-ember: #22140D;
+    --chat-solid-midnight: #0A0F1A;
+    --chat-pattern-dots-opacity: 0.16;
+    --chat-pattern-grid-opacity: 0.12;
+    --chat-pattern-lines-opacity: 0.12;
+    --chat-pattern-waves-opacity: 0.14;
+    --chat-pattern-paws-opacity: 0.16;
+    --chat-pattern-foxes-opacity: 0.16;
+    --chat-pattern-topography-opacity: 0.14;
+    --chat-pattern-stars-opacity: 0.18;
+    --chat-pattern-diamonds-opacity: 0.13;
+    --chat-pattern-doodles-opacity: 0.16;
     --accent: #F08A5D;
     --on-accent: #111111;
     --user-bubble: color-mix(in srgb, var(--accent) 16%, transparent);
+    --user-bubble-solid: color-mix(in srgb, var(--accent) 16%, var(--surface));
   }
     :root:not([data-theme="light"])[data-accent="ember"] {
     --accent: #F08A5D;
@@ -115,9 +157,9 @@
   }
 }
 :root[data-theme="dark"] {
-  --bg: #110F0E;
-  --surface: #1B1816;
-  --surface-alt: #25211E;
+  --bg: #181514;
+  --surface: #231F1D;
+  --surface-alt: #2D2825;
   --hairline: #FFFFFF1F;
   --text: #EDEDED;
   --text-muted: #A8A29C;
@@ -128,9 +170,30 @@
   --idle-text: #E0B04A;
   --offline: #4D4843;
   --danger: #FF6B5E;
+  --chat-solid-sand: #181410;
+  --chat-solid-sage: #111A13;
+  --chat-solid-sky: #0F1722;
+  --chat-solid-blush: #1F1414;
+  --chat-solid-lilac: #161424;
+  --chat-solid-teal: #0E1C19;
+  --chat-solid-butter: #1C180B;
+  --chat-solid-slate: #14171C;
+  --chat-solid-ember: #22140D;
+  --chat-solid-midnight: #0A0F1A;
+  --chat-pattern-dots-opacity: 0.16;
+  --chat-pattern-grid-opacity: 0.12;
+  --chat-pattern-lines-opacity: 0.12;
+  --chat-pattern-waves-opacity: 0.14;
+  --chat-pattern-paws-opacity: 0.16;
+  --chat-pattern-foxes-opacity: 0.16;
+  --chat-pattern-topography-opacity: 0.14;
+  --chat-pattern-stars-opacity: 0.18;
+  --chat-pattern-diamonds-opacity: 0.13;
+  --chat-pattern-doodles-opacity: 0.16;
   --accent: #F08A5D;
   --on-accent: #111111;
   --user-bubble: color-mix(in srgb, var(--accent) 16%, transparent);
+  --user-bubble-solid: color-mix(in srgb, var(--accent) 16%, var(--surface));
 }
 :root[data-theme="dark"][data-accent="ember"] {
   --accent: #F08A5D;
