@@ -1,4 +1,4 @@
-// Test fixture (from Soran's QA, /workspace/audits/foxfleet-bot-screen): a fake VNC-over-WebSocket server for the screen DOM test. Run: node screen-fakevnc.mjs PORT
+// Test fixture: a fake VNC-over-WebSocket server for the screen DOM test. Run: node screen-fakevnc.mjs PORT
 // Minimal fake VNC-over-WebSocket server (RFB 3.8, security None, raw encoding, 1440x900 test pattern). usage: node fakevnc.mjs PORT
 import http from 'node:http'; import crypto from 'node:crypto';
 const W=1440,H=900, port=Number(process.argv[2]||5959);

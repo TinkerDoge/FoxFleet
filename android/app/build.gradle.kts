@@ -15,8 +15,8 @@ android {
         applicationId = "dev.foxfleet.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 17
-        versionName = "0.3.9-alpha"
+        versionCode = 20
+        versionName = "0.3.10-alpha"
     }
 
     // Release signing. The keystore is NEVER in the repository. Provide it either through environment variables
@@ -65,6 +65,11 @@ android {
     }
     testOptions {
         unitTests.isIncludeAndroidResources = true
+        // Fresh test JVMs: avoids the Robolectric native-graphics abort (exit 134)
+        unitTests.all {
+            it.maxHeapSize = "1g"
+            it.forkEvery = 8
+        }
     }
 }
 
