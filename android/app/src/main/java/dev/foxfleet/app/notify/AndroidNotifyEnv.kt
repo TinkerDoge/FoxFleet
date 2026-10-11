@@ -24,7 +24,7 @@ class AndroidNotifyEnv(private val context: Context, private val settings: Setti
     override fun startBlocked() = store.startBlocked
     override fun categories() = binding()?.let { store.categories(it) } ?: NotifyCategory.entries.toSet()
     override fun setCategory(c: NotifyCategory, on: Boolean) { binding()?.let { store.setCategory(it, c, on) } }
-    override fun link() = NotifyController.link.value
+    override fun link() = if (store.needsLogin && serviceEnabled()) NotifyLink.SignedOut else NotifyController.link.value
     override fun cacheMutes(list: List<MuteRule>) { binding()?.let { store.setMutes(it, list) } }
     override fun now() = System.currentTimeMillis()
     override suspend fun prefs() = hubApi().prefs()

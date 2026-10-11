@@ -38,6 +38,13 @@ object NotifyController {
     fun systemSettingsIntent(context: Context): Intent =
         Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
+    /** The system battery-optimisation list (needs no permission; we never ask for the exemption ourselves). Falls back to this app's info page where the list is missing. */
+    fun batterySettingsIntent(context: Context): Intent {
+        val list = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return if (list.resolveActivity(context.packageManager) != null) list
+        else Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+    }
+
     fun channelSettingsIntent(context: Context, c: NotifyChannel): Intent =
         Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName).putExtra(Settings.EXTRA_CHANNEL_ID, c.id).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
@@ -49,6 +56,7 @@ object NotifyController {
         val old = s.binding
         if (old != null && old != b) teardown(context, old)
         s.binding = b
+        s.needsLogin = false // a successful login: the "Log in again" state is over and the service resumes below
         NotifyChannels.create(context)
         if (s.enabled(b) && permissionState(context).ok) start(context) else if (s.enabled(b)) setLink(NotifyLink.Off)
     }
@@ -65,13 +73,19 @@ object NotifyController {
 
     private fun teardown(context: Context, b: NotifyBinding) {
         stop(context); AndroidNotifier(context).clearAll()
-        store(context).clear(b); store(context).startBlocked = false
+        store(context).clear(b); store(context).startBlocked = false; store(context).needsLogin = false
         setLink(NotifyLink.Off)
     }
 
-    /** The service saw `foxfleet.auth` or a 401: same cleanup as a sign-out, and the status says why. The app finds out on its next call and shows the login. */
+    /**
+     * The service saw `foxfleet.auth` or a 401. That can be a blip (the hub lost its sessions, a token past its grace), so the binding and the master
+     * switch stay: the service stops, what we showed is cleared, and "Log in again" is persisted for the Settings status line. Only a real sign-out
+     * ([onSignedOut]) or a different owner ([onAuthed] with another pair) clears them. The next successful login ([onAuthed]) resumes the service.
+     */
     fun onServerSignedOut(context: Context) {
-        onSignedOut(context); setLink(NotifyLink.SignedOut)
+        store(context).needsLogin = true
+        stop(context); AndroidNotifier(context).clearAll()
+        setLink(NotifyLink.SignedOut)
     }
 
     // ---- master switch ----
@@ -80,7 +94,7 @@ object NotifyController {
         val s = store(context); val b = s.binding ?: return false
         if (!on) { s.setEnabled(b, false); stop(context); setLink(NotifyLink.Off); return true }
         if (!permissionState(context).ok) return false
-        s.setEnabled(b, true); s.startBlocked = false
+        s.setEnabled(b, true); s.startBlocked = false; s.needsLogin = false // a fresh try: a 401 sets it again
         return start(context)
     }
 
@@ -98,7 +112,7 @@ object NotifyController {
     /** After a reboot or an app update: restart only for a pair whose user turned notifications on, and only with a stored login. */
     fun onBoot(context: Context) {
         val s = store(context); val b = s.binding ?: return
-        if (!s.enabled(b) || !permissionState(context).ok) return
+        if (!s.enabled(b) || s.needsLogin || !permissionState(context).ok) return
         if (HubTokens(context.getSharedPreferences("foxfleet", Context.MODE_PRIVATE), b.hubId).get() == null) return
         start(context)
     }
@@ -108,15 +122,18 @@ object NotifyController {
     fun onChatOpened(context: Context, agent: String, chat: String?) { AndroidNotifier(context).clearChat(agent, chat) }
 
     /** Mute action on a notification (runs off the main thread). */
-    suspend fun muteFromNotification(context: Context, hub: String, agent: String, chat: String, forMs: Long) {
-        val s = store(context); val b = s.binding ?: return
-        if (b.hubId != hub) return
-        val hubEntry = SettingsStore(context).hubs.firstOrNull { it.id == hub } ?: return
+    suspend fun muteFromNotification(context: Context, hub: String, agent: String, chat: String, forMs: Long): MuteOutcome {
+        val s = store(context); val b = s.binding
+        val hubEntry = SettingsStore(context).hubs.firstOrNull { it.id == hub }
+        if (b == null || b.hubId != hub || hubEntry == null) return MuteOutcome.Failed("This notification belongs to a hub you are no longer signed in to.")
         val api = NotifyApi(hubEntry.url, HubTokens(context.getSharedPreferences("foxfleet", Context.MODE_PRIVATE), hub))
-        val prefs = runCatching { api.mute(agent, chat, true, forMs) }.getOrNull() ?: return
-        s.setMutes(b, prefs.mutes)
-        AndroidNotifier(context).clearChat(agent, chat)
+        val (outcome, prefs) = MuteOutcome.run { api.mute(agent, chat, true, forMs) }
+        if (prefs != null) { s.setMutes(b, prefs.mutes); AndroidNotifier(context).clearChat(agent, chat) }
+        return outcome
     }
+
+    /** The permission was revoked while the service ran: stop it (the switch stays on; the status line says "Permission missing", and it resumes when the app opens with permission). */
+    fun onPermissionLost(context: Context) { stop(context); AndroidNotifier(context).clearAll(); setLink(NotifyLink.Off) }
 
     internal fun openAppSettings(context: Context) = context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
 }

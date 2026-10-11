@@ -5,6 +5,8 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
 import android.os.IBinder
 import androidx.core.app.ServiceCompat
 import dev.foxfleet.app.data.AuthRequiredException
@@ -36,8 +38,12 @@ class NotifyService : Service() {
         notifier = AndroidNotifier(this)
     }
 
+    private var runner: NotifyStreamRunner? = null
+    private var networkCallback: ConnectivityManager.NetworkCallback? = null
+
     private fun show(link: NotifyLink) {
         NotifyController.setLink(link)
+        if (link == NotifyLink.Connected) NotifyStore(this).needsLogin = false
         runCatching { getSystemService(android.app.NotificationManager::class.java).notify(AndroidNotifier.SERVICE_ID, notifier.serviceNotification(link)) }
     }
 
@@ -60,15 +66,21 @@ class NotifyService : Service() {
         val hub = b?.let { x -> settings.hubs.firstOrNull { it.id == x.hubId } }
         val tokens = b?.let { HubTokens(getSharedPreferences("foxfleet", Context.MODE_PRIVATE), it.hubId) }
         // Only for the pair that turned notifications on, on the hub the app is using (HubApi follows the active hub), with a login.
+        if (b != null && store.needsLogin) { NotifyController.setLink(NotifyLink.SignedOut); stopSelf(); return } // a restart after a 401: wait for the next login
         if (b == null || hub == null || tokens?.get() == null || !store.enabled(b) || settings.activeHubId != b.hubId) { NotifyController.setLink(NotifyLink.Off); stopSelf(); return }
         val api = HubApi(settings)
         val content = HubNotifyContent(api, seenAt = { settings.seenAt(it) }, chatOpen = { NotifyForeground.visible && NotifyForeground.agent == it })
-        val dispatcher = NotifyDispatcher(b.hubId, content, notifier, categories = { store.categories(b) }, mutes = { store.mutes(b) }, chatOpen = NotifyForeground::isOpen)
+        val dispatcher = NotifyDispatcher(b.hubId, content, notifier, categories = { store.categories(b) }, mutes = { store.mutes(b) }, chatOpen = NotifyForeground::isOpen,
+            onSkipped = { id, e -> android.util.Log.w("FoxfleetNotify", "skipped event $id: ${e.javaClass.simpleName}") }) // id and class only, never text
+        val sink = PermissionGuardSink(dispatcher) { NotifyController.permissionState(this).ok }
         val cursor = object : NotifyCursorStore {
             override var lastId: Long? get() = store.lastId(b); set(v) = store.setLastId(b, v)
             override fun saveToken(token: String) = tokens.set(token)
         }
-        val runner = NotifyStreamRunner(OkHttpNotifyTransport(hub.url, tokens), cursor, dispatcher, onLink = { l -> show(l); if (l == NotifyLink.Connected) refreshMutes(b, hub.url, tokens, store) })
+        val runner = NotifyStreamRunner(OkHttpNotifyTransport(hub.url, tokens), cursor, sink, onLink = { l -> show(l); if (l == NotifyLink.Connected) refreshMutes(b, hub.url, tokens, store) })
+        this.runner = runner
+        watchNetwork(runner)
+        var failures = 0
         while (true) {
             try {
                 when (runner.run()) {
@@ -76,8 +88,18 @@ class NotifyService : Service() {
                     RunEnd.Unsupported -> { show(NotifyLink.Unsupported); stopSelf() }
                 }
                 return
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { signedOut(); return } catch (_: Exception) { delay(5_000) }
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { signedOut(); return
+            } catch (e: NotifyPermissionLost) { NotifyController.onPermissionLost(this); stopSelf(); return
+            } catch (_: Exception) { delay(NotifyBackoff.delayMs(failures++)) } // same backoff and jitter as the stream; never a flat retry
         }
+    }
+
+    /** When the network comes back, retry now instead of waiting out the backoff. No wake lock: the callback only fires while the app process is alive. */
+    private fun watchNetwork(runner: NotifyStreamRunner) {
+        val cm = getSystemService(ConnectivityManager::class.java) ?: return
+        val cb = object : ConnectivityManager.NetworkCallback() { override fun onAvailable(network: Network) { runner.nudge() } }
+        networkCallback = cb
+        runCatching { cm.registerDefaultNetworkCallback(cb) }
     }
 
     private fun signedOut() { NotifyController.onServerSignedOut(this); stopSelf() }
@@ -92,7 +114,9 @@ class NotifyService : Service() {
     override fun onTimeout(startId: Int) = onTimeout(startId, 0)
 
     override fun onDestroy() {
+        networkCallback?.let { cb -> runCatching { getSystemService(ConnectivityManager::class.java)?.unregisterNetworkCallback(cb) } }
         scope.cancel()
+        runner?.close() // ends a read blocked in OkHttp now, so the hub sees one stream, not two, after a fast off/on
         if (NotifyController.link.value !is NotifyLink.SignedOut && NotifyController.link.value != NotifyLink.Unsupported && NotifyController.link.value != NotifyLink.Blocked) NotifyController.setLink(NotifyLink.Off)
         super.onDestroy()
     }

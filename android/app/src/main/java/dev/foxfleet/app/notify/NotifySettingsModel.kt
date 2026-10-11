@@ -58,6 +58,12 @@ data class NotifyUiState(
     val message: String? = null,
 )
 
+/** Fixed user-facing text that is not state-dependent. */
+object NotifyText {
+    const val BATTERY_HINT = "Phones in battery saver or deep sleep can delay alerts when idle. If they arrive late, set FoxFleet to \"Unrestricted\" or \"Never sleeping\" in the battery settings."
+    const val BATTERY_ACTION = "Open battery settings"
+}
+
 object NotifyStatus {
     /** One line for the Settings status row. */
     fun line(s: NotifyUiState): String = when {
@@ -70,7 +76,7 @@ object NotifyStatus {
             NotifyLink.Connecting, NotifyLink.Off -> "Connecting…"
             is NotifyLink.Reconnecting -> "Reconnecting…"
             NotifyLink.Offline -> "Offline. Retrying."
-            NotifyLink.SignedOut -> "Signed out. Log in again."
+            NotifyLink.SignedOut -> "Log in again to get notifications."
             NotifyLink.Unsupported -> "Your hub is too old for notifications. Update it."
             NotifyLink.Blocked -> "Paused by Android. Open FoxFleet to restart it."
         }

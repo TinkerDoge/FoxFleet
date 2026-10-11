@@ -86,7 +86,7 @@ class NotifyNotifierTest {
     @Test fun openingAChatClearsOnlyItsNotificationsAndTheSummaryWhenNoneLeft() {
         notifier.post(notice("h_1")); notifier.post(notice("h_2")); notifier.post(notice("h_3", agent = "echo", label = "Echo"))
         notifier.clearChat("nova", "h_1"); assertEquals(2, chats().size)
-        notifier.clearChat("nova", null); assertEquals(listOf("echo"), chats().map { it.tag.split(':')[2] })
+        notifier.clearChat("nova", null); assertEquals(listOf("echo"), chats().map { it.tag.split(AndroidNotifier.SEP)[2] })
         notifier.clearChat("echo", "h_3"); assertTrue(nm.activeNotifications.isEmpty())
     }
 
@@ -100,4 +100,27 @@ class NotifyNotifierTest {
     }
 
     private fun shadowIntent(pi: android.app.PendingIntent): android.content.Intent = org.robolectric.Shadows.shadowOf(pi).savedIntent
+
+    @Test fun aReplyOrErrorNeverReplacesAPendingApproval() {
+        notifier.post(notice(text = "Run rm -rf build?", type = NotifyType.Approval, req = "srq-1"))
+        notifier.post(notice(text = "All done", at = 20))
+        notifier.post(notice(text = "The reply failed", at = 30, type = NotifyType.Error))
+        val list = chats()
+        assertEquals(2, list.size) // one approval, one chat line (reply + error share it)
+        val approval = list.single { it.tag!!.startsWith("approval" + AndroidNotifier.SEP) }.notification
+        assertEquals("foxfleet_approvals", approval.channelId)
+        assertTrue(approval.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("rm -rf"))
+        assertTrue(shadowIntent(approval.contentIntent).dataString.orEmpty().contains("srq-1"))
+        assertTrue(list.single { it.tag!!.startsWith("chat" + AndroidNotifier.SEP) }.notification.extras.getCharSequence(Notification.EXTRA_TEXT).toString().contains("The reply failed"))
+    }
+
+    @Test fun openingTheChatClearsItsApprovalToo_evenWithColonsInIds() {
+        notifier.post(notice(chat = "h:1", agent = "no:va", text = "ok"))
+        notifier.post(notice(chat = "h:1", agent = "no:va", text = "ask", type = NotifyType.Approval, req = "r1"))
+        notifier.post(notice(chat = "h_2", text = "other"))
+        assertEquals(3, chats().size)
+        notifier.clearChat("no:va", "h:1")
+        assertEquals(listOf("h_2"), chats().map { it.tag!!.split(AndroidNotifier.SEP).last() })
+    }
+
 }

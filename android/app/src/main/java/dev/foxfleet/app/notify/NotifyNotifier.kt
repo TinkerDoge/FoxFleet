@@ -50,7 +50,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
 
     override fun post(n: ChatNotice) {
         if (!nm.areNotificationsEnabled()) return
-        val tag = tagOf(n.hubId, n.agent, n.chat)
+        val tag = tagOf(n.hubId, n.agent, n.chat, approval = n.type == NotifyType.Approval)
         val channel = NotifyChannel.forType(n.type)
         val target = NotifyTarget(n.hubId, n.agent, n.chat, n.requestId.takeIf { n.type == NotifyType.Approval })
         val code = tag.hashCode()
@@ -77,7 +77,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         summary()
     }
 
-    private fun activeChats() = nm.activeNotifications.filter { it.id == CHAT_ID && it.tag?.startsWith("chat:") == true }
+    private fun activeChats() = nm.activeNotifications.filter { it.id == CHAT_ID && it.tag?.let { t -> t.startsWith("chat$SEP") || t.startsWith("approval$SEP") } == true }
 
     private fun summary() {
         val chats = activeChats()
@@ -97,7 +97,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
 
     override fun clearChat(agent: String, chat: String?) {
         activeChats().filter { sbn ->
-            val p = sbn.tag!!.split(':', limit = 4)
+            val p = sbn.tag!!.split(SEP, limit = 4)
             p.size == 4 && p[2] == agent && (chat == null || p[3] == chat)
         }.forEach { nm.cancel(it.tag, it.id) }
         summary()
@@ -117,7 +117,10 @@ class AndroidNotifier(private val context: Context) : Notifier {
     companion object {
         const val SERVICE_ID = 1000; const val SUMMARY_ID = 1001; const val TEST_ID = 1002; const val CHAT_ID = 2000
         const val GROUP = "dev.foxfleet.app.CHATS"; const val SUMMARY_TAG = "summary"; const val MAX_LINES = 5
-        fun tagOf(hub: String, agent: String, chat: String) = "chat:$hub:$agent:$chat".replace('\n', ' ')
+        /** Separator inside a tag: a character an id can't contain, so an id with ':' in it still splits correctly. */
+        const val SEP = '\u001f'
+        /** Approvals get their own tag, so a later reply or error in the same chat never replaces a pending approval (its channel, text and deep link). */
+        fun tagOf(hub: String, agent: String, chat: String, approval: Boolean = false) = "${if (approval) "approval" else "chat"}$SEP$hub$SEP$agent$SEP$chat".replace('\n', ' ')
         fun serviceText(link: NotifyLink) = when (link) {
             NotifyLink.Connected -> "Connected"
             NotifyLink.Connecting, NotifyLink.Off -> "Connecting…"

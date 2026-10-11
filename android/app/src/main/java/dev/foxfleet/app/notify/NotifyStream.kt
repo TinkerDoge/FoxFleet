@@ -3,7 +3,8 @@ package dev.foxfleet.app.notify
 import dev.foxfleet.app.data.SseParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.ensureActive
 import java.io.IOException
 import java.io.Reader
@@ -15,6 +16,18 @@ object NotifyBackoff {
     fun delayMs(attempt: Int, random: Double = Math.random()): Long {
         val step = minOf(CAP_MS, BASE_MS shl minOf(attempt.coerceAtLeast(0), 10))
         return (step * (0.5 + random.coerceIn(0.0, 1.0) / 2)).toLong()
+    }
+}
+
+/** `Retry-After` is either seconds or an HTTP date. Returns whole seconds to wait (>= 0), or null when it can't be read. */
+object NotifyRetryAfter {
+    fun parse(value: String?, nowMs: Long = System.currentTimeMillis()): Int? {
+        val v = value?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        v.toIntOrNull()?.let { return it.coerceAtLeast(0) }
+        return runCatching {
+            val at = java.time.ZonedDateTime.parse(v, java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+            ((at - nowMs + 999) / 1000).toInt().coerceAtLeast(0)
+        }.getOrNull()
     }
 }
 
@@ -47,25 +60,43 @@ enum class RunEnd { SignedOut, Unsupported }
  * - sends the stored `Last-Event-ID`; with none stored, the replay is only a baseline (the cursor is taken, nothing is notified);
  * - stores a rotated `X-Session-Token` before it reads a single frame;
  * - `foxfleet.auth` or `401` ends the loop with [RunEnd.SignedOut] (never reconnect); `404` ends it with [RunEnd.Unsupported];
- * - every other failure, a closed stream or a silent link reconnects with [NotifyBackoff].
+ * - every other failure, a closed stream or a silent link reconnects with [NotifyBackoff]. The backoff only resets after the link stayed up for [STABLE_MS]
+ *   (a hub that accepts the stream and drops it at once keeps growing the delay); [nudge] (network came back) wakes a sleeping retry and resets it;
+ *   [close] cancels the blocking read of the open call (service stop).
  */
 class NotifyStreamRunner(
     private val transport: NotifyTransport,
     private val store: NotifyCursorStore,
     private val sink: NotifySink,
     private val onLink: (NotifyLink) -> Unit = {},
-    private val sleep: suspend (Long) -> Unit = { delay(it) },
+    private val sleep: (suspend (Long) -> Unit)? = null,
     private val random: () -> Double = { Math.random() },
     private val chunk: Int = 4096,
+    private val clock: () -> Long = { System.currentTimeMillis() },
 ) {
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+    @Volatile private var nudged = false
+    @Volatile private var current: NotifyOpen? = null
+
+    /** The network is back: retry now instead of waiting out the backoff. */
+    fun nudge() { nudged = true; wake.trySend(Unit) }
+
+    /** Stop: cancel the open call so a read blocked in OkHttp ends now. Call it together with cancelling the coroutine that runs [run]. */
+    fun close() { current?.close() }
+
+    private suspend fun pause(ms: Long) { val s = sleep; if (s != null) s(ms) else withTimeoutOrNull(ms) { wake.receive() } }
+
     suspend fun run(): RunEnd {
         var attempt = 0
         while (true) {
             currentCoroutineContext().ensureActive()
+            wake.tryReceive(); nudged = false
+            var upSince: Long? = null
             onLink(if (attempt == 0) NotifyLink.Connecting else if (attempt >= OFFLINE_AFTER) NotifyLink.Offline else NotifyLink.Reconnecting(attempt))
             var wait: Long? = null
             try {
                 val open = transport.open(store.lastId)
+                current = open
                 open.use { o ->
                     o.token?.takeIf { it.isNotBlank() }?.let { store.saveToken(it) } // before anything else, or the next reconnect after the 60 s grace gets 401
                     when {
@@ -74,15 +105,18 @@ class NotifyStreamRunner(
                         o.status == 429 -> wait = maxOf(NotifyBackoff.delayMs(attempt, random()), (o.retryAfterSec ?: 0) * 1000L)
                         o.status != 200 || o.body == null || o.contentType?.contains("text/event-stream") != true -> Unit // a proxy page or a 5xx: retry
                         else -> {
-                            val result = read(o.body) { attempt = 0; onLink(NotifyLink.Connected) }
+                            val result = read(o.body) { upSince = clock(); onLink(NotifyLink.Connected) }
                             if (result == Read.SignedOut) return RunEnd.SignedOut
                         }
                     }
                 }
             } catch (e: CancellationException) { throw e } catch (_: IOException) { } catch (_: IllegalStateException) { /* oversize frame */ }
+            current = null
+            if (upSince?.let { clock() - it >= STABLE_MS } == true) attempt = 0 // it was a real connection, not a flap
             attempt++
             onLink(if (attempt >= OFFLINE_AFTER) NotifyLink.Offline else NotifyLink.Reconnecting(attempt))
-            sleep(wait ?: NotifyBackoff.delayMs(attempt - 1, random()))
+            pause(wait ?: NotifyBackoff.delayMs(attempt - 1, random()))
+            if (nudged) { attempt = 0; nudged = false }
         }
     }
 
@@ -134,5 +168,5 @@ class NotifyStreamRunner(
         return false
     }
 
-    companion object { const val OFFLINE_AFTER = 3 }
+    companion object { const val OFFLINE_AFTER = 3; const val STABLE_MS = 45_000L }
 }

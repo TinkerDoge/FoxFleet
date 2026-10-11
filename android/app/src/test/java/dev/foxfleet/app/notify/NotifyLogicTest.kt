@@ -100,7 +100,7 @@ private class FakeContent : NotifyContent {
 }
 private class FakeNotifier : Notifier {
     val posted = ArrayList<ChatNotice>(); var tests = 0
-    override fun post(n: ChatNotice) { posted.add(n) }
+    override fun post(n: ChatNotice) { if (n.chat == "h_bad") throw IllegalStateException("boom"); posted.add(n) }
     override fun postTest() { tests++ }
     override fun clearChat(agent: String, chat: String?) {}
     override fun clearAll() {}
@@ -158,4 +158,63 @@ class NotifyDispatcherTest {
         d(c, n, mutes = listOf(MuteRule("echo", null, null))).onGap(NotifyFrame.Gap(400, 503))
         assertEquals(listOf("h_9"), n.posted.map { it.chat }) // echo is muted, nova is shown
     }
+}
+
+class NotifyPoisonEventTest {
+    private fun d(n: FakeNotifier, skipped: MutableList<Long>) = NotifyDispatcher("h1", FakeContent(), n, { all }, { emptyList() }, { _, _ -> false }, { NOW }, { id, _ -> skipped.add(id) })
+
+    @Test fun anEventThatCannotBePostedIsSkippedAndTheRestStillArrive() = runTest {
+        val n = FakeNotifier(); val skipped = ArrayList<Long>()
+        d(n, skipped).onEvents(listOf(e(1, chat = "h_bad"), e(2, chat = "h_1")), false)
+        assertEquals(listOf("h_1"), n.posted.map { it.chat }); assertEquals(listOf(1L), skipped)
+    }
+
+    @Test fun cancellationAndALostLoginStillPropagate() = runTest {
+        val c = FakeContent().apply { authGone = true }
+        try { NotifyDispatcher("h1", c, FakeNotifier(), { all }, { emptyList() }, { _, _ -> false }, { NOW }).onEvents(listOf(e(1)), false); fail() } catch (_: AuthRequiredException) {}
+    }
+
+    @Test fun theCursorMovesPastThePoisonEventSoItIsNotReplayedForever() = runTest {
+        val n = FakeNotifier(); val skipped = ArrayList<Long>(); var last: Long? = 0L; var opens = 0
+        val frames = "id: 1\nevent: notify\ndata: {\"id\":1,\"v\":1,\"type\":\"reply_finished\",\"agent\":\"nova\",\"chat\":\"h_bad\",\"priority\":\"normal\",\"at\":1,\"muted\":false}\n\n" +
+            "event: foxfleet.ready\ndata: {\"contract\":\"foxfleet.notify/1\",\"cursor\":1}\n\n"
+        val store = object : NotifyCursorStore { override var lastId: Long? get() = last; set(v) { last = v }; override fun saveToken(token: String) {} }
+        val transport = NotifyTransport { if (opens++ > 0) throw kotlinx.coroutines.CancellationException("done"); NotifyOpen(200, "text/event-stream", null, null, java.io.StringReader(frames)) }
+        try { NotifyStreamRunner(transport, store, d(n, skipped), sleep = {}).run() } catch (_: kotlinx.coroutines.CancellationException) {}
+        assertEquals(1L, last); assertEquals(listOf(1L), skipped); assertTrue(n.posted.isEmpty()); assertEquals(2, opens) // reconnected once, with id 1, no loop on it
+    }
+}
+
+class NotifyGuardsTest {
+    @Test fun revokedPermissionStopsPostingAndConsumesNothing() = runTest {
+        val n = FakeNotifier(); var ok = true
+        val g = PermissionGuardSink(NotifyDispatcher("h1", FakeContent(), n, { all }, { emptyList() }, { _, _ -> false }, { NOW })) { ok }
+        g.onEvents(listOf(e(1)), false); assertEquals(1, n.posted.size)
+        ok = false
+        try { g.onEvents(listOf(e(2)), false); fail() } catch (_: NotifyPermissionLost) {}
+        try { g.onGap(NotifyFrame.Gap(1, 5)); fail() } catch (_: NotifyPermissionLost) {}
+        assertEquals(1, n.posted.size)
+    }
+
+    @Test fun muteActionReportsEveryFailureInsteadOfSwallowingIt() = runTest {
+        val ok = MuteOutcome.run { HubNotifyPrefs() }; assertEquals(MuteOutcome.Done, ok.first); assertNotNull(ok.second)
+        suspend fun failed(ex: Exception) = (MuteOutcome.run { throw ex }.also { assertNull(it.second) }.first as MuteOutcome.Failed).message
+        assertTrue(failed(NotifyHttpException(0, "x", network = true)).startsWith("Can't reach your hub"))
+        assertTrue(failed(NotifyHttpException(401, "no")).contains("Log in again"))
+        assertTrue(failed(NotifyHttpException(500, "boom")).contains("boom"))
+        assertTrue(failed(AuthRequiredException()).contains("Log in again"))
+        assertTrue(failed(IllegalStateException("x")).startsWith("Couldn't mute"))
+    }
+}
+
+class AgentChatsTest {
+    @Test fun twoThreadsCreatingAndReadingNeverCorruptOrCreateTwice() {
+        val chats = AgentChats<Any>(); val created = java.util.concurrent.atomic.AtomicInteger(); val errors = java.util.concurrent.CopyOnWriteArrayList<Throwable>()
+        val start = java.util.concurrent.CountDownLatch(1)
+        val ui = Thread { start.await(); try { repeat(20_000) { i -> chats.getOrPut("a${i % 50}") { created.incrementAndGet(); Any() }; if (i % 997 == 0) chats.clear() } } catch (t: Throwable) { errors.add(t) } }
+        val service = Thread { start.await(); try { repeat(20_000) { i -> chats.peek("a${i % 50}") } } catch (t: Throwable) { errors.add(t) } }
+        ui.start(); service.start(); start.countDown(); ui.join(); service.join()
+        assertTrue(errors.toString(), errors.isEmpty())
+    }
+    @Test fun peekNeverCreatesStateForTheService() { val c = AgentChats<Any>(); assertNull(c.peek("nova")); assertEquals(0, c.size); val a = c.getOrPut("nova") { Any() }; assertSame(a, c.getOrPut("nova") { Any() }); assertSame(a, c.peek("nova")) }
 }

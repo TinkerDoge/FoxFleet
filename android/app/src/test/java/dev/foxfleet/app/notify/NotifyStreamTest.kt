@@ -3,6 +3,8 @@ package dev.foxfleet.app.notify
 import dev.foxfleet.app.data.SseParser
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.*
 import org.junit.Test
@@ -107,8 +109,8 @@ class NotifyStreamRunnerTest {
         val asked = ArrayList<Long?>()
         override fun open(lastId: Long?): NotifyOpen { asked.add(lastId); if (steps.isEmpty()) throw CancellationException("script over"); return steps.removeAt(0)(lastId) }
     }
-    private fun runner(t: NotifyTransport, store: FakeStore, sink: RecSink, sleeps: MutableList<Long> = ArrayList(), links: MutableList<NotifyLink> = ArrayList()) =
-        NotifyStreamRunner(t, store, sink, { links.add(it) }, { sleeps.add(it) }, { 1.0 })
+    private fun runner(t: NotifyTransport, store: FakeStore, sink: RecSink, sleeps: MutableList<Long> = ArrayList(), links: MutableList<NotifyLink> = ArrayList(), clock: () -> Long = { 0L }) =
+        NotifyStreamRunner(t, store, sink, { links.add(it) }, { sleeps.add(it) }, { 1.0 }, clock = clock)
 
     @Test fun firstRunIsABaselineNothingOldIsNotified() = runTest {
         val store = FakeStore(); val sink = RecSink()
@@ -174,7 +176,8 @@ class NotifyStreamRunnerTest {
             { _ -> open("", 502) },
             { _ -> open(readyFrame(5) + frame(6, ev(6))) }, // ends: reconnect again
         ))
-        try { runner(t, store, sink, sleeps, links).run() } catch (_: CancellationException) {}
+        var tick = 0L
+        try { runner(t, store, sink, sleeps, links, clock = { tick += 60_000; tick }).run() } catch (_: CancellationException) {} // each connection counts as stable (>= 45 s up)
         assertEquals(listOf(null, 5L, 5L, 5L, 6L), t.asked)
         assertEquals(listOf(1000L, 2000L, 4000L, 1000L), sleeps) // connected resets the ladder, a failure climbs it
         assertTrue(links.contains(NotifyLink.Connected)); assertTrue(links.any { it is NotifyLink.Reconnecting }); assertTrue(links.contains(NotifyLink.Offline))
@@ -192,5 +195,61 @@ class NotifyStreamRunnerTest {
         val t = Script(mutableListOf({ _ -> open("<html>captive portal</html>", ct = "text/html") }))
         try { runner(t, FakeStore(1), sink, sleeps).run() } catch (_: CancellationException) {}
         assertEquals(1, sleeps.size); assertTrue(sink.live.isEmpty())
+    }
+
+    @Test fun aHubThatAcceptsThenDropsKeepsGrowingTheBackoff() = runTest {
+        val sleeps = ArrayList<Long>()
+        val t = Script(MutableList(5) { { _: Long? -> open(readyFrame(1)) } }) // ready, then closed at once, five times; the clock never moves
+        try { runner(t, FakeStore(1), RecSink(), sleeps).run() } catch (_: CancellationException) {}
+        assertEquals(listOf(1000L, 2000L, 4000L, 8000L, 16000L), sleeps)
+    }
+
+    @Test fun aStableConnectionResetsTheBackoff() = runTest {
+        val sleeps = ArrayList<Long>(); var now = 0L
+        val t = Script(mutableListOf({ _ -> open("", 502) }, { _ -> open("", 502) }, { _ -> NotifyOpen(200, "text/event-stream", null, null, object : Reader() {
+            private val r = StringReader(readyFrame(1))
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int { val n = r.read(cbuf, off, len); if (n < 0) now += 50_000; return n } // up for 50 s, then the hub closes
+            override fun close() {}
+        }) }, { _ -> open("", 502) }))
+        try { runner(t, FakeStore(1), RecSink(), sleeps, clock = { now }).run() } catch (_: CancellationException) {}
+        assertEquals(listOf(1000L, 2000L, 1000L, 2000L), sleeps) // 50 s up (>= 45 s): back to the first step
+    }
+
+    @Test fun networkNudgeWakesASleepingRetryAndResetsTheLadder() = runTest {
+        val links = ArrayList<NotifyLink>()
+        val t = Script(mutableListOf({ _ -> throw IOException("down") }, { _ -> throw IOException("down") }, { _ -> throw IOException("down") }))
+        val r = NotifyStreamRunner(t, FakeStore(1), RecSink(), { links.add(it) }, null, { 1.0 })
+        val job = launch { try { r.run() } catch (_: CancellationException) {} }
+        runCurrent(); assertEquals(1, t.asked.size) // asleep in the backoff (virtual time has not moved)
+        r.nudge(); runCurrent()
+        assertEquals(2, t.asked.size); assertEquals(0L, testScheduler.currentTime) // retried now, no waiting
+        assertEquals(NotifyLink.Reconnecting(1), links.last()) // the ladder restarted: attempt 1, not 2
+        job.cancel()
+    }
+
+    @Test fun closeCancelsTheBlockedReadSoAStoppedServiceLeavesNoStream() {
+        val released = java.util.concurrent.CountDownLatch(1); val opened = java.util.concurrent.CountDownLatch(1); val closed = java.util.concurrent.atomic.AtomicInteger()
+        val blocked = object : Reader() {
+            override fun read(cbuf: CharArray, off: Int, len: Int): Int { opened.countDown(); released.await(); throw IOException("socket closed") }
+            override fun close() {}
+        }
+        val t = NotifyTransport { NotifyOpen(200, "text/event-stream", null, null, blocked, onClose = { closed.incrementAndGet(); released.countDown() }) }
+        val r = NotifyStreamRunner(t, FakeStore(1), RecSink())
+        kotlinx.coroutines.runBlocking {
+            val job = launch(kotlinx.coroutines.Dispatchers.IO) { r.run() }
+            assertTrue(opened.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            job.cancel(); r.close() // what NotifyService.onDestroy does
+            kotlinx.coroutines.withTimeout(5_000) { job.join() }
+            assertTrue(job.isCancelled); assertTrue(closed.get() >= 1)
+        }
+    }
+}
+
+class NotifyRetryAfterTest {
+    @Test fun secondsAndHttpDatesAreBothUnderstood() {
+        assertEquals(30, NotifyRetryAfter.parse("30")); assertEquals(0, NotifyRetryAfter.parse("-5"))
+        val now = java.time.ZonedDateTime.parse("Mon, 12 Oct 2026 10:00:00 GMT", java.time.format.DateTimeFormatter.RFC_1123_DATE_TIME).toInstant().toEpochMilli()
+        assertEquals(90, NotifyRetryAfter.parse("Mon, 12 Oct 2026 10:01:30 GMT", now)); assertEquals(0, NotifyRetryAfter.parse("Mon, 12 Oct 2026 09:00:00 GMT", now))
+        assertNull(NotifyRetryAfter.parse("soon")); assertNull(NotifyRetryAfter.parse(null)); assertNull(NotifyRetryAfter.parse(" "))
     }
 }

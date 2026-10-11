@@ -51,6 +51,7 @@ import dev.foxfleet.app.notify.NotifyCategory
 import dev.foxfleet.app.notify.NotifyController
 import dev.foxfleet.app.notify.NotifySettingsModel
 import dev.foxfleet.app.notify.NotifyStatus
+import dev.foxfleet.app.notify.NotifyText
 import dev.foxfleet.app.notify.NotifyUiState
 import dev.foxfleet.app.notify.PermissionState
 import dev.foxfleet.app.notify.TestOutcome
@@ -75,6 +76,7 @@ class NotifyActions(
     val onToggleChats: (String) -> Unit = {},
     val onMuteChat: (AgentRow, String) -> Unit = { _, _ -> },
     val onTest: () -> Unit = {},
+    val onOpenBattery: () -> Unit = {},
 )
 
 private tailrec fun Context.activity(): Activity? = when (this) { is Activity -> this; is ContextWrapper -> baseContext.activity(); else -> null }
@@ -104,6 +106,7 @@ fun NotificationsSection(model: NotifySettingsModel) {
             onOpenSystemSettings = { ctx.startActivity(NotifyController.systemSettingsIntent(ctx)) },
             onOpenChannel = { ctx.startActivity(NotifyController.channelSettingsIntent(ctx, it)) },
             onMute = model::askMute, onUnmute = model::unmute, onToggleChats = model::toggleChats, onMuteChat = model::askMuteChat, onTest = model::sendTest,
+            onOpenBattery = { ctx.startActivity(NotifyController.batterySettingsIntent(ctx)) },
         )
     }
     NotificationsSectionContent(ui, actions)
@@ -162,6 +165,7 @@ fun NotificationsSectionContent(ui: NotifyUiState, a: NotifyActions) {
             NotifyToggle("Notifications", "Keep a quiet connection to your hub so replies and approvals reach you. A small \"Connected\" line stays in the status bar.", ui.serviceOn && ui.hubSupported, enabled = ui.hubSupported && ui.signedIn, onChange = a.onMaster)
             Hairline(Modifier.padding(start = 16.dp))
             StatusRow(ui, a)
+            if (ui.serviceOn && ui.hubSupported) { Hairline(Modifier.padding(start = 16.dp)); LinkRow(NotifyText.BATTERY_HINT, NotifyText.BATTERY_ACTION, a.onOpenBattery) }
             ui.message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = danger(), modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) }
             ui.hubError?.takeIf { ui.hubSupported }?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp)) }
             if (!ui.hub.storageOk) Text("Your hub could not save its notification log. Mutes work now but may be lost if the hub restarts.", style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 12.dp))

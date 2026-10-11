@@ -74,7 +74,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             } finally { clearingMedia = false }
         }
     }
-    override fun onCleared() { deactivateMedia(); super.onCleared() }
+    override fun onCleared() { dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { null }; deactivateMedia(); super.onCleared() }
 
 
     var prefs by mutableStateOf(settings.appPrefs); private set
@@ -137,11 +137,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     val sessionTotals = mutableStateMapOf<String, Int>()
     val sessionsLoading = mutableStateMapOf<String, Boolean>()
     var historyError by mutableStateOf<String?>(null)
-    private val chats = HashMap<String, ChatState>()
+    private val chats = dev.foxfleet.app.notify.AgentChats<ChatState>() // the notification service reads it from another thread
     private val jobs = HashMap<String, Job>()
 
     init {
-        dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { chatFor(it).sessionId }
+        dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { chats.peek(it)?.sessionId }
         boot()
     }
 
@@ -152,7 +152,9 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val t = pendingOpen ?: return
         if (authed != true || !fleetLoadedOnce) return
         pendingOpen = null
-        if (t.hub != settings.activeHubId || agent(t.agent) == null) return // a notification of another hub, or an agent that is gone
+        if (t.hub != settings.activeHubId || agent(t.agent) == null) { // a notification of another hub, or an agent that is gone: say so instead of doing nothing
+            android.widget.Toast.makeText(getApplication(), "That chat isn't available any more.", android.widget.Toast.LENGTH_SHORT).show(); return
+        }
         navigate(Route.Chat(t.agent)); openSession(t.agent, t.chat)
         dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), t.agent, t.chat)
         if (t.approval != null) viewModelScope.launch { // the open question or approval card comes from the queue

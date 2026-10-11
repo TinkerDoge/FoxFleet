@@ -51,7 +51,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
-        intent.dataString?.let { vm.openConnectLink(it); vm.openNotification(it) }
+        setIntent(intent)
+        dev.foxfleet.app.notify.LaunchLink.consume(null, intent)?.let { vm.openConnectLink(it); vm.openNotification(it) }
     }
 
     override fun onStart() { super.onStart(); dev.foxfleet.app.notify.NotifyForeground.visible = true }
@@ -60,7 +61,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        intent?.dataString?.let { vm.openConnectLink(it); vm.openNotification(it) }
+        dev.foxfleet.app.notify.LaunchLink.consume(savedInstanceState, intent)?.let { vm.openConnectLink(it); vm.openNotification(it) } // once: not again after a rotation
         setContent {
             val dark = isDark(vm.prefs.theme, isSystemInDarkTheme())
             LaunchedEffect(dark) {

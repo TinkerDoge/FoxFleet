@@ -45,7 +45,7 @@ class OkHttpNotifyTransport(private val baseUrl: String, private val tokens: Tok
         if (lastId != null) b.header("Last-Event-ID", lastId.toString())
         val call = client.newCall(b.build())
         val res = call.execute()
-        return NotifyOpen(res.code, res.header("Content-Type"), res.header("X-Session-Token"), res.header("Retry-After")?.toIntOrNull(), res.body?.charStream(), onClose = { res.close(); call.cancel() })
+        return NotifyOpen(res.code, res.header("Content-Type"), res.header("X-Session-Token"), NotifyRetryAfter.parse(res.header("Retry-After")), res.body?.charStream(), onClose = { res.close(); call.cancel() })
     }
     companion object {
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder().connectTimeout(15, TimeUnit.SECONDS).readTimeout(HEARTBEAT_TIMEOUT_SEC, TimeUnit.SECONDS).retryOnConnectionFailure(true).build()
@@ -66,7 +66,7 @@ class NotifyApi(private val baseUrl: String, private val tokens: TokenSource, pr
             it.header("X-Session-Token")?.takeIf { t -> t.isNotBlank() && tokens.get() != null }?.let(tokens::set)
             val text = it.body?.string().orEmpty()
             val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
-            if (!it.isSuccessful) throw NotifyHttpException(it.code, (obj?.get("error") as? JsonPrimitive)?.contentOrNull?.take(200) ?: "HTTP ${it.code}", it.header("Retry-After")?.toIntOrNull())
+            if (!it.isSuccessful) throw NotifyHttpException(it.code, (obj?.get("error") as? JsonPrimitive)?.contentOrNull?.take(200) ?: "HTTP ${it.code}", NotifyRetryAfter.parse(it.header("Retry-After")))
             obj ?: throw NotifyHttpException(it.code, "Invalid response")
         }
     }

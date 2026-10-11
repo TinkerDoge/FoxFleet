@@ -34,18 +34,28 @@ class NotifyDispatcher(
     private val mutes: () -> List<MuteRule>,
     private val chatOpen: (agent: String?, chat: String?) -> Boolean,
     private val now: () -> Long = { System.currentTimeMillis() },
+    /** Called with the event id and the exception when one event could not be turned into a notification and was skipped. Log the id only, never the text. */
+    private val onSkipped: (Long, Exception) -> Unit = { _, _ -> },
 ) : NotifySink {
 
     override suspend fun onEvents(events: List<NotifyEvent>, replay: Boolean) {
         val list = if (replay) NotifyPolicy.coalesceReplay(events, now()) else events
-        for (e in list) handle(e)
+        for (e in list) safely(e.id) { handle(e) }
+    }
+
+    /**
+     * One bad event must not stall the stream: any failure other than cancellation, a lost login or a lost permission is reported and the event is skipped,
+     * so the runner advances its cursor past it instead of replaying it forever.
+     */
+    private suspend fun safely(id: Long, block: suspend () -> Unit) {
+        try { block() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (e: NotifyPermissionLost) { throw e } catch (e: Exception) { onSkipped(id, e) }
     }
 
     /** Resync instead of assuming completeness: ask the hub which chats have unseen replies and notify for them. */
     override suspend fun onGap(gap: NotifyFrame.Gap) {
         val chats = try { content.unreadChats() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (_: Exception) { return }
         chats.take(MAX_RESYNC).forEach { (agent, chat) ->
-            handle(NotifyEvent(id = 0, type = NotifyType.ReplyFinished, agent = agent, chat = chat, high = false, at = now(), muted = false))
+            safely(0) { handle(NotifyEvent(id = 0, type = NotifyType.ReplyFinished, agent = agent, chat = chat, high = false, at = now(), muted = false)) }
         }
     }
 
@@ -103,5 +113,28 @@ class HubNotifyContent(private val api: HubApi, private val seenAt: (String) -> 
     override suspend fun unreadChats(): List<Pair<String, String>> {
         val unread = agentList(force = true).filter { AgentList.unread(it, seenAt(it.name), chatOpen(it.name)) }
         return unread.mapNotNull { a -> api.sessions(a.name, limit = 1).sessions.firstOrNull()?.let { a.name to it.id } }
+    }
+}
+
+/** Thrown by [PermissionGuardSink] when Android no longer lets the app post notifications. Not an error to retry: the service stops and the status line says why. */
+class NotifyPermissionLost : Exception("Notification permission is gone")
+
+/** Wraps the real sink: when [allowed] turns false (permission revoked while running) nothing is posted and nothing is consumed, so the events replay after the user allows it again. */
+class PermissionGuardSink(private val inner: NotifySink, private val allowed: () -> Boolean) : NotifySink {
+    override suspend fun onEvents(events: List<NotifyEvent>, replay: Boolean) { if (!allowed()) throw NotifyPermissionLost(); inner.onEvents(events, replay) }
+    override suspend fun onGap(gap: NotifyFrame.Gap) { if (!allowed()) throw NotifyPermissionLost(); inner.onGap(gap) }
+}
+
+/** What "Mute 1 h" on a notification did, so a failure is shown instead of swallowed. */
+sealed interface MuteOutcome {
+    data object Done : MuteOutcome
+    data class Failed(val message: String) : MuteOutcome
+    companion object {
+        suspend fun run(call: suspend () -> HubNotifyPrefs): Pair<MuteOutcome, HubNotifyPrefs?> = try {
+            Done to call()
+        } catch (e: CancellationException) { throw e } catch (e: NotifyHttpException) {
+            Failed(when { e.network -> "Can't reach your hub. The mute was not saved."; e.status == 401 -> "You are signed out. Log in again."; else -> "Couldn't mute: ${e.message}" }) to null
+        } catch (e: AuthRequiredException) { Failed("You are signed out. Log in again.") to null
+        } catch (e: Exception) { Failed("Couldn't mute. Try again from Settings.") to null }
     }
 }

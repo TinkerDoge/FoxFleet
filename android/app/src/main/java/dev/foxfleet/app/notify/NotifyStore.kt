@@ -52,6 +52,11 @@ class NotifyStore(private val prefs: SharedPreferences) {
         get() = prefs.getBoolean("start_blocked", false)
         set(v) = prefs.edit().putBoolean("start_blocked", v).apply()
 
+    /** Set when the hub rejected the stored login (401 or `foxfleet.auth`). Keeps the binding and the master switch; the status line says "Log in again" until the next successful login. */
+    var needsLogin: Boolean
+        get() = prefs.getBoolean("needs_login", false)
+        set(v) = prefs.edit().putBoolean("needs_login", v).apply()
+
     /** Forget everything stored for one binding (sign-out, account or hub switch). The master switch goes too: a different account starts with notifications off. */
     fun clear(b: NotifyBinding) {
         val e = prefs.edit(); val tail = "_${b.key}"
