@@ -259,7 +259,7 @@ export function takeReact(text: string): { text: string; react: string | null } 
   for (const m of scan.matchAll(REACT_LINE)) {
     if (!emojiShaped(m[1])) continue;
     react ??= m[1];
-    const end = m.index! + m[0].length; spans.push([m.index!, text[end] === '\n' ? end + 1 : end]);
+    const end = m.index! + m[0].length, nl = text[end] === '\r' && text[end + 1] === '\n' ? 2 : text[end] === '\n' ? 1 : 0; spans.push([m.index!, end + nl]); // `$` stops before \r in CRLF text
   }
   if (!spans.length) return { text, react: null };
   let out = text; for (const [a, b] of spans.reverse()) out = out.slice(0, a) + out.slice(b);
@@ -366,7 +366,9 @@ Inside `object MediaTags`, after `mask`, add:
         for (m in reactLine.findAll(scan)) {
             val tok = m.groupValues[1]; if (!emojiShaped(tok)) continue
             if (react == null) react = tok
-            val end = m.range.last + 1; spans += intArrayOf(m.range.first, if (end < input.length && input[end] == '\n') end + 1 else end)
+            val end = m.range.last + 1 // `$` stops before \r in CRLF text
+            val nl = if (input.startsWith("\r\n", end)) 2 else if (end < input.length && input[end] == '\n') 1 else 0
+            spans += intArrayOf(m.range.first, end + nl)
         }
         if (spans.isEmpty()) return input to null
         var out = input; for (s in spans.asReversed()) out = out.substring(0, s[0]) + out.substring(s[1])
