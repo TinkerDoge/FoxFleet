@@ -56,3 +56,6 @@ design/demo/*.bgra
 __pycache__/
 android/.kotlin/
 .test-tmp/
+
+# release signing material (keystore backup + notes): never in git
+sign/
