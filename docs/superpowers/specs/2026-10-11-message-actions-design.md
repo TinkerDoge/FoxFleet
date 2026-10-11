@@ -166,3 +166,19 @@ Stored reply ids and jump-to-original, real per-message deletion, multi-select, 
 - **Web** (`web/tests`): quote building and excerpt rules, reply-bubble detection, menu actions shown per message, touch double-tap detection (and a mouse double-click does not heart), hidden ids filtered, Undo.
 - **Android** (`android/app/src/test`): quote building, reply-bubble detection, the swipe rule (threshold, edge exclusion, vertical wins), action visibility, a hidden filter; a Robolectric screenshot of the menu sheet in light and dark.
 - **Manual / device (recorded separately):** long-press, double-tap and swipe on a phone; TalkBack actions; a live Hermes agent reacting with `REACT:`; two clients seeing the same hide.
+
+## Verification status
+
+Checked on 2026-10-11 (Windows working copy, branch `feat/message-actions`, version 0.3.9-alpha):
+
+- Done: web unit tests and production build, Android unit tests (including the Robolectric menu screenshots) and debug build, hub tests (311 ran; the 20 failures are the known Windows failures that fail identically on `main`), design token check, icon generation (no content changes).
+- Done by tests only: the quote format, the `REACT:` line in all three parsers, the hidden list and the `/hidden` route, menu actions per message, double-tap and swipe rules.
+
+Still pending (needs a device or a live agent):
+
+- [ ] Long-press, double-tap and swipe on a physical phone.
+- [ ] Swipe to reply against the system back gesture (left-edge exclusion).
+- [ ] TalkBack: the "Message actions" action and the menu sheet.
+- [ ] A live Hermes agent writing `REACT:` (the reaction shows on the user's message; the line never shows).
+- [ ] Two clients seeing the same hide, and Undo.
+- [ ] iOS Safari long-press and touch double-tap on web.
