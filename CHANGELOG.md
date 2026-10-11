@@ -2,6 +2,16 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased (next: 0.3.10-alpha)
+
+### Added: notifications on Android
+- *Service:* **Settings > Notifications** turns on a foreground service (type `remoteMessaging`) that holds the hub's `GET /api/notify/stream` open. Its own notification is a quiet, low-importance "Connected" line that tap-opens the app and changes to Connecting, Reconnecting or Offline. It resumes with `Last-Event-ID` (saved per account + hub), reconnects with a 1 s to 60 s jittered backoff, treats 45 s of silence as a dead link, reads the rotated `X-Session-Token` from the stream response before anything else, and never reconnects after `foxfleet.auth` or a 401 (it signs the device out of notifications instead). A `gap` frame refreshes unread chats from the hub instead of trusting the stream.
+- *Alerts:* three channels (Replies, Approvals and questions, Errors) plus the quiet connection channel; approvals are high importance. Events carry ids only, so the text is fetched from the hub (the chat's last reply, the open approval). One notification per chat (MessagingStyle, grouped under one summary); tapping opens that exact chat (and its approval card), also from a cold start and after login. Opening a chat clears its notifications. A reply for the chat that is open on screen is not shown; approvals always are. The lock screen shows no message text. "Mute 1 h" is an action on every chat notification.
+- *Settings:* master switch, per-category switches (replies, approvals, errors; kept on the phone), per-agent and per-chat mute for 1 h, 8 h, 24 h or until unmuted (the hub's mute routes), a status line (Connected, Reconnecting, Offline, Permission missing), a "Send test notification" button with clear success and failure lines, and a link to Android's channel settings when you switched one off there.
+- *Permission (Android 13+):* a short explanation first, then the system dialog; after "Don't ask again" the section says so and opens the system settings.
+- *Boot:* the service restarts after a reboot or an app update only if you turned notifications on and a login is stored. Signing out, or signing in as another account or on another hub, stops it and clears the resume id, the settings and every notification of the old pair.
+- *Hub:* needs hub 0.3.9-alpha with the `notify` feature; an older hub shows "too old" and the controls stay hidden.
+
 ## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)
