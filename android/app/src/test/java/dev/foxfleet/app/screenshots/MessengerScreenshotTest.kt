@@ -1,5 +1,8 @@
 package dev.foxfleet.app.screenshots
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
 import com.github.takahirom.roborazzi.captureRoboImage
@@ -12,7 +15,10 @@ import dev.foxfleet.app.data.ReactionSnapshot
 import dev.foxfleet.app.data.ThemeMode
 import dev.foxfleet.app.data.UiMessage
 import dev.foxfleet.app.ui.FoxfleetTheme
+import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.chat.ChatState
+import dev.foxfleet.app.ui.chat.MessageAction
+import dev.foxfleet.app.ui.components.MessageMenuContent
 import dev.foxfleet.app.ui.screens.ChatScreen
 import org.junit.Rule
 import org.junit.Test
@@ -59,4 +65,22 @@ class MessengerScreenshotTest {
 
     @Test fun framesLight() = frames(false)
     @Test fun framesDark() = frames(true)
+
+    /** Long-press sheet body: quick reactions plus every action row. */
+    private fun menu(dark: Boolean) {
+        compose.setContent {
+            FoxfleetTheme(AppPrefs(theme = if (dark) ThemeMode.Dark else ThemeMode.Light)) {
+                Box(Modifier.background(LocalHubColors.current.surface)) {
+                    MessageMenuContent(
+                        actions = listOf(MessageAction.Reply, MessageAction.Copy, MessageAction.Select, MessageAction.Share, MessageAction.Retry, MessageAction.Delete),
+                        canReact = true, onReact = {}, onMoreReactions = {}, onAction = {},
+                    )
+                }
+            }
+        }
+        compose.onRoot().captureRoboImage("$OUT/message-menu-${if (dark) "dark" else "light"}.png")
+    }
+
+    @Test fun menuLight() = menu(false)
+    @Test fun menuDark() = menu(true)
 }
