@@ -673,7 +673,7 @@ class HubApi(private val store: SettingsStore) {
 
         fun parseAuthInfo(o: JsonObject) = AuthInfo(
             required = o.bool("required") ?: true, authenticated = o.bool("authenticated") ?: false, setupRequired = o.bool("setupRequired") ?: false,
-            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), hubVersion = o["hub"]?.jsonObject?.str("version"), hubFeatures = o["hub"]?.jsonObject?.get("features")?.jsonArray?.mapNotNull { f -> f.jsonPrimitive.contentOrNull } ?: emptyList(), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"),
+            setupCodeRequired = o.bool("setupCodeRequired") ?: false, registration = o.str("registration") ?: "closed", termsVersion = o.str("termsVersion"), hubVersion = o["hub"]?.jsonObject?.str("version"), hubFeatures = o["hub"]?.jsonObject?.get("features")?.jsonArray?.mapNotNull { f -> f.jsonPrimitive.contentOrNull } ?: emptyList(), username = o["user"]?.jsonObject?.str("username"), role = o["user"]?.jsonObject?.str("role"), userId = o["user"]?.jsonObject?.str("id"),
         )
         fun parseMachine(o: JsonObject) = Machine(
             id = o.str("id") ?: "", name = o.str("name") ?: "Machine", online = o.bool("online") ?: false, lastSeen = o["lastSeen"]?.jsonPrimitive?.longOrNull,

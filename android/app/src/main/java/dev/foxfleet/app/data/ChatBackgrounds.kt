@@ -8,6 +8,7 @@ import android.graphics.Matrix
 import android.net.Uri
 import androidx.exifinterface.media.ExifInterface
 import dev.foxfleet.app.ui.Tokens
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
@@ -40,6 +41,32 @@ data class ChatBg(
     }
 }
 
+/** True only when some pixel is not fully opaque (an RGBA PNG with no transparent pixel is still stored as a small JPEG). */
+fun usesAlpha(bmp: Bitmap): Boolean {
+    if (!bmp.hasAlpha()) return false
+    val row = IntArray(bmp.width)
+    for (y in 0 until bmp.height) { bmp.getPixels(row, 0, bmp.width, 0, y, bmp.width, 1); if (row.any { (it ushr 24) != 255 }) return true }
+    return false
+}
+
+enum class Claim { Adopted, Kept, Cleared }
+
+/** Owner identity: a stable account id (not the display name) plus the hub address, both normalised, then hashed so no address sits in the preferences. */
+object ChatBgOwner {
+    fun normalizeHub(hub: String): String {
+        var t = hub.trim(); if (t.isEmpty()) return ""
+        if (!t.contains("://")) t = "https://$t"
+        val u = t.toHttpUrlOrNull() ?: return t.lowercase().trimEnd('/')
+        val port = if (u.port == (if (u.scheme == "https") 443 else 80)) "" else ":${u.port}"
+        val host = if (u.host.contains(':')) "[${u.host}]" else u.host
+        return "${u.scheme}://$host$port${u.encodedPath.trimEnd('/')}".lowercase()
+    }
+    fun key(accountId: String?, hub: String): String {
+        val raw = (accountId?.trim().takeUnless { it.isNullOrEmpty() } ?: "anonymous") + "@" + normalizeHub(hub)
+        return MessageDigest.getInstance("SHA-256").digest(raw.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+}
+
 object ChatBgSizing {
     /** Largest size that fits [max] on the long edge, keeping the aspect (never upscales). */
     fun fit(w: Int, h: Int, max: Int = Tokens.ChatBackgrounds.maxEdge): Pair<Int, Int> {
@@ -58,6 +85,7 @@ class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir:
     constructor(context: Context) : this(context.getSharedPreferences("foxfleet_chat_bg", Context.MODE_PRIVATE), File(context.filesDir, "chat-bg"))
 
     fun key(agent: String, session: String?) = agent + "\u0000" + (session ?: "")
+    private val OWNER = "owner"
     private fun pk(key: String) = "bg." + key
     fun imageFile(key: String) = File(dir, MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }.take(32) + ".jpg")
 
@@ -88,12 +116,14 @@ class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir:
         if (rotation != 0) bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, Matrix().apply { postRotate(rotation.toFloat()) }, true)
         val (w, h) = ChatBgSizing.fit(bmp.width, bmp.height)
         if (w != bmp.width || h != bmp.height) bmp = Bitmap.createScaledBitmap(bmp, w, h, true)
-        writeJpeg(key, bmp); true
+        writeImage(key, bmp); true
     }.getOrDefault(false)
 
-    fun writeJpeg(key: String, bmp: Bitmap) {
+    /** A picture with real transparency stays PNG (it would turn black as JPEG); everything else is JPEG. The decoder reads either from the same file. */
+    fun writeImage(key: String, bmp: Bitmap) {
         dir.mkdirs(); val f = imageFile(key); val tmp = File(dir, f.name + ".tmp")
-        tmp.outputStream().use { bmp.compress(Bitmap.CompressFormat.JPEG, Tokens.ChatBackgrounds.quality, it) }
+        val alpha = usesAlpha(bmp)
+        tmp.outputStream().use { if (alpha) bmp.compress(Bitmap.CompressFormat.PNG, 100, it) else bmp.compress(Bitmap.CompressFormat.JPEG, Tokens.ChatBackgrounds.quality, it) }
         if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f) }
     }
 
@@ -112,6 +142,18 @@ class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir:
         save(to, out); reset(from)
     }
 
-    /** Sign-out: nothing of the previous account's chats stays on the phone. */
+    /**
+     * Called once a session is signed in (never on sign-out). Backgrounds belong to one account on one hub: nothing stored (or older data
+     * with no owner) = adopt, same owner = keep, a different account or hub = clear settings and pictures before anything is drawn.
+     * Returns what happened.
+     */
+    fun claimOwner(owner: String): Claim {
+        val had = prefs.getString(OWNER, null)
+        if (had == owner) return Claim.Kept
+        if (had == null) { prefs.edit().putString(OWNER, owner).apply(); return Claim.Adopted }
+        clearAll(); prefs.edit().putString(OWNER, owner).apply(); return Claim.Cleared
+    }
+
+    /** Wipes every background and picture (a different account or hub took over this phone). */
     fun clearAll() { prefs.edit().apply { prefs.all.keys.filter { it.startsWith("bg.") }.forEach { remove(it) } }.apply(); dir.listFiles()?.forEach { it.delete() } }
 }

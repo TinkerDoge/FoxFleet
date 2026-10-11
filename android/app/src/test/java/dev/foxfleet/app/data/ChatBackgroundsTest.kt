@@ -7,6 +7,7 @@ import android.net.Uri
 import dev.foxfleet.app.ui.Tokens
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -99,9 +100,55 @@ class ChatBackgroundsTest {
         s.move(from, other); assertEquals("sky", s.load(other).solid)
     }
 
-    @Test fun signOutWipesEveryBackgroundAndPicture() {
+    @Test fun clearAllWipesEveryBackgroundAndPicture() {
         val s = store(); val k = s.key("atlas", "1"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 0, 0.2f, true)); s.save(s.key("b", "2"), ChatBg.normalize("Solid", "sky", null, 0, 0f, false))
         s.clearAll(); assertEquals(ChatBg(), s.load(k)); assertEquals(ChatBg(), s.load(s.key("b", "2"))); assertFalse(s.imageFile(k).exists())
+    }
+
+    // ---- owner: backgrounds survive sign-out, a different account or hub clears them ----
+    private fun seed(s: ChatBackgroundStore): String { val k = s.key("atlas", "1"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 4, 0.2f, true)); return k }
+    private val a1 = ChatBgOwner.key("acct-1", "https://hub.example.com")
+
+    @Test fun legacyDataWithNoOwnerIsAdopted() {
+        val s = store(); val k = seed(s)
+        assertEquals(Claim.Adopted, s.claimOwner(a1)); assertTrue(s.load(k).image); assertTrue(s.imageFile(k).exists())
+    }
+    @Test fun sameOwnerKeepsDataAcrossSignOutAndSignIn() {
+        val name = "bg-keep-${System.nanoTime()}"; val dir = Files.createTempDirectory("chatbg").toFile()
+        val s = ChatBackgroundStore(ctx.getSharedPreferences(name, Context.MODE_PRIVATE), dir); val k = seed(s); s.claimOwner(a1)
+        // sign-out wipes nothing; signing in again as the same owner (even through a freshly created store, as after an app restart) keeps everything
+        assertEquals(Claim.Kept, ChatBackgroundStore(ctx.getSharedPreferences(name, Context.MODE_PRIVATE), dir).claimOwner(a1)); assertTrue(s.load(k).image); assertTrue(s.imageFile(k).exists())
+    }
+    @Test fun differentAccountClears() {
+        val s = store(); val k = seed(s); s.claimOwner(a1)
+        assertEquals(Claim.Cleared, s.claimOwner(ChatBgOwner.key("acct-2", "https://hub.example.com"))); assertEquals(ChatBg(), s.load(k)); assertFalse(s.imageFile(k).exists())
+        assertEquals(Claim.Kept, s.claimOwner(ChatBgOwner.key("acct-2", "https://hub.example.com")))
+    }
+    @Test fun differentHubClears() {
+        val s = store(); val k = seed(s); s.claimOwner(a1)
+        assertEquals(Claim.Cleared, s.claimOwner(ChatBgOwner.key("acct-1", "https://other.example.com"))); assertEquals(ChatBg(), s.load(k)); assertFalse(s.imageFile(k).exists())
+    }
+    @Test fun hubSpellingIsNormalised() {
+        assertEquals(a1, ChatBgOwner.key("acct-1", "HTTPS://Hub.Example.com/")); assertEquals(a1, ChatBgOwner.key(" acct-1 ", "hub.example.com:443"))
+        assertNotEquals(a1, ChatBgOwner.key("acct-1", "http://hub.example.com")); assertNotEquals(a1, ChatBgOwner.key("acct-1", "https://hub.example.com:8443"))
+        assertFalse(a1.contains("example"))
+    }
+    @Test fun aFailedSignInNeverTouchesTheData() {
+        val s = store(); val k = seed(s); s.claimOwner(a1)
+        // a failed or cancelled attempt never reaches claimOwner, so nothing changes; the real owner returns and finds everything
+        assertEquals(Claim.Kept, s.claimOwner(a1)); assertTrue(s.load(k).image)
+    }
+
+    // ---- transparency ----
+    private fun argb(alpha: Int): Bitmap = Bitmap.createBitmap(40, 30, Bitmap.Config.ARGB_8888).also { b -> b.eraseColor(android.graphics.Color.argb(alpha, 200, 40, 40)); b.setHasAlpha(true) }
+    @Test fun transparentPictureKeepsItsAlphaOpaqueOneBecomesJpeg() {
+        val s = store(); val k = s.key("a", "t")
+        s.writeImage(k, argb(0)); var head = s.imageFile(k).readBytes().take(4).map { it.toInt() and 0xff }
+        assertEquals(listOf(0x89, 0x50, 0x4e, 0x47), head)                         // PNG
+        assertEquals(0, s.loadBitmap(k)!!.getPixel(5, 5) ushr 24)                  // still see-through, not black
+        s.writeImage(k, argb(255)); head = s.imageFile(k).readBytes().take(2).map { it.toInt() and 0xff }
+        assertEquals(listOf(0xff, 0xd8), head)                                      // opaque RGBA is a small JPEG
+        assertTrue(usesAlpha(argb(128))); assertFalse(usesAlpha(argb(255)))
     }
 
     @Test fun sizing() {

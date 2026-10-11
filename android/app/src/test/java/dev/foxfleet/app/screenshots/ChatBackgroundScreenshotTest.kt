@@ -70,7 +70,7 @@ class ChatBackgroundScreenshotTest {
         c.drawRect(0f, 0f, 900f, 1400f, Paint().apply { shader = LinearGradient(0f, 0f, 0f, 1400f, intArrayOf(AColor.rgb(250, 190, 120), AColor.rgb(120, 90, 160), AColor.rgb(30, 40, 90)), null, Shader.TileMode.CLAMP) })
         val p = Paint().apply { color = AColor.rgb(60, 50, 110); isAntiAlias = true }
         for (i in 0 until 6) c.drawCircle(150f * i + 40f, 1150f + (i % 2) * 90f, 330f, p)
-        store.writeJpeg(key, b)
+        store.writeImage(key, b)
     }
     private fun seed(bg: ChatBg) { if (bg.image) photo(); store.save(key, bg) }
 
@@ -79,11 +79,11 @@ class ChatBackgroundScreenshotTest {
         compose.mainClock.autoAdvance = false
         val state = ChatState().apply { load(convo, "s1") }
         compose.setContent { FoxfleetTheme(AppPrefs(theme = if (dark) ThemeMode.Dark else ThemeMode.Light)) { Box(Modifier.fillMaxSize()) { ChatScreen(atlas, listOf(atlas), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}) } } }
-        compose.mainClock.advanceTimeBy(1500); compose.mainClock.autoAdvance = true; compose.waitForIdle(); compose.mainClock.autoAdvance = false; compose.mainClock.advanceTimeBy(800)
+        Thread.sleep(400); compose.mainClock.advanceTimeBy(1500); compose.mainClock.autoAdvance = true; compose.waitForIdle(); compose.mainClock.autoAdvance = false; compose.mainClock.advanceTimeBy(800)
         act()
         compose.onRoot().captureRoboImage("$OUT/android-$name-${if (dark) "dark" else "light"}.png")
     }
-    private fun settle() { compose.mainClock.autoAdvance = true; compose.waitForIdle(); compose.mainClock.autoAdvance = false; compose.mainClock.advanceTimeBy(900) }
+    private fun settle() { Thread.sleep(400); compose.mainClock.autoAdvance = true; compose.waitForIdle(); compose.mainClock.autoAdvance = false; compose.mainClock.advanceTimeBy(900) }
 
     @Test fun defaultDark() = chat("chat-default", true, ChatBg())
     @Test fun solidDark() = chat("chat-solid-sage", true, ChatBg(BgMode.Solid, solid = "sage"))
@@ -108,7 +108,7 @@ class ChatBackgroundScreenshotTest {
         seed(bg); compose.mainClock.autoAdvance = false
         compose.setContent { FoxfleetTheme(AppPrefs(theme = if (dark) ThemeMode.Dark else ThemeMode.Light)) {
             val c = LocalHubColors.current
-            Box(Modifier.fillMaxSize().background(c.surface).padding(16.dp)) { ChatBackgroundContent(ChatBackgroundState(store, RuntimeEnvironment.getApplication() as Context, key)) {} }
+            Box(Modifier.fillMaxSize().background(c.surface).padding(16.dp)) { ChatBackgroundContent(ChatBackgroundState(store, RuntimeEnvironment.getApplication() as Context, key, kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Main))) {} }
         } }
         compose.mainClock.advanceTimeBy(900)
         compose.onRoot().captureRoboImage("$OUT/android-picker-$name-${if (dark) "dark" else "light"}.png")

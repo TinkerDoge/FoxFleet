@@ -18,6 +18,8 @@ data class AuthInfo(
     /** Null on a hub older than 0.3.5 (it does not report them): the app then says "update your hub" instead of failing silently. */
     val hubVersion: String? = null,
     val hubFeatures: List<String> = emptyList(),
+    /** The hub's stable account id (renames do not change it); null on a hub that does not send it. Used only to tell accounts apart for chat backgrounds. */
+    val userId: String? = null,
 ) { val isOwner get() = role == "owner"; val hubKnown get() = hubVersion != null; fun hubHas(feature: String) = feature in hubFeatures }
 
 data class ConnectLink(val hub: String, val invite: String? = null)

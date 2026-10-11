@@ -67,6 +67,11 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.runtime.rememberCoroutineScope
 import dev.foxfleet.app.data.BgMode
 import dev.foxfleet.app.data.ChatBackgroundStore
 import dev.foxfleet.app.data.ChatBg
@@ -82,36 +87,70 @@ val LocalChatBgActive = compositionLocalOf { false }
 fun solidColor(id: String, dark: Boolean): Color? = Tokens.ChatBackgrounds.solids.firstOrNull { it.id == id }?.let { if (dark) it.dark else it.light }
 fun patternOf(id: String) = Tokens.ChatBackgrounds.patterns.firstOrNull { it.id == id }
 
-/** One chat's background: settings + decoded picture, read from and written to the private [ChatBackgroundStore]. */
+/**
+ * One chat's background: settings + decoded picture, read from and written to the private [ChatBackgroundStore].
+ * Settings are tiny (SharedPreferences, already in memory). Everything that touches a picture (decode, EXIF turn, JPEG/PNG write, file move or delete)
+ * runs on [Dispatchers.IO], so a 50 MP photo never blocks a frame; [gen] drops results that arrive after the chat changed.
+ */
 @Stable
-class ChatBackgroundState(private val store: ChatBackgroundStore, private val context: Context, initialKey: String) {
+class ChatBackgroundState(private val store: ChatBackgroundStore, private val context: Context, initialKey: String, private val scope: CoroutineScope) {
     var key by mutableStateOf(initialKey); private set
     var bg by mutableStateOf(store.load(initialKey)); private set
-    var bitmap by mutableStateOf<Bitmap?>(if (bg.image) store.loadBitmap(initialKey) else null); private set
+    var bitmap by mutableStateOf<Bitmap?>(null); private set
     var failed by mutableStateOf(false); private set
+    var busy by mutableStateOf(false); private set
+    private var gen = 0
+
+    init { if (bg.image) loadImage(initialKey, ++gen) }
+
+    private fun loadImage(k: String, g: Int) {
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) { store.loadBitmap(k) }
+            if (g == gen && k == key) bitmap = bmp
+        }
+    }
 
     /** Switch to another chat. A new chat's look moves to the chat when it gets its id ([adopt] = true). */
     fun switchTo(newKey: String, adopt: Boolean) {
         if (newKey == key) return
-        if (adopt) store.move(key, newKey)
-        key = newKey; bg = store.load(newKey); bitmap = if (bg.image) store.loadBitmap(newKey) else null; failed = false
+        val old = key; val g = ++gen
+        key = newKey; failed = false; busy = false
+        if (!adopt) {
+            bg = store.load(newKey); bitmap = null
+            if (bg.image) loadImage(newKey, g)
+        } else scope.launch {
+            // keep what is on screen while the picture file is renamed on the IO thread
+            withContext(Dispatchers.IO) { store.move(old, newKey) }
+            if (g == gen) { bg = store.load(newKey); if (bg.image) loadImage(newKey, g) else bitmap = null }
+        }
     }
     fun update(patch: (ChatBg) -> ChatBg) {
         val n = patch(bg); bg = ChatBg.normalize(n.mode.name, n.solid, n.pattern, n.blur, n.dim, n.image); store.save(key, bg)
     }
     fun pick(uri: android.net.Uri) {
-        failed = false
-        if (store.savePicked(context, key, uri)) { bitmap = store.loadBitmap(key); update { it.copy(image = true, mode = BgMode.Image) } } else failed = true
+        failed = false; busy = true
+        val k = key; val g = ++gen
+        scope.launch {
+            val bmp = withContext(Dispatchers.IO) { if (store.savePicked(context, k, uri)) store.loadBitmap(k) else null }
+            if (g != gen || k != key) return@launch
+            busy = false
+            if (bmp != null) { bitmap = bmp; update { it.copy(image = true, mode = BgMode.Image) } } else failed = true
+        }
     }
-    fun reset() { store.reset(key); bg = ChatBg(); bitmap = null; failed = false }
+    fun reset() {
+        val k = key; ++gen
+        bg = ChatBg(); bitmap = null; failed = false; busy = false
+        scope.launch(Dispatchers.IO) { store.reset(k) }
+    }
 }
 
 @Composable
 fun rememberChatBackground(agent: String, sessionId: String?, hasMessages: Boolean): ChatBackgroundState {
     val ctx = LocalContext.current.applicationContext
     val store = remember { ChatBackgroundStore(ctx) }
+    val scope = rememberCoroutineScope()
     val key = store.key(agent, sessionId)
-    val st = remember { ChatBackgroundState(store, ctx, key) }
+    val st = remember { ChatBackgroundState(store, ctx, key, scope) }
     var last by remember { mutableStateOf(Triple(agent, sessionId, hasMessages)) }
     if (key != st.key) {
         // new chat -> its first message got an id: keep the look; anything else is just another chat
@@ -255,7 +294,15 @@ private fun Swatch(name: String, color: Color, selected: Boolean, pattern: Token
     ) {
         if (pattern != null) {
             val tile = rememberTile(pattern, c.text.copy(alpha = minOf(1f, 3 * (if (c.dark) pattern.opacityDark else pattern.opacityLight))))
-            Box(Modifier.fillMaxSize().drawBehind { drawRect(ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated))) })
+            // A tile bigger than the swatch (doodles, topography) is shrunk to fit whole instead of showing only its corner; small tiles repeat.
+            Box(Modifier.fillMaxSize().drawBehind {
+                val big = maxOf(tile.width, tile.height)
+                if (big > size.minDimension) {
+                    val k = size.minDimension / big
+                    val w = (tile.width * k).toInt().coerceAtLeast(1); val h = (tile.height * k).toInt().coerceAtLeast(1)
+                    drawImage(tile, dstOffset = androidx.compose.ui.unit.IntOffset(((size.width - w) / 2).toInt(), ((size.height - h) / 2).toInt()), dstSize = androidx.compose.ui.unit.IntSize(w, h))
+                } else drawRect(ShaderBrush(ImageShader(tile, TileMode.Repeated, TileMode.Repeated)))
+            })
         }
     }
 }
