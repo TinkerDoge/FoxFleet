@@ -69,7 +69,7 @@ export async function moveBg(from: string, to: string, s: ImageStore = images())
   saveBg(to, blob || !bg.image ? bg : { ...bg, image: false, mode: bg.mode === 'image' ? 'default' : bg.mode });
   await resetBg(from, s);
 }
-/** Sign-out: nothing of the previous account's chats stays on the device. */
+/** Wipes every chat background and picture (used when a different account or hub takes over this device, never on a plain sign-out). */
 export async function forgetAllBgs(s: ImageStore = images()): Promise<void> {
   safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith(LS)) localStorage.removeItem(k); }, undefined);
   await s.clear().catch(() => {});
@@ -100,3 +100,28 @@ export function patternSvg(p: Pattern): string {
 }
 export const patternUrl = (p: Pattern) => `url("data:image/svg+xml,${encodeURIComponent(patternSvg(p))}")`;
 export const solidVar = (id: string) => `var(--chat-solid-${id})`;
+
+// ---- who owns the data on this device ----
+// Sign-out keeps backgrounds. They are cleared only when a DIFFERENT account or hub signs in; the owner key sits next to the data.
+const OWNER = 'foxfleet.chatbgowner';
+/** One spelling per hub: scheme and host lower-case, default port and trailing slashes dropped, no query or fragment. '' means this origin. */
+export function normalizeHubKey(hub: string, origin = typeof location !== 'undefined' ? location.origin : ''): string {
+  let text = (hub || origin).trim(); if (!text) return '';
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) text = 'https://' + text;
+  try { const u = new URL(text); return `${u.protocol}//${u.host}${u.pathname.replace(/\/+$/, '')}`.toLowerCase(); } catch { return text.toLowerCase().replace(/\/+$/, ''); }
+}
+/** Stable account id (not the display name, which can be reused) plus the normalised hub. */
+export const ownerKey = (accountId: string | undefined, hub: string) => `${(accountId ?? '').trim() || 'anonymous'}@${normalizeHubKey(hub)}`;
+export type Claim = 'adopted' | 'kept' | 'cleared';
+/**
+ * Called once a session is signed in. Nothing stored: adopt (this also adopts older data that has no owner key). Same owner: keep.
+ * Different owner: the settings go at once and the pictures right after, before anything is drawn for the new owner.
+ */
+export function claimBgOwner(owner: string, s: ImageStore = images()): Claim {
+  const had = safe(() => localStorage.getItem(OWNER), null);
+  if (had === owner) return 'kept';
+  if (had === null) { safe(() => localStorage.setItem(OWNER, owner), undefined); return 'adopted'; }
+  safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith(LS)) localStorage.removeItem(k); localStorage.setItem(OWNER, owner); }, undefined);
+  void s.clear().catch(() => {});
+  return 'cleared';
+}

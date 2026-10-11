@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import tokens from '../../design/tokens.json';
-import { DEFAULT_BG, LIMITS, PATTERNS, SOLIDS, backgroundSize, chatBgKey, forgetAllBgs, isDefault, loadBg, moveBg, normalizeBg, patternSvg, patternUrl, prepareBackground, resetBg, saveBg, type ImageStore } from '../src/lib/chatBg';
+import { forgetAll } from '../src/lib/persist';
+import { claimBgOwner, normalizeHubKey, ownerKey, DEFAULT_BG, LIMITS, PATTERNS, SOLIDS, backgroundSize, chatBgKey, forgetAllBgs, isDefault, loadBg, moveBg, normalizeBg, patternSvg, patternUrl, prepareBackground, resetBg, saveBg, type ImageStore } from '../src/lib/chatBg';
 
 function memory(): ImageStore & { map: Map<string, Blob> } {
   const map = new Map<string, Blob>();
@@ -48,7 +49,7 @@ describe('chat background settings', () => {
     saveBg(from, normalizeBg({ mode: 'solid', solid: 'sand' })); saveBg(other, normalizeBg({ mode: 'solid', solid: 'sky' }));
     await moveBg(from, other, s); expect(loadBg(other).solid).toBe('sky');
   });
-  it('forgetAll (sign-out) wipes every chat background and picture but leaves other keys', async () => {
+  it('forgetAllBgs wipes every chat background and picture but leaves other keys', async () => {
     const s = memory(); localStorage.setItem('other', '1'); saveBg('a', normalizeBg({ mode: 'solid', solid: 'sky' })); await s.put('a', blob());
     await forgetAllBgs(s); expect(loadBg('a')).toEqual(DEFAULT_BG); expect(s.map.size).toBe(0); expect(localStorage.getItem('other')).toBe('1');
   });
@@ -84,5 +85,46 @@ describe('contrast over the presets', () => {
   it('dark bg is only a little lighter than before and the cards keep a gap to it', () => {
     const d: any = tokens.colors.dark; expect(ratio(d.surface, d.bg)).toBeGreaterThanOrEqual(1.1); expect(ratio(d.surfaceAlt, d.surface)).toBeGreaterThanOrEqual(1.08);
     expect(ratio(d.bg, '#110F0E')).toBeLessThan(1.15);
+  });
+});
+
+describe('owner key: backgrounds survive sign-out, a different account or hub clears them', () => {
+  const alice = ownerKey('u-alice', 'https://hub.example.com'), seed = async (s: ReturnType<typeof memory>) => { saveBg('a', normalizeBg({ mode: 'image', image: true, blur: 3, dim: 0.3 })); await s.put('a', blob()); };
+  it('legacy data without an owner key is adopted for the current owner and kept', async () => {
+    const s = memory(); await seed(s);
+    expect(claimBgOwner(alice, s)).toBe('adopted'); expect(loadBg('a').mode).toBe('image'); expect(s.map.has('a')).toBe(true); expect(localStorage.getItem('foxfleet.chatbgowner')).toBe(alice);
+  });
+  it('same owner: sign-out then sign-in keeps settings and pictures (sign-out itself wipes nothing)', async () => {
+    const s = memory(); claimBgOwner(alice, s); await seed(s);
+    forgetAll(); // what Sign out runs
+    expect(loadBg('a').mode).toBe('image'); expect(s.map.has('a')).toBe(true);
+    expect(claimBgOwner(ownerKey('u-alice', 'https://hub.example.com'), s)).toBe('kept'); expect(loadBg('a').mode).toBe('image'); expect(s.map.has('a')).toBe(true);
+  });
+  it('a different account on the same hub clears everything before it is shown', async () => {
+    const s = memory(); claimBgOwner(alice, s); await seed(s);
+    expect(claimBgOwner(ownerKey('u-bob', 'https://hub.example.com'), s)).toBe('cleared');
+    expect(loadBg('a')).toEqual(DEFAULT_BG); await Promise.resolve(); expect(s.map.size).toBe(0); expect(localStorage.getItem('foxfleet.chatbgowner')).toBe(ownerKey('u-bob', 'https://hub.example.com'));
+    expect(claimBgOwner(alice, s)).toBe('cleared'); // and back again: nothing of Bob's either
+  });
+  it('a different hub clears, even for the same account id', async () => {
+    const s = memory(); claimBgOwner(alice, s); await seed(s);
+    expect(claimBgOwner(ownerKey('u-alice', 'https://other.example.com'), s)).toBe('cleared'); expect(loadBg('a')).toEqual(DEFAULT_BG);
+  });
+  it('a failed or cancelled sign-in never claims, so nothing is wiped or shown', async () => {
+    const s = memory(); claimBgOwner(alice, s); await seed(s);
+    forgetAll(); // signed out, then the next sign-in fails: claimBgOwner is only called by a signed-in Shell
+    expect(loadBg('a').mode).toBe('image'); expect(localStorage.getItem('foxfleet.chatbgowner')).toBe(alice);
+  });
+  it('hub spelling does not matter: case, trailing slash, default port, query, same-origin', () => {
+    const a = normalizeHubKey('https://Hub.Example.com/');
+    for (const v of ['https://hub.example.com', 'HTTPS://HUB.EXAMPLE.COM///', 'https://hub.example.com:443', ' hub.example.com ', 'https://hub.example.com/?x=1#y']) expect(normalizeHubKey(v), v).toBe(a);
+    expect(normalizeHubKey('https://hub.example.com/team')).not.toBe(a); expect(normalizeHubKey('http://hub.example.com')).not.toBe(a);
+    expect(normalizeHubKey('', 'https://Here.Example.com')).toBe('https://here.example.com');
+    expect(ownerKey('u1', 'https://A.example.com/')).toBe(ownerKey(' u1 ', 'https://a.example.com')); expect(ownerKey(undefined, 'https://a.example.com')).toBe('anonymous@https://a.example.com');
+    expect(ownerKey('u1', 'https://a.example.com')).not.toBe(ownerKey('U1', 'https://a.example.com'));
+  });
+  it('the same account after a spelling change of the hub still keeps its data', async () => {
+    const s = memory(); claimBgOwner(ownerKey('u1', 'https://Hub.example.com/'), s); await seed(s);
+    expect(claimBgOwner(ownerKey('u1', 'https://hub.example.com'), s)).toBe('kept'); expect(loadBg('a').mode).toBe('image');
   });
 });

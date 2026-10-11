@@ -1,4 +1,3 @@
-import { forgetAllBgs } from './chatBg';
 // What the web app remembers across reloads and closed tabs: the last agent and, per agent, the open session and the
 // in-flight run (so reopening the page restores the same chat and reattaches to the reply that kept running on the hub).
 // Only ids and the pending user text are stored here, never keys or tokens.
@@ -11,7 +10,7 @@ export const saveChat = (agent: string, patch: Partial<SavedChat>) => safe(() =>
 export const clearSaved = (agent: string) => safe(() => localStorage.removeItem(KEY(agent)), undefined);
 export const lastAgent = () => safe(() => localStorage.getItem(LAST) || undefined, undefined);
 export const rememberAgent = (agent: string) => safe(() => localStorage.setItem(LAST, agent), undefined);
-export const forgetAll = () => { void forgetAllBgs(); return safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('foxfleet.chat.') || k === LAST) localStorage.removeItem(k); }, undefined); };
+export const forgetAll = () => safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith('foxfleet.chat.') || k === LAST) localStorage.removeItem(k); }, undefined);
 
 // The send mode (Steer / Queue / Interrupt & send) is remembered per conversation. Wiped with the chat state on sign-out.
 const MODE = (agent: string, session?: string) => `foxfleet.chat.mode.${agent}:${session ?? ''}`;
