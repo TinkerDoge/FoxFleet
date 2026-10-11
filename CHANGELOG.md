@@ -2,6 +2,22 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased (next: 0.3.10-alpha)
+
+### Added: chat backgrounds (web + Android)
+- *Per chat:* a new **Background** button in the chat header (web: next to New chat and History; Android: the picture icon) opens a panel to choose **Default**, a **Colour**, a **Pattern** or a **Picture** for that conversation only. Changes show in the chat straight away. **Reset to default** removes the setting and the picture.
+- *Colours and patterns:* 10 soft, theme-aware colours and 10 small tiling patterns (dots, grid, lines, waves, paws, foxes, topography, stars, diamonds, doodles). Patterns are drawn in the text colour at a low opacity set per pattern and per theme in `design/tokens.json` (`chatBackgrounds`); the same source feeds web and Android.
+- *Pictures:* pick an image from the device (web file picker; Android system photo picker, no permission needed), then set **Blur** and **Dim** with live preview. The picture is scaled to at most 1600 px and stored as a small JPEG.
+- *Private:* the choice, the picture and both sliders stay on the device (web: localStorage + IndexedDB; Android: app-private preferences and files). Nothing is uploaded to the hub. Sign-out removes all of it. A new chat keeps its look when it gets its id.
+- *Readable on anything:* your own bubbles become opaque on a custom background, and loose text (notices, status, empty state) sits on a quiet chip.
+
+### Changed: slightly lighter dark theme
+- *Dark background:* `bg` `#110F0E` to `#181514` (about +2.5 lightness points); `surface` and `surfaceAlt` move up with it so cards and bubbles keep their separation. Contrast tests still pass.
+
+### Changed: attachment menu icons (web + Android)
+- *Icons:* Photo library, Take photo and File now carry the shared icons (image, camera, file); the web attach button is a 44 px target and a file chip uses the file icon. Icons are decorative; the text stays the accessible name.
+- *Icon set:* `wallpaper` and `reset` join the shared set.
+
 ## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)

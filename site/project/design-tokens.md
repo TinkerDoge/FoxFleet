@@ -9,6 +9,7 @@ One JSON file, `design/tokens.json`, is the source of truth for the look of the 
 | `radius` | `card` 16, `control` 12, `small` 8, `pill` 999 |
 | `space` | 4, 8, 12, 16, 24, 32 |
 | `type` | system font stack, mono stack, size/line/weight scale |
+| `chatBackgrounds` | per-chat background presets: 10 `solids` (a `light` and a `dark` value each), 10 tiling `patterns` (SVG path shapes plus a tint opacity per theme) and the `image` limits (blur and dim range, 1600 px edge). Web reads the JSON directly and gets `--chat-solid-*` / `--chat-pattern-*-opacity` variables; Android gets `Tokens.ChatBackgrounds` |
 
 ```bash
 node design/tools/gen-tokens.mjs          # writes web/src/styles/tokens.css and android/.../ui/Tokens.kt
