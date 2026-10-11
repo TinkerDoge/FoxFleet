@@ -486,16 +486,24 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun editLast(agent: String, target: dev.foxfleet.app.data.UiMessage, onUndone: () -> Unit) {
         val state = chatFor(agent); val sid = state.sessionId ?: return
         if (state.streaming || state.loading || state.queue.any { it.state == "queued" || it.state == "awaiting_stop" }) return
-        fun copies(ms: List<dev.foxfleet.app.data.UiMessage>) = ms.count { it.role == "user" && it.content == target.content }
-        val before = copies(state.messages)
+        val before = state.userCopies(target)
         jobs[agent] = viewModelScope.launch {
             try {
                 state.send(api, agent, "/undo", emptyList())
                 if (state.error != null || state.sessionId != sid) return@launch // a failed /undo leaves the composer alone
-                val page = api.messages(agent, sid); if (state.sessionId != sid) return@launch
-                state.load(page.messages, sid, page.hasMore)
-                val gone = target.id?.let { id -> state.messages.none { it.id == id } } ?: (copies(state.messages) < before)
-                if (gone) onUndone() else state.addNotice("Couldn't take that message back.")
+                // The reload is a load: the composer waits (as on web), so no new turn can start before the page lands.
+                state.beginLoad()
+                // cancelled: whoever cancelled (another chat, a new chat) owns the loading flag now
+                val page = try { api.messages(agent, sid) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                    if (state.sessionId == sid) state.endLoad()
+                    if (e is AuthRequiredException) throw e
+                    state.addNotice("Couldn't take that message back."); return@launch
+                }
+                when (state.applyUndo(sid, page.messages, page.hasMore, target, before)) {
+                    true -> onUndone()
+                    false -> state.addNotice("Couldn't take that message back.")
+                    null -> {}
+                }
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
         }
     }

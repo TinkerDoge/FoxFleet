@@ -50,13 +50,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -160,6 +156,8 @@ import okhttp3.OkHttpClient
 import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import dev.foxfleet.app.ui.chat.HEART
@@ -316,7 +314,7 @@ fun ChatScreen(
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
-                reply = reply, onClearReply = { reply = null },
+                reply = reply, onClearReply = { reply = null }, disabled = state.loading,
                 prefill = prefill, onPrefilled = { applied -> prefill = null; if (!applied) state.addNotice("Your edited text wasn't put back because the box isn't empty.") },
                 onLocal = { cmd, args ->
                     when (cmd) {
@@ -336,9 +334,11 @@ fun ChatScreen(
         if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null })
         else if (pc.kind == "choice") ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
     }
-    // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away closes it.
-    val shown = MessageActions.visible(state.messages, state.reactions?.hidden.orEmpty())
-    val menuMsg = menuFor?.let { mf -> shown.firstOrNull { it.value === mf }?.value ?: mf.id?.let { id -> shown.firstOrNull { it.value.id == id }?.value } }
+    // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away (or was hidden) closes it.
+    val menuMsg = menuFor?.let { mf ->
+        val hidden = state.reactions?.hidden.orEmpty()
+        (state.messages.firstOrNull { it === mf } ?: mf.id?.let { id -> state.messages.firstOrNull { it.id == id } })?.takeIf { it.id == null || it.id !in hidden }
+    }
     LaunchedEffect(menuFor, menuMsg) { if (menuFor != null && menuMsg == null) menuFor = null }
     menuMsg?.let { m ->
         val newest = MessageActions.newestTargets(state.messages)
@@ -393,11 +393,14 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             AgentAvatar(agentName, null, 56.dp)
             Spacer(Modifier.size(14.dp))
             Text("Start a conversation with $agentName", style = MaterialTheme.typography.titleMedium, color = c.text)
-            Text("Replies stream in live. Swipe from the left edge to switch agents.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            Text("Replies stream in live. Long-press a message for more.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
         }
         return
     }
     var baseline by remember { mutableStateOf<Int?>(null) }
+    // Hidden messages and reaction-only replies draw no row; parsed once per change, not on every recomposition or reaction sync.
+    val hiddenIds = state.reactions?.hidden.orEmpty()
+    val visible = remember(state.messages, hiddenIds) { MessageActions.visible(state.messages, hiddenIds) }
     androidx.compose.runtime.LaunchedEffect(state.loading, state.messages.isNotEmpty()) { if (!state.loading && baseline == null) { kotlinx.coroutines.delay(700); baseline = state.keyBase + state.messages.size } }
     Box(modifier.fillMaxWidth()) {
     LazyColumn(
@@ -411,7 +414,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         state.hiddenUndo?.let { id -> item(key = "hide-undo") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Text("Message hidden", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
-                Text("Undo", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { gestures?.onUndoHide?.invoke(id) }.padding(10.dp))
+                Box(Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button) { gestures?.onUndoHide?.invoke(id) }.padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
+                    Text("Undo", style = MaterialTheme.typography.labelLarge, color = c.accent)
+                }
             }
         } }
         state.reactionError?.let { e -> item(key = "react-error") { Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.fillMaxWidth().padding(4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
@@ -449,8 +454,8 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             StreamingMessage(agentName, state, Modifier.animateItem(), onOpen)
         }
         if (state.loading) item(key = "loading") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
-        // Hidden messages and reaction-only replies draw no row; keys keep the full-list index so they stay stable.
-        val rev = MessageActions.visible(state.messages, state.reactions?.hidden.orEmpty()).asReversed()
+        // keys keep the full-list index so they stay stable when a row is hidden
+        val rev = visible.asReversed()
         items(rev.size, key = { state.keyBase + rev[it].index }) { i ->
             // only messages that arrive after the history has been shown animate in (never old ones scrolled back into view)
             val (index, m) = rev[i]; val b = baseline; val isNew = b != null && state.keyBase + index >= b
@@ -489,10 +494,11 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
     val pressed by press.collectIsPressedAsState()
     var pop by remember { mutableIntStateOf(0) }
     val heart: (() -> Unit)? = if (gestures != null && reactions != null && m.id != null) ({ haptic(HapticFeedbackType.LongPress); gestures.onHeart(m.id); pop++ }) else null
+    val menu: (() -> Unit)? = gestures?.let { g -> { haptic(HapticFeedbackType.LongPress); g.onMenu(m) } }
     val reactable = if (gestures == null) Modifier else Modifier
-        .combinedClickable(interactionSource = press, indication = null, onClick = {}, onDoubleClick = heart,
-            onLongClick = { haptic(HapticFeedbackType.LongPress); gestures.onMenu(m) }, onLongClickLabel = "Message actions")
-        .semantics { customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Message actions") { gestures.onMenu(m); true }) }
+        // TalkBack: activating the frame opens the menu (outermost, so it wins over the empty touch tap below)
+        .semantics { onClick(label = "Message actions") { gestures.onMenu(m); true } }
+        .combinedClickable(interactionSource = press, indication = null, onClick = {}, onDoubleClick = heart, onLongClick = menu, onLongClickLabel = "Message actions")
     val edge = if (pressed) c.accent else c.hairline
     val lift = if (reactions?.groups?.isNotEmpty() == true) 10.dp else 0.dp // room inside the frame for the pills hanging on its edge
     // Reactions hang on the frame's bottom edge (Messenger / iMessage), not loose under it.
@@ -506,13 +512,13 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 Modifier.widthIn(max = 300.dp).clip(shape).background(c.userBubble).border(1.dp, if (pressed) c.accent else Color.Transparent, shape).then(reactable).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp + lift),
                 horizontalAlignment = Alignment.End,
             ) {
-                m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+                m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = "Message actions") }
                 if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 4.dp)) {
                     m.images.forEach { img ->
                         // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
                         val src = dev.foxfleet.app.media.attachmentSource(img.localPath, img.dataUrl)
                         dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 220.dp else 104.dp).clip(RoundedCornerShape(14.dp)),
-                            onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) })
+                            onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = "Message actions")
                     }
                 }
                 files.forEach { (path, size) -> FileChip(path.substringAfterLast('/').substringAfter('-'), size, Modifier.padding(bottom = 4.dp)) }
@@ -537,10 +543,10 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 Column(Modifier.clip(shape).background(c.surface).border(1.dp, edge, shape).then(reactable).padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp + lift)) {
                     if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
                     m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
-                        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+                        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).combinedClickable(onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = if (menu != null) "Message actions" else null)) }
                     AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
                     val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
-                    media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
+                    media.forEach { ref -> MediaCard(ref, menu) { onOpen(ref) } }
                     if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
                 }
                 HeartPop(pop)
@@ -614,10 +620,11 @@ private fun ToolActivityStrip(active: List<dev.foxfleet.app.ui.chat.ActiveTool>)
 }
 
 @Composable
-private fun MediaCard(ref: MediaRef, onClick: () -> Unit) {
+private fun MediaCard(ref: MediaRef, onLongClick: (() -> Unit)?, onClick: () -> Unit) {
     val c = LocalHubColors.current
     Box(
-        Modifier.padding(top = 8.dp).fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable(onClick = onClick),
+        Modifier.padding(top = 8.dp).fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = if (onLongClick != null) "Message actions" else null),
         contentAlignment = Alignment.Center,
     ) {
         if (ref.kind == MediaRef.Kind.Image) AsyncImage(ref.url, ref.alt.ifBlank { "Image" }, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().heightIn(min = 120.dp, max = 220.dp))
@@ -669,6 +676,8 @@ private fun Composer(
     waiting: Int = 0,
     reply: ReplyTarget? = null,
     onClearReply: () -> Unit = {},
+    /** While the chat loads (also Edit's reload) nothing is sent, as on web. */
+    disabled: Boolean = false,
     /** Text to put back (Edit); [onPrefilled] says whether it went in (only into an empty box). */
     prefill: String? = null,
     onPrefilled: (applied: Boolean) -> Unit = {},
@@ -735,7 +744,7 @@ private fun Composer(
     LaunchedEffect(note) { if (note != null) { delay(2500); note = null } }
 
     val suggestions = remember(input, skills, agentCommands, defs) { commandSuggestions(input, skills, limit = Int.MAX_VALUE, agentCommands = agentCommands, defs = defs) }
-    val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && encoding == 0 && uploads.isEmpty()
+    val canSend = (input.isNotBlank() || attachments.isNotEmpty() || files.isNotEmpty()) && encoding == 0 && uploads.isEmpty() && !disabled
     fun send() {
         if (!canSend) return
         if (attachments.isEmpty() && files.isEmpty()) {

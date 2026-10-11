@@ -18,7 +18,8 @@ enum class MessageAction(val label: String, val icon: String) {
 
 /** Message actions without UI: quotes, excerpts, what is shown, what the menu offers. Same rules as web/src/chat/messageActions.ts. */
 object MessageActions {
-    private val quote = Regex("^> ([^\\n]*)\\n\\n")
+    /** The quote line, then a blank line; or the quote alone (a reply with only pictures: the send trims the blank line away). */
+    private val quote = Regex("^> ([^\\n]*)(?:\\n\\n|\\z)")
 
     fun splitQuote(text: String): Quoted? = quote.find(text)?.let { Quoted(it.groupValues[1], text.substring(it.range.last + 1)) }
     fun withQuote(reply: ReplyTarget?, text: String) = if (reply == null) text else "> ${reply.excerpt}\n\n$text"

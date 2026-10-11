@@ -9,7 +9,8 @@ export const HEART = '❤️';
 export interface ReplyTarget { author: string; excerpt: string }
 export type MessageAction = 'reply' | 'copy' | 'select' | 'share' | 'retry' | 'edit' | 'delete';
 
-const QUOTE = /^> ([^\n]*)\n\n/;
+/** The quote line, then a blank line; or the quote alone (a reply with only pictures: the send trims the blank line away). */
+const QUOTE = /^> ([^\n]*)(?:\n\n|$)/;
 /** A reply's leading quote line, split from the rest; null when the text does not start with one. */
 export function splitQuote(text: string): { quote: string; body: string } | null {
   const m = QUOTE.exec(text); return m ? { quote: m[1], body: text.slice(m[0].length) } : null;

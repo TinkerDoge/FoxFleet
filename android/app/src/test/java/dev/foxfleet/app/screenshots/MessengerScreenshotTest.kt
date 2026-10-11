@@ -5,6 +5,14 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onRoot
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.click
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.test.performTouchInput
 import com.github.takahirom.roborazzi.captureRoboImage
 import dev.foxfleet.app.data.AgentStatus
 import dev.foxfleet.app.data.AppPrefs
@@ -91,6 +99,19 @@ class MessengerScreenshotTest {
 
     @Test fun replyLight() = reply(false)
     @Test fun replyDark() = reply(true)
+
+    /** TalkBack's "activate" on a frame opens the message menu; a plain touch tap on it does nothing. */
+    @Test fun frameClickIsTheMenuForTalkBackOnly() {
+        val agent = AgentStatus("Atlas", online = true, chatReady = true, managementReady = true)
+        val state = ChatState().apply { load(listOf(UiMessage("user", "Perfect, thanks!", id = "m3"), UiMessage("assistant", "Any time.", id = "m4")), "s1") }
+        compose.setContent { FoxfleetTheme(AppPrefs()) { ChatScreen(agent, listOf(agent), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}) } }
+        val frame = compose.onNodeWithText("Perfect, thanks!")
+        frame.assert(SemanticsMatcher("click is labelled Message actions") { it.config.getOrNull(SemanticsActions.OnClick)?.label == "Message actions" })
+        frame.performTouchInput { click() }; compose.mainClock.advanceTimeBy(1000); compose.waitForIdle()
+        compose.onNodeWithText("Select text").assertDoesNotExist()
+        frame.performSemanticsAction(SemanticsActions.OnClick); compose.waitForIdle()
+        compose.onNodeWithText("Select text").assertExists()
+    }
 
     /** Long-press sheet body: quick reactions plus every action row. */
     private fun menu(dark: Boolean) {

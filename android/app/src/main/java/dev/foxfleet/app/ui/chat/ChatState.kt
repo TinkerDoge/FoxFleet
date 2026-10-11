@@ -110,6 +110,22 @@ class ChatState {
     fun markUnread() { unread = true }
     fun beginLoad() { loading = true; error = null }
     fun loadFailed(msg: String) { loading = false; error = msg }
+    /** A reload that ends without changing the chat (Edit's reload failed or was skipped). */
+    fun endLoad() { loading = false }
+
+    /** How many user messages carry [target]'s text: Edit's check for a message without a hub id. */
+    fun userCopies(target: UiMessage) = messages.count { it.role == "user" && it.content == target.content }
+
+    /**
+     * Edit's reload after /undo. The page is applied only while nothing new started (a reply streaming, messages waiting):
+     * loading it then would wipe that turn. Returns true when [target] is gone, false when it is still there, null when skipped.
+     */
+    fun applyUndo(sid: String, page: List<UiMessage>, hasMore: Boolean, target: UiMessage, copiesBefore: Int): Boolean? {
+        if (sessionId != sid) return null // another chat opened: its own load owns the flag
+        if (streaming || queue.any { it.state != "rejected" && it.state != "failed" }) { loading = false; return null }
+        load(page, sid, hasMore)
+        return target.id?.let { id -> messages.none { it.id == id } } ?: (userCopies(target) < copiesBefore)
+    }
 
     /** Append a fully-formed message (history load or user send). */
     fun push(m: UiMessage) { messages = messages + m }
@@ -144,7 +160,7 @@ class ChatState {
     fun newConversation() {
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
         messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; hiddenUndo = null; persist(SavedChat())
-        resetStream(); error = null
+        resetStream(); error = null; loading = false // a new chat loads nothing (an Edit reload it cut short must not leave the composer waiting)
     }
 
     /** True while the hub or the tunnel is briefly unreachable and we are resuming quietly (shown as a small status, never an error). */

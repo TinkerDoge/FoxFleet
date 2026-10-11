@@ -14,6 +14,7 @@ describe('message actions', () => {
     expect(sent).toBe('> Ship it?\n\nYes');
     expect(splitQuote(sent)).toEqual({ quote: 'Ship it?', body: 'Yes' });
     expect(splitQuote('> no blank line\nYes')).toBeNull();
+    expect(splitQuote('> Ship it?')).toEqual({ quote: 'Ship it?', body: '' }); // a reply with only pictures, trimmed on send
     expect(splitQuote('Yes\n> later')).toBeNull();
     expect(withQuote(null, 'Yes')).toBe('Yes');
   });

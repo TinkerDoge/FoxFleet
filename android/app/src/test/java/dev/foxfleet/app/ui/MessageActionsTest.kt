@@ -7,6 +7,7 @@ import dev.foxfleet.app.data.UiMessage
 import dev.foxfleet.app.ui.chat.MessageAction
 import dev.foxfleet.app.ui.chat.MessageActions
 import dev.foxfleet.app.ui.chat.QUICK_REACTIONS
+import dev.foxfleet.app.ui.chat.Quoted
 import dev.foxfleet.app.ui.chat.ReplyTarget
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -24,6 +25,9 @@ class MessageActionsTest {
         assertEquals("Ship it?", MessageActions.splitQuote(sent)!!.quote)
         assertEquals("Yes", MessageActions.splitQuote(sent)!!.body)
         assertNull(MessageActions.splitQuote("> no blank line\nYes"))
+        // a reply with only pictures: the send trims the blank line away
+        assertEquals(Quoted("Ship it?", ""), MessageActions.splitQuote("> Ship it?"))
+        assertEquals("", MessageActions.displayText(UiMessage("user", "> Ship it?")))
         assertEquals("Yes", MessageActions.withQuote(null, "Yes"))
     }
 
@@ -92,6 +96,25 @@ class MessageActionsTest {
         assertTrue(MessageActions.nextHeart(emptyList(), me.id))
         assertFalse(MessageActions.nextHeart(listOf(ReactionGroup("❤️", listOf(me))), me.id))
         assertTrue(MessageActions.nextHeart(listOf(ReactionGroup("❤️", listOf(ReactionActor("agent:a", "A", "agent")))), me.id))
+    }
+
+    @Test fun editReloadAppliesOnlyWhenNothingNewStarted() {
+        val u = UiMessage("user", "Hi", id = "u"); val a = UiMessage("assistant", "Hello", id = "a")
+        fun chat() = dev.foxfleet.app.ui.chat.ChatState().apply { load(listOf(u, a), "s1"); beginLoad() }
+        // gone after /undo: Edit puts the text back; the reload ends the load
+        chat().let { s -> assertEquals(true, s.applyUndo("s1", emptyList(), false, u, 1)); assertFalse(s.loading) }
+        // still there: refused
+        chat().let { s -> assertEquals(false, s.applyUndo("s1", listOf(u, a), false, u, 1)) }
+        // no hub id: fewer copies of the same text means it went
+        val bare = UiMessage("user", "Hi")
+        chat().let { s -> assertEquals(true, s.applyUndo("s1", listOf(UiMessage("user", "Hi")), false, bare, 2)); assertEquals(false, s.applyUndo("s1", listOf(UiMessage("user", "Hi")), false, bare, 1)) }
+        // a reply started meanwhile: the page is not applied (it would wipe that turn), the composer is free again
+        chat().let { s -> s.simulateStream("new"); assertNull(s.applyUndo("s1", emptyList(), false, u, 1)); assertEquals(2, s.messages.size); assertFalse(s.loading) }
+        chat().let { s -> s.simulateNative(queue = listOf(dev.foxfleet.app.data.HubApi.QueuedMessage("q", "sending", "queue", "next"))); assertNull(s.applyUndo("s1", emptyList(), false, u, 1)); assertEquals(2, s.messages.size) }
+        // another chat opened: untouched, its own load owns the flag
+        chat().let { s -> assertNull(s.applyUndo("other", emptyList(), false, u, 1)); assertTrue(s.loading) }
+        // a new chat never waits on a reload it cut short
+        chat().let { s -> s.newConversation(); assertFalse(s.loading) }
     }
 
     @Test fun swipeRules() {

@@ -2,6 +2,7 @@ package dev.foxfleet.app.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -38,14 +39,14 @@ import dev.foxfleet.app.ui.LocalHubColors
  * decoded or fetched there is a tile that says so with a Retry, never an empty rounded rectangle. [model] is a File, a data: URL or an https URL.
  */
 @Composable
-fun ChatImage(model: Any, description: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, onClick: (() -> Unit)? = null) {
+fun ChatImage(model: Any, description: String, modifier: Modifier = Modifier, contentScale: ContentScale = ContentScale.Crop, onClick: (() -> Unit)? = null, onLongClick: (() -> Unit)? = null, onLongClickLabel: String? = null) {
     val c = LocalHubColors.current
     var attempt by remember { mutableIntStateOf(0) }
     val ctx = LocalContext.current
     val request = remember(model, attempt) { ImageRequest.Builder(ctx).data(model).memoryCacheKey("$model#$attempt").diskCacheKey("$model#$attempt").build() }
     SubcomposeAsyncImage(
         model = request, contentDescription = description, contentScale = contentScale,
-        modifier = modifier.background(c.surfaceAlt).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        modifier = modifier.background(c.surfaceAlt).then(if (onClick != null || onLongClick != null) Modifier.combinedClickable(onClick = onClick ?: {}, onLongClick = onLongClick, onLongClickLabel = onLongClickLabel) else Modifier),
         loading = { Box(Modifier.testTag("image-loading"), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(22.dp), color = c.textMuted, strokeWidth = 2.dp) } },
         error = {
             Column(Modifier.testTag("image-failed").padding(10.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center) {
