@@ -26,6 +26,7 @@ import { openaiClient } from './openai.js';
 import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
+import { notifyStore, attachNotifyStream } from './notify.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
@@ -53,7 +54,7 @@ export const APP_ORIGIN = 'https://appassets.androidplatform.net';
 // What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
 /** Opt-in diagnostics (FOXFLEET_DEBUG=1): one JSON line per event, never message text or addresses. */
 const log = (event, data = {}) => { if (process.env.FOXFLEET_DEBUG) console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data })); };
-export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo'];
+export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify'];
 const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
 const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
@@ -149,14 +150,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const runs = runRegistry(); runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  const runs = runRegistry(); runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.notify.fromRun(r, state)).catch(() => {}); });
+  runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
       const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')), activity: await activityStore(path.join(dir, 'activity.json')) };
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
-      reg.mcp = mcpHandler(reg.inbox, reg.reactions); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
+      reg.mcp = mcpHandler(reg.inbox, reg.reactions); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
+      reg.notify = await notifyStore(path.join(dir, 'notify.json'));
+      reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); });
+      return reg;
     })());
     return registries.get(userId);
   }
@@ -459,6 +464,22 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           // Tokens are shown once; only their hashes are stored.
           return sendJson(res, 201, { connection: publicConnection(m), ...(token ? { inboxToken: token.value, mcpUrl: '/mcp' } : {}) });
         }
+      }
+      if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
+        const nt = ctx.reg.notify, route = parts[2];
+        if (parts.length === 3 && route === 'stream' && req.method === 'GET') {
+          const raw = url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0, after = Number(raw);
+          return void attachNotifyStream(req, res, nt, { after: Number.isInteger(after) && after > 0 ? after : 0, keepAliveMs: Number(process.env.FOXFLEET_NOTIFY_HEARTBEAT_MS) || undefined });
+        }
+        if (parts.length === 3 && route === 'events' && req.method === 'GET') { const since = Number(url.searchParams.get('since') ?? 0), limit = Number(url.searchParams.get('limit') ?? 100); return sendJson(res, 200, nt.since(Number.isInteger(since) && since > 0 ? since : 0, Number.isInteger(limit) ? limit : 100)); }
+        if (parts.length === 3 && route === 'prefs' && req.method === 'GET') return sendJson(res, 200, nt.prefs());
+        if (parts.length === 3 && route === 'prefs' && req.method === 'PUT') { const b = await readJson(req, 4096); return sendJson(res, 200, await nt.setEnabled(b.enabled)); }
+        if (parts.length === 3 && route === 'mute' && req.method === 'PUT') {
+          const b = await readJson(req, 4096); if (typeof b.agent !== 'string' || !store.all().some((m) => m.name === b.agent)) throw fault(404, 'Unknown agent');
+          return sendJson(res, 200, await nt.setMute({ agent: b.agent, chat: b.chat, muted: b.muted, forMs: b.for_ms }));
+        }
+        if (parts.length === 3 && route === 'test' && req.method === 'POST') { await readJson(req, 4096); return sendJson(res, 200, { event: nt.emit({ type: 'test' }) }); }
+        throw fault(404, 'Not found');
       }
       if (parts[0] === 'api' && parts[1] === 'machines') {
         const uid = auth.user.id, view = (m) => machines.publicMachine(m, { online: connectors.isOnline(m.id), ...(connectors.lastSeen(m.id) ? { lastSeen: connectors.lastSeen(m.id) } : {}) });

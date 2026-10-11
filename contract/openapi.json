@@ -4617,7 +4617,8 @@
                     "mediaTags",
                     "agentActivity",
                     "pin",
-                    "hubInfo"
+                    "hubInfo",
+                    "notify"
                   ]
                 }
               }

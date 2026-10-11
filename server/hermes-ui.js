@@ -46,7 +46,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
   for (const m of journal.messages) if (m.state === 'sending') m.state = 'uncertain'; // the hub restarted between "write down" and "acknowledged"
   let writing = Promise.resolve();
   const save = () => { journal.messages = journal.messages.slice(-KEEP_JOURNAL); const snap = JSON.stringify(journal), tmp = file + '.tmp'; writing = writing.then(() => writeFile(tmp, snap, { mode: 0o600 }).then(() => rename(tmp, file))).catch(() => {}); return writing; };
-  const hooks = [];
+  const hooks = [], requestHooks = [];
   const sessions = new Map(), subscribed = new WeakSet(), byMachine = new Map(); // key -> state; machine -> Set(keys)
   const key = (machineId, agent, stored) => `${machineId}\0${agent}\0${stored}`;
 
@@ -55,7 +55,7 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
     if (!s) { s = { k, machineId, agent, stored, scope, runtime: null, epoch: null, running: false, partial: '', turn: null, up: 0, log: [], next: 1, viewers: new Set(), requests: new Map(), queued: [] }; sessions.set(k, s); (byMachine.get(machineId) ?? byMachine.set(machineId, new Set()).get(machineId)).add(k); }
     return s;
   }
-  function publish(s, ev) { const e = { ...ev, seq: s.next++, at: now() }; s.log.push(e); if (s.log.length > LOG_MAX) s.log.splice(0, s.log.length - LOG_MAX); for (const v of s.viewers) { try { v(e); } catch { /* a dead viewer must not stop the others */ } } if (e.type === 'turn.start') for (const h of hooks) { try { h(s, e); } catch { /* hooks are best effort */ } } return e; }
+  function publish(s, ev) { const e = { ...ev, seq: s.next++, at: now() }; s.log.push(e); if (s.log.length > LOG_MAX) s.log.splice(0, s.log.length - LOG_MAX); for (const v of s.viewers) { try { v(e); } catch { /* a dead viewer must not stop the others */ } } if (e.type === 'turn.start') for (const h of hooks) { try { h(s, e); } catch { /* hooks are best effort */ } } if (e.type === 'request.open') for (const h of requestHooks) { try { h(s, e); } catch { /* hooks are best effort */ } } return e; }
   function onUpstream(machineId, agent, up) {
     const set = byMachine.get(machineId) ?? new Set();
     if (up.kind === 'link.down') { for (const k of set) { const s = sessions.get(k); if (s) publish(s, { v: 1, session_id: s.stored, type: 'link', state: 'down' }); } return; }
@@ -87,6 +87,8 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
   const api = {
     CONTRACT,
     onTurnStart: (fn) => { hooks.push(fn); },
+    /** A session opened an approval / question: fn(session, event). Used by notifications. */
+    onRequest: (fn) => { requestHooks.push(fn); },
     cursor: (machineId, agent, stored) => (sessions.get(key(machineId, agent, stored))?.next ?? 1) - 1,
     isRunning: (machineId, agent, stored) => Boolean(sessions.get(key(machineId, agent, stored))?.running),
     // What the queue panel shows: journal items Hermes still holds, from the live snapshot (Hermes schedules them; the hub never drains).
