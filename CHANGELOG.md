@@ -2,12 +2,6 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased
-
-### Changed: shorter agent note, new foxfleet skill
-- *Skill:* `skills/foxfleet/SKILL.md` is a Hermes skill with the full FoxFleet chat rules (files, reactions, reply quotes, question cards, remote slash commands, common mistakes). It also tells agents that older notes saying FoxFleet ignores `MEDIA:` are out of date. How to teach it: `docs/AGENT-AWARENESS.md`.
-- *Agent note:* 7 lines down to 4 (658 to 481 bytes): the core `MEDIA:` and `REACT:` syntax, this machine's folders, size limit and upload folder, and a pointer to the skill. The question-card and slash-command lines moved to the skill. A new note version means an installed note shows as stale until `agent-note install` (automatic with `agentNote: true`).
-
 ## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)
@@ -18,6 +12,13 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Hub:* `PUT`/`DELETE /api/agents/{name}/sessions/{id}/hidden` keep a per-account hidden list (the agent keeps the message); the reactions snapshot gains `hidden`. The list is cleaned up with the chat, agent or account, and the oldest entries drop when it is full.
 - *Agents:* Hermes agents react by writing `REACT: <emoji>` on its own line; the hub shows it as the agent's reaction on your message, and the line is never shown (a reply that is only that line draws no row). `agentReactions` is now true for Hermes. The agent note gains one line (connector 0.3.9-alpha).
 - *Icons:* `reply`, `share`, `selectAll` and `edit` join the shared set.
+
+### Changed: shorter agent note, new foxfleet skill
+- *Skill:* `skills/foxfleet/SKILL.md` is a Hermes skill with the full FoxFleet chat rules (files, reactions, reply quotes, question cards, remote slash commands, common mistakes). It also tells agents that older notes saying FoxFleet ignores `MEDIA:` are out of date. How to teach it: `docs/AGENT-AWARENESS.md`.
+- *Agent note:* 7 lines down to 4 (658 to 481 bytes): the core `MEDIA:` and `REACT:` syntax, this machine's folders, size limit and upload folder, and a pointer to the skill. The question-card and slash-command lines moved to the skill. A new note version means an installed note shows as stale until `agent-note install` (automatic with `agentNote: true`).
+
+### Fixed: hub test hang
+- *Hub:* a connector link that closed while its forwarder servers were still being created left them listening, which kept the process (and the `ui-gateway` test file) alive until the test timeout. The link now remembers it is closed, closes late forwarders and serialises `expose()` calls; a deterministic regression test covers it.
 
 ### Compatibility / upgrade order
 - *Order:* update the hub first, then the connector and the apps.

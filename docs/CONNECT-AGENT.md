@@ -89,6 +89,8 @@ It lists the Hermes profiles it found, how it found the gateway, starts the gate
 
 Write Hermes' normal `MEDIA:/absolute/path/file.png` (or `MEDIA:https://…`) on its own line in the reply; add `[[audio_as_voice]]` before an audio file for a voice message. Foxfleet strips the tag and shows image/video/audio/file cards in the web app and on Android. For a local path the connector on that computer serves the file, but only inside the profile's cache/workspace folders and the temp folder (add more with `mediaRoots` in `connector.json` or `FOXFLEET_MEDIA_ROOTS`), only for allowlisted extensions whose content matches, up to 25 MiB. Tags inside code blocks are ignored. More: https://tinkerdoge.github.io/FoxFleet/apps/agent-media
 
+The agent note and the `foxfleet` Hermes skill (`skills/foxfleet/SKILL.md` in the server bundle) teach a Hermes agent these rules; `docs/AGENT-AWARENESS.md` explains how to install the note (`agent-note install` or `doctor --fix`) and the skill (the connector does not install the skill itself yet; copy it into the profile's `skills/communication/foxfleet/` folder).
+
 ## Connection drops (0.3.3-alpha)
 
 The connector reconnects by itself after a tunnel or proxy blip, including a failed handshake, and the hub re-attaches the running Hermes sessions without restarting turns. `foxfleet doctor --url <your https address>` tests whether the public address streams live and says what to change if a proxy buffers.

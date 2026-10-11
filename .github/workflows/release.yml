@@ -64,10 +64,10 @@ jobs:
           V="${GITHUB_REF_NAME#v}"
           D="foxfleet-server-$V"
           mkdir -p "out/$D/docs" out
-          cp -r package.json server connector deploy LICENSE README.md NOTICE.md SECURITY.md TERMS.md PRIVACY.md CHANGELOG.md compose.yaml Dockerfile "out/$D/"
+          cp -r package.json server connector deploy skills LICENSE README.md NOTICE.md SECURITY.md TERMS.md PRIVACY.md CHANGELOG.md compose.yaml Dockerfile "out/$D/"
           rm -rf "out/$D/server/test"
           mkdir -p "out/$D/web" && cp -r web/dist "out/$D/web/dist"
-          cp docs/CONNECT-AGENT.md docs/INSTALL.md "out/$D/docs/"
+          cp docs/CONNECT-AGENT.md docs/INSTALL.md docs/AGENT-AWARENESS.md "out/$D/docs/"
           tar -C out -czf "out/$D.tar.gz" "$D"
       - uses: actions/setup-java@v4
         if: steps.guard.outputs.exists == 'false' && env.HAS_SIGNING == 'true'

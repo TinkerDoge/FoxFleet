@@ -9,7 +9,7 @@
 | File | What it is |
 | --- | --- |
 | `foxfleet-0.3.9-alpha.apk` | Android app (`dev.foxfleet.app`, Android 10+, versionCode 17), release-signed |
-| `foxfleet-server-0.3.9-alpha.tar.gz` | The hub: `server/`, `connector/`, the built web app, `deploy/` files, licence and docs |
+| `foxfleet-server-0.3.9-alpha.tar.gz` | The hub: `server/`, `connector/`, the built web app, `deploy/` files, the `skills/` folder (the `foxfleet` Hermes skill), licence and docs (including `docs/AGENT-AWARENESS.md`) |
 | `SHA256SUMS` | Checksums for the two files above |
 | `APK-CERT-SHA256.txt` | The expected APK signing certificate fingerprint |
 
@@ -42,6 +42,8 @@ There is no debug APK in this release.
 - **Hub first.** Redeploy the hub from the server bundle (or rebuild your Docker image), then update the connectors, then the apps. New hub features (hidden messages, reactions, activity, screen error codes) need the new hub; the apps tell you when the hub is older.
 - **Connectors need updating** (`foxfleet-connector` 0.3.9-alpha, from the same bundle) for agent awareness (`source: "foxfleet"`), pictures you send, shared media folders and the `REACT:` line.
 - **Agent note (`doctor --fix`).** The connector can write a short note for the agent into each Hermes profile's `config.yaml` (`platform_hints.foxfleet`) so the agent knows it is in FoxFleet, how `MEDIA:` files work and that `REACT:` exists. It only does this **after you agree**: run `foxfleet-connector doctor --fix` (it asks first; `--yes` skips the question). A backup is kept once (`config.yaml.foxfleet.bak`); `agent-note remove` takes it out; `agentNote: false` turns it off. If you decline, the same note is sent once with the first message of each new chat.
+- **Agent note is shorter** (658 to 481 bytes: the core `MEDIA:` and `REACT:` syntax, this machine's folders, size limit, upload folder and a pointer to the skill). A note you installed earlier shows as *stale* in `agent-note status` until you run `agent-note install`; with `agentNote: true` the connector updates it by itself.
+- **The `foxfleet` skill is new** (`skills/foxfleet/SKILL.md` in the server bundle). It holds the full chat rules (files, reactions, reply quotes, question cards, remote slash commands, common mistakes) so they cost nothing on ordinary turns. **The connector and `doctor --fix` do not install the skill for you yet.** To teach an agent, upload `SKILL.md` in a FoxFleet chat and ask it to copy the file to `~/.hermes/skills/communication/foxfleet/SKILL.md` (for another Hermes profile: `<profile home>/skills/communication/foxfleet/`), then run `skills_list`; the exact message is in `docs/AGENT-AWARENESS.md`. Without the skill the note still works; agents just know less.
 - **Mixed versions.** Apps 0.3.8 and older show `REACT:` lines as raw text. A new connector on an old hub loses agent reactions. Downgrading the hub to 0.3.8 drops the hidden-message list on its next write of `reactions.json`.
 - **Android.** Install the APK (allow installs from your browser or file manager for this one file). It is an alpha pre-release; the debug build `dev.foxfleet.app.debug` is separate and installs side by side. Reactions artwork (Twemoji) is bundled in the app, so there is no CDN call.
 - See [CHANGELOG.md](CHANGELOG.md) and the docs site: <https://tinkerdoge.github.io/FoxFleet/>.
@@ -85,6 +87,10 @@ Open `http://127.0.0.1:3080`, create the owner account with the setup code, then
 - A message menu (long-press on Android, right-click, long-press or the ⋯ button on web): quick reactions, Reply, Copy, Select text (Android), Share, Retry, Edit (Hermes agents, via `/undo`) and **Delete for me** (hides a message from your own view, keeps it in the agent's history, synced across your devices).
 - Double-tap a message to heart it (touch), swipe right to reply (Android), reply bubbles with a "Replying to" chip.
 - Hermes agents can react by writing `REACT: <emoji>` on its own line; the hub shows it as the agent's reaction and never shows the line.
+- A shorter agent note and the new `foxfleet` skill (see the upgrade notes above); the server bundle now includes `skills/` and `docs/AGENT-AWARENESS.md`.
+
+### Fixed
+- Hub: a connector link that closed while its forwarder servers were still being created left them listening, which kept the process alive (this hung the `ui-gateway` test file on Node 22 in CI). The link now closes late forwarders; a regression test covers it.
 
 ## Things to verify live
 
