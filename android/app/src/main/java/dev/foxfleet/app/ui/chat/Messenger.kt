@@ -41,5 +41,5 @@ fun ReactionSnapshot.apply(message: String, emoji: String, present: Boolean): Re
     return copy(messages = messages + (message to groups.filter { it.actors.isNotEmpty() }))
 }
 
-/** Quick choices shown first in the picker. */
-val QUICK_REACTIONS = listOf("👍", "❤️", "😂", "🎉", "😮", "😢", "🙏", "🦊")
+/** Quick reactions, in menu order (the smiley-plus button opens the full picker). Same list as the web app. */
+val QUICK_REACTIONS = listOf("👍", "👎", "❤️", "🎉", "😮")
