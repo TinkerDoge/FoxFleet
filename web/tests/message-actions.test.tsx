@@ -1,4 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { render } from 'preact';
+import { act } from 'preact/test-utils';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { Message } from '../src/chat/Message';
+import { MessageMenu } from '../src/chat/MessageMenu';
 import { createDoubleTap, displayText, emptyReply, excerpt, messageActions, nextHeart, splitQuote, visibleMessages, withQuote } from '../src/chat/messageActions';
 import type { UiMessage } from '../src/lib/chat';
 
@@ -56,5 +60,79 @@ describe('message actions', () => {
     expect(tap(10, 10)).toBe(false); now = 200; expect(tap(20, 15)).toBe(true);
     now = 1000; expect(tap(10, 10)).toBe(false); now = 1400; expect(tap(10, 10)).toBe(false);
     now = 1500; expect(tap(100, 10)).toBe(false);
+  });
+});
+
+let host: HTMLDivElement;
+beforeEach(() => { host = document.createElement('div'); document.body.append(host); vi.stubGlobal('fetch', vi.fn(async () => new Response('[]'))); });
+afterEach(async () => { await act(() => render(null, host)); host.remove(); vi.unstubAllGlobals(); });
+const pointer = (type: string, pointerType: string, x = 10, y = 10) => Object.assign(new Event(type, { bubbles: true, cancelable: true }), { pointerType, clientX: x, clientY: y });
+
+describe('message gestures', () => {
+  it('right-click opens the menu at the pointer; a touch double tap hearts; a mouse double click does not', async () => {
+    const open = vi.fn(), heart = vi.fn();
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open, heart }} />, host));
+    const card = host.querySelector('.msg-card')!;
+    await act(() => { card.dispatchEvent(Object.assign(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 40, clientY: 50 }))); });
+    expect(open).toHaveBeenCalledWith(40, 50);
+    await act(() => { card.dispatchEvent(pointer('pointerup', 'mouse')); card.dispatchEvent(pointer('pointerup', 'mouse')); });
+    expect(heart).not.toHaveBeenCalled();
+    await act(() => { card.dispatchEvent(pointer('pointerup', 'touch')); card.dispatchEvent(pointer('pointerup', 'touch')); });
+    expect(heart).toHaveBeenCalledTimes(1);
+  });
+
+  it('a touch long press opens the menu at the finger once; a real move cancels it; the lift is not a tap', async () => {
+    vi.useFakeTimers();
+    try {
+      const open = vi.fn(), heart = vi.fn();
+      await act(() => render(<Message m={{ id: 'a', role: 'user', content: 'Hi' }} onMedia={() => {}} gestures={{ open, heart }} />, host));
+      const bubble = host.querySelector('.bubble')!;
+      bubble.dispatchEvent(pointer('pointerdown', 'touch', 20, 30));
+      bubble.dispatchEvent(pointer('pointermove', 'touch', 23, 32)); // jitter
+      vi.advanceTimersByTime(499); expect(open).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(1); expect(open).toHaveBeenCalledWith(20, 30);
+      const native = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 30 });
+      bubble.dispatchEvent(native); // Android's own long-press contextmenu: suppressed, no second open
+      expect(native.defaultPrevented).toBe(true); expect(open).toHaveBeenCalledTimes(1);
+      bubble.dispatchEvent(pointer('pointerup', 'touch', 20, 30));
+      bubble.dispatchEvent(pointer('pointerdown', 'touch', 20, 30)); bubble.dispatchEvent(pointer('pointerup', 'touch', 20, 30));
+      expect(heart).not.toHaveBeenCalled();
+      bubble.dispatchEvent(pointer('pointerdown', 'touch', 20, 30));
+      bubble.dispatchEvent(pointer('pointermove', 'touch', 20, 60)); // scroll
+      vi.advanceTimersByTime(600); expect(open).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('right-click on a link keeps the browser menu', async () => {
+    const open = vi.fn();
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: '[site](https://example.com)' }} onMedia={() => {}} gestures={{ open }} />, host));
+    const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 5, clientY: 5 });
+    host.querySelector('.msg-card a')!.dispatchEvent(ev);
+    expect(open).not.toHaveBeenCalled(); expect(ev.defaultPrevented).toBe(false);
+  });
+
+  it('the ⋯ button opens the same menu (keyboard reachable)', async () => {
+    const open = vi.fn();
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open, heart: () => {} }} />, host));
+    await act(() => host.querySelector<HTMLButtonElement>('.msg-more')!.click());
+    expect(open).toHaveBeenCalled();
+  });
+
+  it('a user message that starts with a quote shows a reply bubble above its text', async () => {
+    await act(() => render(<Message m={{ role: 'user', content: '> Ship it?\n\nYes' }} onMedia={() => {}} />, host));
+    expect(host.querySelector('.reply-quote')!.textContent).toBe('Ship it?');
+    expect(host.querySelector('.user-text')!.textContent).toBe('Yes');
+  });
+
+  it('the menu offers the quick row, the picker and the actions', async () => {
+    const onReact = vi.fn(), onAction = vi.fn(), onClose = vi.fn();
+    await act(() => render(<MessageMenu x={10} y={10} actions={['reply', 'copy', 'delete']} canReact onReact={onReact} onAction={onAction} onClose={onClose} />, host));
+    const quick = [...host.querySelectorAll<HTMLButtonElement>('.msg-menu-quick button')];
+    expect(quick.length).toBe(6); // 5 emoji + more
+    await act(() => quick[2].click()); expect(onReact).toHaveBeenCalledWith('❤️');
+    const items = [...host.querySelectorAll<HTMLButtonElement>('[role=menuitem]')];
+    expect(items.map((b) => b.textContent)).toEqual(['Reply', 'Copy', 'Delete for me']);
+    await act(() => items[1].click()); expect(onAction).toHaveBeenCalledWith('copy');
+    await act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })); }); expect(onClose).toHaveBeenCalled();
   });
 });
