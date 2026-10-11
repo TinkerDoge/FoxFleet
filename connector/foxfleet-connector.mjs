@@ -457,6 +457,7 @@ export function agentNote({ cfg = {}, roots = [], home = os.homedir(), features 
       : 'Files: no attachment channel; give the absolute path as text.',
     `User uploads are in ${upload}.`,
     'Approvals and questions show as tap-to-answer cards: ask one question with short options.',
+    "To react to the user's message, put REACT: ❤️ (any one emoji) on its own line. Use it sparingly.",
     `Slash commands that work here: ${REMOTE_COMMANDS.map((c) => '/' + c).join(' ')}.`,
   ];
   const body = lines.join('\n'), hash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 8);
