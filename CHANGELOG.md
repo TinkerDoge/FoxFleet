@@ -2,6 +2,11 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased
+
+### Fixed: Android bot screen shown black while diagnostics said `blank:false`
+- *Viewer:* the picture check now judges what is really visible: the displayed canvas size and the part of it inside the window and its container, and reports `collapsed`, `clipped` or `black` honestly (a 1440x900 canvas shown at 2x1 px used to read as fine). The page re-fits the picture to the window when it is collapsed or off-size, sizes its container to the window when that was a sliver, counts bytes received, and the diagnostics gain `verdict`, `canvas`, `scaleXY`, `box`, `visible`, `fixes`, `msgs` and `sample`. Not yet confirmed on a real phone.
+
 ## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)
