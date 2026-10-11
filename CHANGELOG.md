@@ -6,7 +6,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
-## 0.3.9-alpha (unreleased, Android versionCode 17)
+## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)
 - *Message menu:* long-press (Android; also on a picture inside a message) or right-click, long-press, the ⋯ button or the keyboard's context-menu key (web) opens a menu: quick reactions 👍 👎 ❤️ 🎉 😮 plus the full picker (an emoji you already gave is taken back), Reply, Copy, Select text (Android), Share, Retry, Edit, Delete for me. Retry shows on the newest reply only while it is the last message. Edit shows on your newest message once a reply follows it, for Hermes agents only, and neither shows while the agent is busy. Edit runs `/undo` and puts the text back in the box; if the agent refuses `/undo`, the text stays out and a notice says so.
@@ -24,14 +24,14 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Delete for me* needs hub 0.3.9. The new apps hide the action on older hubs.
 - *Downgrading the hub to 0.3.8* drops the hidden list the next time it writes `reactions.json`.
 
-## 0.3.8-alpha (unreleased, Android versionCode 16)
+## 0.3.8-alpha (Android versionCode 16)
 
 ### Changed: one frame per message, quieter history, shorter agent note
 - *Message frames (web + Android):* each message is one card that holds its reasoning, text, pictures, files and time; reactions hang on the card's bottom edge. Pointing at (web) or pressing (Android) a message outlines it, so it is clear what you react to. A reply being written already sits in the frame it keeps.
 - *History:* Hermes' own notices (background-process results, delegation results, wake-ups, compaction context) no longer show as your messages when a chat loads; a skill turn shows as you typed it (`/review check PR 4`) instead of the whole skill text.
 - *Connector 0.3.8-alpha:* the FoxFleet note for agents is about half as long (568 instead of 1297 characters) and says each thing once. If you opted in, the installed note updates on the next connector start; otherwise new chats get the new text.
 
-## 0.3.7-alpha (unreleased, Android versionCode 15)
+## 0.3.7-alpha (Android versionCode 15)
 
 ### Added: messenger polish (web + Android)
 - *Reactions:* react to any message with emoji (quick row plus the full searchable catalog, skin tones included); pills show counts and who reacted, humans and agents apart. Web: the smiley button on a message; Android: long-press (or the TalkBack action) and a bottom sheet. Changes show at once and roll back if the hub refuses. A second client picks them up within 30 s.
@@ -44,7 +44,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Android media:* pictures and opened videos are kept in an account-scoped cache (256 MB, oldest removed first), so reopening a chat shows them without asking the hub again. Videos download when opened, with progress and Cancel. Settings shows the size and a **Clear cached media** button. Signing out clears that account's copies. Media requests send the hub token only to the hub itself.
 - *Look:* warmer dark palette, softer assistant cards, slightly tighter spacing; the Android header shows Online/Offline and live activity shows once, under the reply.
 
-## 0.3.6-alpha (unreleased, Android versionCode 14)
+## 0.3.6-alpha (Android versionCode 14)
 
 ### Added: agents know they are in FoxFleet
 - *Connector 0.3.6:* chats are now created and resumed with `source: "foxfleet"`, so Hermes no longer tells the agent it is in its terminal UI (which also told it `MEDIA:` files do not work). A Hermes that does not know `source` is detected and the call is retried without it.
@@ -69,7 +69,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 ### Changed: tests
 - `npm test` now runs `scripts/check-hub-tests.mjs`: fails if fewer tests ran than `scripts/hub-tests.min`, or any was cancelled or failed. `--test-force-exit` was dropped (`--test-timeout` stays); `npm run test:raw` is the plain runner.
 
-## 0.3.5-alpha (unreleased, Android versionCode 13)
+## 0.3.5-alpha (Android versionCode 13)
 
 Fixes from testing 0.3.3 / 0.3.4 on a phone against a self-hosted hub behind Cloudflare. **The hub needs the new build** for the items marked *hub*; apps and connectors tell you when it is older.
 
@@ -95,7 +95,7 @@ Fixes from testing 0.3.3 / 0.3.4 on a phone against a self-hosted hub behind Clo
 ### Docs
 - Screen takeover and media troubleshooting, a hub / connector / app compatibility table, scrolling, agent list fallbacks, `allow-media`.
 
-## 0.3.4-alpha (unreleased, Android versionCode 12)
+## 0.3.4-alpha (Android versionCode 12)
 
 ### Added: a Telegram-style agent list, sorted by activity, with pins
 - **Order:** pinned agents first (in the order you pinned them, up to 50), then newest message activity, then agents with no messages in registry order. The manual order under *Manage agents* is now only the tie-break. Pins and last-activity data are per account on the hub.
