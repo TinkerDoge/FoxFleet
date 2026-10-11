@@ -10,6 +10,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Settings:* master switch, per-category switches (replies, approvals, errors; kept on the phone), per-agent and per-chat mute for 1 h, 8 h, 24 h or until unmuted (the hub's mute routes), a status line (Connected, Reconnecting, Offline, Permission missing), a "Send test notification" button with clear success and failure lines, and a link to Android's channel settings when you switched one off there.
 - *Permission (Android 13+):* a short explanation first, then the system dialog; after "Don't ask again" the section says so and opens the system settings.
 - *Boot:* the service restarts after a reboot or an app update only if you turned notifications on and a login is stored. Signing out, or signing in as another account or on another hub, stops it and clears the resume id, the settings and every notification of the old pair.
+- *Web:* Settings gets a small Notifications card (hub with the `notify` feature only): the hub-side master switch, agent mutes with a duration and an Unmute list, and a test button. The web app shows no alerts itself.
 - *Hub:* needs hub 0.3.9-alpha with the `notify` feature; an older hub shows "too old" and the controls stay hidden.
 
 ## 0.3.9-alpha (Android versionCode 17)

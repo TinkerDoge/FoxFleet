@@ -263,3 +263,5 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 .media-skel { width: 2.2rem; height: 2.2rem; border-radius: 10px; background: linear-gradient(90deg, rgba(127,127,127,.18), rgba(127,127,127,.32), rgba(127,127,127,.18)); background-size: 200% 100%; animation: media-shimmer 1.2s linear infinite; }
 @keyframes media-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .media-skel { animation: none; } }
+
+.row-check{display:flex;align-items:center;gap:10px;min-height:44px}.row-check input{width:20px;height:20px}

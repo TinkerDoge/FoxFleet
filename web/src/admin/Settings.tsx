@@ -2,6 +2,8 @@ import { useState } from 'preact/hooks';
 import { displayHub, getPrefs, setAccent, setMotion, setReasoning, setTextSize, setTheme, type Prefs } from '../state';
 import { t } from '../i18n/t';
 import { hubIsOld, type HubInfo } from '../lib/hubCompat';
+import type { Client } from '../api/client';
+import { NotifySettings } from './NotifySettings';
 
 export const ACCENTS: { id: string; name: string; color: string }[] = [
   { id: 'ember', name: 'Ember', color: '#BE4A21' }, { id: 'ocean', name: 'Ocean', color: '#2A64C6' }, { id: 'moss', name: 'Moss', color: '#2F7A4B' }, { id: 'iris', name: 'Iris', color: '#7457D8' }, { id: 'graphite', name: 'Graphite', color: '#3A3A3A' },
@@ -10,7 +12,7 @@ function Choice<T extends string>({ label, value, options, onPick }: { label: st
   return <fieldset class="field enum"><legend>{label}</legend><div class="chips" role="radiogroup" aria-label={label}>{options.map(([v, name]) => <button key={v} type="button" role="radio" aria-checked={value === v} class={`chip-btn${value === v ? ' on' : ''}`} onClick={() => onPick(v)}>{name}</button>)}</div></fieldset>;
 }
 /** Theme, accent, text size, motion: stored on this device only. */
-export function Settings({ hub, hubInfo }: { hub: string; hubInfo?: HubInfo }) {
+export function Settings({ hub, hubInfo, client }: { hub: string; hubInfo?: HubInfo; client?: Client }) {
   const [p, setP] = useState<Prefs>(getPrefs());
   const upd = (fn: () => void) => { fn(); setP(getPrefs()); };
   return (
@@ -25,6 +27,7 @@ export function Settings({ hub, hubInfo }: { hub: string; hubInfo?: HubInfo }) {
         <Choice label={t('settings.motion')} value={p.motion} options={[['system', t('settings.motionSystem')], ['reduce', t('settings.motionReduce')]]} onPick={(v) => upd(() => setMotion(v))} />
         <Choice label={t('settings.reasoning')} value={p.reasoning ? 'on' : 'off'} options={[['on', t('settings.on')], ['off', t('settings.off')]]} onPick={(v) => upd(() => setReasoning(v === 'on'))} />
       </section>
+      {client && hubInfo?.features?.includes('notify') && <NotifySettings client={client} />}
       <section class="card stack"><h2>{t('settings.hub')}</h2><p class="muted">{displayHub(hub)}</p><p class="muted small">{t('settings.about')}</p>{hubInfo?.version && <p class="muted small">{t('settings.hubVersion', { version: hubInfo.version })}</p>}{hubIsOld(hubInfo) && <p class="muted small hub-old" role="note">{t('settings.hubOld')}</p>}</section>
     </div>
   );

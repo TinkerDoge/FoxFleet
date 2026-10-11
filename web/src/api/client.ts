@@ -7,6 +7,7 @@ import { chatMessages, fromHistory } from '../lib/chat';
 import type { FileRef } from '../lib/files';
 import { SseParser } from '../lib/sse';
 import { BUNDLED_CATALOG, type Catalog } from '../lib/commands';
+import { parseNotifyPrefs, type NotifyPrefs } from '../lib/notify';
 
 type Fetch = typeof fetch;
 export interface ClientOptions { base?: string; fetch?: Fetch; timeoutMs?: number; /** First retry delay for transient failures (ms); doubles with jitter. Tests use 1. */ retryBaseMs?: number }
@@ -178,6 +179,11 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     react: (agent: string, session: string, message: string, emoji: string, present: boolean) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/reactions`, { method: present ? 'PUT' : 'DELETE', body: { message_id: message, emoji }, retries: 2 }), // PUT/DELETE are idempotent, so a retry is safe
     hide: (agent: string, session: string, message: string, present: boolean) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/hidden`, { method: present ? 'PUT' : 'DELETE', body: { message_id: message }, retries: 2 }), // idempotent, like reactions
     pinAgent: async (agent: string, pinned: boolean): Promise<{ pinned: boolean; pins: string[] }> => request(`/api/agents/${enc(agent)}/pin`, { method: 'PUT', body: { pinned }, retries: 0 }),
+    // Notifications (hub 0.3.9+, feature "notify"): the master switch, mutes and the test event. The same routes the Android app uses.
+    notifyPrefs: async (): Promise<NotifyPrefs> => parseNotifyPrefs(await request('/api/notify/prefs')),
+    setNotifyEnabled: async (enabled: boolean): Promise<NotifyPrefs> => parseNotifyPrefs(await request('/api/notify/prefs', { method: 'PUT', body: { enabled }, retries: 0 })),
+    notifyMute: async (agent: string, chat: string | null, muted: boolean, forMs?: number): Promise<NotifyPrefs> => parseNotifyPrefs(await request('/api/notify/mute', { method: 'PUT', body: { agent, ...(chat ? { chat } : {}), muted, ...(muted && forMs ? { for_ms: forMs } : {}) }, retries: 0 })),
+    notifyTest: async (): Promise<{ muted: boolean }> => ({ muted: (await request<{ event?: { muted?: boolean } }>('/api/notify/test', { body: {}, retries: 0 })).event?.muted === true }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
 
     // ---- devices and security ----

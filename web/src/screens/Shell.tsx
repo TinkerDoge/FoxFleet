@@ -112,7 +112,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {route.name === 'manage' && owner && <Manage client={client} onChanged={load} onAuthLost={lost} />}
         {route.name === 'admin' && owner && <Admin client={client} onAuthLost={lost} />}
         {route.name === 'account' && <Account client={client} onAuthLost={lost} />}
-        {route.name === 'settings' && <Settings hub={loadHub()} hubInfo={info.hub} />}
+        {route.name === 'settings' && <Settings hub={loadHub()} hubInfo={info.hub} client={client} />}
         {!PAGES.includes(route.name) && agents && agents.length === 0 && (
           <div class="empty-home"><Icon name="agents" size={48} class="icon-hero" /><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}
