@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fault } from './config.js';
-import { parseMedia } from './media-tags.js';
+import { takeReact } from './media-tags.js';
 
 export const validEmoji = (value) => typeof value === 'string' && value.length <= 64 && /^\p{RGI_Emoji}$/v.test(value);
 /** Reactions agents write in their replies (a REACT: line). Each lands on the nearest earlier user message with an id. Derived on read, never stored. */
@@ -12,14 +12,15 @@ export function agentReactions(messages, actor) {
   for (const m of messages) {
     if (m?.role === 'user') { user = m.id != null ? String(m.id) : null; continue; }
     if (m?.role !== 'assistant' || !user || typeof m.content !== 'string') continue;
-    const { react } = parseMedia(m.content);
+    const { react } = takeReact(m.content);
     if (react && validEmoji(react)) out.push({ message: user, emoji: react, actor });
   }
   return out;
 }
 /** Stored reactions plus derived ones; an actor counts once per emoji on a message. */
 export function mergeReactions(stored, derived) {
-  const merged = Object.fromEntries(Object.entries(stored).map(([id, groups]) => [id, groups.map((g) => ({ emoji: g.emoji, actors: [...g.actors] }))]));
+  const merged = Object.create(null); // no prototype: a message id like "__proto__" is just a key
+  for (const [id, groups] of Object.entries(stored)) merged[id] = groups.map((g) => ({ emoji: g.emoji, actors: [...g.actors] }));
   for (const d of derived) {
     const groups = (merged[d.message] ??= []); let g = groups.find((x) => x.emoji === d.emoji);
     if (!g) { g = { emoji: d.emoji, actors: [] }; groups.push(g); }
@@ -27,12 +28,12 @@ export function mergeReactions(stored, derived) {
   }
   return merged;
 }
-export async function reactionStore(file, { now = () => Date.now(), retentionMs = 90 * 86400000 } = {}) {
+export async function reactionStore(file, { now = () => Date.now(), retentionMs = 90 * 86400000, hiddenLimit = 50000, hiddenPerSession = 5000 } = {}) {
   let rows = [], hidden = []; // hidden: [{ agent, session, message, at }], this account's "delete for me" list; it never expires on its own
   try {
     const data = JSON.parse(await readFile(file, 'utf8'));
     if (!Array.isArray(data.rows)) throw new Error('Invalid reaction store');
-    rows = data.rows; hidden = Array.isArray(data.hidden) ? data.hidden : [];
+    rows = data.rows; hidden = Array.isArray(data.hidden) ? data.hidden.filter(h => h && typeof h === 'object' && typeof h.agent === 'string' && typeof h.session === 'string' && typeof h.message === 'string') : [];
   } catch (e) { if (e.code !== 'ENOENT') throw e; }
   let pending = Promise.resolve();
   function mutate(change) {
@@ -77,7 +78,8 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
         const i = next.findIndex(h => h.agent === agent && h.session === session && h.message === message);
         if (!present) { if (i >= 0) next.splice(i, 1); return; }
         if (i >= 0) return;
-        if (next.length >= 50000 || next.filter(h => h.agent === agent && h.session === session).length >= 5000) throw fault(409, 'Hidden message limit reached');
+        if (next.filter(h => h.agent === agent && h.session === session).length >= hiddenPerSession) throw fault(409, 'Hidden message limit reached');
+        while (next.length >= hiddenLimit) { let o = 0; for (let k = 1; k < next.length; k++) if (next[k].at < next[o].at) o = k; next.splice(o, 1); } // the global cap evicts the oldest hidden ids rather than refusing new ones
         next.push({ agent, session, message, at: now() });
       });
     },

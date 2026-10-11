@@ -134,3 +134,47 @@ test('HTTP: agent REACT: lines show as reactions, and hiding is per account and 
   const agents = (await (await call('/api/agents')).json()).agents;
   assert.equal(agents.find(a => a.name === 'scribe').capabilities.agentReactions, true);
 });
+
+test('hidden messages: the global cap evicts the oldest, the per-conversation cap rejects', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hidden-cap-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let clock = 1000; const s = await reactionStore(path.join(dir, 'reactions.json'), { now: () => clock++, hiddenLimit: 3 });
+  for (const [session, id] of [['s1', 'a'], ['s2', 'b'], ['s3', 'c'], ['s4', 'd']]) await s.hide('x', session, id, true);
+  assert.deepEqual(s.hidden('x', 's1'), []); // 'a' was the oldest
+  assert.deepEqual([s.hidden('x', 's2'), s.hidden('x', 's3'), s.hidden('x', 's4')], [['b'], ['c'], ['d']]);
+  const per = await reactionStore(path.join(dir, 'per.json'), { hiddenPerSession: 2 });
+  await per.hide('x', 's', '1', true); await per.hide('x', 's', '2', true); await per.hide('x', 's', '2', true); // a repeat is not a new entry
+  await assert.rejects(per.hide('x', 's', '3', true), e => e.status === 409);
+  await per.hide('x', 'other', '3', true); assert.deepEqual(per.hidden('x', 's'), ['1', '2']);
+});
+
+test('hidden messages: corrupt entries in the store file are ignored on load', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hidden-bad-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'reactions.json');
+  await writeFile(file, JSON.stringify({ version: 2, rows: [], hidden: [null, 7, 'x', { agent: 'a', session: 's' }, { agent: 'a', session: 's', message: 4 }, { agent: 'a', session: 's', message: 'ok', at: 1 }] }));
+  const s = await reactionStore(file);
+  assert.deepEqual(s.hidden('a', 's'), ['ok']);
+  await s.hide('a', 's', 'two', true); assert.deepEqual(s.hidden('a', 's'), ['ok', 'two']);
+});
+
+test('mergeReactions copes with a message id of __proto__', () => {
+  const bot = { id: 'agent:a', name: 'A', kind: 'agent' };
+  const merged = mergeReactions({}, [{ message: '__proto__', emoji: '👍', actor: bot }]);
+  assert.deepEqual(merged['__proto__'], [{ emoji: '👍', actors: [bot] }]);
+  assert.equal(Object.getPrototypeOf(merged), null);
+});
+
+test('HTTP: /hidden refuses ids from another conversation and other methods', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hide-http2-'));
+  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
+  await new Promise(r => hub.listen(0, '127.0.0.1', r));
+  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const call = (p, method = 'GET', body) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  await call('/api/connections', 'POST', { name: 'scribe', kind: 'mcp-inbox' });
+  const chat = async (text) => { const r = await call('/api/agents/scribe/chat', 'POST', { messages: [{ role: 'user', content: text }] }); const sid = r.headers.get('x-hermes-session-id'); await r.text(); return sid; };
+  const one = await chat('first'), two = await chat('second');
+  assert.notEqual(one, two);
+  const other = (await (await call(`/api/agents/scribe/sessions/${two}/messages`)).json()).messages.find(m => m.role === 'user');
+  assert.ok(other?.id);
+  assert.equal((await call(`/api/agents/scribe/sessions/${one}/hidden`, 'PUT', { message_id: other.id })).status, 404);
+  assert.equal((await call(`/api/agents/scribe/sessions/${one}/hidden`, 'POST', { message_id: other.id })).status, 405);
+});
