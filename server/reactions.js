@@ -1,4 +1,4 @@
-// Account-local reactions. The caller verifies conversation/message access and supplies the authenticated actor.
+// Account-local reactions and hidden messages. The caller verifies conversation/message access and supplies the authenticated actor.
 import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
@@ -6,20 +6,24 @@ import { fault } from './config.js';
 
 export const validEmoji = (value) => typeof value === 'string' && value.length <= 64 && /^\p{RGI_Emoji}$/v.test(value);
 export async function reactionStore(file, { now = () => Date.now(), retentionMs = 90 * 86400000 } = {}) {
-  let rows = [];
-  try { const data = JSON.parse(await readFile(file, 'utf8')); if (!Array.isArray(data.rows)) throw new Error('Invalid reaction store'); rows = data.rows; }
-  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  let rows = [], hidden = []; // hidden: [{ agent, session, message, at }], this account's "delete for me" list; it never expires on its own
+  try {
+    const data = JSON.parse(await readFile(file, 'utf8'));
+    if (!Array.isArray(data.rows)) throw new Error('Invalid reaction store');
+    rows = data.rows; hidden = Array.isArray(data.hidden) ? data.hidden : [];
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
   let pending = Promise.resolve();
   function mutate(change) {
     const work = pending.then(async () => {
-      const next = rows.filter(r => r.at > now() - retentionMs).map(r => ({ ...r })); change(next);
+      const next = rows.filter(r => r.at > now() - retentionMs).map(r => ({ ...r })), nextHidden = hidden.map(h => ({ ...h })); change(next, nextHidden);
       const tmp = file + '.' + randomBytes(6).toString('hex') + '.tmp';
       await mkdir(path.dirname(file), { recursive: true });
-      try { await writeFile(tmp, JSON.stringify({ version: 1, rows: next }), { mode: 0o600, flag: 'wx' }); await rename(tmp, file); rows = next; }
+      try { await writeFile(tmp, JSON.stringify({ version: 2, rows: next, hidden: nextHidden }), { mode: 0o600, flag: 'wx' }); await rename(tmp, file); rows = next; hidden = nextHidden; }
       finally { await unlink(tmp).catch(() => {}); }
     });
     pending = work.catch(() => {}); return work;
   }
+  const drop = (list, agent, session) => { for (let i = list.length - 1; i >= 0; i--) if (list[i].agent === agent && (session === undefined || list[i].session === session)) list.splice(i, 1); };
   return {
     list(agent, session) {
       const messages = new Map();
@@ -44,9 +48,21 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
         next.push({ agent, session, message, emoji, actor: { id: actor.id, kind: actor.kind, name: actor.name.slice(0, 100) }, at: now() });
       });
     },
-    remove(agent, session) { return mutate(next => { for (let i = next.length - 1; i >= 0; i--) if (next[i].agent === agent && (session === undefined || next[i].session === session)) next.splice(i, 1); }); },
-    retain(agent, sessions) { const keep = new Set(sessions); return mutate(next => { for (let i = next.length - 1; i >= 0; i--) if (next[i].agent === agent && !keep.has(next[i].session)) next.splice(i, 1); }); },
-    clear() { return mutate(next => { next.length = 0; }); },
+    /** "Delete for me": hide (present) or show again one message in this account's view. Idempotent. */
+    hide(agent, session, message, present) {
+      if (typeof message !== 'string' || !message || message.length > 200) throw fault(400, 'Invalid message ID');
+      return mutate((_, next) => {
+        const i = next.findIndex(h => h.agent === agent && h.session === session && h.message === message);
+        if (!present) { if (i >= 0) next.splice(i, 1); return; }
+        if (i >= 0) return;
+        if (next.length >= 50000 || next.filter(h => h.agent === agent && h.session === session).length >= 5000) throw fault(409, 'Hidden message limit reached');
+        next.push({ agent, session, message, at: now() });
+      });
+    },
+    hidden(agent, session) { return hidden.filter(h => h.agent === agent && h.session === session).map(h => h.message); },
+    remove(agent, session) { return mutate((next, nextHidden) => { drop(next, agent, session); drop(nextHidden, agent, session); }); },
+    retain(agent, sessions) { const keep = new Set(sessions); return mutate((next, nextHidden) => { for (const list of [next, nextHidden]) for (let i = list.length - 1; i >= 0; i--) if (list[i].agent === agent && !keep.has(list[i].session)) list.splice(i, 1); }); },
+    clear() { return mutate((next, nextHidden) => { next.length = 0; nextHidden.length = 0; }); },
     flush: () => pending,
   };
 }

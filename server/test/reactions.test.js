@@ -65,3 +65,30 @@ test('HTTP and agent MCP reactions share state, bind actors, and reject other me
   await call(endpoint, 'DELETE', { message_id: message.id, emoji: '🦊' });
   const remaining = await (await call(endpoint)).json(); assert.equal(remaining.messages[message.id][0].actors[0].id, 'agent:scribe');
 });
+
+test('hidden messages: idempotent, per conversation, survive reload, cleaned with sessions, agents and accounts', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hidden-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, 'reactions.json');
+  await writeFile(file, JSON.stringify({ version: 1, rows: [] })); // a 0.3.8 store loads with nothing hidden
+  const s = await reactionStore(file);
+  assert.deepEqual(s.hidden('a', 's'), []);
+  await s.hide('a', 's', 'm1', true); await s.hide('a', 's', 'm1', true); await s.hide('a', 's', 'm2', true);
+  await s.hide('a', 'other', 'm9', true); await s.hide('b', 's', 'm1', true);
+  assert.deepEqual(s.hidden('a', 's'), ['m1', 'm2']);
+  const again = await reactionStore(file);
+  assert.deepEqual(again.hidden('a', 's'), ['m1', 'm2']);
+  await again.hide('a', 's', 'm2', false); await again.hide('a', 's', 'm2', false);
+  assert.deepEqual(again.hidden('a', 's'), ['m1']);
+  await again.retain('a', ['s']); assert.deepEqual(again.hidden('a', 'other'), []); assert.deepEqual(again.hidden('a', 's'), ['m1']);
+  await again.remove('a', 's'); assert.deepEqual(again.hidden('a', 's'), []);
+  assert.deepEqual(again.hidden('b', 's'), ['m1']); await again.remove('b'); assert.deepEqual(again.hidden('b', 's'), []);
+  await again.hide('c', 's', 'x', true); await again.clear(); assert.deepEqual(again.hidden('c', 's'), []);
+  await assert.rejects(async () => again.hide('a', 's', '', true), /Invalid message ID/);
+});
+
+test('hidden messages never expire on their own (reactions do)', async (t) => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hidden-age-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  let clock = 1_000_000; const s = await reactionStore(path.join(dir, 'reactions.json'), { now: () => clock, retentionMs: 1000 });
+  await s.hide('a', 's', 'm', true); clock += 5000; await s.hide('a', 's', 'n', true);
+  assert.deepEqual(s.hidden('a', 's'), ['m', 'n']);
+});
