@@ -54,22 +54,29 @@ data: {"contract":"foxfleet.notify/1","cursor":7}
 : keep-alive                 (comment, every 15 s)
 ```
 
-- **Resume.** Send `Last-Event-ID: <last id seen>` (EventSource does this by itself) or `?after=<id>`. The hub replays every retained, unmuted event with a larger id, then `foxfleet.ready`, then follows live. No duplicates. A missing or invalid cursor means "from the start of the retained log"; a client with no state should call `GET /api/notify/events` first (or take `cursor` from `foxfleet.ready`) and not process history as new.
+- **Resume.** Send `Last-Event-ID: <last id seen>` (EventSource does this by itself) or `?after=<id>`. The hub replays every retained, unmuted event with a larger id, then `foxfleet.ready`, then follows live. No duplicates. A missing or invalid cursor (anything that is not plain decimal digits: `abc`, `-5`, `1e3`, `0x10`) means "from the start of the retained log"; a client with no state should call `GET /api/notify/events` first (or take `cursor` from `foxfleet.ready`) and not process history as new.
 - **Gap.** The log keeps the newest 500 events. If your cursor is older than the oldest retained id, you get `foxfleet.gap` with `first` (oldest retained id) and `cursor` (newest). If your cursor is *newer* than the hub's (data was reset), you get `foxfleet.gap` and no replay: restart from `cursor`. After a gap, refresh the unread state by listing the chats.
 - **Heartbeat.** A `: keep-alive` comment every 15 s (so a Cloudflare tunnel stays open). If nothing, not even a comment, arrives for ~45 s, treat the link as dead and reconnect with backoff (1 s → 60 s, jittered) and your last id.
 - **Limits.** At most 8 open streams per account (`429` beyond that). A viewer that stops reading is dropped; reconnect and resume by id.
-- The stream is not closed when a device is signed out remotely; the next reconnect gets `401`. Handle `401` by going to the login screen, not by retrying.
+- **Sign-out closes the stream.** When the device behind a stream is revoked (`DELETE /api/auth/devices/{id}`), signed out (`logout`, `logout-all`, password change), disabled or removed, or its session expires, the hub sends `event: foxfleet.auth` with `{"reason":"signed_out"}` and closes the stream. For a session that simply ran out of age, the 15 s heartbeat notices within one tick. Do **not** reconnect after this frame (or after a `401`): go to the login screen.
+- **Token rotation (Android).** The app's bearer token rotates about once a day: the response that triggers it carries `X-Session-Token: <new token>`, and the old token still works for 60 s. A stream request can be that request, so read `X-Session-Token` from the **stream response headers** too and store it before anything else, or the next reconnect after the 60 s grace gets `401`. (The hub sets the header before the stream starts; there is a test that it reaches the stream response.) A stream that stays open for days never sees the header again; the client picks it up on its next `/events` call or reconnect.
 
 `FOXFLEET_NOTIFY_HEARTBEAT_MS` (hub environment) changes the heartbeat period; it exists for tests.
 
 ## Catch-up: `GET /api/notify/events?since=<id>&limit=<n>`
 
 ```json
-{ "events": [ /* events with id > since, oldest first, muted ones included (muted: true) */ ], "first": 4, "cursor": 503 }
+{ "events": [ /* events with id > since, oldest first, muted ones included (muted: true) */ ], "first": 4, "cursor": 503, "gap": false }
 ```
 
-`limit` defaults to 100, at most 500. `first` is the oldest retained id; `cursor` is the newest id. Use it on app open to learn what
+`since` must be plain digits (`400` otherwise; default 0). `limit` defaults to 100 and is at most 500; `0`, negative numbers and non-numbers mean the default. `first` is the oldest retained id; `cursor` is the newest id.
+`gap` is `true` when events after `since` were lost, that is `since > 0` and `since + 1 < first` (the log keeps only the newest 500), or when `since` is newer than the hub's `cursor` (hub data was reset). On `gap`, resync from `cursor` and refresh unread state from the chat list. With `limit` smaller than what is waiting, page by calling again with the last id you got. Use it on app open to learn what
 happened while the service was down (and for unread dots, since it includes muted events).
+
+## Retention and limits
+
+The log keeps the **newest 500 events per account, with no time limit** (older ones are dropped by count; the cursor never goes back). It is saved to `notify.json` in the account's data directory, coalesced: changes inside 250 ms cost one write; a mute change is written immediately.
+To stop a burst from flushing the log, `reply_finished` and `error` events are limited to **60 per minute per account**; the excess is dropped (not logged, not pushed). `approval` events are never dropped, and `test` has its own 10-per-minute limit on the route.
 
 ## Mute and master switch
 
@@ -81,12 +88,12 @@ Mute rules (checked when an event is created, so a mute never hides something th
 
 Muted events are still logged. Timed mutes expire by themselves.
 
-- `GET /api/notify/prefs` → `{ "enabled": true, "agents": [{ "agent": "nova", "until": null }], "chats": [{ "agent": "nova", "chat": "h_abc", "until": 1791403600000 }] }` (`until` = ms epoch, or `null` = until unmuted).
+- `GET /api/notify/prefs` → `{ "enabled": true, "storage": { "ok": true }, "agents": [{ "agent": "nova", "until": null }], "chats": [{ "agent": "nova", "chat": "h_abc", "until": 1791403600000 }] }` (`until` = ms epoch, or `null` = until unmuted). `storage.ok` is `false` (with an `error` code such as `ENOSPC`) when the last write of the log file failed: mutes and events still work in memory but would be lost on a hub restart; a Settings screen can show a hint. The hub also logs one `notify.save_failed` line (error code only) per minute.
 - `PUT /api/notify/prefs` body `{ "enabled": false }` → the same view. `enabled` must be a boolean.
 - `PUT /api/notify/mute` body `{ "agent": "nova", "chat": "h_abc"?, "muted": true, "for_ms": 3600000? }` → the prefs view.
   Without `chat` it mutes the agent. `muted: false` clears it. No `for_ms` means until unmuted; otherwise 1000 ms to 366 days (`400` outside that).
   Unknown agent → `404`. At most 200 mutes per kind.
-- `POST /api/notify/test` body `{}` → `{ "event": { …type "test"… } }`. Use it for the Settings "test" button: if `event.muted` is true the master switch is off, so tell the user. The same event is pushed on the stream.
+- `POST /api/notify/test` body `{}` → `{ "event": { …type "test"… } }`. At most 10 per minute per account, then `429` with `Retry-After: 60`. Use it for the Settings "test" button: if `event.muted` is true the master switch is off, so tell the user. The same event is pushed on the stream.
 
 Errors are JSON `{ "error": "…" }` with the usual status codes (`400` invalid input, `401` login, `404`, `429`).
 

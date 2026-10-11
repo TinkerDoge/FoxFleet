@@ -26,7 +26,7 @@ import { openaiClient } from './openai.js';
 import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
-import { notifyStore, attachNotifyStream } from './notify.js';
+import { notifyStore, attachNotifyStream, closeDeviceStreams } from './notify.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
@@ -146,6 +146,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const trusted = trustedOriginList(trustedOrigins);
   const trustedList = trusted, cfgPath = path.resolve(configPath), dataDir = path.dirname(cfgPath), avatarBase = avatarDir ? path.resolve(avatarDir) : DEFAULT_AVATAR_DIR;
   const accounts = await accountStore(path.join(dataDir, 'accounts'));
+  accounts.onSessionEnd((device) => closeDeviceStreams(device)); // a revoked / expired / signed-out device must not keep receiving notifications
   // Legacy FOXFLEET_PASSWORD bootstraps the first owner ("owner") so existing deployments keep working.
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
@@ -467,18 +468,24 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       }
       if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
         const nt = ctx.reg.notify, route = parts[2];
+        const cursorOf = (v) => (typeof v === 'string' && /^\d{1,15}$/.test(v) ? Number(v) : 0); // digits only: '1e3', '0x10', '-5', 'abc' are not cursors
         if (parts.length === 3 && route === 'stream' && req.method === 'GET') {
-          const raw = url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0, after = Number(raw);
-          return void attachNotifyStream(req, res, nt, { after: Number.isInteger(after) && after > 0 ? after : 0, keepAliveMs: Number(process.env.FOXFLEET_NOTIFY_HEARTBEAT_MS) || undefined });
+          // The rotated token (X-Session-Token, apps) is already on `res` here (set at identify time) and survives writeHead: clients must read it from this response too.
+          const device = singleUser ? null : auth.device;
+          return void attachNotifyStream(req, res, nt, { after: cursorOf(url.searchParams.get('after') ?? req.headers['last-event-id']), keepAliveMs: Number(process.env.FOXFLEET_NOTIFY_HEARTBEAT_MS) || undefined, device, alive: device ? () => accounts.isActive(device) : undefined });
         }
-        if (parts.length === 3 && route === 'events' && req.method === 'GET') { const since = Number(url.searchParams.get('since') ?? 0), limit = Number(url.searchParams.get('limit') ?? 100); return sendJson(res, 200, nt.since(Number.isInteger(since) && since > 0 ? since : 0, Number.isInteger(limit) ? limit : 100)); }
+        if (parts.length === 3 && route === 'events' && req.method === 'GET') {
+          const rawSince = url.searchParams.get('since'), rawLimit = url.searchParams.get('limit');
+          if (rawSince !== null && !/^\d{1,15}$/.test(rawSince)) throw fault(400, 'since must be a whole number');
+          return sendJson(res, 200, nt.since(cursorOf(rawSince ?? '0'), rawLimit !== null && /^\d{1,6}$/.test(rawLimit) ? Number(rawLimit) : undefined));
+        }
         if (parts.length === 3 && route === 'prefs' && req.method === 'GET') return sendJson(res, 200, nt.prefs());
         if (parts.length === 3 && route === 'prefs' && req.method === 'PUT') { const b = await readJson(req, 4096); return sendJson(res, 200, await nt.setEnabled(b.enabled)); }
         if (parts.length === 3 && route === 'mute' && req.method === 'PUT') {
           const b = await readJson(req, 4096); if (typeof b.agent !== 'string' || !store.all().some((m) => m.name === b.agent)) throw fault(404, 'Unknown agent');
           return sendJson(res, 200, await nt.setMute({ agent: b.agent, chat: b.chat, muted: b.muted, forMs: b.for_ms }));
         }
-        if (parts.length === 3 && route === 'test' && req.method === 'POST') { await readJson(req, 4096); return sendJson(res, 200, { event: nt.emit({ type: 'test' }) }); }
+        if (parts.length === 3 && route === 'test' && req.method === 'POST') { await readJson(req, 4096); if (!nt.allowTest()) { res.setHeader('Retry-After', '60'); throw fault(429, 'Too many test notifications; wait a minute'); } return sendJson(res, 200, { event: nt.emit({ type: 'test' }) }); }
         throw fault(404, 'Not found');
       }
       if (parts[0] === 'api' && parts[1] === 'machines') {

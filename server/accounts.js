@@ -38,6 +38,8 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
   const load = async (n, fallback) => { try { return JSON.parse(await readFile(file(n), 'utf8')); } catch (e) { if (e.code === 'ENOENT') return fallback; throw fault(500, 'Invalid account data'); } };
   const users = new Map((await load('users.json', { users: [] })).users.map((u) => [u.id, u]));
   const sessions = new Map((await load('devices.json', { devices: [] })).devices.map((d) => [d.id, d]));
+  // Anything holding a long-lived connection for a device (the notification stream) hears when its session ends: revoked, signed out, expired, user disabled/removed.
+  const endListeners = new Set(), dropSession = (id) => { const had = sessions.delete(id); if (had) for (const fn of endListeners) { try { fn(id); } catch { /* a listener must not break sign-out */ } } return had; };
   const invites = new Map((await load('invites.json', { invites: [] })).invites.map((i) => [i.id, i]));
   let settings = { registration: 'closed', ...(await load('account-settings.json', {})) };
   let pending = Promise.resolve();
@@ -59,9 +61,13 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
   const publicUser = (u) => ({ id: u.id, username: u.username, role: u.role, totp: Boolean(u.totp), disabled: Boolean(u.disabled), created: u.created, acceptedTerms: u.terms?.version ?? null });
   const dummy = await hashPassword('dummy-password-for-timing');
   const newToken = (sid) => { const secret = randomBytes(32).toString('base64url'); return { token: `${sid}.${secret}`, hash: sha(secret) }; };
-  function prune() { const t = now(); let changed = false; for (const [id, s] of sessions) if (s.expires <= t) { sessions.delete(id); changed = true; } for (const [id, i] of invites) if (i.expires <= t || i.usedBy) { if (i.expires <= t) { invites.delete(id); } } return changed; }
+  function prune() { const t = now(); let changed = false; for (const [id, s] of sessions) if (s.expires <= t) { dropSession(id); changed = true; } for (const [id, i] of invites) if (i.expires <= t || i.usedBy) { if (i.expires <= t) { invites.delete(id); } } return changed; }
 
   const api = {
+    /** Is this device's session still valid right now (exists, not expired, user enabled)? */
+    isActive(deviceId) { const s = sessions.get(deviceId); if (!s || s.expires <= now()) return false; const u = users.get(s.userId); return Boolean(u && !u.disabled); },
+    /** fn(deviceId) when a session ends for any reason. Returns an unsubscribe. */
+    onSessionEnd(fn) { endListeners.add(fn); return () => endListeners.delete(fn); },
     needsSetup: () => users.size === 0,
     userCount: () => users.size,
     users: () => [...users.values()].map(publicUser),
@@ -87,7 +93,7 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     },
     async createSession(userId, meta = {}) {
       prune();
-      if ([...sessions.values()].filter((s) => s.userId === userId).length >= 50) { const oldest = [...sessions.values()].filter((s) => s.userId === userId).sort((a, b) => a.lastSeen - b.lastSeen)[0]; sessions.delete(oldest.id); }
+      if ([...sessions.values()].filter((s) => s.userId === userId).length >= 50) { const oldest = [...sessions.values()].filter((s) => s.userId === userId).sort((a, b) => a.lastSeen - b.lastSeen)[0]; dropSession(oldest.id); }
       const id = randomBytes(8).toString('hex'), { token, hash } = newToken(id), t = now();
       sessions.set(id, { id, userId, hash, prevHash: null, prevUntil: 0, created: t, rotated: t, lastSeen: t, expires: t + SESSION_AGE, name: String(meta.name || 'Device').slice(0, 64), kind: meta.kind === 'app' ? 'app' : 'web', ip: meta.ip || '', ua: String(meta.ua || '').slice(0, 160) });
       await persist.devices(); return { token, deviceId: id };
@@ -98,7 +104,7 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
       const dot = token.indexOf('.'); if (dot < 1) return null;
       const s = sessions.get(token.slice(0, dot)); if (!s) return null;
       const h = sha(token.slice(dot + 1)), t = now();
-      if (s.expires <= t) { sessions.delete(s.id); await persist.devices(); return null; }
+      if (s.expires <= t) { dropSession(s.id); await persist.devices(); return null; }
       const current = eq(s.hash, h), previous = s.prevHash && s.prevUntil > t && eq(s.prevHash, h);
       if (!current && !previous) return null;
       const user = users.get(s.userId); if (!user || user.disabled) return null;
@@ -109,8 +115,8 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     },
     async rotate(deviceId) { const s = sessions.get(deviceId); if (!s) throw fault(401, 'Not signed in'); const n = newToken(s.id), t = now(); s.prevHash = s.hash; s.prevUntil = t + GRACE; s.hash = n.hash; s.rotated = t; await persist.devices(); return n.token; },
     devices: (userId, currentId) => [...sessions.values()].filter((s) => s.userId === userId).sort((a, b) => b.lastSeen - a.lastSeen).map((s) => ({ id: s.id, name: s.name, kind: s.kind, created: s.created, lastSeen: s.lastSeen, current: s.id === currentId })),
-    async revoke(userId, id) { const s = sessions.get(id); if (!s || s.userId !== userId) throw fault(404, 'Unknown device'); sessions.delete(id); await persist.devices(); },
-    async revokeAll(userId, exceptId) { for (const [id, s] of sessions) if (s.userId === userId && id !== exceptId) sessions.delete(id); await persist.devices(); },
+    async revoke(userId, id) { const s = sessions.get(id); if (!s || s.userId !== userId) throw fault(404, 'Unknown device'); dropSession(id); await persist.devices(); },
+    async revokeAll(userId, exceptId) { for (const [id, s] of sessions) if (s.userId === userId && id !== exceptId) dropSession(id); await persist.devices(); },
     async changePassword(userId, current, next, exceptId) {
       const u = users.get(userId), limit = throttle(failKey('pw', userId), 5, 15 * 60_000, 15 * 60_000);
       if (!u || typeof current !== 'string' || !(await verifyPassword(current.slice(0, 1024), u.pass))) { limit.fail(); throw fault(403, 'Current password is wrong'); }
@@ -141,12 +147,12 @@ export async function accountStore(dir, { now = () => Date.now() } = {}) {
     async setDisabled(ownerId, id, disabled) {
       if (users.get(ownerId)?.role !== 'owner') throw fault(403, 'Owner only');
       const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); if (u.role === 'owner') throw fault(400, 'The owner cannot be disabled');
-      u.disabled = Boolean(disabled); if (u.disabled) for (const [sid, s] of sessions) if (s.userId === id) sessions.delete(sid);
+      u.disabled = Boolean(disabled); if (u.disabled) for (const [sid, s] of sessions) if (s.userId === id) dropSession(sid);
       await persist.users(); await persist.devices(); return publicUser(u);
     },
     /** Admin recovery (the `foxfleet user reset-password` CLI, run on the hub host while the hub is stopped): new password, every session of that user signed out. */
-    async resetPassword(id, next) { const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); checkPassword(next); u.pass = await hashPassword(next); await persist.users(); for (const [sid, ss] of sessions) if (ss.userId === id) sessions.delete(sid); await persist.devices(); return publicUser(u); },
-    async removeUser(ownerId, id) { if (users.get(ownerId)?.role !== 'owner') throw fault(403, 'Owner only'); const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); if (u.role === 'owner') throw fault(400, 'The owner cannot be removed'); users.delete(id); for (const [sid, s] of sessions) if (s.userId === id) sessions.delete(sid); await persist.users(); await persist.devices(); },
+    async resetPassword(id, next) { const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); checkPassword(next); u.pass = await hashPassword(next); await persist.users(); for (const [sid, ss] of sessions) if (ss.userId === id) dropSession(sid); await persist.devices(); return publicUser(u); },
+    async removeUser(ownerId, id) { if (users.get(ownerId)?.role !== 'owner') throw fault(403, 'Owner only'); const u = users.get(id); if (!u) throw fault(404, 'Unknown user'); if (u.role === 'owner') throw fault(400, 'The owner cannot be removed'); users.delete(id); for (const [sid, s] of sessions) if (s.userId === id) dropSession(sid); await persist.users(); await persist.devices(); },
   };
   return api;
 }
