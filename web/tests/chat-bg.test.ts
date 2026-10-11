@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import tokens from '../../design/tokens.json';
 import { forgetAll } from '../src/lib/persist';
-import { claimBgOwner, normalizeHubKey, ownerKey, DEFAULT_BG, LIMITS, PATTERNS, SOLIDS, backgroundSize, chatBgKey, forgetAllBgs, isDefault, loadBg, moveBg, normalizeBg, patternSvg, patternUrl, prepareBackground, resetBg, saveBg, type ImageStore } from '../src/lib/chatBg';
+import { claimBgOwner, normalizeHubKey, ownerKey, DEFAULT_BG, LIMITS, PATTERNS, SOLIDS, backgroundSize, chatBgKey, forgetAllBgs, isDefault, loadBg, moveBg, normalizeBg, patternSvg, patternUrl, prepareBackground, backgroundFormat, hasTransparency, resetBg, saveBg, type ImageStore } from '../src/lib/chatBg';
 
 function memory(): ImageStore & { map: Map<string, Blob> } {
   const map = new Map<string, Blob>();
@@ -58,8 +58,32 @@ describe('chat background settings', () => {
 describe('picture preparation', () => {
   it('fits a large photo into 1600 px on the long edge, keeps the aspect, never upscales', async () => {
     expect(backgroundSize(4000, 3000)).toEqual({ width: 1600, height: 1200 }); expect(backgroundSize(3000, 4000)).toEqual({ width: 1200, height: 1600 }); expect(backgroundSize(800, 600)).toEqual({ width: 800, height: 600 });
-    let seen: number[] = []; const out = await prepareBackground(6000, 4000, async (w, h, q) => { seen = [w, h, q]; return blob(); });
+    let seen: number[] = []; const out = await prepareBackground(6000, 4000, async (w, h, q, type) => { seen = [w, h, q]; expect(type).toBe('image/jpeg'); return blob(); });
     expect(out).toBeInstanceOf(Blob); expect(seen[0]).toBe(1600); expect(seen[1]).toBe(1067); expect(seen[2]).toBeCloseTo(tokens.chatBackgrounds.image.quality);
+  });
+});
+
+describe('transparent pictures', () => {
+  it('an opaque photo is JPEG; a picture with see-through pixels keeps its alpha (WebP/PNG), never JPEG', async () => {
+    expect(backgroundFormat(false).type).toBe('image/jpeg'); expect(backgroundFormat(true).type).toBe('image/webp');
+    const types: string[] = []; const enc = async (_w: number, _h: number, _q: number, type: string) => { types.push(type); return new Blob(['x'], { type }); };
+    await prepareBackground(800, 600, enc, false); await prepareBackground(800, 600, enc, true);
+    expect(types).toEqual(['image/jpeg', 'image/webp']);
+  });
+  it('finds transparency in RGBA data and ignores a fully opaque picture', () => {
+    expect(hasTransparency(new Uint8ClampedArray([10, 20, 30, 255, 40, 50, 60, 255]))).toBe(false);
+    expect(hasTransparency(new Uint8ClampedArray([10, 20, 30, 255, 40, 50, 60, 0]))).toBe(true);
+    expect(hasTransparency(new Uint8ClampedArray([1, 2, 3, 254]))).toBe(true);
+  });
+});
+
+describe('the picture store clear survives a quick reload', () => {
+  it('a different owner sets a pending flag that the next claim finishes if the first clear never ran', async () => {
+    const s = memory(); await s.put('k', new Blob(['x'])); claimBgOwner('a@hub', s);
+    const slow: ImageStore = { ...s, clear: () => new Promise(() => {}) };   // the page reloads before the clear finishes
+    claimBgOwner('b@hub', slow); expect(localStorage.getItem('foxfleet.chatbgclear')).toBe('1');
+    claimBgOwner('b@hub', s); await new Promise((r) => setTimeout(r, 0));
+    expect(s.map.size).toBe(0); expect(localStorage.getItem('foxfleet.chatbgclear')).toBeNull();
   });
 });
 

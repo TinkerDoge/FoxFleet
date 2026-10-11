@@ -77,19 +77,30 @@ export async function forgetAllBgs(s: ImageStore = images()): Promise<void> {
 
 /** Largest size for the stored picture: long edge at most `maxEdge` (1600 by default), never upscaled. */
 export const backgroundSize = (w: number, h: number) => fitDimensions(w, h, LIMITS.maxEdge);
-export interface Encode { (width: number, height: number, quality: number): Promise<Blob> }
-/** Re-encode a picked picture small: fit 1600 px, JPEG. Injectable `encode` for tests; the browser path decodes with EXIF orientation. */
-export async function prepareBackground(w: number, h: number, encode: Encode): Promise<Blob> {
-  const d = backgroundSize(w, h); return encode(d.width, d.height, LIMITS.quality);
+export interface Encode { (width: number, height: number, quality: number, type: string): Promise<Blob> }
+/** A picture with real see-through pixels is kept as WebP/PNG (JPEG would turn them black); every other picture is a small JPEG. */
+export const backgroundFormat = (alpha: boolean) => (alpha ? { type: 'image/webp', quality: LIMITS.quality } : { type: 'image/jpeg', quality: LIMITS.quality });
+/** True when any pixel of RGBA data (canvas getImageData) is not fully opaque. */
+export function hasTransparency(rgba: ArrayLike<number>): boolean { for (let i = 3; i < rgba.length; i += 4) if (rgba[i] < 255) return true; return false; }
+/** Re-encode a picked picture small: fit 1600 px; JPEG, or WebP (PNG where the browser cannot write WebP) with alpha. Injectable `encode` for tests. */
+export async function prepareBackground(w: number, h: number, encode: Encode, alpha = false): Promise<Blob> {
+  const d = backgroundSize(w, h), f = backgroundFormat(alpha);
+  const blob = await encode(d.width, d.height, f.quality, f.type);
+  // a browser that cannot write WebP answers with PNG: still lossless alpha, never black
+  return blob;
 }
 export async function downscaleBackground(file: Blob): Promise<Blob> {
   const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
   try {
-    return await prepareBackground(bmp.width, bmp.height, (width, height, quality) => new Promise<Blob>((res, rej) => {
-      const c = document.createElement('canvas'); c.width = width; c.height = height;
-      const g = c.getContext('2d'); if (!g) return rej(new Error('Canvas is not available'));
-      g.drawImage(bmp, 0, 0, width, height); c.toBlob((b) => (b ? res(b) : rej(new Error('Could not encode the picture'))), 'image/jpeg', quality);
-    }));
+    const d = backgroundSize(bmp.width, bmp.height);
+    const c = document.createElement('canvas'); c.width = d.width; c.height = d.height;
+    const g = c.getContext('2d', { willReadFrequently: true }); if (!g) throw new Error('Canvas is not available');
+    g.drawImage(bmp, 0, 0, d.width, d.height);
+    // only formats that can carry alpha are scanned; a photo goes straight to JPEG
+    const alpha = /png|webp|gif|avif/i.test(file.type) && hasTransparency(g.getImageData(0, 0, d.width, d.height).data);
+    return await prepareBackground(bmp.width, bmp.height, (_w, _h, quality, type) => new Promise<Blob>((res, rej) => {
+      c.toBlob((b) => (b ? res(b) : rej(new Error('Could not encode the picture'))), type, quality);
+    }), alpha);
   } finally { bmp.close?.(); }
 }
 
@@ -103,7 +114,8 @@ export const solidVar = (id: string) => `var(--chat-solid-${id})`;
 
 // ---- who owns the data on this device ----
 // Sign-out keeps backgrounds. They are cleared only when a DIFFERENT account or hub signs in; the owner key sits next to the data.
-const OWNER = 'foxfleet.chatbgowner';
+const OWNER = 'foxfleet.chatbgowner', PENDING = 'foxfleet.chatbgclear';
+function finishClear(s: ImageStore): Promise<void> { return s.clear().then(() => safe(() => localStorage.removeItem(PENDING), undefined)).catch(() => {}); }
 /** One spelling per hub: scheme and host lower-case, default port and trailing slashes dropped, no query or fragment. '' means this origin. */
 export function normalizeHubKey(hub: string, origin = typeof location !== 'undefined' ? location.origin : ''): string {
   let text = (hub || origin).trim(); if (!text) return '';
@@ -119,9 +131,11 @@ export type Claim = 'adopted' | 'kept' | 'cleared';
  */
 export function claimBgOwner(owner: string, s: ImageStore = images()): Claim {
   const had = safe(() => localStorage.getItem(OWNER), null);
+  if (safe(() => localStorage.getItem(PENDING), null)) finishClear(s);
   if (had === owner) return 'kept';
   if (had === null) { safe(() => localStorage.setItem(OWNER, owner), undefined); return 'adopted'; }
-  safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith(LS)) localStorage.removeItem(k); localStorage.setItem(OWNER, owner); }, undefined);
-  void s.clear().catch(() => {});
+  // the picture store clears asynchronously: a flag survives a quick reload and finishes the job at the next claim
+  safe(() => { for (const k of Object.keys(localStorage)) if (k.startsWith(LS)) localStorage.removeItem(k); localStorage.setItem(OWNER, owner); localStorage.setItem(PENDING, '1'); }, undefined);
+  finishClear(s);
   return 'cleared';
 }

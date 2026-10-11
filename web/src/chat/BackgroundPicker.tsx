@@ -43,7 +43,7 @@ export function BackgroundPicker({ bg, hasImage, error, onChange, onPick, onRese
         <div class="bg-section"><h3>{t('chatbg.patterns')}</h3>
           <div class="bg-swatches patterns" role="radiogroup" aria-label={t('chatbg.patterns')}>
             {PATTERNS.map((p) => <button type="button" key={p.id} role="radio" aria-checked={bg.pattern === p.id} aria-label={p.name} title={p.name} class={`bg-swatch pat${bg.pattern === p.id ? ' on' : ''}`} style={{ background: bg.solid ? solidVar(bg.solid) : 'var(--bg)' }} onClick={() => onChange({ pattern: p.id })}>
-              <i style={{ WebkitMaskImage: patternUrl(p), maskImage: patternUrl(p), WebkitMaskSize: `${p.width}px ${p.height}px`, maskSize: `${p.width}px ${p.height}px`, '--pat-o': `var(--chat-pattern-${p.id}-opacity)` } as any} />
+              <i style={{ WebkitMaskImage: patternUrl(p), maskImage: patternUrl(p), ...swatchMask(p), '--pat-o': `var(--chat-pattern-${p.id}-opacity)` } as any} />
             </button>)}
           </div>
         </div>
@@ -64,4 +64,10 @@ export function BackgroundPicker({ bg, hasImage, error, onChange, onPick, onRese
       <p class="muted small bg-note">{t('chatbg.local')}</p>
     </div>
   );
+}
+
+/** A tile bigger than the 44 px swatch (doodles, topography) is shown whole, scaled to fit, instead of its clipped corner; small tiles repeat. */
+function swatchMask(p: { width: number; height: number }) {
+  const big = Math.max(p.width, p.height) > 44;
+  return big ? { WebkitMaskSize: 'contain', maskSize: 'contain', WebkitMaskRepeat: 'no-repeat', maskRepeat: 'no-repeat', WebkitMaskPosition: 'center', maskPosition: 'center' } : { WebkitMaskSize: `${p.width}px ${p.height}px`, maskSize: `${p.width}px ${p.height}px` };
 }

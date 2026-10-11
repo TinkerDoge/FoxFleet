@@ -4,29 +4,31 @@ import { DEFAULT_BG, LIMITS, PATTERNS, SOLIDS, downscaleBackground, images, isDe
 /** The look of one chat: settings from localStorage, the picture from IndexedDB (as an object URL). All on this device. */
 export function useChatBg(key: string, previousKey?: string) {
   const [bg, setBg] = useState<ChatBg>(() => loadBg(key)), [url, setUrl] = useState<string>(), [error, setError] = useState(false);
-  const alive = useRef(0);
+  const alive = useRef(0), obj = useRef<string>();
+  /** The one live object URL: every replacement, key change and unmount revokes the previous one, so no picture leaks. */
+  const show = useCallback((blob?: Blob) => { if (obj.current) URL.revokeObjectURL(obj.current); obj.current = blob ? URL.createObjectURL(blob) : undefined; setUrl(obj.current); }, []);
+  useEffect(() => () => { alive.current++; if (obj.current) URL.revokeObjectURL(obj.current); obj.current = undefined; }, []);
   useEffect(() => {
-    const run = ++alive.current; let made: string | undefined;
+    const run = ++alive.current;
     (async () => {
       if (previousKey && previousKey !== key) await moveBg(previousKey, key);
-      const next = loadBg(key); if (run !== alive.current) return; setBg(next); setUrl(undefined); setError(false);
+      const next = loadBg(key); if (run !== alive.current) return; setBg(next); show(undefined); setError(false);
       if (!next.image) return;
       const blob = await images().get(key).catch(() => undefined);
       if (run !== alive.current) return;
-      if (blob) { made = URL.createObjectURL(blob); setUrl(made); } else setBg((b) => normalizeBg({ ...b, image: false }));
+      if (blob) show(blob); else setBg((b) => normalizeBg({ ...b, image: false }));
     })();
-    return () => { if (made) URL.revokeObjectURL(made); };
   }, [key]);
   const update = useCallback((patch: Partial<ChatBg>) => setBg((b) => { const next = normalizeBg({ ...b, ...patch }); saveBg(key, next); return next; }), [key]);
   const pick = useCallback(async (file: File) => {
     setError(false); const run = alive.current;
     try {
       const blob = await downscaleBackground(file); await images().put(key, blob); if (run !== alive.current) return;
-      setUrl((old) => { if (old) URL.revokeObjectURL(old); return URL.createObjectURL(blob); });
+      show(blob);
       setBg((b) => { const next = normalizeBg({ ...b, image: true, mode: 'image' }); saveBg(key, next); return next; });
     } catch { setError(true); }
-  }, [key]);
-  const reset = useCallback(async () => { alive.current++; setUrl((old) => { if (old) URL.revokeObjectURL(old); return undefined; }); setBg(await resetBg(key)); setError(false); }, [key]);
+  }, [key, show]);
+  const reset = useCallback(async () => { alive.current++; show(undefined); setBg(await resetBg(key)); setError(false); }, [key, show]);
   return { bg, url: bg.mode === 'image' ? url : undefined, imageUrl: url, error, update, pick, reset };
 }
 
