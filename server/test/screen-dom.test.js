@@ -74,7 +74,7 @@ test('clipped canvas: size is fine but it is off-screen -> verdict clipped, blan
 
 test('hub.disconnect stops the sampler (no verdict updates afterwards)', { skip: !CHROME && 'no Chrome', timeout: 60000 }, async (t) => {
   const h = await setup(t); await open(h, { collapse: false });
-  await until(h, (x) => x.verdict === 'ok'); await h.ev('hub.disconnect()');
+  await until(h, (x) => x.verdict === 'ok'); await h.ev('hub.disconnect()'); await sleep(800); // let the disconnect's own state line land first
   const a = (await diag(h)).log.length; await sleep(3000); const b = (await diag(h)).log.length;
   assert.equal(b, a, 'no log lines (blank/refit) after disconnect');
 });
