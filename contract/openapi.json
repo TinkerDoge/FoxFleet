@@ -4343,6 +4343,691 @@
           }
         }
       }
+    },
+    "/api/notify/stream": {
+      "get": {
+        "operationId": "notifyStream",
+        "summary": "Account-wide notification stream (SSE).",
+        "description": "Server-Sent Events. Resume with Last-Event-ID or ?after=<id> (digits only; anything else means no cursor). Frames: `retry: 3000`; optional `event: foxfleet.gap` {first,cursor}; `event: notify` with `id:` and an Event as data; once `event: foxfleet.ready` {contract,cursor} (no id); `: keep-alive` comment every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close when the device session ends. The response carries X-Session-Token when the app token was rotated by this request: store it. At most 8 streams per account (429).",
+        "tags": [
+          "notify"
+        ],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Cursor; same as Last-Event-ID (this one wins)."
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream",
+            "headers": {
+              "X-Session-Token": {
+                "description": "Present only when the app's bearer token was rotated by this request.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/notify/events": {
+      "get": {
+        "operationId": "listNotifyEvents",
+        "summary": "Catch-up: events after a cursor (muted ones included).",
+        "tags": [
+          "notify"
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "description": "Digits only, else 400. Default 0."
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "Default 100, max 500; 0, negatives and non-numbers mean the default."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Events, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "events",
+                    "first",
+                    "cursor",
+                    "gap"
+                  ],
+                  "properties": {
+                    "events": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "id",
+                          "v",
+                          "type",
+                          "agent",
+                          "chat",
+                          "priority",
+                          "at",
+                          "muted"
+                        ],
+                        "properties": {
+                          "id": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "description": "Cursor: strictly increasing per account, never reused, also across restarts. Muted events use ids too."
+                          },
+                          "v": {
+                            "type": "integer",
+                            "enum": [
+                              1
+                            ]
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "reply_finished",
+                              "approval",
+                              "error",
+                              "test"
+                            ],
+                            "description": "Clients must ignore unknown future types."
+                          },
+                          "agent": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Agent name as used in /api/agents/{name}. Null for test."
+                          },
+                          "chat": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "description": "Session id of the chat. Null for test."
+                          },
+                          "priority": {
+                            "type": "string",
+                            "enum": [
+                              "normal",
+                              "high"
+                            ]
+                          },
+                          "at": {
+                            "type": "integer",
+                            "description": "Hub time, ms since the epoch."
+                          },
+                          "muted": {
+                            "type": "boolean",
+                            "description": "A mute or the master switch applied when the event was created. Muted events are not pushed on the stream."
+                          },
+                          "run_id": {
+                            "type": "string",
+                            "description": "reply_finished, error."
+                          },
+                          "message": {
+                            "type": "string",
+                            "description": "error: a fixed short sentence, never model text."
+                          },
+                          "request_id": {
+                            "type": "string",
+                            "description": "approval: answer with POST /api/agents/{agent}/native/sessions/{chat}/requests/{request_id}."
+                          },
+                          "kind": {
+                            "type": "string",
+                            "description": "approval: 'clarify' for a question, otherwise the approval method name."
+                          }
+                        }
+                      }
+                    },
+                    "first": {
+                      "type": "integer",
+                      "description": "Oldest id still retained."
+                    },
+                    "cursor": {
+                      "type": "integer",
+                      "description": "Newest id."
+                    },
+                    "gap": {
+                      "type": "boolean",
+                      "description": "True when events after `since` were lost (since+1 < first) or `since` is newer than the hub's cursor: resync from `cursor`."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/notify/prefs": {
+      "get": {
+        "operationId": "getNotifyPrefs",
+        "summary": "Master switch and mutes.",
+        "tags": [
+          "notify"
+        ],
+        "responses": {
+          "200": {
+            "description": "Prefs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "storage",
+                    "agents",
+                    "chats"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Master switch."
+                    },
+                    "storage": {
+                      "type": "object",
+                      "required": [
+                        "ok"
+                      ],
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Error code of the last failed save (for example ENOSPC)."
+                        }
+                      },
+                      "description": "Whether the last write of notify.json succeeded; muted state is kept in memory either way."
+                    },
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "description": "ms epoch, or null = until unmuted."
+                          }
+                        }
+                      }
+                    },
+                    "chats": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "chat",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "chat": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "setNotifyPrefs",
+        "summary": "Turn notifications on or off for the account.",
+        "tags": [
+          "notify"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "enabled"
+                ],
+                "properties": {
+                  "enabled": {
+                    "type": "boolean"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prefs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "storage",
+                    "agents",
+                    "chats"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Master switch."
+                    },
+                    "storage": {
+                      "type": "object",
+                      "required": [
+                        "ok"
+                      ],
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Error code of the last failed save (for example ENOSPC)."
+                        }
+                      },
+                      "description": "Whether the last write of notify.json succeeded; muted state is kept in memory either way."
+                    },
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "description": "ms epoch, or null = until unmuted."
+                          }
+                        }
+                      }
+                    },
+                    "chats": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "chat",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "chat": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/notify/mute": {
+      "put": {
+        "operationId": "setNotifyMute",
+        "summary": "Mute or unmute an agent, or one chat of it.",
+        "description": "Approvals break through a chat mute, not an agent mute. No for_ms = until unmuted.",
+        "tags": [
+          "notify"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "agent",
+                  "muted"
+                ],
+                "properties": {
+                  "agent": {
+                    "type": "string"
+                  },
+                  "chat": {
+                    "type": "string"
+                  },
+                  "muted": {
+                    "type": "boolean"
+                  },
+                  "for_ms": {
+                    "type": "integer",
+                    "minimum": 1000,
+                    "maximum": 31622400000
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Prefs",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "enabled",
+                    "storage",
+                    "agents",
+                    "chats"
+                  ],
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean",
+                      "description": "Master switch."
+                    },
+                    "storage": {
+                      "type": "object",
+                      "required": [
+                        "ok"
+                      ],
+                      "properties": {
+                        "ok": {
+                          "type": "boolean"
+                        },
+                        "error": {
+                          "type": "string",
+                          "description": "Error code of the last failed save (for example ENOSPC)."
+                        }
+                      },
+                      "description": "Whether the last write of notify.json succeeded; muted state is kept in memory either way."
+                    },
+                    "agents": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ],
+                            "description": "ms epoch, or null = until unmuted."
+                          }
+                        }
+                      }
+                    },
+                    "chats": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "agent",
+                          "chat",
+                          "until"
+                        ],
+                        "properties": {
+                          "agent": {
+                            "type": "string"
+                          },
+                          "chat": {
+                            "type": "string"
+                          },
+                          "until": {
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/notify/test": {
+      "post": {
+        "operationId": "sendNotifyTest",
+        "summary": "Create a test event (Settings test button). At most 10 per minute.",
+        "tags": [
+          "notify"
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The event; event.muted is true when the master switch is off",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "event"
+                  ],
+                  "properties": {
+                    "event": {
+                      "type": "object",
+                      "required": [
+                        "id",
+                        "v",
+                        "type",
+                        "agent",
+                        "chat",
+                        "priority",
+                        "at",
+                        "muted"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "integer",
+                          "minimum": 1,
+                          "description": "Cursor: strictly increasing per account, never reused, also across restarts. Muted events use ids too."
+                        },
+                        "v": {
+                          "type": "integer",
+                          "enum": [
+                            1
+                          ]
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "reply_finished",
+                            "approval",
+                            "error",
+                            "test"
+                          ],
+                          "description": "Clients must ignore unknown future types."
+                        },
+                        "agent": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Agent name as used in /api/agents/{name}. Null for test."
+                        },
+                        "chat": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "description": "Session id of the chat. Null for test."
+                        },
+                        "priority": {
+                          "type": "string",
+                          "enum": [
+                            "normal",
+                            "high"
+                          ]
+                        },
+                        "at": {
+                          "type": "integer",
+                          "description": "Hub time, ms since the epoch."
+                        },
+                        "muted": {
+                          "type": "boolean",
+                          "description": "A mute or the master switch applied when the event was created. Muted events are not pushed on the stream."
+                        },
+                        "run_id": {
+                          "type": "string",
+                          "description": "reply_finished, error."
+                        },
+                        "message": {
+                          "type": "string",
+                          "description": "error: a fixed short sentence, never model text."
+                        },
+                        "request_id": {
+                          "type": "string",
+                          "description": "approval: answer with POST /api/agents/{agent}/native/sessions/{chat}/requests/{request_id}."
+                        },
+                        "kind": {
+                          "type": "string",
+                          "description": "approval: 'clarify' for a question, otherwise the approval method name."
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
