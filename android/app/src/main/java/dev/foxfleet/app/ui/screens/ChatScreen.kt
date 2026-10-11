@@ -300,6 +300,9 @@ fun ChatScreen(
     CompositionLocalProvider(LocalChatBgActive provides !bgState.bg.isDefault) {
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
+            // Narrow phones (under 400 dp) or large text: Screen, Background and History move into one "More" menu so the name keeps room; New chat stays an icon. All targets stay 44 dp or more.
+            val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 400 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.15f
+            var moreMenu by remember { mutableStateOf(false) }
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
                 Spacer(Modifier.width(4.dp))
@@ -313,12 +316,22 @@ fun ChatScreen(
                     }
                     // Connection here; what the agent is doing shows once, under the reply it is writing.
                     if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
-                    else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted)
+                    else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
-                if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
-                SoftIconButton(FoxIcons.get("wallpaper"), "Chat background", { bgSheet = true })
-                if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
+                if (!compact) {
+                    if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
+                    SoftIconButton(FoxIcons.get("wallpaper"), "Chat background", { bgSheet = true })
+                    if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
+                }
                 SoftIconButton(FoxIcons.get("add"), "New chat", onNewChat)
+                if (compact) Box {
+                    SoftIconButton(FoxIcons.get("more"), "More actions", { moreMenu = true })
+                    DropdownMenu(moreMenu, { moreMenu = false }, containerColor = c.surface) {
+                        if (onOpenScreen != null) DropdownMenuItem(text = { Text("Agent's screen") }, leadingIcon = { FoxIcon("screen", null, tint = c.textMuted) }, onClick = { moreMenu = false; onOpenScreen() })
+                        DropdownMenuItem(text = { Text("Chat background") }, leadingIcon = { FoxIcon("wallpaper", null, tint = c.textMuted) }, onClick = { moreMenu = false; bgSheet = true })
+                        if (agent.capabilities.sessions) DropdownMenuItem(text = { Text("Chat history") }, leadingIcon = { FoxIcon("history", null, tint = c.textMuted) }, onClick = { moreMenu = false; history = true })
+                    }
+                }
             }
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
