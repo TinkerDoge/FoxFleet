@@ -1,10 +1,11 @@
 import type { ComponentChildren } from 'preact';
+import { Icon, type IconName } from './Icon';
 import { useId, useLayoutEffect, useRef, useState } from 'preact/hooks';
 
 /** Small action menus share the History menu's keyboard and dismissal model. */
 export function ActionMenu({ label, children, actions, className = '', above = false }: {
   label: string; children: ComponentChildren; className?: string; above?: boolean;
-  actions: { label: string; onSelect: () => void }[];
+  actions: { label: string; onSelect: () => void; icon?: IconName }[];
 }) {
   const [open, setOpen] = useState(false), id = useId();
   const anchor = useRef<HTMLSpanElement>(null), trigger = useRef<HTMLButtonElement>(null), menu = useRef<HTMLDivElement>(null);
@@ -30,7 +31,7 @@ export function ActionMenu({ label, children, actions, className = '', above = f
         e.preventDefault(); const items = [...menu.current!.querySelectorAll<HTMLButtonElement>('[role=menuitem]')], current = items.indexOf(document.activeElement as HTMLButtonElement);
         items[e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1 : (current + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus();
       }}>
-      {actions.map((action) => <button type="button" key={action.label} role="menuitem" tabIndex={-1} onClick={() => { close(true); action.onSelect(); }}>{action.label}</button>)}
+      {actions.map((action) => <button type="button" key={action.label} role="menuitem" tabIndex={-1} onClick={() => { close(true); action.onSelect(); }}>{action.icon && <Icon name={action.icon} size={20} />}<span>{action.label}</span></button>)}
     </div>}
   </span>;
 }

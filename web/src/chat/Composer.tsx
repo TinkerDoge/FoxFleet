@@ -156,7 +156,7 @@ export function Composer(props: {
           {pending.map((p) => p.kind === 'image'
             ? <div class="att" key={p.id}><img src={p.dataUrl} alt={p.name} /><button aria-label={t('chat.remove')} onClick={() => setPending((x) => x.filter((y) => y.id !== p.id))}><Icon name="close" size={14} /></button></div>
             : <div class={`att file${p.error ? ' bad' : ''}`} key={p.id}>
-                <Icon name="attach" size={16} /><span class="chip-name">{p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
+                <Icon name="file" size={16} /><span class="chip-name">{p.name}</span><small>{p.error ?? (p.ref ? humanSize(p.size) : `${Math.round(p.progress * 100)}%`)}</small>
                 {!p.ref && !p.error && <progress max={1} value={p.progress} aria-label={t('chat.uploading')} />}
                 <button aria-label={t('chat.remove')} onClick={() => { p.abort.abort(); setPending((x) => x.filter((y) => y.id !== p.id)); }}><Icon name="close" size={14} /></button>
               </div>)}
@@ -167,8 +167,8 @@ export function Composer(props: {
         {(caps.images || caps.files) && (
           <span class="attach">
             <ActionMenu label={t('chat.attach')} above actions={[
-              ...(caps.images ? [{ label: t('chat.photo'), onSelect: () => photo.current?.click() }, { label: t('chat.camera'), onSelect: () => cam.current?.click() }] : []),
-              ...(caps.files ? [{ label: t('chat.file'), onSelect: () => file.current?.click() }] : []),
+              ...(caps.images ? [{ label: t('chat.photo'), icon: 'image' as const, onSelect: () => photo.current?.click() }, { label: t('chat.camera'), icon: 'camera' as const, onSelect: () => cam.current?.click() }] : []),
+              ...(caps.files ? [{ label: t('chat.file'), icon: 'file' as const, onSelect: () => file.current?.click() }] : []),
             ]}><Icon name="add" size={22} /></ActionMenu>
             <input ref={photo} type="file" accept="image/*" multiple hidden onChange={media} />
             <input ref={cam} type="file" accept="image/*" capture="environment" hidden onChange={media} />
