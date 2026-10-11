@@ -29,18 +29,18 @@ object Tokens {
         const val userBubbleAlpha = 0.12f
     }
     object Dark {
-        val bg = Color(0xFF0E0E0F)
-        val surface = Color(0xFF17171A)
-        val surfaceAlt = Color(0xFF1F1F23)
+        val bg = Color(0xFF110F0E)
+        val surface = Color(0xFF1B1816)
+        val surfaceAlt = Color(0xFF25211E)
         val hairline = Color(0x1FFFFFFF)
         val text = Color(0xFFEDEDED)
-        val textMuted = Color(0xFFA1A1A6)
-        val textFaint = Color(0xFF939399)
+        val textMuted = Color(0xFFA8A29C)
+        val textFaint = Color(0xFF9A948E)
         val online = Color(0xFF4CC38A)
         val onlineText = Color(0xFF6ACF9D)
         val idle = Color(0xFFE0B04A)
         val idleText = Color(0xFFE0B04A)
-        val offline = Color(0xFF4A4A50)
+        val offline = Color(0xFF4D4843)
         val danger = Color(0xFFFF6B5E)
         const val userBubbleAlpha = 0.16f
     }

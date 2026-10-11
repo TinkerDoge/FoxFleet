@@ -79,7 +79,8 @@ The site is built with VitePress. Its output bundles the packages below (all res
 | mark.js 8.11.1 | MIT | `site/` (bundled into the documentation site) |
 | @docsearch/css 3.8.2 | MIT | `site/` (bundled into the documentation site) |
 | Inter (14 `.woff2` files, shipped inside VitePress's default theme and copied to the site output) | SIL OFL 1.1, Copyright (c) 2016 The Inter Project Authors | `site/.vitepress/dist/assets/inter-*.woff2`; full licence text in `LICENSES/Inter-OFL-1.1.txt` (also published at `/licenses/Inter-OFL-1.1.txt` on the site) |
-| Material Symbols Rounded, 48 icon outlines (weight 400, from `@material-symbols/svg-400` 0.48.0) | Apache-2.0, Copyright Google LLC | `design/icons/icons.json`, compiled into `web/src/icons/paths.ts` and `android/.../ui/FoxIcons.kt`; full licence text in `LICENSES/Material-Symbols-Apache-2.0.txt` |
+| Material Symbols Rounded, 49 icon outlines (weight 400, from `@material-symbols/svg-400` 0.48.0) | Apache-2.0, Copyright Google LLC | `design/icons/icons.json`, compiled into `web/src/icons/paths.ts` and `android/.../ui/FoxIcons.kt`; full licence text in `LICENSES/Material-Symbols-Apache-2.0.txt` |
+| Twemoji v17.0.3 graphics (3,944 72×72 PNGs, emoji reactions), from [jdecked/twemoji](https://github.com/jdecked/twemoji) | Graphics CC BY 4.0, Copyright Twitter, Inc. and other contributors (code MIT; no code shipped) | `web/public/emoji/`, `android/app/src/main/assets/emoji/`, made by `scripts/bundle-emoji.py` (source and checksums in `LICENSES/Twemoji-source.json`); full licence text in `LICENSES/Twemoji-graphics.txt`, also shipped beside the artwork; credited in both emoji pickers |
 
 Other VitePress build-time dependencies (Vite, Rollup, esbuild, Shiki, markdown-it and friends) are not shipped in the output.
 

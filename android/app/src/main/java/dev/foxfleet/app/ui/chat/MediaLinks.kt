@@ -1,7 +1,7 @@
 package dev.foxfleet.app.ui.chat
 
 /** Media an agent reply points to, shown as tappable cards under the message. */
-data class MediaRef(val url: String, val kind: Kind, val alt: String = "") {
+data class MediaRef(val url: String, val kind: Kind, val alt: String = "", val agent: String? = null, val ref: String? = null, val instance: String = "") {
     enum class Kind { Image, Video }
 }
 

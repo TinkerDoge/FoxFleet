@@ -14,6 +14,10 @@ data class Capabilities(
     val busy: List<String> = listOf("queue"),
     /** The agent runs through Hermes's native session gateway: approval/question cards, a model picker and a real Redirect exist. */
     val nativeUi: Boolean = false,
+    /** The hub keeps emoji reactions for this agent's conversations (hub 0.3.6+). */
+    val reactions: Boolean = false,
+    /** The agent itself can react (it has an authenticated reaction action). */
+    val agentReactions: Boolean = false,
 ) {
     companion object {
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
@@ -78,6 +82,8 @@ data class SavedChat(val session: String? = null, val run: String? = null, val u
 data class UiMessage(
     val role: String,
     val content: String,
+    /** Stable hub/provider message identity, absent until the live turn is reconciled with history. */
+    val id: String? = null,
     val reasoning: String = "",
     /** How long the agent thought (ms) when known: shown in the Reasoning header. */
     val reasoningMs: Long = 0L,
@@ -93,3 +99,12 @@ data class UiMessage(
 
 /** A downscaled JPEG kept in the app cache; [dataUrl] is what goes to the hub. */
 data class ImageAttachment(val localPath: String, val dataUrl: String, val bytes: Int)
+
+/** One tool lifecycle event from the hub stream (foxfleet.tool). [type] is tool.start, tool.progress or tool.end. */
+data class ToolEvent(val type: String, val turnId: String?, val toolId: String?, val name: String)
+
+/** Who reacted: the signed-in person ("user:…") or an agent ("agent:…"), bound by the hub, never by the client. */
+data class ReactionActor(val id: String, val name: String, val kind: String)
+data class ReactionGroup(val emoji: String, val actors: List<ReactionActor>)
+/** The hub's reactions for one conversation: who "you" are, and the reactions on each stable message id. */
+data class ReactionSnapshot(val actor: ReactionActor, val messages: Map<String, List<ReactionGroup>>)

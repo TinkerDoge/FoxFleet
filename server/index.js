@@ -31,6 +31,7 @@ import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
+import { reactionStore } from './reactions.js';
 import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
@@ -154,7 +155,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
       const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')), activity: await activityStore(path.join(dir, 'activity.json')) };
-      reg.mcp = mcpHandler(reg.inbox); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
+      reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
+      reg.mcp = mcpHandler(reg.inbox, reg.reactions); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native); return reg;
     })());
     return registries.get(userId);
   }
@@ -225,7 +227,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: { ...capabilitiesOf(m), busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
+      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'mcp-inbox', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), ...(isChatKind(kindOf(m)) ? {} : { media: mediaCheck(m) }) } };
@@ -410,7 +412,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         // Bridged agents (Scribe) authenticate with their own per-agent bearer token, not a user session.
         if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST', 'Cache-Control': 'no-store' }); return res.end(); }
         const { agent, reg } = await inboxAgent(req); ctx.reg = reg;
-        const body = await readJson(req, 256 * 1024, true), reply = mcp(agent, body);
+        const body = await readJson(req, 256 * 1024, true), reply = await mcp(agent, body);
         if (!reply) { res.writeHead(202, { 'Cache-Control': 'no-store' }); return res.end(); }
         return sendJson(res, 200, reply);
       }
@@ -435,7 +437,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'users' && parts.length === 4 && req.method === 'PATCH') return sendJson(res, 200, { user: await accounts.setDisabled(auth.user.id, parts[3], Boolean((await body0()).disabled)) });
         if (route === 'invites' && parts.length === 4 && req.method === 'DELETE') { await accounts.deleteInvite(parts[3]); return sendJson(res, 200, { ok: true }); }
         if (route === 'users' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { users: accounts.users() });
-        if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); return sendJson(res, 200, { ok: true }); }
+        if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); const removed = registries.get(parts[3]); if (removed) await (await removed).reactions.clear(); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await media.serve({ token: parts[2], scope: scopeOf(ctx), req, res });
@@ -485,7 +487,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
         if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicConnection(m) }); }
-        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); inbox.drop(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
+        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); inbox.drop(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') {
           const prior = store.get(parts[2]);
           if (prior.kind !== 'mcp-inbox') throw fault(400, 'This agent has no token'); const t = newInboxToken(); const m = await store.edit(parts[2], { inboxTokenHash: t.hash }); return sendJson(res, 200, { connection: publicConnection(m), inboxToken: t.value, mcpUrl: '/mcp' });
@@ -493,7 +495,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
       if (url.pathname === '/api/history/settings' && ['GET', 'PUT'].includes(req.method)) { // how long the hub keeps chat history for API-key agents (this user only)
-        if (req.method === 'PUT') { const b = await readJson(req, 1024); await history.setRetention(b.retentionDays); }
+        if (req.method === 'PUT') { const b = await readJson(req, 1024); await history.setRetention(b.retentionDays); for (const a of store.all().filter(m => isChatKind(kindOf(m)))) await ctx.reg.reactions.retain(a.name, history.list(a.name, { limit: 300 }).sessions.map(s => s.id)); }
         return sendJson(res, 200, { retentionDays: history.retentionDays });
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
@@ -501,6 +503,25 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
+        // Reactions live beside each account's history. Never accept an actor identity from a request body.
+        if (route === 'sessions' && parts.length === 6 && parts[5] === 'reactions') {
+          const sid = sessionId(parts[4]);
+          let messages;
+          try {
+            messages = isChatKind(kindOf(m)) ? history.messages(m.name, sid, { limit: 1000 }).messages
+              : kindOf(m) === 'mcp-inbox' ? inbox.messages(m.name, sid).messages
+              : normalizeTranscript((await upstream.messages(m, sid)).messages);
+          } catch (e) { if (e.status === 404) await ctx.reg.reactions.remove(m.name, sid); throw e; }
+          current(m);
+          const actor = { id: 'user:' + scopeOf(ctx), name: auth?.user?.username || 'You', kind: 'human' };
+          if (req.method === 'PUT' || req.method === 'DELETE') {
+            const b = await readJson(req, 2048);
+            if (!messages.some(x => x.id != null && String(x.id) === b.message_id)) throw fault(404, 'Message not found');
+            await ctx.reg.reactions.set(m.name, sid, b.message_id, b.emoji, actor, req.method === 'PUT');
+          } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
+          const ids = new Set(messages.map(x => String(x.id)));
+          return sendJson(res, 200, { actor, messages: Object.fromEntries(Object.entries(ctx.reg.reactions.list(m.name, sid)).filter(([id]) => ids.has(id))) });
+        }
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
         if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned
           const b = await readJson(req, 512); if (typeof b?.pinned !== 'boolean') throw fault(400, 'pinned must be true or false');
@@ -610,7 +631,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
             if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') { const page = history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }); for (const x of page?.messages ?? []) if (x.role === 'assistant' && typeof x.content === 'string') media.note(scopeOf(ctx), m.name, x.content); return sendJson(res, 200, page); }
             if (parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); return sendJson(res, 200, await history.rename(m.name, sessionId(parts[4]), b.title)); }
-            if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); return sendJson(res, 200, { ok: true }); }
+            if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); await ctx.reg.reactions.remove(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
           }
           throw fault(404, 'Not available for this agent');
         }
@@ -712,7 +733,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           return sendJson(res, 200, agentData(m, route, { messages: msgs, offset, limit, has_more: raw.length >= limit }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
-        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); return sendJson(res, 200, { ok: true }); }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); await ctx.reg.reactions.remove(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
         let remote, opts = {};
         if (req.method === 'GET' && parts.length === 4) remote = { sessions: '/api/sessions?limit=50', cron: '/api/cron/jobs', skills: '/api/skills', config: '/api/config', profiles: '/api/profiles' }[route];
         if (req.method === 'GET' && route === 'usage' && parts.length === 4) { const days = url.searchParams.get('days') || '30'; if (!/^\d{1,3}$/.test(days) || Number(days) < 1 || Number(days) > 365) throw fault(400, 'Invalid usage period'); remote = '/api/analytics/usage?days=' + days; }

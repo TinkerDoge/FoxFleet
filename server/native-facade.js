@@ -13,8 +13,8 @@ export function toFrames(e) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
     case 'reasoning': return [frame({ choices: [{ delta: { reasoning_content: e.text } }] })];
     case 'turn.end': return e.reasoning ? [frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] })] : []; // a provider that only reports its reasoning with the final message
-    case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress')];
-    case 'tool.end': return e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : []; // tool-made files ride the normal MEDIA: card pipeline
+    case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress'), frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name }, 'foxfleet.tool')];
+    case 'tool.end': return [frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name }, 'foxfleet.tool'), ...(e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : [])]; // tool-made files ride the normal MEDIA: card pipeline
     case 'request.open': return [frame(e, 'foxfleet.request')];
     case 'request.cancel': return [frame({ request_id: e.request_id, reason: e.reason || 'cancelled' }, 'foxfleet.request_closed')];
     case 'request.answered': return [frame({ request_id: e.request_id, reason: 'answered' }, 'foxfleet.request_closed')];

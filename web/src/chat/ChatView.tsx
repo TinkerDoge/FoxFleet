@@ -9,12 +9,14 @@ import { RequestCards } from './RequestCards';
 import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { AssistantText, Message } from './Message';
+import { useReactions } from './Reactions';
+import { toolPresentation } from './toolActivity';
 import { MediaContext, DiagnoseContext } from './MediaCards';
 import { control, createFollow, type Follow, type Role } from './scrollFollow';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
-import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued } from './store';
+import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued, reconcileMessages } from './store';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate, parseRoute } from '../router';
@@ -77,7 +79,13 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   const last = c.messages[c.messages.length - 1];
   // Screen readers get one announcement when a reply starts and one when it ends, never a token-by-token flood.
   const announce = c.streaming ? t('a11y.replying', { agent: agent.displayName || agent.name }) : last?.role === 'assistant' ? t('a11y.replied', { agent: agent.displayName || agent.name, text: last.content.replace(/\s+/g, ' ').slice(0, 300) }) : '';
-  const status = c.streaming ? statusLine(agent.displayName || agent.name, c.tool, c.streamText.length > 0, c.streamReasoning.length > 0) : null;
+  const active = c.activity?.active ?? [];
+  const status = c.streaming && !active.length ? statusLine(agent.displayName || agent.name, c.tool, c.streamText.length > 0, c.streamReasoning.length > 0) : null;
+  // Reactions need stable hub ids: after a live turn ends, swap in the stored page (which carries them), then load reactions.
+  const lastId = last?.id, ids = useMemo(() => c.messages.map((m) => m.id ?? '').join(','), [c.messages]);
+  useEffect(() => { if (!c.streaming && !c.loading && c.session && last && !lastId && agent.capabilities?.reactions) void reconcileMessages(client, agent.name); }, [c.streaming, c.loading, c.session, lastId]);
+  const reactions = useReactions(client, agent.name, c.session, ids, Boolean(agent.capabilities?.reactions) && !c.loading);
+  const reactionsFor = (id?: string) => (id && reactions.snap ? { groups: reactions.snap.messages[id] ?? [], me: reactions.snap.actor.id, onReact: (emoji: string, present: boolean) => reactions.react(id, emoji, present) } : undefined);
   const name = agent.displayName || agent.name;
   const recovery = () => {
     if (c.recovery === 'retry') void retryLast(client, agent.name, onAuthLost);
@@ -113,12 +121,13 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <div class="msg-skeleton" role="status" aria-label={t('home.loading')}><i class="sk-bubble w60" /><i class="sk-bubble me w40" /><i class="sk-bubble w75" /></div>}
         {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><Icon name="chat" size={48} class="icon-hero" /><p>{t('chat.empty', { agent: name })}</p></div>}
-        {c.messages.map((m, i) => <Message key={i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} />)}
+        {c.messages.map((m, i) => <Message key={m.id ?? i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} reactions={reactionsFor(m.id)} />)}
+        {reactions.error && <p class="react-error error small" role="alert">{reactions.error}</p>}
         {c.streaming && (
           <div class="msg assistant">
             {c.streamReasoning && <Reasoning text={c.streamReasoning} live={!c.streamText} ms={c.reasoningMs} />}
             {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
-            {c.toolLog.length > 1 && <details class="tools"><summary>{t('chat.toolsDone', { n: c.toolLog.length })}</summary><ul>{c.toolLog.map((x, i) => <li key={i}>{i === c.toolLog.length - 1 && c.tool ? '… ' : '✓ '}{x}</li>)}</ul></details>}
+            {active.length > 0 && <ul class="activity" aria-label={t('tool.activity')} role="status" aria-live="polite">{active.map((x) => { const p = toolPresentation(x.name); return <li key={x.key} class="activity-row"><Icon name={p.icon} size={16} /><span>{p.label}</span><span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></li>; })}</ul>}
             {status && <p class="status shimmer" key={status} role="status" aria-live="polite">{status}<span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></p>}
           </div>
         )}

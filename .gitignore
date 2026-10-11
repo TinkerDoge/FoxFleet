@@ -55,3 +55,4 @@ android/keystore.properties
 design/demo/*.bgra
 __pycache__/
 android/.kotlin/
+.test-tmp/

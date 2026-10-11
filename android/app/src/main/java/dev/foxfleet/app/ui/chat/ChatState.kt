@@ -73,6 +73,15 @@ class ChatState {
     /** Tools used in the current reply, newest last. */
     var toolLog by mutableStateOf<List<String>>(emptyList())
         private set
+    /** Calls running right now (hubs that send per-call events); each disappears when its end arrives, all clear when the reply ends. */
+    var tools by mutableStateOf(ToolActivity())
+        private set
+    /** Reactions for this conversation once loaded (null: not loaded, or the hub has none for this agent). */
+    var reactions by mutableStateOf<dev.foxfleet.app.data.ReactionSnapshot?>(null)
+        private set
+    var reactionError by mutableStateOf<String?>(null)
+        private set
+    private var reacting = 0
     /** False when the agent keeps the queue itself (Hermes): a queued message cannot be taken back from here. */
     var canCancel by mutableStateOf(true)
         private set
@@ -99,7 +108,7 @@ class ChatState {
     fun push(m: UiMessage) { messages = messages + m }
 
     private fun resetStream() {
-        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); requests = emptyList()
+        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); requests = emptyList()
     }
 
     fun adopt(sessionId: String?) {
@@ -107,6 +116,7 @@ class ChatState {
     }
 
     fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
+        if (sessionId != this.sessionId) { reactions = null; reactionError = null }
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
         this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
@@ -126,7 +136,7 @@ class ChatState {
 
     fun newConversation() {
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
-        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; persist(SavedChat())
+        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; persist(SavedChat())
         resetStream(); error = null
     }
 
@@ -135,7 +145,8 @@ class ChatState {
 
     private fun callbacks(g: Int) = HubApi.StreamCallbacks(
         onReconnecting = { if (g == gen) reconnecting = true },
-        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
+        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { if (tools.active.isEmpty() && tools.ended.isEmpty()) toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
+        onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null } }, // per-call events replace the legacy label
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -150,7 +161,7 @@ class ChatState {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
         val sentAt = System.currentTimeMillis(); val before = messages
-        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting) } }
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent) } }
         catch (e: dev.foxfleet.app.data.HubApiException) {
             if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
         }
@@ -186,7 +197,7 @@ class ChatState {
 
     private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
         val g = ++gen
-        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null
+        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; tools = ToolActivity()
         try {
             val text = block(callbacks(g))
             if (g != gen) return // another chat is open now: this stream's end changes nothing
@@ -254,5 +265,45 @@ class ChatState {
         catch (e: CancellationException) { throw e }
         catch (e: HubApiException) { if (e.status == 404) { requests = requests.filter { it.id != id }; null } else e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Could not send the answer" }
         catch (e: AuthRequiredException) { throw e } catch (_: Exception) { "Could not send the answer" }
+    }
+
+    // ---- stable ids and reactions ----
+
+    /**
+     * A live turn has no hub ids yet. Once it ended, swap the newest page for the stored one (which carries them), but only when the
+     * stored copy already ends with the same message: a provider may persist after the stream closes.
+     */
+    suspend fun reconcile(api: HubApi, agent: String) {
+        val s = sessionId ?: return; val start = messages
+        if (streaming || loading || start.isEmpty() || start.last().id != null) return
+        val page = try { api.messages(agent, s, limit = PAGE) } catch (e: CancellationException) { throw e } catch (_: Exception) { return }
+        if (s != sessionId || streaming || messages !== start || page.messages.isEmpty()) return
+        // The stored page must end with the same exchange (last two messages), not merely a repeated answer.
+        fun same(a: UiMessage?, b: UiMessage?) = a == null || (b != null && a.role == b.role && a.content.trim() == b.content.trim())
+        if (!same(start.last(), page.messages.last()) || !same(start.getOrNull(start.size - 2), page.messages.getOrNull(page.messages.size - 2))) return
+        val first = page.messages.first().id; val boundary = if (first != null) start.indexOfFirst { it.id == first } else -1
+        messages = (if (boundary >= 0) start.take(boundary) else emptyList()) + page.messages
+        if (boundary < 0) { hasOlder = page.hasMore; olderOffset = PAGE } // the stored page replaced everything we had
+    }
+
+    suspend fun refreshReactions(api: HubApi, agent: String) {
+        val s = sessionId ?: return
+        if (reacting > 0) return
+        val snap = try { api.reactions(agent, s) } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (_: Exception) { return }
+        if (s == sessionId && reacting == 0) reactions = snap
+    }
+
+    /** Optimistic: shows at once, rolls back and re-reads the hub when the change fails. */
+    suspend fun react(api: HubApi, agent: String, messageId: String, emoji: String, present: Boolean) {
+        val s = sessionId ?: return; val before = reactions ?: return
+        reactions = before.apply(messageId, emoji, present); reactionError = null; reacting++
+        var failed = false
+        try {
+            val snap = api.react(agent, s, messageId, emoji, present)
+            if (s == sessionId && reacting == 1) reactions = snap
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (_: Exception) {
+            failed = true; if (s == sessionId) { reactions = before; reactionError = "Couldn't update the reaction. Try again." }
+        } finally { reacting-- }
+        if (failed) refreshReactions(api, agent)
     }
 }

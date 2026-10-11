@@ -154,6 +154,8 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.compose.ui.semantics.customActions
 
 /** Chars at the tail of a streaming reply that fade in instead of popping. */
 const val STREAM_FADE_CHARS = 24
@@ -216,9 +218,19 @@ fun ChatScreen(
     onUploadFile: (suspend (Uri, (Float) -> Unit) -> FileRef)? = null,
     onOpenScreen: (() -> Unit)? = null,
     initialFiles: List<FileRef> = emptyList(),
+    /** Reactions (agents whose hub keeps them): re-read after replies and every 30 s while the chat is on screen. */
+    onSyncReactions: () -> Unit = {},
+    onReact: (messageId: String, emoji: String, present: Boolean) -> Unit = { _, _, _ -> },
 ) {
     val c = LocalHubColors.current
     var viewing by remember { mutableStateOf(initialViewing) }
+    var reactingTo by remember { mutableStateOf<String?>(null) }
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(state.sessionId, state.streaming, state.loading, state.messages.lastOrNull()?.id) { if (!state.streaming && !state.loading && state.sessionId != null) onSyncReactions() }
+    LaunchedEffect(state.sessionId, lifecycle) {
+        // Wall-clock wait off the frame clock: the poll never keeps the UI (or a UI test) busy.
+        if (state.sessionId != null) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (true) { withContext(Dispatchers.Default) { delay(30_000) }; if (!state.streaming) onSyncReactions() } }
+    }
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
@@ -235,17 +247,16 @@ fun ChatScreen(
                         Text(agent.label ?: agent.name, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
                         agent.badge?.let { Spacer(Modifier.width(6.dp)); KindBadge(it) }
                     }
-                    val sub = statusLine(agent.name, state.toolLabel, state.streamReasoning.isNotBlank(), state.streamText.isNotBlank())
+                    // Connection here; what the agent is doing shows once, under the reply it is writing.
                     if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
-                    else if (state.streaming && sub != null) ShimmerStatusText(sub, style = MaterialTheme.typography.bodySmall)
-                    else Text(state.sessionId?.let { "Session ${it.take(8)}" } ?: "New conversation", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                    else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted)
                 }
                 if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
                 if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
                 SoftIconButton(FoxIcons.get("add"), "New chat", onNewChat)
             }
             Hairline()
-            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest) { viewing = it }
+            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, onReact = onReact, onPickReaction = { reactingTo = it }) { viewing = it }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
                 modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
@@ -270,6 +281,7 @@ fun ChatScreen(
         if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null })
         else if (pc.kind == "choice") ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
     }
+    reactingTo?.let { id -> dev.foxfleet.app.ui.components.EmojiPickerSheet(onPick = { e -> reactingTo = null; onReact(id, e, true) }, onDismiss = { reactingTo = null }) }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
         viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
@@ -278,7 +290,7 @@ fun ChatScreen(
 
 
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, onReact: (String, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (String) -> Unit = {}, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -325,6 +337,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         itemsIndexed(state.notices.reversed(), key = { i, _ -> "notice-$i" }) { _, n ->
             Text(n, style = MaterialTheme.typography.bodySmall, color = c.textMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
         }
+        state.reactionError?.let { e -> item(key = "react-error") { Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.fillMaxWidth().padding(4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
         state.error?.let { e ->
             item(key = "error") {
                 Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted,
@@ -363,7 +376,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         items(rev.size, key = { state.keyBase + rev.size - 1 - it }) { i ->
             // only messages that arrive after the history has been shown animate in (never old ones scrolled back into view)
             val b = baseline; val isNew = b != null && state.keyBase + rev.size - 1 - i >= b
-            MessageRow(agentName, rev[i], Modifier.animateItem().messageEnter(isNew), onOpen)
+            val m = rev[i]; val snap = state.reactions; val id = m.id
+            val reactions = if (id != null && snap != null) MessageReactions(snap.messages[id].orEmpty(), snap.actor.id, { e, on -> onReact(id, e, on) }, { onPickReaction(id) }) else null
+            MessageRow(agentName, m, Modifier.animateItem().messageEnter(isNew), onOpen, state.sessionId.orEmpty(), reactions)
         }
         if (state.loadingOlder) item(key = "older") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
     }
@@ -383,17 +398,22 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
 }
 
 @Composable
-private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOpen: (MediaRef) -> Unit) {
+private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOpen: (MediaRef) -> Unit, sessionId: String, reactions: MessageReactions? = null) {
     val c = LocalHubColors.current
+    val haptic = rememberHaptic()
+    // Long-press (and a TalkBack action) opens the reaction picker; only messages with a stable hub id can be reacted to.
+    val reactable = if (reactions == null) Modifier else Modifier
+        .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onLongClick = { haptic(HapticFeedbackType.LongPress); reactions.onPick() }, onLongClickLabel = "Add reaction")
+        .semantics { customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Add reaction") { reactions.onPick(); true }) }
     if (m.role == "user") {
-        Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Column(modifier.fillMaxWidth().then(reactable), horizontalAlignment = Alignment.End) {
             m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 6.dp).size(180.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
             if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
                 m.images.forEach { img ->
                     // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
-                    val src: Any = remember(img.localPath) { java.io.File(img.localPath).takeIf { it.exists() && it.length() > 0 } ?: img.dataUrl }
+                    val src = dev.foxfleet.app.media.attachmentSource(img.localPath, img.dataUrl)
                     dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 180.dp else 96.dp).clip(RoundedCornerShape(14.dp)),
-                        onClick = { onOpen(MediaRef(java.io.File(img.localPath).toURI().toString(), MediaRef.Kind.Image)) })
+                        onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) })
                 }
             }
             val (bodyText, files) = remember(m.content) { FileMarker.split(m.content) }
@@ -401,24 +421,28 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
             if (bodyText.isNotBlank()) Text(bodyText, style = MaterialTheme.typography.bodyLarge, color = c.text,
                 modifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp))
                     .background(c.userBubble).padding(horizontal = 14.dp, vertical = 10.dp))
+            reactions?.let { r -> dev.foxfleet.app.ui.components.ReactionPills(r.groups, r.me, r.onReact, r.onPick) }
         }
     } else {
-        Row(modifier.fillMaxWidth()) {
+        Row(modifier.fillMaxWidth().then(reactable)) {
             AgentAvatar(agentName, null, 28.dp)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
-                if (m.steps.isNotEmpty()) ToolSteps(m.steps)
                 m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
                     modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
-                AssistantBody(agentName, m.content, onOpen = onOpen) { RichText(it) }
+                AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
                 if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(top = 4.dp))
                 val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
                 media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
+                reactions?.let { r -> dev.foxfleet.app.ui.components.ReactionPills(r.groups, r.me, r.onReact, r.onPick) }
             }
         }
     }
 }
+
+/** What one message row needs for reactions: its groups, who "you" are, toggle, and open the picker. */
+private class MessageReactions(val groups: List<dev.foxfleet.app.data.ReactionGroup>, val me: String, val onReact: (String, Boolean) -> Unit, val onPick: () -> Unit)
 
 @Composable
 private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit) {
@@ -431,7 +455,8 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
             if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
             val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
             val text = parsedStream.text
-            val status = if (state.reconnecting) "Reconnecting…" else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
+            val active = state.tools.active
+            val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty()) null else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
             if (text.isNotBlank()) {
                 val fadeFrom = if (reduce) text.length else maxOf(0, text.length - STREAM_FADE_CHARS)
                 Text(
@@ -445,6 +470,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
                 )
             }
             AgentMediaCards(agentName, parsedStream.media, onOpen)
+            ToolActivityStrip(active)
             androidx.compose.animation.Crossfade(status, animationSpec = androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionStatusMs), label = "status") { st ->
                 if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }
             }
@@ -452,19 +478,19 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
     }
 }
 
-/** "Used 2 tools ▸": one calm line per assistant turn, expands to the steps. The raw tool JSON never shows. */
+/** One quiet line per running tool call (icon + safe description); each leaves when its call ends. */
 @Composable
-private fun ToolSteps(steps: List<dev.foxfleet.app.data.ToolStep>) {
+private fun ToolActivityStrip(active: List<dev.foxfleet.app.ui.chat.ActiveTool>) {
     val c = LocalHubColors.current
-    var open by rememberSaveable { mutableStateOf(false) }
-    val failed = steps.count { !it.ok }
-    Column(Modifier.padding(bottom = 8.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable { open = !open }.animateContentSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
-        Text((if (steps.size == 1) "Used 1 tool" else "Used ${steps.size} tools") + (if (failed > 0) " · $failed failed" else "") + (if (open) " ▾" else " ▸"), style = MaterialTheme.typography.labelMedium, color = c.textMuted)
-        if (open) steps.forEach { t ->
-            Column(Modifier.padding(top = 6.dp)) {
-                Text(t.name + if (!t.ok) " ⚠" else "", style = MaterialTheme.typography.labelMedium, color = c.text)
-                if (t.args.isNotBlank()) Text(t.args, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (t.result.isNotBlank()) Text(t.result, style = MaterialTheme.typography.bodySmall, color = c.textFaint, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    if (active.isEmpty()) return
+    Column(Modifier.padding(top = 6.dp).semantics { contentDescription = "Agent activity" }, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        active.forEach { t ->
+            val (icon, label) = dev.foxfleet.app.ui.chat.toolPresentation(t.name)
+            Row(Modifier.clip(RoundedCornerShape(50)).background(c.accent.copy(alpha = 0.09f)).padding(start = 10.dp, end = 12.dp, top = 5.dp, bottom = 5.dp), verticalAlignment = Alignment.CenterVertically) {
+                Icon(FoxIcons.get(icon), null, tint = c.accent, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(label, style = MaterialTheme.typography.labelMedium, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TypingDots(c.textMuted)
             }
         }
     }

@@ -266,6 +266,16 @@ class HubApi(private val store: SettingsStore) {
         HistoryPage(arr.mapNotNull { historyMessage(it) }, obj["has_more"]?.jsonPrimitive?.booleanOrNull == true)
     }
 
+    /** Reactions in one conversation. The hub binds the actor to this sign-in; we never send one. */
+    suspend fun reactions(agent: String, sessionId: String): ReactionSnapshot = withContext(Dispatchers.IO) {
+        parseReactions(request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/reactions"))
+    }
+    /** Idempotent: PUT adds this emoji once, DELETE removes it; repeating either changes nothing. */
+    suspend fun react(agent: String, sessionId: String, messageId: String, emoji: String, present: Boolean): ReactionSnapshot = withContext(Dispatchers.IO) {
+        parseReactions(request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/reactions", if (present) "PUT" else "DELETE",
+            buildJsonObject { put("message_id", messageId); put("emoji", emoji) }.toString()))
+    }
+
     suspend fun renameSession(agent: String, id: String, title: String) = withContext(Dispatchers.IO) {
         request(agentPath(agent) + "/sessions/" + enc(id), "PATCH", buildJsonObject { put("title", title) }.toString()); Unit
     }
@@ -285,8 +295,9 @@ class HubApi(private val store: SettingsStore) {
             ToolStep(o.str("name") ?: return@mapNotNull null, o.str("args").orEmpty(), o.str("result").orEmpty(), o.bool("ok") != false)
         }.orEmpty()
         val urls = runCatching { m["images"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }.orEmpty()
-        if (content.isEmpty() && reasoning.isEmpty() && steps.isEmpty() && urls.isEmpty()) return null
-        return UiMessage(role = role, content = content, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls)
+        if (content.isEmpty() && reasoning.isEmpty() && urls.isEmpty()) return null // a tool-only step is diagnostics, not a message
+        val id = runCatching { m["id"]?.jsonPrimitive?.takeIf { it !is JsonNull }?.content }.getOrNull()?.takeIf { it.isNotEmpty() }
+        return UiMessage(role = role, content = content, id = id, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls)
     }
 
     private fun contentToString(value: kotlinx.serialization.json.JsonElement?): String {
@@ -374,6 +385,8 @@ class HubApi(private val store: SettingsStore) {
         val onSession: (String) -> Unit, val onRun: (String) -> Unit = {}, val onGap: () -> Unit = {}, val onRunState: (String) -> Unit = {},
         val onRequest: (OpenRequest) -> Unit = {}, val onRequestClosed: (String, String) -> Unit = { _, _ -> }, val onAck: (String, String) -> Unit = { _, _ -> },
         val onReconnecting: () -> Unit = {},
+        /** Per-call tool lifecycle (start/progress/end with turn and call ids) from hubs that send it; [onTool] stays for older ones. */
+        val onToolEvent: (ToolEvent) -> Unit = {},
     )
 
     /**
@@ -394,6 +407,7 @@ class HubApi(private val store: SettingsStore) {
         onRequestClosed: (String, String) -> Unit = { _, _ -> },
         onAck: (String, String) -> Unit = { _, _ -> },
         onReconnecting: () -> Unit = {},
+        onToolEvent: (ToolEvent) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -403,7 +417,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -544,6 +558,7 @@ class HubApi(private val store: SettingsStore) {
                         e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
                         e.event == "foxfleet.request" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::parseRequest)?.let(cb.onRequest); true }
                         e.event == "foxfleet.request_closed" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> v.str("request_id")?.let { id -> cb.onRequestClosed(id, v.str("reason") ?: "closed") } }; true }
+                        e.event == "foxfleet.tool" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val type = v.str("type"); val name = v.str("name"); if (type in TOOL_EVENTS && name != null) cb.onToolEvent(ToolEvent(type!!, v.str("turn_id"), v.str("tool_id"), name)) }; true }
                         e.event == "foxfleet.ack" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val a = v.str("ack"); if (a != null && a in ACKS) cb.onAck(v.str("message_id").orEmpty(), a) }; true }
                         e.event == "error" -> throw HubApiException(0, "The agent reply failed. Check the agent and try again.")
                         else -> {
@@ -588,6 +603,21 @@ class HubApi(private val store: SettingsStore) {
         private val parser = Json { ignoreUnknownKeys = true }
 
         internal val ACKS = setOf("streaming", "queued", "steered", "redirected", "rejected")
+        internal val TOOL_EVENTS = setOf("tool.start", "tool.progress", "tool.end")
+
+        /** The hub's reaction snapshot; anything malformed is skipped rather than failing the chat. */
+        fun parseReactions(o: JsonObject): ReactionSnapshot {
+            fun actor(v: JsonObject?): ReactionActor? { val id = v?.str("id") ?: return null; return ReactionActor(id, v.str("name") ?: id, if (v.str("kind") == "agent") "agent" else "human") }
+            val me = actor(runCatching { o["actor"]?.jsonObject }.getOrNull()) ?: ReactionActor("", "You", "human")
+            val msgs = runCatching { o["messages"]?.jsonObject }.getOrNull().orEmpty().mapValues { (_, groups) ->
+                runCatching { groups.jsonArray }.getOrNull().orEmpty().mapNotNull { g ->
+                    val go = runCatching { g.jsonObject }.getOrNull() ?: return@mapNotNull null
+                    val emoji = go.str("emoji") ?: return@mapNotNull null
+                    ReactionGroup(emoji, runCatching { go["actors"]!!.jsonArray }.getOrNull().orEmpty().mapNotNull { actor(runCatching { it.jsonObject }.getOrNull()) }).takeIf { it.actors.isNotEmpty() }
+                }
+            }.filterValues { it.isNotEmpty() }
+            return ReactionSnapshot(me, msgs)
+        }
         /** Only clarify and approval become cards; any other kind is ignored (the hub already declined it upstream, so nothing waits). */
         internal fun parseRequest(o: JsonObject): OpenRequest? {
             val kind = o.str("kind"); val id = o.str("request_id")
@@ -623,6 +653,7 @@ class HubApi(private val store: SettingsStore) {
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,
                     sessions = caps.bool("sessions") ?: false, mailbox = caps.bool("mailbox") ?: false,
                     nativeUi = caps.bool("nativeUi") ?: false,
+                    reactions = caps.bool("reactions") ?: false, agentReactions = caps.bool("agentReactions") ?: false,
                     busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),
                 ) else Capabilities.forKind(kind),
             )

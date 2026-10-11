@@ -57,11 +57,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        coil3.SingletonImageLoader.setSafe { ctx ->
-            coil3.ImageLoader.Builder(ctx)
-                .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { vm.api.httpClient })) }
-                .build()
-        }
         intent?.dataString?.let { vm.openConnectLink(it) }
         setContent {
             val dark = isDark(vm.prefs.theme, isSystemInDarkTheme())
@@ -71,8 +66,18 @@ class MainActivity : ComponentActivity() {
                 enableEdgeToEdge(style, style)
             }
             FoxfleetTheme(vm.prefs) {
-                val mediaHost = remember { dev.foxfleet.app.ui.components.MediaHost(vm.api.httpClient) { agent, ref -> vm.api.media(agent, ref) }.also { h -> h.diagnose = { url -> vm.api.mediaDiagnose(url) } } }
-                CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars, dev.foxfleet.app.ui.components.LocalMediaHost provides mediaHost) { FoxfleetApp(vm) }
+                val mediaHost = vm.mediaHost
+                val imageLoader = remember(mediaHost) {
+                    val client = mediaHost?.client ?: dev.foxfleet.app.media.scopedMediaClient("", null)
+                    coil3.ImageLoader.Builder(applicationContext)
+                        .diskCache(null) // The bounded account cache owns durable media; never persist signed URLs in Coil.
+                        .components { add(coil3.network.okhttp.OkHttpNetworkFetcherFactory(callFactory = { client })) }
+                        .build().also { coil3.SingletonImageLoader.setUnsafe(it) }
+                }
+                androidx.compose.runtime.DisposableEffect(imageLoader) { onDispose { imageLoader.shutdown() } }
+                androidx.compose.runtime.key(mediaHost) {
+                    CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars, dev.foxfleet.app.ui.components.LocalMediaHost provides mediaHost) { FoxfleetApp(vm) }
+                }
             }
         }
     }
@@ -161,6 +166,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 sessions = vm.sessions[agent.name].orEmpty(), unread = { vm.chatFor(it).unread },
                 onSend = { t, imgs -> vm.send(agent.name, t, imgs) }, onSendMode = { t, imgs, mode -> vm.send(agent.name, t, imgs, mode) }, onStop = { vm.stop(agent.name) },
                 commandDefs = vm.commandDefs[agent.name], onResumeQueue = { vm.resumeQueue(agent.name) }, onCancelQueued = { vm.cancelQueued(agent.name, it) },
+                onSyncReactions = { vm.syncReactions(agent.name) }, onReact = { id, emoji, present -> vm.react(agent.name, id, emoji, present) },
                 onAnswerRequest = if (agent.capabilities.nativeUi) { id, result -> vm.answerRequest(agent.name, id, result) } else null,
                 nativeControls = if (agent.capabilities.nativeUi) vm.nativeControls(agent.name) else null,
                 onBack = { vm.back() }, onNewChat = { vm.newChat(agent.name) },
@@ -189,11 +195,15 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             agentName = route.agent, api = vm.api, onBack = { vm.back() }, hubKnown = vm.hubKnown, debug = vm.prefs.screenDebug, hubVersion = vm.hubVersion,
             onLeaveInControl = { vm.handBackScreen(route.agent) },
         )
-        Route.Settings -> SettingsScreen(
+        Route.Settings -> {
+            LaunchedEffect(Unit) { vm.refreshMediaUsage() }
+            SettingsScreen(
+            mediaCacheBytes = vm.mediaCacheBytes, clearingMedia = vm.clearingMedia, onClearMedia = vm::clearMediaCache,
             prefs = vm.prefs, onChange = vm::updatePrefs,
             onSignOut = vm::signOut, onBack = { vm.back() }, onAgents = { vm.navigate(Route.Agents) },
             hubName = vm.hubName, hubVersion = vm.hubVersion, hubOld = dev.foxfleet.app.ui.HubCompat.isOld(vm.hubVersion, vm.hubFeatures), username = vm.username, isOwner = vm.isOwner, onAdmin = { vm.navigate(Route.Admin) }, onHubs = { vm.navigate(Route.Hubs) }, onDevices = { vm.navigate(Route.Devices) },
         )
+        }
         Route.Hubs -> dev.foxfleet.app.ui.screens.HubsScreen(
             hubs = vm.settings.hubs, activeId = vm.settings.activeHubId, onBack = { vm.back() },
             onSwitch = vm::switchHub, onAdd = vm::startAddHub, onRemove = vm::removeHub,

@@ -7,6 +7,7 @@ import type { MediaItem } from '../components/MediaViewer';
 import { parseMedia, parseStreaming } from '../lib/mediaTags';
 import { MediaCards } from './MediaCards';
 import { Reasoning } from './Reasoning';
+import { ReactButton, ReactionBar, type ReactionGroup } from './Reactions';
 import { t } from '../i18n/t';
 
 export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaItem) => void }) {
@@ -27,16 +28,6 @@ export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaIt
 
 import { clock } from '../lib/time';
 
-function Tools({ m }: { m: UiMessage }) {
-  if (!m.tools?.length) return null;
-  const failed = m.tools.filter((x) => x.ok === false).length;
-  return (
-    <details class="tools">
-      <summary>{t(m.tools.length === 1 ? 'chat.toolsOne' : 'chat.toolsMany', { n: m.tools.length })}{failed ? ` · ${t('chat.toolsFailed', { n: failed })}` : ''}</summary>
-      <ul>{m.tools.map((x, i) => <li key={i} class={x.ok === false ? 'bad' : ''}><b>{x.name}</b>{x.args && <code>{x.args}</code>}{x.result && <span class="muted">{x.result}</span>}</li>)}</ul>
-    </details>
-  );
-}
 const Time = ({ ts }: { ts?: number }) => (ts ? <time class="msg-time muted" dateTime={new Date(ts).toISOString()}>{clock(ts)}</time> : null);
 
 /** Reply text with MEDIA: tags removed from view and shown as picture / video / audio / file cards underneath. */
@@ -45,29 +36,38 @@ export function AssistantText({ text, onMedia, streaming = false }: { text: stri
   return <>{parsed.text && <Markdown text={parsed.text} onMedia={onMedia} />}<MediaCards media={parsed.media} onMedia={onMedia} /></>;
 }
 
-export function Message({ m, onMedia, grouped = false }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean }) {
+/** Reactions for one message: pills plus an add button. Absent until the message has a stable hub id. */
+export interface MessageReactions { groups: ReactionGroup[]; me: string; onReact: (emoji: string, present: boolean) => void }
+const Reacts = ({ r }: { r?: MessageReactions }) => (r ? <ReactionBar groups={r.groups} me={r.me} onReact={r.onReact} /> : null);
+const AddReact = ({ r }: { r?: MessageReactions }) => (r ? <span class="msg-actions"><ReactButton onPick={(e) => r.onReact(e, true)} /></span> : null);
+
+export function Message({ m, onMedia, grouped = false, reactions }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean; reactions?: MessageReactions }) {
   if (m.role === 'system') return <div class="msg notice" role="status"><small class="muted">{m.content}</small></div>;
   if (m.role === 'user') {
     const { text, files } = splitFiles(m.content);
     return (
       <div class={`msg user${grouped ? ' grouped' : ''}`}>
-        <div class="bubble">
-          {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
-          {text && <p class="user-text">{text}</p>}
-          <Time ts={m.ts} />
-          {files.map((f, i) => <div class="chip" key={i}><Icon name="attach" size={16} /><span class="chip-name">{f.path.split('/').pop()}</span><small>{f.size}</small></div>)}
+        <div class="msg-row">
+          {!reactions?.groups.length && <AddReact r={reactions} />}
+          <div class="bubble">
+            {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
+            {text && <p class="user-text">{text}</p>}
+            <Time ts={m.ts} />
+            {files.map((f, i) => <div class="chip" key={i}><Icon name="attach" size={16} /><span class="chip-name">{f.path.split('/').pop()}</span><small>{f.size}</small></div>)}
+          </div>
         </div>
+        <Reacts r={reactions} />
       </div>
     );
   }
   return (
     <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}`}>
       {m.reasoning && <Reasoning text={m.reasoning} ms={m.reasoningMs} />}
-      <Tools m={m} />
       {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
       <AssistantText text={m.content} onMedia={onMedia} />
       {m.interrupted && <small class="interrupted muted">{t('chat.interrupted')}</small>}
-      <Time ts={m.ts} />
+      <Reacts r={reactions} />
+      <div class="msg-foot"><Time ts={m.ts} />{!reactions?.groups.length && <AddReact r={reactions} />}</div>
     </div>
   );
 }

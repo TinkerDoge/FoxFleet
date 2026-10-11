@@ -10,6 +10,8 @@ import { catalogFor } from '../../server/commands.js';
 import { readFileSync } from 'node:fs';
 const HERMES = JSON.parse(readFileSync(new URL('../../server/hermes-commands.json', import.meta.url), 'utf8'));
 const queue = [];
+const reactions = {}; // session key -> message id -> [{ emoji, actors }]
+const toolHold = Number(process.env.MOCK_TOOL_HOLD || 1200); // how long each mock tool call stays on screen
 const NATIVE = process.env.MOCK_NATIVE === '1'; // atlas behaves like a native Hermes session: cards, acknowledgements, model picker
 const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, ...o });
 const REPLY = `Here is the **weekly summary** you asked for. Atlas handled most of the load, and Friday was the busiest day.
@@ -65,7 +67,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   const devices = [{ id: 'd1', name: 'Desktop browser', kind: 'web', created: Date.now() - 5e8, lastSeen: Date.now() - 1000 }, { id: 'd2', name: 'Phone', kind: 'app', created: Date.now() - 4e8, lastSeen: Date.now() - 36e5 }, { id: 'd3', name: 'Laptop', kind: 'web', created: Date.now() - 2e8, lastSeen: Date.now() - 86400e3 }];
   let lease = null, screenOn = true;
   const agentsOut = () => saved.map((s) => ({ id: s.name, name: s.name, displayName: s.label || s.name, kind: s.kind, online: s.name !== 'echo', chatReady: true, managementReady: s.kind === 'hermes', description: s.description || '',
-    capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true, busy: ['queue', 'steer', 'interrupt'], ...(NATIVE ? { nativeUi: true } : {}) }) : caps({ images: s.name === 'nova', sessions: false, busy: ['queue', 'interrupt'] }) }));
+    capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true, reactions: true, busy: ['queue', 'steer', 'interrupt'], ...(NATIVE ? { nativeUi: true } : {}) }) : caps({ images: s.name === 'nova', sessions: false, busy: ['queue', 'interrupt'] }) }));
   let retention = 90;
   const H = 3600_000, T0 = Date.now();
   const chatSessions = { atlas: [
@@ -145,6 +147,19 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (c && c[2] && m === 'POST') return json(res, 200, { bootstrap: 'Connect this machine to my Foxfleet hub. Token: fft_EXAMPLE_NEW_TOKEN' });
     if (c && m === 'PUT') { await body(req); return json(res, 200, { connection: saved.find((s) => s.name === decodeURIComponent(c[1])) ?? { name: c[1], kind: 'openai' } }); }
     if (c && m === 'DELETE') { saved = saved.filter((s) => s.name !== decodeURIComponent(c[1])); return json(res, 200, { ok: true }); }
+    // Reactions: one in-memory store, the signed-in owner as "you", the agent already reacted to the first answer.
+    const rx = /^\/api\/agents\/([^/]+)\/sessions\/([^/]+)\/reactions$/.exec(p);
+    if (rx) {
+      const me = { id: 'user:owner1', name: 'owner1', kind: 'human' }, key = rx[1] + '/' + rx[2];
+      reactions[key] ??= { msg_a2: [{ emoji: '🦊', actors: [{ id: 'agent:' + rx[1], name: rx[1], kind: 'agent' }] }] };
+      if (m === 'PUT' || m === 'DELETE') {
+        const b = await body(req), groups = (reactions[key][b.message_id] ??= []);
+        for (const g of groups) g.actors = g.actors.filter((x) => x.id !== me.id || g.emoji !== b.emoji);
+        if (m === 'PUT') { const g = groups.find((x) => x.emoji === b.emoji); if (g) g.actors.push(me); else groups.push({ emoji: b.emoji, actors: [me] }); }
+        reactions[key][b.message_id] = groups.filter((g) => g.actors.length);
+      }
+      return json(res, 200, { actor: me, messages: reactions[key] });
+    }
     const a = /^\/api\/agents\/([^/]+)\/(sessions|skills|chat|files|media|screen)(?:\/([^/]+))?(?:\/messages)?$/.exec(p);
     if (a) {
       const [, agent, what, sid] = a;
@@ -153,8 +168,8 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
       if (what === 'sessions' && !sid) { const all = chatSessions[agent] || [], off = Number(url.searchParams.get('offset') || 0), lim = Number(url.searchParams.get('limit') || 30); return json(res, 200, { sessions: all.slice(off, off + lim), total: all.length }); }
       if (what === 'sessions' && (m === 'PATCH' || m === 'DELETE')) { await body(req).catch(() => {}); return json(res, 200, m === 'PATCH' ? { id: sid, title: 'renamed' } : { ok: true }); }
       if (what === 'sessions') return json(res, 200, { has_more: false, messages: [
-        { role: 'user', content: 'Can you summarise last week’s agent activity and chart the token usage?', ts: T0 - 0.5 * H },
-        { role: 'assistant', content: REPLY, reasoning: 'The user wants a summary and a chart. Pull usage, then format a table.', tools: [{ name: 'usage_report', args: 'days: 7', result: '3 agents, 41 chats, 1.2M tokens', ok: true }, { name: 'render_chart', args: 'kind: bar', result: 'saved chart.png', ok: true }], ts: T0 - 0.45 * H },
+        { id: 'msg_a1', role: 'user', content: 'Can you summarise last week’s agent activity and chart the token usage?', ts: T0 - 0.5 * H },
+        { id: 'msg_a2', role: 'assistant', content: REPLY, reasoning: 'The user wants a summary and a chart. Pull usage, then format a table.', tools: [{ name: 'usage_report', args: 'days: 7', result: '3 agents, 41 chats, 1.2M tokens', ok: true }, { name: 'render_chart', args: 'kind: bar', result: 'saved chart.png', ok: true }], ts: T0 - 0.45 * H },
       ] });
       if (what === 'files') { await body(req); return json(res, 200, { name: url.searchParams.get('name'), path: 'uploads/' + url.searchParams.get('name') }); }
       if (what === 'screen') {
@@ -171,6 +186,9 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
         const send = (d, e) => res.write(`${e ? 'event: ' + e + '\n' : ''}data: ${JSON.stringify(d)}\n\n`), delta = (x) => ({ choices: [{ delta: x }] });
         send(delta({ reasoning_content: 'Checking each agent’s status first.' })); await new Promise((r) => setTimeout(r, 400));
         send({ tool: 'fleet_status' }, 'hermes.tool.progress');
+        send({ type: 'tool.start', turn_id: 't1', tool_id: 'c1', name: 'web_search' }, 'foxfleet.tool'); send({ type: 'tool.start', turn_id: 't1', tool_id: 'c2', name: 'terminal' }, 'foxfleet.tool');
+        await new Promise((r) => setTimeout(r, toolHold)); send({ type: 'tool.end', turn_id: 't1', tool_id: 'c1', name: 'web_search' }, 'foxfleet.tool');
+        await new Promise((r) => setTimeout(r, toolHold)); send({ type: 'tool.end', turn_id: 't1', tool_id: 'c2', name: 'terminal' }, 'foxfleet.tool');
         if (NATIVE && agent === 'atlas') {
           send({ tool: 'read_file' }, 'hermes.tool.progress'); send({ tool: 'terminal' }, 'hermes.tool.progress'); send(delta({ content: 'Before I change anything, ' }));
           send({ request_id: 'srq-000000000001', kind: 'clarify', questions: [{ id: 'q0', question: 'Which environment should I deploy to?', choices: ['staging', 'production'], multi_select: false }] }, 'foxfleet.request');

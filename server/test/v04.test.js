@@ -92,7 +92,7 @@ test('Scribe MCP inbox: owner message -> hub_get_messages -> hub_post_message ->
   assert.equal(init.result.protocolVersion, '2025-06-18'); assert.equal(init.result.serverInfo.name, 'foxfleet');
   assert.equal((await mcp({ jsonrpc: '2.0', method: 'notifications/initialized' })).status, 202);
   const tools = (await (await mcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' })).json()).result.tools.map((x) => x.name);
-  assert.deepEqual(tools, ['hub_get_messages', 'hub_post_message']);
+  assert.deepEqual(tools, ['hub_get_messages', 'hub_post_message', 'hub_react']);
   // Owner sends from the app: queued, synthetic stream returns the thread as the session id.
   const chat = await owner('/api/agents/Scribe/chat', { messages: [{ role: 'user', content: [{ type: 'text', text: 'Plan my Saturday' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] }] }, 'POST');
   assert.equal(chat.status, 200); const thread = chat.headers.get('x-hermes-session-id'); assert.match(await chat.text(), /Delivered to Scribe's inbox/);

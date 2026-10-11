@@ -70,6 +70,9 @@ fun SettingsScreen(
     onDevices: () -> Unit = {},
     isOwner: Boolean = false,
     onAdmin: () -> Unit = {},
+    mediaCacheBytes: Long = 0L,
+    clearingMedia: Boolean = false,
+    onClearMedia: () -> Unit = {},
 ) {
     val c = LocalHubColors.current
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
@@ -140,6 +143,15 @@ fun SettingsScreen(
                     ToggleRow("Show reasoning", "Show the agent's thinking as a collapsed block above its replies.", prefs.showReasoning) { onChange(prefs.copy(showReasoning = it)) }
                     Hairline(Modifier.padding(start = 16.dp))
                     ToggleRow("Screen debug", "Show a status strip over the bot screen (connection, size, frames, errors) and a Send diagnostics button.", prefs.screenDebug) { onChange(prefs.copy(screenDebug = it)) }
+                }
+            }
+            SectionLabel("Media storage")
+            SoftCard(Modifier.fillMaxWidth()) {
+                Column {
+                    InfoRow("Cached media", "${mediaCacheBytes / (1024 * 1024)} MB / 256 MB")
+                    Text("Pictures and opened videos stay on this phone for faster replay. Old files are removed automatically. Open media stays available until you close it.",
+                        style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+                    NavRow(if (clearingMedia) "Clearing…" else "Clear cached media", chevron = false, onClick = { if (!clearingMedia) onClearMedia() })
                 }
             }
             SectionLabel("Account")

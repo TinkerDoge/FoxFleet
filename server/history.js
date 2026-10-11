@@ -16,6 +16,10 @@ export async function historyStore(file, { now = () => Date.now() } = {}) {
   try { const raw = JSON.parse(await readFile(file, 'utf8')); if (raw && typeof raw === 'object' && raw.agents) db = { ...db, ...raw }; } catch { /* first run */ }
   let writing = Promise.resolve();
   const save = () => (writing = writing.then(async () => { await mkdir(path.dirname(file), { recursive: true }); const tmp = file + '.tmp'; await writeFile(tmp, JSON.stringify(db), { mode: 0o600 }); await rename(tmp, file); }).catch(() => {}));
+  // Upgrade once on disk: identical messages must remain distinct across pagination and restarts.
+  let migrated = false;
+  for (const a of Object.values(db.agents)) for (const s of a.sessions ?? []) for (const m of s.messages ?? []) if (!m.id) { m.id = 'msg_' + randomBytes(12).toString('base64url'); migrated = true; }
+  if (migrated) await save();
   const list = (agent) => (db.agents[agent] ??= { sessions: [] }).sessions;
   function sweep() {
     const cutoff = now() - db.retentionDays * DAY; let changed = false;
@@ -33,7 +37,7 @@ export async function historyStore(file, { now = () => Date.now() } = {}) {
       if (db.retentionDays === 0 || !validSessionId(sid)) return;
       const t = now(), a = list(agent); let s = a.find((x) => x.id === sid);
       if (!s) { s = { id: sid, title: clip(userText.replace(/\s+/g, ' ').trim(), 60) || 'New chat', created: t, updated: t, messages: [] }; a.unshift(s); if (a.length > MAX_SESSIONS) a.length = MAX_SESSIONS; }
-      s.messages.push({ role: 'user', content: clip(userText, MAX_CHARS), ts: t }, { role: 'assistant', content: clip(assistantText, MAX_CHARS), ts: t });
+      s.messages.push({ id: 'msg_' + randomBytes(12).toString('base64url'), role: 'user', content: clip(userText, MAX_CHARS), ts: t }, { id: 'msg_' + randomBytes(12).toString('base64url'), role: 'assistant', content: clip(assistantText, MAX_CHARS), ts: t });
       if (s.messages.length > MAX_MESSAGES) s.messages.splice(0, s.messages.length - MAX_MESSAGES);
       s.updated = t; a.sort((x, y) => y.updated - x.updated); sweep(); await save();
     },

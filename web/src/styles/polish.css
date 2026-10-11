@@ -135,3 +135,48 @@
 .keys .chip-btn.on{background:var(--accent);color:var(--on-accent,#fff)}
 .keys-help{flex-basis:100%;margin:0}
 .screen-host{touch-action:none}
+
+/* ---- messenger: compact rhythm, warm canvas, activity strip, reactions ---- */
+.messages { gap: 14px; background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 70%); }
+.msg.assistant > .md:not(.plain) { box-shadow: 0 1px 2px #0000000d; }
+.msg.user { flex-direction: column; align-items: flex-end; gap: 4px; }
+.msg-row { display: flex; align-items: center; justify-content: flex-end; gap: 6px; width: 100%; }
+.msg-foot { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.msg-time { color: var(--text-faint); }
+
+/* temporary tool activity: one quiet line per running call, gone when it ends */
+.activity { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.activity-row { display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px 4px 10px; border-radius: var(--radius-pill); background: color-mix(in srgb, var(--accent) 9%, var(--surface)); color: var(--text-muted); font-size: 13px; line-height: 18px; width: fit-content; max-width: 100%; animation: fade-in var(--motion-status) var(--ease-out); }
+.activity-row .icon { color: var(--accent); flex: none; }
+.activity-row span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* reactions */
+.msg-actions { opacity: 0; transition: opacity var(--motion-fast); }
+.msg:hover .msg-actions, .msg:focus-within .msg-actions { opacity: 1; }
+@media (hover: none) { .msg-actions { opacity: .6; } }
+.react-anchor { position: relative; display: inline-flex; }
+.react-add { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
+.react-add:hover, .react-add:focus-visible, .react-add[aria-expanded="true"] { background: var(--surface-alt); color: var(--accent); }
+.react-add.small { width: 28px; height: 28px; border: 1px solid var(--hairline); }
+.reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: min(100%, 680px); }
+.react-pill { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 10px 0 7px; border-radius: var(--radius-pill); border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-press) var(--ease-out); }
+.react-pill:hover { background: var(--surface-alt); }
+.react-pill:active { transform: scale(0.94); }
+.react-pill.mine { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.react-count { font-variant-numeric: tabular-nums; font-weight: 500; }
+.react-pill.mine .react-count { color: var(--accent); }
+img.emoji { display: inline-block; vertical-align: -3px; object-fit: contain; }
+.emoji-text { line-height: 1; }
+.react-error { margin: 0; align-self: center; }
+
+.emoji-picker { position: absolute; z-index: 25; bottom: calc(100% + 6px); left: 0; width: min(320px, calc(100vw - 32px)); padding: 8px; display: flex; flex-direction: column; gap: 8px; border-radius: 18px; background: var(--surface); border: 1px solid var(--hairline); box-shadow: var(--elev), 0 16px 48px #0003; animation: panel-in var(--motion-panel-in) var(--ease-out); }
+.msg.user .emoji-picker { left: auto; right: 0; }
+.emoji-quick { display: flex; justify-content: space-between; }
+.emoji-quick button, .emoji-grid button { display: inline-grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: 10px; background: none; cursor: pointer; }
+.emoji-quick button:hover, .emoji-grid button:hover, .emoji-quick button:focus-visible, .emoji-grid button:focus-visible { background: var(--surface-alt); }
+.emoji-search { margin: 0; height: 38px; }
+.emoji-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(36px, 1fr)); gap: 2px; max-height: 232px; overflow-y: auto; overscroll-behavior: contain; }
+.emoji-grid p { grid-column: 1 / -1; margin: 8px; }
+.emoji-credit { font-size: 11px; text-align: right; padding-inline: 4px; } .emoji-credit a { color: inherit; }
+@media (max-width: 760px) { .emoji-picker, .msg.user .emoji-picker { position: fixed; left: 12px; right: 12px; bottom: calc(88px + env(safe-area-inset-bottom)); width: auto; } }
+@media (prefers-reduced-motion: reduce) { .activity-row, .emoji-picker, .react-pill, .msg-actions { animation: none !important; transition: none !important; } }

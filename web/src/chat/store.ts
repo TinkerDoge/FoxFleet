@@ -1,3 +1,4 @@
+import { updateTools, type ToolActivity, type ToolEvent } from './toolActivity';
 import { useEffect, useState } from 'preact/hooks';
 import type { Client, OpenRequest, QueuedMessage, SendMode } from '../api/client';
 import { backoff, isTransientStatus } from '../api/client';
@@ -12,6 +13,7 @@ import { clearSaved, loadSaved, saveChat } from '../lib/persist';
 import { rememberLast } from '../lib/localLast';
 
 export interface ChatState {
+  activity?: ToolActivity;
   agent: string; messages: UiMessage[]; session?: string; streaming: boolean;
   streamText: string; streamReasoning: string; reasoningMs?: number; tool?: string; error?: string; sessions: SessionInfo[]; sessionsTotal: number; sessionsLoading: boolean; sessionsError?: string; skills: string[]; loading: boolean;
   runState?: 'submitting' | 'accepted' | 'working' | 'completed' | 'failed' | 'stopped' | 'disconnected' | 'reconnecting' | 'unknown';
@@ -33,7 +35,7 @@ const selections = new Map<string, symbol>();
 let account = Symbol();
 const selection = (agent: string) => { let key = selections.get(agent); if (!key) { key = Symbol(); selections.set(agent, key); } return key; };
 const select = (agent: string) => { const key = Symbol(); selections.set(agent, key); return key; };
-const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0, queue: [], halted: false, requests: [], toolLog: [], canCancel: true });
+const fresh = (agent: string): ChatState => ({ agent, messages: [], streaming: false, streamText: '', streamReasoning: '', sessions: [], sessionsTotal: 0, sessionsLoading: false, skills: [], loading: false, hasOlder: false, loadingOlder: false, olderOffset: 0, queue: [], halted: false, requests: [], toolLog: [], activity: undefined, canCancel: true });
 /** Tells the agent list that a message went out or a reply ended, so it can refresh its last-message line. */
 const announce = (agent: string) => { try { window.dispatchEvent(new CustomEvent('foxfleet:activity', { detail: { agent } })); } catch { /* not a browser */ } };
 export const chatOf = (agent: string): ChatState => { let s = states.get(agent); if (!s) { s = fresh(agent); states.set(agent, s); } return s; };
@@ -56,7 +58,7 @@ export async function loadAgent(client: Client, agent: string, onAuthLost: () =>
 }
 export async function openSession(client: Client, agent: string, id: string, onAuthLost: () => void, discoverRun = false) {
   const key = select(agent);
-  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, recovery: undefined, runState: undefined, session: id, queue: [], halted: false, requests: [], toolLog: [], messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, loadingOlder: false, olderOffset: 0 });
+  detach(agent); saveChat(agent, { session: id, run: undefined, user: undefined }); patch(agent, { loading: true, error: undefined, recovery: undefined, runState: undefined, session: id, queue: [], halted: false, requests: [], toolLog: [], activity: undefined, messages: [], streaming: false, streamText: '', streamReasoning: '', tool: undefined, hasOlder: false, loadingOlder: false, olderOffset: 0 });
   try { const page = await client.messages(agent, id); if (selections.get(agent) !== key) return; patch(agent, { messages: page.messages, hasOlder: page.hasMore, olderOffset: PAGE, loading: discoverRun }); }
   catch (e) { if (selections.get(agent) !== key) return; if (e instanceof AuthRequiredError) { onAuthLost(); return; } patch(agent, { loading: false, error: friendly(e), recovery: 'reload' }); }
 }
@@ -112,7 +114,9 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     onGap: () => { if (!live()) return; acc.reply = ''; patch(agent, { streamText: '' }); },
     onContent: (d: string) => { if (!live()) return; if (acc.t0 && !acc.ms) { acc.ms = Date.now() - acc.t0; patch(agent, { reasoningMs: acc.ms }); } acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
     onReasoning: (d: string) => { if (!live()) return; if (!acc.t0) acc.t0 = Date.now(); acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning, runState: 'working' }); },
-    onTool: (label: string) => { if (live()) { const log = chatOf(agent).toolLog; patch(agent, { tool: label, runState: 'working', toolLog: log[log.length - 1] === label ? log : [...log, label].slice(-12) }); } },
+    onToolEvent: (event: ToolEvent) => { if (live()) patch(agent, { activity: updateTools(chatOf(agent).activity, event), tool: undefined }); },
+    // Legacy label: shown only for providers that never send per-call events (it stays until the turn ends).
+    onTool: (label: string) => { if (live()) { const c = chatOf(agent), log = c.toolLog; patch(agent, { tool: c.activity ? undefined : label, runState: 'working', toolLog: log[log.length - 1] === label ? log : [...log, label].slice(-12) }); } },
     // cards come and go with the agent's own events; the id is the only key, so a late or repeated event changes nothing
     onRequest: (r: OpenRequest) => { if (live() && !chatOf(agent).requests.some((x) => x.id === r.id)) patch(agent, { requests: [...chatOf(agent).requests, r] }); },
     onRequestClosed: (id: string) => { if (live()) patch(agent, { requests: chatOf(agent).requests.filter((x) => x.id !== id) }); },
@@ -127,7 +131,7 @@ function settle(agent: string, ctrl: AbortController, base: UiMessage[], acc: Ac
   const interrupted = stoppedBy.has(ctrl) || acc.state === 'stopped';
   const reply: UiMessage[] = acc.reply || acc.reasoning ? [{ role: 'assistant', content: acc.reply, ...(acc.reasoning ? { reasoning: acc.reasoning, ...(acc.t0 ? { reasoningMs: acc.ms ?? Date.now() - acc.t0 } : {}) } : {}), ...(interrupted ? { interrupted: true } : {}) }] : [];
   if (acc.reply) rememberLast(agent, 'assistant', acc.reply);
-  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', reasoningMs: undefined, tool: undefined, toolLog: [], requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
+  patch(agent, { messages: [...base, ...reply], streaming: false, streamText: '', streamReasoning: '', reasoningMs: undefined, tool: undefined, toolLog: [], activity: undefined, requests: [], runState: interrupted ? 'stopped' : acc.state === 'error' ? 'failed' : acc.state === 'unavailable' ? 'unknown' : 'completed', ...(acc.state === 'error' || acc.state === 'unavailable' ? { error: t(acc.state === 'error' ? 'chat.runFailed' : 'chat.runUnavailable'), recovery: 'check' as const } : {}), ...extra });
   announce(agent); return true;
 }
 
@@ -139,7 +143,7 @@ async function followRun(client: Client, agent: string, run: string, item: Queue
   const base = [...history, ...user], ctrl = new AbortController(); aborts.set(agent, ctrl); runIds.set(agent, run);
   const acc: Acc = { reply: '', reasoning: '', selection: selection(agent) };
   saveChat(agent, { run });
-  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'accepted' });
+  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', activity: undefined, tool: undefined, error: undefined, recovery: undefined, runState: 'accepted' });
   try { await client.follow(agent, run, 0, callbacks(agent, ctrl, acc)); settle(agent, ctrl, base, acc); if (aborts.get(agent) === ctrl && acc.state !== 'unavailable') clearRun(agent); }
   catch (e) { if ((e as Error).name !== 'AbortError') { if (e instanceof AuthRequiredError) onAuthLost(); settle(agent, ctrl, base, acc, failure(agent, e)); } else settle(agent, ctrl, base, acc); }
   finally { if (aborts.get(agent) === ctrl) { aborts.delete(agent); runIds.delete(agent); } }
@@ -243,7 +247,7 @@ export async function send(client: Client, agent: string, text: string, images: 
   if (cur.loading) return;
   if (cur.streaming || cur.queue.some((q) => PENDING.has(q.state))) return submitBusy(client, agent, user, mode, onAuthLost);
   const base = [...cur.messages, user]; rememberLast(agent, 'user', user.content);
-  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' }); announce(agent);
+  patch(agent, { messages: base, streaming: true, streamText: '', streamReasoning: '', activity: undefined, tool: undefined, error: undefined, recovery: undefined, runState: 'submitting' }); announce(agent);
   const ctrl = new AbortController(); aborts.set(agent, ctrl);
   saveChat(agent, { user: user.content, started: Date.now(), run: undefined });
   const acc: Acc = { reply: '', reasoning: '', selection: selection(agent) }, sentAt = Date.now();
@@ -288,4 +292,22 @@ export async function answerRequest(client: Client, agent: string, id: string, r
   const drop = () => patch(agent, { requests: chatOf(agent).requests.filter((x) => x.id !== id) });
   try { await client.answerRequest(agent, c.session, id, result); drop(); return null; }
   catch (e) { if (e instanceof AuthRequiredError) { onAuthLost(); return 'sign-in'; } if (e instanceof ApiError && e.status === 404) { drop(); return null; } return friendly(e); }
+}
+
+/** Replace the newest page with authoritative message IDs after a completed turn. */
+export async function reconcileMessages(client: Client, agent: string) {
+  const start = chatOf(agent), context = account, key = selection(agent);
+  if (!start.session || start.streaming || start.loading || start.error) return;
+  try {
+    const page = await client.messages(agent, start.session, { limit: 200 });
+    const current = chatOf(agent);
+    if (account !== context || selection(agent) !== key || current.streaming || current.messages !== start.messages || !page.messages.length) return;
+    // A provider may persist after the stream ends. Do not replace newer live text with an older snapshot.
+    // The stored page must end with the same exchange (last two messages), not merely a repeated answer.
+    const same = (a?: UiMessage, b?: UiMessage) => !a || (a.role === b?.role && a.content.trim() === b.content.trim());
+    if (!same(current.messages.at(-1), page.messages.at(-1)) || !same(current.messages.at(-2), page.messages.at(-2))) return;
+    const first = page.messages[0].id, boundary = first ? current.messages.findIndex(m => m.id === first) : -1;
+    const older = boundary >= 0 ? current.messages.slice(0, boundary) : [];
+    patch(agent, { messages: [...older, ...page.messages], hasOlder: page.hasMore, olderOffset: 200 });
+  } catch { /* History is optional; keep the live answer and retry on the next refresh. */ }
 }

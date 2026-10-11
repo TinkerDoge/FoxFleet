@@ -6,6 +6,19 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 (nothing yet)
 
+## 0.3.7-alpha (unreleased, Android versionCode 15)
+
+### Added: messenger polish (web + Android)
+- *Reactions:* react to any message with emoji (quick row plus the full searchable catalog, skin tones included); pills show counts and who reacted, humans and agents apart. Web: the smiley button on a message; Android: long-press (or the TalkBack action) and a bottom sheet. Changes show at once and roll back if the hub refuses. A second client picks them up within 30 s.
+- *Hub:* reactions are stored per account (`reactions.json`) by stable message id and the signed-in actor (never an actor from the request). `PUT`/`DELETE /api/agents/{name}/sessions/{id}/reactions` are idempotent. Deleting a chat, an agent or an account removes its reactions; they expire after 90 days.
+- *Hub:* API-key agent history now has persisted message ids (existing history is upgraded once on start), and inbox messages carry their id, so identical messages stay distinct.
+- *Agents:* MCP inbox agents get a `hub_react` tool (`capabilities.agentReactions`). Reacting does not post a message or start a turn.
+- Emoji artwork: [Twemoji](https://github.com/jdecked/twemoji) v17.0.3, bundled in both apps (no CDN), CC BY 4.0, credited in the picker and NOTICE.md.
+- *Tool activity:* while the agent works, one short line per running tool ("Searching the web", "Running a command") with an icon; each line leaves when its call ends, all clear when the reply ends. Raw arguments never show. Native agents send per-call `foxfleet.tool` events; older ones keep the single latest label.
+- *Clean history:* finished answers no longer show a "Used N tools" log, and tool-only rows are hidden.
+- *Android media:* pictures and opened videos are kept in an account-scoped cache (256 MB, oldest removed first), so reopening a chat shows them without asking the hub again. Videos download when opened, with progress and Cancel. Settings shows the size and a **Clear cached media** button. Signing out clears that account's copies. Media requests send the hub token only to the hub itself.
+- *Look:* warmer dark palette, softer assistant cards, slightly tighter spacing; the Android header shows Online/Offline and live activity shows once, under the reply.
+
 ## 0.3.6-alpha (unreleased, Android versionCode 14)
 
 ### Added: agents know they are in FoxFleet

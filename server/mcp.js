@@ -16,11 +16,13 @@ export const TOOLS = [
     annotations: { readOnlyHint: false, idempotentHint: false } },
 ];
 
-export function mcpHandler(inbox) {
+const REACT_TOOL = { name: 'hub_react', title: 'React to a message', description: 'Add or remove your emoji reaction to a message in your FoxFleet conversation. Use thread_id and message_id from hub_get_messages. This does not send a chat message.', inputSchema: { type: 'object', properties: { thread_id: { type: 'string' }, message_id: { type: 'string' }, emoji: { type: 'string' }, remove: { type: 'boolean', default: false } }, required: ['thread_id', 'message_id', 'emoji'], additionalProperties: false }, annotations: { readOnlyHint: false, idempotentHint: true } };
+
+export function mcpHandler(inbox, reactions) {
   const ok = (id, result) => ({ jsonrpc: '2.0', id, result });
   const err = (id, code, message) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
   const text = (value, isError = false) => ({ content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }], ...(typeof value === 'object' ? { structuredContent: value } : {}), isError });
-  function one(agent, msg) {
+  async function one(agent, msg) {
     if (!msg || msg.jsonrpc !== '2.0' || typeof msg.method !== 'string') return err(msg?.id, -32600, 'Invalid request');
     const notification = msg.id === undefined || msg.id === null;
     if (notification) return null;
@@ -32,10 +34,17 @@ export function mcpHandler(inbox) {
           instructions: `You are connected to a Foxfleet hub as "${agent.label || agent.name}". Check in with hub_get_messages, then answer each message with hub_post_message using its thread_id.` });
       }
       case 'ping': return ok(msg.id, {});
-      case 'tools/list': return ok(msg.id, { tools: TOOLS });
+      case 'tools/list': return ok(msg.id, { tools: reactions ? [...TOOLS, REACT_TOOL] : TOOLS });
       case 'tools/call': {
         const args = p.arguments && typeof p.arguments === 'object' ? p.arguments : {};
         try {
+          if (p.name === 'hub_react' && reactions) {
+            if (!threadId(args.thread_id)) return ok(msg.id, text('Invalid thread_id', true));
+            if (args.remove !== undefined && typeof args.remove !== 'boolean') return ok(msg.id, text('remove must be a boolean', true));
+            if (!inbox.messages(agent.name, args.thread_id).messages.some(m => m.id === args.message_id)) return ok(msg.id, text('Message not found', true));
+            await reactions.set(agent.name, args.thread_id, args.message_id, args.emoji, { id: 'agent:' + agent.name, name: agent.label || agent.name, kind: 'agent' }, args.remove !== true);
+            return ok(msg.id, text({ ok: true, reactions: reactions.list(agent.name, args.thread_id)[args.message_id] ?? [] }));
+          }
           if (p.name === 'hub_get_messages') {
             const limit = args.limit === undefined ? 20 : args.limit;
             if (!Number.isInteger(limit) || limit < 1 || limit > 50) return ok(msg.id, text('limit must be an integer from 1 to 50', true));
@@ -51,8 +60,8 @@ export function mcpHandler(inbox) {
       default: return err(msg.id, -32601, 'Method not found');
     }
   }
-  return function handle(agent, body) {
-    if (Array.isArray(body)) { const out = body.map((m) => one(agent, m)).filter(Boolean); return out.length ? out : null; }
+  return async function handle(agent, body) {
+    if (Array.isArray(body)) { const out = []; for (const m of body) { const result = await one(agent, m); if (result) out.push(result); } return out.length ? out : null; }
     return one(agent, body);
   };
 }

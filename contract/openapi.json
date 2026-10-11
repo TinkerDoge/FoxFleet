@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.6-alpha",
+    "version": "0.3.7-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -1699,6 +1699,10 @@
                                 }
                               }
                             }
+                          },
+                          "id": {
+                            "type": "string",
+                            "description": "Stable message id (hub-assigned for API-key agents, provider id for Hermes). Reactions address messages by this id, never by position."
                           }
                         }
                       }
@@ -1808,7 +1812,7 @@
     "/api/agents/{name}/chat": {
       "post": {
         "operationId": "chat",
-        "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `[DONE]`. Session id in X-Hermes-Session-Id.",
+        "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `foxfleet.tool` ({type: tool.start|tool.progress|tool.end, turn_id, tool_id, name}; per-call lifecycle, from native agents), `[DONE]`. Session id in X-Hermes-Session-Id.",
         "tags": [
           "agents"
         ],
@@ -4056,6 +4060,181 @@
           }
         }
       }
+    },
+    "/api/agents/{name}/sessions/{id}/reactions": {
+      "get": {
+        "operationId": "getReactions",
+        "summary": "Emoji reactions in one conversation (humans and agents). Only ids of messages still in the conversation are returned.",
+        "tags": [
+          "agents"
+        ],
+        "responses": {
+          "200": {
+            "description": "Reactions",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reactions"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown conversation or message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "addReaction",
+        "summary": "Add your reaction (idempotent: repeating it changes nothing).",
+        "tags": [
+          "agents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "message_id",
+                  "emoji"
+                ],
+                "properties": {
+                  "message_id": {
+                    "type": "string"
+                  },
+                  "emoji": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reactions for the conversation after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reactions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one emoji, or an invalid message id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown conversation or message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Reaction limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeReaction",
+        "summary": "Remove your reaction (idempotent).",
+        "tags": [
+          "agents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "message_id",
+                  "emoji"
+                ],
+                "properties": {
+                  "message_id": {
+                    "type": "string"
+                  },
+                  "emoji": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reactions for the conversation after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reactions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one emoji, or an invalid message id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown conversation or message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Reaction limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4654,6 +4833,14 @@
                 "description": "Pictures and files made by tools (not only MEDIA: lines) become cards (native Hermes)"
               }
             }
+          },
+          "reactions": {
+            "type": "boolean",
+            "description": "The hub keeps emoji reactions for this agent's conversations."
+          },
+          "agentReactions": {
+            "type": "boolean",
+            "description": "The agent can react itself (MCP inbox agents: the hub_react tool)."
           }
         }
       },
@@ -5296,6 +5483,68 @@
           }
         },
         "description": "A question or approval the agent waits on. Answer once with POST /api/agents/{name}/native/sessions/{sid}/requests/{rid}. Other request kinds are declined upstream and never listed."
+      },
+      "ReactionActor": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "user:<account> or agent:<name>; bound by the hub from the credential, never taken from a request body."
+          },
+          "name": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent"
+            ]
+          }
+        }
+      },
+      "Reactions": {
+        "type": "object",
+        "required": [
+          "actor",
+          "messages"
+        ],
+        "properties": {
+          "actor": {
+            "$ref": "#/components/schemas/ReactionActor"
+          },
+          "messages": {
+            "type": "object",
+            "description": "Stable message id -> reactions on it.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "emoji",
+                  "actors"
+                ],
+                "properties": {
+                  "emoji": {
+                    "type": "string",
+                    "description": "One RGI emoji (Unicode, not artwork)."
+                  },
+                  "actors": {
+                    "type": "array",
+                    "items": {
+                      "$ref": "#/components/schemas/ReactionActor"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

@@ -77,7 +77,7 @@ export async function inboxStore(file) {
     },
     messages(name, tid) {
       const t = agent(name).threads[tid]; if (!t) throw fault(404, 'Unknown session');
-      return { messages: t.messages.map((m) => ({ role: m.role, content: m.content, timestamp: m.at / 1000, ...(m.role === 'user' ? { delivered: m.delivered } : {}) })) };
+      return { messages: t.messages.map((m) => ({ id: m.id, role: m.role, content: m.content, ts: m.at, timestamp: m.at / 1000, ...(m.role === 'user' ? { delivered: m.delivered } : {}) })) };
     },
     lastSeen: (name) => agent(name).lastSeen || 0,
     drop(name) { if (data.agents[name]) { delete data.agents[name]; save(); } },

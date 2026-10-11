@@ -1,3 +1,4 @@
+import type { ToolEvent } from '../chat/toolActivity';
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
 import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, SessionPage, HistoryPage, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
@@ -33,7 +34,7 @@ export const parseRequest = (r: any): OpenRequest | null => {
 };
 export const parseQueued = (m: any): QueuedMessage => ({ id: String(m?.id ?? ''), state: String(m?.state ?? 'queued'), mode: MODES.includes(m?.mode) ? m.mode : 'queue', text: String(m?.text ?? ''), ...(m?.error ? { error: String(m.error) } : {}), ...(m?.note ? { note: String(m.note) } : {}), ...(m?.run_id ? { runId: String(m.run_id) } : {}), ...(ACKS.includes(m?.ack) ? { ack: m.ack as Ack } : {}) });
 export const parseQueue = (r: any): QueueState => ({ items: (Array.isArray(r?.items) ? r.items : []).map(parseQueued), recent: (Array.isArray(r?.recent) ? r.recent : []).map(parseQueued), halted: r?.halted === true, activeRun: typeof r?.active_run === 'string' ? r.active_run : null, modes: (Array.isArray(r?.modes) ? r.modes : []).filter((m: unknown): m is SendMode => MODES.includes(m as SendMode)), openRequests: (Array.isArray(r?.open_requests) ? r.open_requests : []).map(parseRequest).filter((x: OpenRequest | null): x is OpenRequest => !!x), canCancel: r?.can_cancel !== false });
-export interface StreamOpts { signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onReconnecting?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
+export interface StreamOpts { onToolEvent?: (event: ToolEvent) => void; signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onReconnecting?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
 export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000, retryBaseMs = 400 }: ClientOptions = {}) {
@@ -145,6 +146,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
         let v: any; try { v = JSON.parse(e.data); } catch { return true; }
         if (!v || typeof v !== 'object') return true;
         if ('error' in v) throw fail();
+        if (e.event === 'foxfleet.tool') { if (['tool.start', 'tool.progress', 'tool.end'].includes(v.type) && typeof v.name === 'string') opts.onToolEvent?.(v); return true; }
         if (e.event === 'hermes.tool.progress') { opts.onTool(String(v.tool ?? v.name ?? 'tool')); return true; }
         for (const c of Array.isArray(v.choices) ? v.choices : []) {
           const d = c?.delta; if (!d) continue;
@@ -172,6 +174,8 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     setup: (username: string, password: string, setupCode?: string, acceptedTerms?: string) => request<unknown>('/api/auth/setup', { body: { username, password, setupCode, acceptedTerms, client: 'web' }, plain401: true }),
     register: (username: string, password: string, invite: string, acceptedTerms?: string) => request<unknown>('/api/auth/register', { body: { username, password, invite, acceptedTerms, client: 'web' }, plain401: true }),
     logout: () => request<unknown>('/api/auth/logout', { method: 'POST', body: {}, plain401: true }),
+    reactions: (agent: string, session: string) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/reactions`),
+    react: (agent: string, session: string, message: string, emoji: string, present: boolean) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/reactions`, { method: present ? 'PUT' : 'DELETE', body: { message_id: message, emoji }, retries: 2 }), // PUT/DELETE are idempotent, so a retry is safe
     pinAgent: async (agent: string, pinned: boolean): Promise<{ pinned: boolean; pins: string[] }> => request(`/api/agents/${enc(agent)}/pin`, { method: 'PUT', body: { pinned }, retries: 0 }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
 
