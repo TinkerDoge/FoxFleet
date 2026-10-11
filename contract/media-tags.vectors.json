@@ -403,6 +403,26 @@
         }
       ],
       "react": "❤️"
+    },
+    {
+      "name": "react with CRLF",
+      "input": "Hi\r\nREACT: ❤️\r\nBye",
+      "text": "Hi\r\nBye",
+      "media": [],
+      "react": "❤️"
+    },
+    {
+      "name": "react in a blockquote stays",
+      "input": "> REACT: ❤️",
+      "text": "> REACT: ❤️",
+      "media": []
+    },
+    {
+      "name": "react emoji-shaped but not an emoji is removed",
+      "input": "Wait\nREACT: …",
+      "text": "Wait",
+      "media": [],
+      "react": "…"
     }
   ]
 }

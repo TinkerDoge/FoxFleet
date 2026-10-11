@@ -1,6 +1,6 @@
 // MEDIA: tags, as Hermes writes them for Telegram (gateway/platforms/base.py: MEDIA_TAG_CLEANUP_RE, extract_media), for FoxFleet's chat.
 // The same algorithm lives in web/src/lib/mediaTags.ts and android/.../MediaTags.kt; contract/media-tags.vectors.json pins all three.
-//   parseMedia(text) -> { text: <tags and directives removed>, media: [{ ref, kind, name, voice? }] }
+//   parseMedia(text) -> { text: <tags, directives and REACT: lines removed>, media: [{ ref, kind, name, voice? }], react: <first REACT: emoji> | null }
 // `ref` is the path or URL exactly as the agent wrote it (the hub resolves it); nothing here touches the disk or the network.
 
 export const IMAGE_EXTS = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif'];
@@ -39,7 +39,7 @@ export function takeReact(text) {
   for (const m of scan.matchAll(REACT_LINE)) {
     if (!emojiShaped(m[1])) continue;
     react ??= m[1];
-    const end = m.index + m[0].length; spans.push([m.index, text[end] === '\n' ? end + 1 : end]);
+    const end = m.index + m[0].length, nl = text[end] === '\r' && text[end + 1] === '\n' ? 2 : text[end] === '\n' ? 1 : 0; spans.push([m.index, end + nl]);
   }
   if (!spans.length) return { text, react: null };
   let out = text; for (const [a, b] of spans.reverse()) out = out.slice(0, a) + out.slice(b);

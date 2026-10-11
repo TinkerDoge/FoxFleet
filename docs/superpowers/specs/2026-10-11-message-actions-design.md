@@ -151,7 +151,7 @@ Stored reply ids and jump-to-original, real per-message deletion, multi-select, 
 - React and hide are optimistic, with a rollback on failure, the same as reactions today. Errors use the existing `reactionError` line.
 - Edit: if `/undo` fails or the agent refuses it, the composer is not filled, and the failure shows as a notice.
 - Copy, Share and Select never touch the network.
-- A malformed `REACT:` value stays visible as text, so the agent's mistake is visible rather than silent.
+- A `REACT:` line whose token is not emoji-shaped (for example `REACT: like`) stays visible as text. An emoji-shaped token that is not one RGI emoji is removed from view but not applied.
 
 ## Testing
 
