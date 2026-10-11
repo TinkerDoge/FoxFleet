@@ -3,8 +3,30 @@ import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fault } from './config.js';
+import { parseMedia } from './media-tags.js';
 
 export const validEmoji = (value) => typeof value === 'string' && value.length <= 64 && /^\p{RGI_Emoji}$/v.test(value);
+/** Reactions agents write in their replies (a REACT: line). Each lands on the nearest earlier user message with an id. Derived on read, never stored. */
+export function agentReactions(messages, actor) {
+  const out = []; let user = null;
+  for (const m of messages) {
+    if (m?.role === 'user') { user = m.id != null ? String(m.id) : null; continue; }
+    if (m?.role !== 'assistant' || !user || typeof m.content !== 'string') continue;
+    const { react } = parseMedia(m.content);
+    if (react && validEmoji(react)) out.push({ message: user, emoji: react, actor });
+  }
+  return out;
+}
+/** Stored reactions plus derived ones; an actor counts once per emoji on a message. */
+export function mergeReactions(stored, derived) {
+  const merged = Object.fromEntries(Object.entries(stored).map(([id, groups]) => [id, groups.map((g) => ({ emoji: g.emoji, actors: [...g.actors] }))]));
+  for (const d of derived) {
+    const groups = (merged[d.message] ??= []); let g = groups.find((x) => x.emoji === d.emoji);
+    if (!g) { g = { emoji: d.emoji, actors: [] }; groups.push(g); }
+    if (!g.actors.some((a) => a.id === d.actor.id)) g.actors.push(d.actor);
+  }
+  return merged;
+}
 export async function reactionStore(file, { now = () => Date.now(), retentionMs = 90 * 86400000 } = {}) {
   let rows = [], hidden = []; // hidden: [{ agent, session, message, at }], this account's "delete for me" list; it never expires on its own
   try {

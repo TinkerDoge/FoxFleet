@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { reactionStore, validEmoji } from '../reactions.js';
+import { reactionStore, validEmoji, agentReactions, mergeReactions } from '../reactions.js';
 import { historyStore } from '../history.js';
 import { createHub } from '../index.js';
 
@@ -91,4 +91,46 @@ test('hidden messages never expire on their own (reactions do)', async (t) => {
   let clock = 1_000_000; const s = await reactionStore(path.join(dir, 'reactions.json'), { now: () => clock, retentionMs: 1000 });
   await s.hide('a', 's', 'm', true); clock += 5000; await s.hide('a', 's', 'n', true);
   assert.deepEqual(s.hidden('a', 's'), ['m', 'n']);
+});
+
+test('agent reactions come from REACT: lines and land on the nearest earlier user message', () => {
+  const bot = { id: 'agent:atlas', name: 'Atlas', kind: 'agent' };
+  const msgs = [
+    { id: 'u1', role: 'user', content: 'hello' }, { id: 'a1', role: 'assistant', content: 'Hi!\nREACT: 👋' },
+    { id: 'u2', role: 'user', content: 'thanks' }, { id: 'a2', role: 'assistant', content: 'REACT: ❤️\nREACT: 🎉' },
+    { role: 'user', content: 'no id yet' }, { id: 'a3', role: 'assistant', content: 'REACT: 👍👍' }, // two emoji: shaped, but not one RGI emoji
+    { id: 'a4', role: 'assistant', content: '```\nREACT: 🦊\n```' },
+  ];
+  assert.deepEqual(agentReactions(msgs, bot), [{ message: 'u1', emoji: '👋', actor: bot }, { message: 'u2', emoji: '❤️', actor: bot }]);
+  const human = { id: 'user:u', name: 'Owner', kind: 'human' };
+  const merged = mergeReactions({ u2: [{ emoji: '❤️', actors: [human, bot] }] }, agentReactions(msgs, bot));
+  assert.deepEqual(merged.u2, [{ emoji: '❤️', actors: [human, bot] }]); // an actor counts once
+  assert.deepEqual(merged.u1, [{ emoji: '👋', actors: [bot] }]);
+});
+
+test('HTTP: agent REACT: lines show as reactions, and hiding is per account and idempotent', async t => {
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hide-http-'));
+  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
+  await new Promise(r => hub.listen(0, '127.0.0.1', r));
+  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const call = (p, method = 'GET', body, token) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const added = await (await call('/api/connections', 'POST', { name: 'scribe', kind: 'mcp-inbox' })).json();
+  const sent = await call('/api/agents/scribe/chat', 'POST', { messages: [{ role: 'user', content: 'I fixed the bug' }] });
+  const sid = sent.headers.get('x-hermes-session-id'); await sent.text();
+  const rpc = await (await call('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hub_post_message', arguments: { thread_id: sid, text: 'Nice work!\nREACT: ❤️' } } }, added.inboxToken)).json();
+  assert.equal(rpc.result.isError, false);
+  const msgs = (await (await call(`/api/agents/scribe/sessions/${sid}/messages`)).json()).messages;
+  const user = msgs.find(m => m.role === 'user'), reply = msgs.find(m => m.role === 'assistant');
+  const snap = await (await call(`/api/agents/scribe/sessions/${sid}/reactions`)).json();
+  assert.deepEqual(snap.messages[user.id], [{ emoji: '❤️', actors: [{ id: 'agent:scribe', name: 'scribe', kind: 'agent' }] }]);
+  assert.deepEqual(snap.hidden, []);
+  const hiddenUrl = `/api/agents/scribe/sessions/${sid}/hidden`;
+  assert.equal((await call(hiddenUrl, 'PUT', { message_id: 'nope' })).status, 404);
+  const h1 = await (await call(hiddenUrl, 'PUT', { message_id: reply.id })).json();
+  const h2 = await (await call(hiddenUrl, 'PUT', { message_id: reply.id })).json();
+  assert.deepEqual(h1.hidden, [reply.id]); assert.deepEqual(h2.hidden, [reply.id]);
+  assert.deepEqual((await (await call(`/api/agents/scribe/sessions/${sid}/reactions`)).json()).hidden, [reply.id]);
+  assert.deepEqual((await (await call(hiddenUrl, 'DELETE', { message_id: reply.id })).json()).hidden, []);
+  const agents = (await (await call('/api/agents')).json()).agents;
+  assert.equal(agents.find(a => a.name === 'scribe').capabilities.agentReactions, true);
 });

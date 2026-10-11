@@ -4235,6 +4235,114 @@
           }
         }
       }
+    },
+    "/api/agents/{name}/sessions/{id}/hidden": {
+      "put": {
+        "operationId": "hideMessage",
+        "summary": "Delete for me: hide one message in this account (idempotent). The agent keeps it.",
+        "tags": [
+          "agents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "message_id"
+                ],
+                "properties": {
+                  "message_id": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reactions for the conversation after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reactions"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown conversation or message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Hidden message limit reached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "unhideMessage",
+        "summary": "Show a hidden message again (idempotent).",
+        "tags": [
+          "agents"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "message_id"
+                ],
+                "properties": {
+                  "message_id": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reactions for the conversation after the change",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Reactions"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown conversation or message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5520,7 +5628,7 @@
           },
           "messages": {
             "type": "object",
-            "description": "Stable message id -> reactions on it.",
+            "description": "Stable message id -> reactions on it, including reactions agents wrote as a REACT: line.",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -5543,6 +5651,13 @@
                 }
               }
             }
+          },
+          "hidden": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of messages this account hid (delete for me). Absent on hubs before 0.3.9."
           }
         }
       }

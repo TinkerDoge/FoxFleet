@@ -31,7 +31,7 @@ import { wsAccept } from './ws.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
-import { reactionStore } from './reactions.js';
+import { reactionStore, agentReactions, mergeReactions } from './reactions.js';
 import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
@@ -227,7 +227,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'mcp-inbox', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
+      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'mcp-inbox' || kindOf(m) === 'hermes', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), ...(isChatKind(kindOf(m)) ? {} : { media: mediaCheck(m) }) } };
@@ -503,8 +503,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
-        // Reactions live beside each account's history. Never accept an actor identity from a request body.
-        if (route === 'sessions' && parts.length === 6 && parts[5] === 'reactions') {
+        // Reactions and "delete for me" live beside each account's history. Never accept an actor identity from a request body.
+        if (route === 'sessions' && parts.length === 6 && (parts[5] === 'reactions' || parts[5] === 'hidden')) {
           const sid = sessionId(parts[4]);
           let messages;
           try {
@@ -517,10 +517,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const b = await readJson(req, 2048);
             if (!messages.some(x => x.id != null && String(x.id) === b.message_id)) throw fault(404, 'Message not found');
-            await ctx.reg.reactions.set(m.name, sid, b.message_id, b.emoji, actor, req.method === 'PUT');
+            if (parts[5] === 'hidden') await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT');
+            else await ctx.reg.reactions.set(m.name, sid, b.message_id, b.emoji, actor, req.method === 'PUT');
           } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
           const ids = new Set(messages.map(x => String(x.id)));
-          return sendJson(res, 200, { actor, messages: Object.fromEntries(Object.entries(ctx.reg.reactions.list(m.name, sid)).filter(([id]) => ids.has(id))) });
+          const all = mergeReactions(ctx.reg.reactions.list(m.name, sid), agentReactions(messages, { id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' }));
+          return sendJson(res, 200, { actor, messages: Object.fromEntries(Object.entries(all).filter(([id]) => ids.has(id))), hidden: ctx.reg.reactions.hidden(m.name, sid).filter(id => ids.has(id)) });
         }
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
         if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned
