@@ -841,6 +841,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     if (!loopback(options.host) && singleUser) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
     return originalListen.call(this, options, ...(callback ? [callback] : []));
   };
+  // Closing the hub writes every account's pending notification events first (the save is debounced), and closes the stores afterwards so a run that
+  // finishes late cannot schedule a write into a data directory that may be gone. The close callback fires after both.
+  const notifyStores = async () => (await Promise.allSettled([...registries.values()])).filter((x) => x.status === 'fulfilled' && x.value.notify).map((x) => x.value.notify);
+  const closeHub = server.close;
+  server.close = function (cb) {
+    void (async () => { for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); })().finally(() => cb?.(err)); }));
+    return this;
+  };
   server.setupCode = setupCode; server.accounts = accounts;
   return server;
 }

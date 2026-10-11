@@ -3,6 +3,9 @@
 import test, { mock } from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { mkdtemp, rm, readFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,14 +16,16 @@ import { spec } from '../../contract/run.mjs';
 import { setup as setupNative } from './ui-helpers.js';
 import { waitFor } from './machine-helpers.js';
 
-const tmp = async (t) => { const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-notify-')); t.after(() => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 })); return dir; };
+const open = new WeakMap(); // per test: stores opened here are closed (pending saves cancelled) before the temp dir goes, whatever order the hooks run in
+const openStore = async (t, file, o) => { const st = await notifyStore(file, o); (open.get(t) ?? open.set(t, []).get(t)).push(st); return st; };
+const tmp = async (t) => { const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-notify-')); t.after(async () => { for (const st of open.get(t) ?? []) await st.close(); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); }); return dir; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (s) => new Promise((r) => s.listen(0, '127.0.0.1', () => r(`http://127.0.0.1:${s.address().port}`)));
 
 async function hub(t, opts = {}) {
   const dir = await tmp(t), server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true, ...opts });
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); });
+  (open.get(t) ?? open.set(t, []).get(t)).push({ close: async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); } }); // before the temp dir is removed: close flushes the notify store
   const base = `http://127.0.0.1:${server.address().port}`;
   const call = async (p, data, method = data === undefined ? 'GET' : 'POST') => { const r = await fetch(base + p, { method, headers: data === undefined ? {} : { 'Content-Type': 'application/json' }, body: data === undefined ? undefined : JSON.stringify(data), signal: AbortSignal.timeout(10_000) }); return { status: r.status, body: await r.json().catch(() => ({})) }; };
   return { dir, base, call, server };
@@ -52,21 +57,21 @@ function sse(t, url, headers = {}) {
 
 test('store: bounded log, ids never go back, persists across a restart', async (t) => {
   const dir = await tmp(t), file = path.join(dir, 'notify.json');
-  let a = await notifyStore(file, { maxEvents: 5 });
+  let a = await openStore(t, file, { maxEvents: 5 });
   for (let i = 0; i < 8; i++) a.emit({ type: 'reply_finished', agent: 'a', chat: `c${i}` });
   const { events, first, cursor } = a.since(0); assert.equal(events.length, 5); assert.equal(first, 4); assert.equal(cursor, 8); assert.deepEqual(events.map((e) => e.id), [4, 5, 6, 7, 8]);
   await a.setMute({ agent: 'a', muted: true }); await a.flush();
   assert.equal((await readFile(file, 'utf8')).includes('"seq":8'), true);
-  const b = await notifyStore(file, { maxEvents: 5 }); assert.equal(b.cursor, 8); assert.deepEqual(b.since(6).events.map((e) => e.id), [7, 8]); assert.equal(b.prefs().agents[0].agent, 'a', 'mute survives a restart');
+  const b = await openStore(t, file, { maxEvents: 5 }); assert.equal(b.cursor, 8); assert.deepEqual(b.since(6).events.map((e) => e.id), [7, 8]); assert.equal(b.prefs().agents[0].agent, 'a', 'mute survives a restart');
   assert.equal(b.emit({ type: 'error', agent: 'a' }).id, 9, 'the next id continues after a restart');
   assert.equal(b.fromRun({ agent: 'a', session: 's', id: 'r' }, 'stopped'), null, 'a run the user stopped is not a notification'); assert.equal(b.fromRun({ agent: 'a', session: 's', id: 'r' }, 'done').type, 'reply_finished'); assert.equal(b.fromRun({ agent: 'a', session: 's', id: 'r' }, 'error').type, 'error');
   assert.throws(() => b.emit({ type: 'nope' }), /unknown notification type/);
-  await b.flush(); await writeBroken(file); assert.equal((await notifyStore(file)).cursor, 0, 'an unreadable file starts empty instead of crashing the hub');
+  await b.flush(); await writeBroken(file); assert.equal((await openStore(t, file)).cursor, 0, 'an unreadable file starts empty instead of crashing the hub');
 });
 async function writeBroken(file) { await (await import('node:fs/promises')).writeFile(file, '{not json'); }
 
 test('store: mute rules (agent, chat, approval ignores a chat mute, expiry, master switch, validation)', async (t) => {
-  let clock = 1_000_000; const s = await notifyStore(path.join(await tmp(t), 'n.json'), { now: () => clock });
+  let clock = 1_000_000; const s = await openStore(t, path.join(await tmp(t), 'n.json'), { now: () => clock });
   assert.equal(s.emit({ type: 'reply_finished', agent: 'a', chat: 'c1' }).muted, false);
   await s.setMute({ agent: 'a', chat: 'c1', muted: true });
   assert.equal(s.emit({ type: 'reply_finished', agent: 'a', chat: 'c1' }).muted, true, 'chat mute');
@@ -91,7 +96,7 @@ test('API: auth is required, mute/prefs validate, events list carries muted even
     const r = await fetch(loginHub.base + p, { method: m, headers: m === 'GET' ? {} : { 'Content-Type': 'application/json' }, body: m === 'GET' ? undefined : '{}', signal: AbortSignal.timeout(10_000) }); assert.equal(r.status, 401, `${m} ${p} without a login`); await r.body?.cancel();
   }
   assert.ok((await x.call('/api/auth')).body.hub.features.includes('notify'), 'advertised in hub.features');
-  assert.deepEqual((await x.call('/api/notify/prefs')).body, { enabled: true, storage: { ok: true }, agents: [], chats: [] });
+  assert.deepEqual((await x.call('/api/notify/prefs')).body, { enabled: true, storage: { ok: true }, dropped: 0, agents: [], chats: [] });
   assert.equal((await x.call('/api/notify/mute', { agent: 'ghost', muted: true }, 'PUT')).status, 404, 'unknown agent');
   assert.equal((await x.call('/api/notify/prefs', { enabled: 'x' }, 'PUT')).status, 400);
   assert.equal((await x.call('/api/notify/nope')).status, 404);
@@ -117,7 +122,7 @@ test('stream: ready, live delivery, resume by Last-Event-ID and ?after, gap noti
 
 test('stream: a log trimmed past the client cursor reports a gap', async (t) => {
   const dir = await tmp(t), file = path.join(dir, 'config.json');
-  const pre = await notifyStore(path.join(dir, 'notify.json'), { maxEvents: 500 }); for (let i = 0; i < 503; i++) pre.emit({ type: 'test' }); await pre.flush(); // 3 oldest dropped
+  const pre = await openStore(t, path.join(dir, 'notify.json'), { maxEvents: 500 }); for (let i = 0; i < 503; i++) pre.emit({ type: 'test' }); await pre.flush(); // 3 oldest dropped
   const server = await createHub({ configPath: file, singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r)); t.after(async () => { server.closeAllConnections(); await new Promise((r) => server.close(r)); });
   const s = sse(t, `http://127.0.0.1:${server.address().port}/api/notify/stream`, { 'Last-Event-ID': '1' });
   const gap = await s.wait((f) => f.event === 'foxfleet.gap'); assert.deepEqual(gap.data, { first: 4, cursor: 503 }); await s.wait((f) => f.event === 'foxfleet.ready'); assert.equal(s.notifies().length, 500); assert.equal(s.notifies()[0].id, 4);
@@ -198,7 +203,7 @@ test('P1: revoking a device closes its open streams at once (final foxfleet.auth
 });
 
 test('P1/P6: heartbeat re-checks the session (expiry backstop) and the rotated X-Session-Token header reaches the stream response', async (t) => {
-  const store = await notifyStore(path.join(await tmp(t), 'n.json')); let valid = true;
+  const store = await openStore(t, path.join(await tmp(t), 'n.json')); let valid = true;
   const server = http.createServer((req, res) => { res.setHeader('X-Session-Token', 'rotated-token-value'); attachNotifyStream(req, res, store, { keepAliveMs: 30, alive: () => valid }); });
   const base = await listen(server); t.after(() => { server.closeAllConnections(); server.close(); });
   const ac = new AbortController(); t.after(() => ac.abort()); const r = await fetch(base, { signal: ac.signal });
@@ -210,26 +215,26 @@ test('P1/P6: heartbeat re-checks the session (expiry backstop) and the rotated X
 });
 
 test('P2: a burst of events is coalesced into very few writes and little memory; the file is complete after flush', async (t) => {
-  const file = path.join(await tmp(t), 'n.json'), s = await notifyStore(file, { saveMs: 50 }); const before = process.memoryUsage().heapUsed;
+  const file = path.join(await tmp(t), 'n.json'), s = await openStore(t, file, { saveMs: 50 }); const before = process.memoryUsage().heapUsed;
   for (let i = 0; i < 4000; i++) s.emit({ type: 'test' });
   await s.flush(); assert.ok(s.writes <= 3, `4000 events caused ${s.writes} writes`); assert.ok(process.memoryUsage().heapUsed - before < 80e6, 'no snapshot per event queued in memory');
-  assert.equal(JSON.parse(await readFile(file, 'utf8')).seq, 4000); assert.equal((await notifyStore(file)).cursor, 4000);
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).seq, 4000); assert.equal((await openStore(t, file)).cursor, 4000);
   await s.setMute({ agent: 'a', muted: true }); assert.ok(s.writes <= 4, 'a mute change is written at once'); assert.equal(JSON.parse(await readFile(file, 'utf8')).prefs.agents.a.until, null);
 });
 
 test('P3: a failing disk is reported (health, prefs.storage, one log line per minute), never thrown, and recovers', async (t) => {
   const dir = await tmp(t), file = path.join(dir, 'missing', 'n.json'); let clock = 5_000_000;
   const log = mock.method(console, 'error', () => {}); t.after(() => log.mock.restore());
-  const s = await notifyStore(file, { saveMs: 10, now: () => clock });
+  const s = await openStore(t, file, { saveMs: 10, now: () => clock });
   s.emit({ type: 'test' }); await s.flush(); assert.equal(s.health.ok, false); assert.equal(s.health.error, 'ENOENT'); assert.deepEqual(s.prefs().storage, { ok: false, error: 'ENOENT' });
   s.emit({ type: 'test' }); await s.flush(); assert.equal(log.mock.callCount(), 1, 'logged once, not per failed write'); assert.match(log.mock.calls[0].arguments[0], /notify\.save_failed/); assert.ok(!log.mock.calls[0].arguments[0].includes(dir), 'no path in the log');
   clock += 61_000; s.emit({ type: 'test' }); await s.flush(); assert.equal(log.mock.callCount(), 2, 'and again after a minute');
   await mkdir(path.dirname(file)); s.emit({ type: 'test' }); await s.flush(); assert.equal(s.health.ok, true); assert.deepEqual(s.prefs().storage, { ok: true }); assert.equal(JSON.parse(await readFile(file, 'utf8')).seq, 4, 'recovered with the full state');
-  const seen = []; const s2 = await notifyStore(file, { saveMs: 10, onError: (e) => seen.push(e.code) }); await rm(path.dirname(file), { recursive: true }); s2.emit({ type: 'test' }); await s2.flush(); assert.deepEqual(seen, ['ENOENT'], 'onError hook gets it');
+  const seen = []; const s2 = await openStore(t, file, { saveMs: 10, onError: (e) => seen.push(e.code) }); await rm(path.dirname(file), { recursive: true }); s2.emit({ type: 'test' }); await s2.flush(); assert.deepEqual(seen, ['ENOENT'], 'onError hook gets it');
 });
 
 test('P4: limit 0, negatives and junk mean the default; the max is 500; since is strict; gap flag on the list', async (t) => {
-  const s = await notifyStore(path.join(await tmp(t), 'n.json'), { maxEvents: 150, saveMs: 10_000 });
+  const s = await openStore(t, path.join(await tmp(t), 'n.json'), { maxEvents: 150, saveMs: 10_000 });
   for (let i = 0; i < 200; i++) s.emit({ type: 'test' });
   assert.equal(s.since(0, 0).events.length, 100); assert.equal(s.since(0, -3).events.length, 100); assert.equal(s.since(0, NaN).events.length, 100); assert.equal(s.since(0, 10).events.length, 10); assert.equal(s.since(0, 99999).events.length, 150);
   assert.equal(s.since(0).gap, false, 'no cursor yet: nothing was missed'); assert.equal(s.since(51).first, 51); assert.equal(s.since(51).gap, false, 'since+1 == first: nothing lost'); assert.equal(s.since(50).gap, false);
@@ -241,7 +246,7 @@ test('P4: limit 0, negatives and junk mean the default; the max is 500; since is
 });
 
 test('P5: bursts of replies/errors cannot flush the log; approvals and test are exempt from it; /test is limited per minute', async (t) => {
-  let clock = 9_000_000; const s = await notifyStore(path.join(await tmp(t), 'n.json'), { now: () => clock, eventsPerMin: 5, testsPerMin: 3, saveMs: 10_000 });
+  let clock = 9_000_000; const s = await openStore(t, path.join(await tmp(t), 'n.json'), { now: () => clock, eventsPerMin: 5, testsPerMin: 3, saveMs: 10_000 });
   const made = []; for (let i = 0; i < 20; i++) made.push(s.emit({ type: i % 2 ? 'error' : 'reply_finished', agent: 'a', chat: 'c' }));
   assert.equal(made.filter(Boolean).length, 5); assert.equal(s.dropped, 15); assert.equal(s.since(0).events.length, 5);
   assert.ok(s.emit({ type: 'approval', agent: 'a', chat: 'c', request_id: 'r' }), 'an approval is never dropped'); assert.ok(s.emit({ type: 'test' }));
@@ -264,4 +269,86 @@ test('P8: every /api/notify route is in contract/openapi.json and the real respo
   r = await x.call('/api/notify/test', {}); check('/api/notify/test', 'post', 200, r.body); r = await x.call('/api/notify/events'); check('/api/notify/events', 'get', 200, r.body);
   r = await x.call('/api/notify/events?since=abc'); check('/api/notify/events', 'get', 400, r.body);
   for (let i = 0; i < 10; i++) r = await x.call('/api/notify/test', {}); check('/api/notify/test', 'post', 429, r.body);
+});
+
+// ---- recheck fixes ----
+const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+const freePort = () => new Promise((resolve, reject) => { const s = net.createServer(); s.once('error', reject); s.listen(0, '127.0.0.1', () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+
+// A REAL hub process (server/index.js): it logs in, creates events, gets a signal at once, and the events must be on disk after it exits.
+async function spawnHub(t, dir, port) {
+  const child = spawn(process.execPath, [path.join(ROOT, 'server', 'index.js')], { env: { ...process.env, FOXFLEET_CONFIG: path.join(dir, 'config.json'), FOXFLEET_PORT: String(port), FOXFLEET_HOST: '127.0.0.1', FOXFLEET_PASSWORD: PASS }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '', exited = null; child.stdout.on('data', (d) => { out += d; }); child.stderr.on('data', (d) => { out += d; });
+  const exit = new Promise((r) => child.once('exit', (code, sig) => { exited = { code, sig }; r(exited); }));
+  t.after(async () => { if (!exited) { child.kill('SIGKILL'); await Promise.race([exit, sleep(5000)]); } }); // never leave a child behind
+  assert.ok(await waitFor(async () => (/Foxfleet listening/.test(out) ? true : exited ? Promise.reject(new Error('hub exited early: ' + out)) : null), { tries: 100, ms: 100 }), 'the hub did not start: ' + out);
+  const base = `http://127.0.0.1:${port}`;
+  const r = await fetch(base + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username: 'owner', password: PASS, client: 'app' }), signal: AbortSignal.timeout(10_000) }); const token = (await r.json()).token; assert.ok(token);
+  const ev = async () => { const x = await fetch(base + '/api/notify/test', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(10_000) }); assert.equal(x.status, 200); return (await x.json()).event.id; };
+  return { child, exit, ev, out: () => out };
+}
+
+for (const signal of ['SIGTERM', 'SIGINT']) test(`a clean ${signal} writes the last events (the debounced save is flushed) in a real hub process`, async (t) => {
+  const dir = await tmp(t), port = await freePort();
+  const h = await spawnHub(t, dir, port); const ids = []; for (let i = 0; i < 3; i++) ids.push(await h.ev());
+  h.child.kill(signal); // right after the last event: well inside the 250 ms debounce
+  const res = await Promise.race([h.exit, sleep(15_000).then(() => { throw new Error('the hub did not exit after ' + signal + ': ' + h.out()); })]); assert.equal(res.code, 0, `clean exit, got ${JSON.stringify(res)}`);
+  const onDisk = JSON.parse(await readFile(path.join(dir, 'notify.json'), 'utf8')); assert.deepEqual(onDisk.events.map((e) => e.id), ids, 'every event made it to disk'); assert.equal(onDisk.seq, ids.at(-1));
+  // and the next process continues from there (same data dir), then gets the other signal's treatment on a second life
+  const h2 = await spawnHub(t, dir, await freePort()); const next = await h2.ev(); assert.equal(next, ids.at(-1) + 1, 'ids continue after the restart'); h2.child.kill(signal === 'SIGTERM' ? 'SIGINT' : 'SIGTERM');
+  assert.equal((await Promise.race([h2.exit, sleep(15_000).then(() => { throw new Error('second hub did not exit'); })])).code, 0);
+  assert.deepEqual(JSON.parse(await readFile(path.join(dir, 'notify.json'), 'utf8')).events.map((e) => e.id), [...ids, next]);
+  assert.ok(!/save_failed/.test(h.out() + h2.out()), 'no write errors on shutdown');
+});
+
+test('a closed hub has written its pending events (server.close flushes), so a temp dir can go right after', async (t) => {
+  const dir = await tmp(t), server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true }); await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}`; const r = await fetch(base + '/api/notify/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}', signal: AbortSignal.timeout(10_000) }); assert.equal(r.status, 200); await r.body?.cancel();
+  server.closeAllConnections(); await new Promise((res) => server.close(res)); assert.equal(JSON.parse(await readFile(path.join(dir, 'notify.json'), 'utf8')).seq, 1);
+});
+
+test('store.close(): cancels pending saves (nothing written after), or flushes first when asked', async (t) => {
+  const dir = await tmp(t), a = path.join(dir, 'a.json'), b = path.join(dir, 'b.json');
+  const s1 = await notifyStore(a, { saveMs: 30 }); s1.emit({ type: 'test' }); await s1.close(); await sleep(120); await assert.rejects(readFile(a, 'utf8'), { code: 'ENOENT' }, 'a cancelled save never happens'); s1.emit({ type: 'test' }); await sleep(80); assert.equal(s1.writes, 0, 'a closed store stays quiet');
+  const s2 = await notifyStore(b, { saveMs: 5000 }); s2.emit({ type: 'test' }); await s2.close({ flush: true }); assert.equal(JSON.parse(await readFile(b, 'utf8')).seq, 1);
+});
+
+test('a failed write is retried by itself with backoff, capped, then stops; a new change starts over', async (t) => {
+  const dir = await tmp(t), file = path.join(dir, 'gone', 'n.json'), seen = [];
+  const s = await openStore(t, file, { saveMs: 5, retryMs: 20, maxRetries: 3, onError: (e) => seen.push(e.code) });
+  s.emit({ type: 'test' }); const stable = async () => { let last = -1; for (let i = 0; i < 100; i++) { await sleep(60); if (s.writes === last) return s.writes; last = s.writes; } throw new Error('writes never settled: ' + s.writes); };
+  assert.equal(await stable(), 4, '1 try + 3 retries, then it stops (no tight loop)'); assert.equal(s.health.ok, false); assert.deepEqual(seen, ['ENOENT', 'ENOENT', 'ENOENT', 'ENOENT']);
+  s.emit({ type: 'test' }); assert.equal(await stable(), 8, 'a new change gets a fresh set of retries');
+  await mkdir(path.dirname(file)); s.emit({ type: 'test' }); await waitFor(async () => (s.health.ok && s.writes > 8 ? true : null), { tries: 100, ms: 30 });
+  assert.equal(JSON.parse(await readFile(file, 'utf8')).seq, 3, 'recovered, with everything');
+  // recovery without any new change: the disk comes back between the first failure and a retry
+  const file2 = path.join(dir, 'later', 'n.json'), s2 = await openStore(t, file2, { saveMs: 5, retryMs: 80, maxRetries: 5, onError: () => {} });
+  s2.emit({ type: 'test' }); await waitFor(async () => (s2.writes >= 1 ? true : null), { tries: 100, ms: 10 }); await mkdir(path.dirname(file2));
+  await waitFor(async () => (s2.health.ok ? true : null), { tries: 100, ms: 30 }); assert.equal(JSON.parse(await readFile(file2, 'utf8')).seq, 1, 'the retry wrote it without another event');
+  assert.ok(s2.writes <= 4, 'few attempts');
+});
+
+test('dropped: the rate-cap drop count is visible in /prefs and in the stream ready frame', async (t) => {
+  const x = await hub(t), api = http.createServer((req, res) => { req.resume(); req.on('end', () => { if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"data":[{"id":"m"}]}'); } res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'); }); });
+  const up = await listen(api); t.after(() => { api.closeAllConnections(); api.close(); });
+  assert.equal((await x.call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: up + '/v1', model: 'm', apiKey: 'k' })).status, 201);
+  assert.equal((await x.call('/api/notify/prefs')).body.dropped, 0);
+  const ask = async () => { const r = await fetch(`${x.base}/api/agents/glm/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal: AbortSignal.timeout(10_000) }); await r.text(); };
+  for (let i = 0; i < 62; i++) await ask(); // 60 per minute are kept
+  await waitFor(async () => ((await x.call('/api/notify/prefs')).body.dropped >= 2 ? true : null), { tries: 100, ms: 50 });
+  assert.equal((await x.call('/api/notify/prefs')).body.dropped, 2); assert.equal((await x.call('/api/notify/events?limit=500')).body.events.filter((e) => e.type === 'reply_finished').length, 60);
+  const s = sse(t, `${x.base}/api/notify/stream`); const ready = await s.wait((f) => f.event === 'foxfleet.ready'); assert.equal(ready.data.dropped, 2); assert.equal(typeof ready.data.cursor, 'number');
+});
+
+test('OpenAPI: Retry-After on the 429, and 403/413/415 declared and real, for the notify routes', async (t) => {
+  const routes = [['/api/notify/stream', 'get'], ['/api/notify/events', 'get'], ['/api/notify/prefs', 'get'], ['/api/notify/prefs', 'put'], ['/api/notify/mute', 'put'], ['/api/notify/test', 'post']];
+  for (const [p, m] of routes) assert.ok(spec.paths[p][m].responses['403'], `${m} ${p} declares 403`);
+  for (const [p, m] of routes.filter(([, m]) => m !== 'get')) { assert.ok(spec.paths[p][m].responses['413'], `${m} ${p} 413`); assert.ok(spec.paths[p][m].responses['415'], `${m} ${p} 415`); }
+  const r429 = spec.paths['/api/notify/test'].post.responses['429']; assert.ok(r429.headers['Retry-After'], '/test 429 declares Retry-After'); assert.ok(spec.paths['/api/notify/stream'].get.responses['429']);
+  const x = await hub(t), valid = (p, m, status, body) => { const decl = spec.paths[p][m].responses[String(status)]; assert.ok(decl, `${m} ${p} ${status} declared`); assert.deepEqual(validate(decl.content?.['application/json']?.schema ?? spec.components.responses.Error.content['application/json'].schema, body, spec), []); };
+  const hit = async (p, m, init) => { const r = await fetch(x.base + p, { method: m, signal: AbortSignal.timeout(10_000), ...init }); return { status: r.status, body: await r.json().catch(() => ({})), headers: r.headers }; };
+  const bad = await hit('/api/notify/prefs', 'PUT', { headers: { 'Content-Type': 'text/plain' }, body: 'enabled=false' }); assert.equal(bad.status, 415); valid('/api/notify/prefs', 'put', 415, bad.body);
+  const big = await hit('/api/notify/mute', 'PUT', { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: 'a'.repeat(10_000), muted: true }) }); assert.equal(big.status, 413); valid('/api/notify/mute', 'put', 413, big.body);
+  const cross = await hit('/api/notify/test', 'POST', { headers: { 'Content-Type': 'application/json', Origin: 'https://evil.example' }, body: '{}' }); assert.equal(cross.status, 403); valid('/api/notify/test', 'post', 403, cross.body);
+  for (let i = 0; i < 10; i++) await x.call('/api/notify/test', {}); const limited = await hit('/api/notify/test', 'POST', { headers: { 'Content-Type': 'application/json' }, body: '{}' }); assert.equal(limited.status, 429); assert.equal(limited.headers.get('retry-after'), '60'); valid('/api/notify/test', 'post', 429, limited.body);
 });

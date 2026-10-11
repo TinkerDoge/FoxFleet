@@ -4348,7 +4348,7 @@
       "get": {
         "operationId": "notifyStream",
         "summary": "Account-wide notification stream (SSE).",
-        "description": "Server-Sent Events. Resume with Last-Event-ID or ?after=<id> (digits only; anything else means no cursor). Frames: `retry: 3000`; optional `event: foxfleet.gap` {first,cursor}; `event: notify` with `id:` and an Event as data; once `event: foxfleet.ready` {contract,cursor} (no id); `: keep-alive` comment every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close when the device session ends. The response carries X-Session-Token when the app token was rotated by this request: store it. At most 8 streams per account (429).",
+        "description": "Server-Sent Events. Resume with Last-Event-ID or ?after=<id> (digits only; anything else means no cursor). Frames: `retry: 3000`; optional `event: foxfleet.gap` {first,cursor}; `event: notify` with `id:` and an Event as data; once `event: foxfleet.ready` {contract,cursor,dropped} (no id); `: keep-alive` comment every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close when the device session ends. The response carries X-Session-Token when the app token was rotated by this request: store it. At most 8 streams per account (429).",
         "tags": [
           "notify"
         ],
@@ -4396,6 +4396,9 @@
             "$ref": "#/components/responses/Error"
           },
           "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -4549,6 +4552,9 @@
           },
           "401": {
             "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -4570,6 +4576,7 @@
                   "required": [
                     "enabled",
                     "storage",
+                    "dropped",
                     "agents",
                     "chats"
                   ],
@@ -4640,6 +4647,11 @@
                           }
                         }
                       }
+                    },
+                    "dropped": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "reply_finished / error events dropped by the per-minute cap (60/min per account) since the hub started. The same number is in the stream's foxfleet.ready frame."
                     }
                   }
                 }
@@ -4647,6 +4659,9 @@
             }
           },
           "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -4685,6 +4700,7 @@
                   "required": [
                     "enabled",
                     "storage",
+                    "dropped",
                     "agents",
                     "chats"
                   ],
@@ -4755,6 +4771,11 @@
                           }
                         }
                       }
+                    },
+                    "dropped": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "reply_finished / error events dropped by the per-minute cap (60/min per account) since the hub started. The same number is in the stream's foxfleet.ready frame."
                     }
                   }
                 }
@@ -4765,6 +4786,15 @@
             "$ref": "#/components/responses/Error"
           },
           "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -4818,6 +4848,7 @@
                   "required": [
                     "enabled",
                     "storage",
+                    "dropped",
                     "agents",
                     "chats"
                   ],
@@ -4888,6 +4919,11 @@
                           }
                         }
                       }
+                    },
+                    "dropped": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "reply_finished / error events dropped by the per-minute cap (60/min per account) since the hub started. The same number is in the stream's foxfleet.ready frame."
                     }
                   }
                 }
@@ -4901,6 +4937,15 @@
             "$ref": "#/components/responses/Error"
           },
           "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -5024,6 +5069,30 @@
             "$ref": "#/components/responses/Error"
           },
           "429": {
+            "description": "Too many requests (test notifications: 10 per minute).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds to wait before trying again.",
+                "schema": {
+                  "type": "integer"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
             "$ref": "#/components/responses/Error"
           }
         }

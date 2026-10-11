@@ -9,7 +9,7 @@ export const NOTIFY_TYPES = ['reply_finished', 'approval', 'error', 'test'];
 export const NOTIFY_CONTRACT = 'foxfleet.notify/1';
 const PRIORITY = { reply_finished: 'normal', approval: 'high', error: 'high', test: 'normal' };
 const MAX_EVENTS = 500, MAX_MUTES = 200, MAX_STREAMS = 8, RETRY_MS = 3000, HEARTBEAT_MS = 15_000;
-const SAVE_MS = 250, MAX_BACKLOG = 1024 * 1024, DEFAULT_LIMIT = 100, EVENTS_PER_MIN = 60, TESTS_PER_MIN = 10, MINUTE = 60_000,  MAX_FOR_MS = 366 * 24 * 3600 * 1000;
+const RETRY_BASE_MS = 1000, MAX_RETRIES = 5, RETRY_CAP_MS = 30_000, SAVE_MS = 250, MAX_BACKLOG = 1024 * 1024, DEFAULT_LIMIT = 100, EVENTS_PER_MIN = 60, TESTS_PER_MIN = 10, MINUTE = 60_000,  MAX_FOR_MS = 366 * 24 * 3600 * 1000;
 const chatKey = (agent, chat) => `${agent}\n${chat}`;
 const word = (v, max = 160) => (typeof v === 'string' && v.length > 0 && v.length <= max && !/[\x00-\x1f\x7f]/.test(v) ? v : null);
 
@@ -17,7 +17,7 @@ const word = (v, max = 160) => (typeof v === 'string' && v.length > 0 && v.lengt
 const byDevice = new Map();
 export function closeDeviceStreams(deviceId, reason = 'signed_out') { let n = 0; for (const close of [...(byDevice.get(deviceId) ?? [])]) { close(reason); n++; } return n; }
 
-export async function notifyStore(file, { now = () => Date.now(), maxEvents = MAX_EVENTS, saveMs = SAVE_MS, eventsPerMin = EVENTS_PER_MIN, testsPerMin = TESTS_PER_MIN, onError } = {}) {
+export async function notifyStore(file, { now = () => Date.now(), maxEvents = MAX_EVENTS, saveMs = SAVE_MS, eventsPerMin = EVENTS_PER_MIN, testsPerMin = TESTS_PER_MIN, retryMs = RETRY_BASE_MS, maxRetries = MAX_RETRIES, onError } = {}) {
   let db = { seq: 0, events: [], prefs: { enabled: true, agents: {}, chats: {} } };
   try {
     const raw = JSON.parse(await readFile(file, 'utf8')), p = raw.prefs ?? {};
@@ -27,13 +27,20 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
   } catch { /* first run, or unreadable: start empty */ }
   // Saves are coalesced: many changes inside `saveMs` cost ONE write, and the snapshot is taken when the write runs (never queued per change).
   // Mute changes are written at once (and awaited); event bursts are debounced. A failed write is kept in `health` and logged, never thrown into a request.
-  let writing = Promise.resolve(), timer = null, writes = 0, health = { ok: true, error: null, at: null }, lastLogged = 0;
-  const write = () => { writing = writing.then(async () => { const snap = JSON.stringify(db), tmp = file + '.tmp'; writes++; try { await writeFile(tmp, snap, { mode: 0o600 }); await rename(tmp, file); health = { ok: true, error: null, at: health.at }; } catch (e) { fail(e); } }); return writing; };
+  let writing = Promise.resolve(), timer = null, retryTimer = null, retries = 0, closed = false, writes = 0, health = { ok: true, error: null, at: null }, lastLogged = 0;
+  const write = () => { writing = writing.then(async () => {
+    if (closed) return;
+    const snap = JSON.stringify(db), tmp = file + '.tmp'; writes++;
+    try { await writeFile(tmp, snap, { mode: 0o600 }); await rename(tmp, file); health = { ok: true, error: null, at: health.at }; retries = 0; }
+    catch (e) { fail(e); retry(); }
+  }); return writing; };
+  // A failed write is retried by itself: 1 s, 2 s, 4 s ... (capped at 30 s), at most `maxRetries` times in a row, one timer at a time; a success or a fresh change starts over.
+  const retry = () => { if (closed || retryTimer || retries >= maxRetries) return; retryTimer = setTimeout(() => { retryTimer = null; void write(); }, Math.min(RETRY_CAP_MS, retryMs * 2 ** retries++)); retryTimer.unref?.(); };
   const fail = (e) => {
     const code = String(e?.code ?? e?.name ?? 'error').slice(0, 40), t = now(); health = { ok: false, error: code, at: t };
     if (onError) { try { onError(e); } catch { /* ignore */ } } else if (t - lastLogged > MINUTE) { lastLogged = t; console.error(JSON.stringify({ t: new Date(t).toISOString(), event: 'notify.save_failed', code })); } // no path, no content
   };
-  const save = () => { if (!timer) { timer = setTimeout(() => { timer = null; void write(); }, saveMs); timer.unref?.(); } };
+  const save = () => { if (closed) return; retries = 0; if (!timer) { timer = setTimeout(() => { timer = null; void write(); }, saveMs); timer.unref?.(); } };
   const saveNow = () => { if (timer) { clearTimeout(timer); timer = null; } return write(); };
   const allow = { events: [], tests: [] }, within = (list, limit, t) => { while (list.length && list[0] <= t - MINUTE) list.shift(); if (list.length >= limit) return false; list.push(t); return true; };
   let dropped = 0;
@@ -75,7 +82,7 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
     get streams() { return subs.size; },
     prefs(t = now()) {
       prune(t);
-      return { enabled: db.prefs.enabled, storage: health.ok ? { ok: true } : { ok: false, error: health.error }, agents: Object.entries(db.prefs.agents).map(([agent, m]) => ({ agent, until: m.until })),
+      return { enabled: db.prefs.enabled, storage: health.ok ? { ok: true } : { ok: false, error: health.error }, dropped, agents: Object.entries(db.prefs.agents).map(([agent, m]) => ({ agent, until: m.until })),
         chats: Object.entries(db.prefs.chats).map(([k, m]) => { const [agent, chat] = k.split('\n'); return { agent, chat, until: m.until }; }) };
     },
     async setEnabled(enabled) { if (typeof enabled !== 'boolean') throw fault(400, 'enabled must be true or false'); db.prefs.enabled = enabled; await saveNow(); return store.prefs(); },
@@ -98,6 +105,8 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
       return null;
     },
     flush: () => { if (timer) return saveNow(); return writing; },
+    /** Stop for good: cancels pending and retry timers. `{ flush: true }` writes what is pending first (clean shutdown); without it nothing more is written (test teardown, data dir about to go). */
+    async close({ flush = false } = {}) { if (flush) await store.flush(); closed = true; clearTimeout(timer); clearTimeout(retryTimer); timer = retryTimer = null; await writing; },
   };
   return store;
 }
@@ -120,7 +129,7 @@ export function attachNotifyStream(req, res, store, { after = 0, keepAliveMs = H
   const close = (reason) => end(false, reason); // the session behind this stream ended: say so, then hang up
   if (device) (byDevice.get(device) ?? byDevice.set(device, new Set()).get(device)).add(close);
   for (const e of events) send(e);
-  res.write(`event: foxfleet.ready\ndata: ${JSON.stringify({ contract: NOTIFY_CONTRACT, cursor: store.cursor })}\n\n`); // no id: it must not move Last-Event-ID
+  res.write(`event: foxfleet.ready\ndata: ${JSON.stringify({ contract: NOTIFY_CONTRACT, cursor: store.cursor, dropped: store.dropped })}\n\n`); // no id: it must not move Last-Event-ID
   unsub = store.subscribe(send);
   ka = setInterval(() => { if (closed) return; if (!alive()) return close('signed_out'); res.write(': keep-alive\n\n'); }, keepAliveMs); ka.unref?.(); // backstop: a session that expired by age never fires a revoke
   res.once('close', () => end(false)); req.once('aborted', () => end(true));
