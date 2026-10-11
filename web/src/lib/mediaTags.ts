@@ -1,6 +1,6 @@
 // MEDIA: tags, as Hermes writes them for Telegram (gateway/platforms/base.py: MEDIA_TAG_CLEANUP_RE, extract_media), for FoxFleet's chat.
 // TypeScript twin of server/media-tags.js (and android/.../MediaTags.kt); contract/media-tags.vectors.json pins all three.
-//   parseMedia(text) -> { text: <tags and directives removed>, media: [{ ref, kind, name, voice? }] }
+//   parseMedia(text) -> { text: <tags, directives and REACT: lines removed>, media: [{ ref, kind, name, voice? }], react: <first REACT: emoji> | null }
 // `ref` is the path or URL exactly as the agent wrote it (the hub resolves it); nothing here touches the disk or the network.
 
 export type MediaKind = 'image' | 'video' | 'audio' | 'file';
@@ -29,6 +29,24 @@ function mask(text: string) {
   m = m.replace(/(?<!MEDIA:\s{0,3})(`+)(?!`)([^\n]*?[^`\n])\1(?!`)/g, (x: string) => blank(x));
   return m;
 }
+// REACT: <one emoji> on its own line is the agent's reaction to the user's message. The hub applies it; the apps never show the line.
+const REACT_LINE = /^[ \t]*REACT:[ \t]*([^ \t\r\n]{1,32})[ \t]*$/gm;
+const PARTIAL_REACT = /(?:^|\n)[ \t]*R(?:E(?:A(?:C(?:T(?::[^\n]*)?)?)?)?)?$/;
+/** Emoji-shaped: no ASCII letters and at least one code point from U+2000 up. The hub still checks validEmoji before applying it. */
+export const emojiShaped = (s: string) => !/[A-Za-z]/.test(s) && [...s].some((c) => c.codePointAt(0)! >= 0x2000);
+/** takeReact(text) -> { text: <REACT: lines removed>, react: <first one's token> | null }. Lines in code or quotes stay. */
+export function takeReact(text: string): { text: string; react: string | null } {
+  if (!text.includes('REACT:')) return { text, react: null };
+  const scan = mask(text), spans: [number, number][] = []; let react: string | null = null;
+  for (const m of scan.matchAll(REACT_LINE)) {
+    if (!emojiShaped(m[1])) continue;
+    react ??= m[1];
+    const end = m.index! + m[0].length, nl = text[end] === '\r' && text[end + 1] === '\n' ? 2 : text[end] === '\n' ? 1 : 0; spans.push([m.index!, end + nl]);
+  }
+  if (!spans.length) return { text, react: null };
+  let out = text; for (const [a, b] of spans.reverse()) out = out.slice(0, a) + out.slice(b);
+  return { text: out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim(), react };
+}
 const normalize = (raw: unknown) => {
   let p = String(raw ?? '').trim();
   if (p.length >= 2 && p[0] === p.at(-1) && '`"\''.includes(p[0])) p = p.slice(1, -1).trim();
@@ -40,9 +58,9 @@ export const kindOf = (ref: string): MediaKind => { if (isData(ref)) return 'ima
 export const nameOf = (ref: string) => { if (isData(ref)) return 'image'; let p = ref; if (/^https?:\/\//i.test(p)) { try { p = decodeURIComponent(new URL(p).pathname); } catch { p = p.split(/[?#]/)[0]; } } const b = p.split(/[\\/]/).filter(Boolean).pop() ?? 'file'; return b.replace(/[\x00-\x1f\x7f]/g, '').slice(0, 120) || 'file'; };
 export const isUrl = (ref: string) => /^https?:\/\//i.test(ref);
 
-export function parseMedia(input: unknown): { text: string; media: MediaRef[] } {
-  const text = typeof input === 'string' ? input : '';
-  if (!text.includes('MEDIA:') && !text.includes('[[') && !text.includes('](') && !text.includes('http') && !text.includes('data:image')) return { text, media: [] };
+export function parseMedia(input: unknown): { text: string; media: MediaRef[]; react: string | null } {
+  const { text, react } = takeReact(typeof input === 'string' ? input : '');
+  if (!text.includes('MEDIA:') && !text.includes('[[') && !text.includes('](') && !text.includes('http') && !text.includes('data:image')) return { text, media: [], react };
   const voice = text.includes('[[audio_as_voice]]'), asDoc = text.includes('[[as_document]]');
   const scan = mask(text), spans: [number, number][] = [], media: MediaRef[] = [], seen = new Set<string>();
   const add = (raw: unknown, span: [number, number] | null, { strip = true, onlyAv = false } = {}) => {
@@ -62,13 +80,15 @@ export function parseMedia(input: unknown): { text: string; media: MediaRef[] } 
   for (const [a, b] of spans.sort((x, y) => y[0] - x[0])) out = out.slice(0, a) + out.slice(b);
   out = out.replace(/\[\[audio_as_voice\]\]|\[\[as_document\]\]/g, '');
   if (spans.length || voice || asDoc) out = out.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-  return { text: out, media };
+  return { text: out, media, react };
 }
 
 /** While a reply is still streaming, hide a tag whose end has not arrived yet (it is never shown half-written). */
 export function parseStreaming(input: unknown) {
   // A tag is held back until its line is finished (a spaced path may still grow): never a half card, never a half-written path in the text.
-  const text = typeof input === 'string' ? input : '', cut = text.search(/[`"'*_]{0,3}MEDIA:[^\n]*$/i);
-  const r = parseMedia(cut >= 0 ? text.slice(0, cut) : text);
+  // A last line that could still become a REACT: line is held back the same way.
+  const text = typeof input === 'string' ? input : '';
+  const cuts = [text.search(/[`"'*_]{0,3}MEDIA:[^\n]*$/i), text.search(PARTIAL_REACT)].filter((i) => i >= 0);
+  const r = parseMedia(cuts.length ? text.slice(0, Math.min(...cuts)) : text);
   return { ...r, text: r.text.replace(/\[\[[a-z_]*\]?$/, '').trimEnd() };
 }

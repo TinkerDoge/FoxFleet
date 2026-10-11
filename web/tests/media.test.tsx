@@ -3,7 +3,7 @@ import { act } from 'preact/test-utils';
 import { readFileSync } from 'node:fs';
 import { resolve as pathResolve } from 'node:path';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { parseMedia } from '../src/lib/mediaTags';
+import { parseMedia, parseStreaming } from '../src/lib/mediaTags';
 import { AssistantText } from '../src/chat/Message';
 import { MediaContext, type Resolved } from '../src/chat/MediaCards';
 import { createClient } from '../src/api/client';
@@ -13,6 +13,13 @@ it.each(vectors.map((v: any) => [v.name, v]) as [string, any][])('conformance: %
   const r = parseMedia(v.input);
   expect(r.text).toBe(v.text);
   expect(r.media.map((m) => ({ ref: m.ref, kind: m.kind, ...(m.voice ? { voice: true } : {}) }))).toEqual(v.media);
+  expect(r.react ?? null).toBe(v.react ?? null);
+});
+it('streaming hides a REACT: line until the reply is done', () => {
+  expect(parseStreaming('Nice\nREAC').text).toBe('Nice');
+  expect(parseStreaming('Nice\nREACT: ❤').text).toBe('Nice');
+  expect(parseStreaming('Nice\nREACT: ❤️\nMore').text).toBe('Nice\nMore');
+  expect(parseStreaming('Really good').text).toBe('Really good');
 });
 
 let host: HTMLDivElement;
