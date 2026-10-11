@@ -37,7 +37,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   useEffect(() => { closePicker(agent.name); }, [agent.name, c.session]); // a card never outlives the chat that opened it
   const onModel = (args: string) => {
     if (!args) { openPicker({ agent: agent.name, session: c.session, kind: 'model' }); return; }
-    if (/(^|\s)--global(\s|$)/.test(args)) { notice(agent.name, t('picker.noGlobal')); return; }
+    if (/(^|\s)--global(\s|$)/i.test(args)) { notice(agent.name, t('picker.noGlobal')); return; }
     if (!c.session) { notice(agent.name, t('ctl.modelNeedsChat')); return; }
     void client.setModel(agent.name, c.session, args).then((r) => { if (r?.confirm_required) openPicker({ agent: agent.name, session: c.session, kind: 'model', confirm: { value: args, message: String(r.confirm_message ?? '') } }); else notice(agent.name, t('picker.modelSet', { model: String(r?.model ?? args) })); }).catch(() => notice(agent.name, t('error.generic')));
   };

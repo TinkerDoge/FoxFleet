@@ -28,6 +28,7 @@ test('allowlist: only named actions cross the tunnel, params are rebuilt, text a
   const sm = await x.ui.call(x.agent, 'setmodel', { value: 'fake-model', session_id: c.session_id }); assert.equal(sm.value, 'fake-model'); assert.equal(sm.scope, 'session');
   if (!REAL) { const g = await x.ui.call(x.agent, 'setmodel', { value: 'expensive-1', session_id: c.session_id }); assert.equal(g.confirm_required, true); const ok = await x.ui.call(x.agent, 'setmodel', { value: 'expensive-1', session_id: c.session_id, confirm: true }); assert.equal(ok.confirm_required, false, 'confirm reaches Hermes as confirm_expensive_model'); }
   await assert.rejects(x.ui.call(x.agent, 'setmodel', { value: 'fake-model --global', session_id: c.session_id }), (e) => e.code === 'not_allowed', 'profile defaults are not changed remotely');
+  await assert.rejects(x.ui.call(x.agent, 'setmodel', { value: 'fake-model --GLOBAL', session_id: c.session_id }), (e) => e.code === 'not_allowed', 'the guard is case-insensitive');
   assert.equal((await x.ui.call(x.agent, 'busy', { mode: 'status' })).value.length > 0, true); await assert.rejects(x.ui.call(x.agent, 'busy', { mode: 'rm' }), (e) => e.code === 'bad_params');
   assert.match((await x.ui.call(x.agent, 'catalog')).pairs[0][0], /^\//); assert.equal((await x.ui.call(x.agent, 'resolve', { name: 'busy' })).canonical, 'busy');
   assert.ok((await x.ui.call(x.agent, 'models', {})).providers.length > 0);

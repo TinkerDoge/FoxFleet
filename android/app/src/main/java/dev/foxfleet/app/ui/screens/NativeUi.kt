@@ -103,7 +103,7 @@ internal fun RequestCard(r: HubApi.OpenRequest, agentName: String, onAnswer: sus
 }
 
 /** A Telegram-style choice card. It belongs to the chat (session) that opened it and expires. */
-class PickerCard(val sessionId: String?, val kind: String, val command: String? = null, val options: List<String> = emptyList(), val openedAt: Long = System.currentTimeMillis()) {
+class PickerCard(val sessionId: String?, val kind: String, val command: String? = null, val options: List<String> = emptyList(), val openedAt: Long = System.currentTimeMillis(), /** A typed /model Hermes wants confirmed: (model, provider, reason). */ val ask: Triple<String, String?, String>? = null) {
     fun valid(session: String?, now: Long = System.currentTimeMillis()) = session == sessionId && now - openedAt <= PICKER_TTL_MS
     companion object { const val PICKER_TTL_MS = 5 * 60_000L }
 }
@@ -123,16 +123,16 @@ internal fun modelSetMessage(model: String) = "Model for this chat is now $model
  */
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-internal fun ModelPickerSheet(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit) {
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = LocalHubColors.current.surface) { ModelPickerContent(controls, hasSession, onDone, onDismiss) }
+internal fun ModelPickerSheet(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startAsk: Triple<String, String?, String>? = null) {
+    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = LocalHubColors.current.surface) { ModelPickerContent(controls, hasSession, onDone, onDismiss, startAsk = startAsk) }
 }
 
 /** The two steps themselves (also what the screenshots render, since a sheet window is not part of the root). */
 @Composable
-internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "") {
+internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "", startAsk: Triple<String, String?, String>? = null) {
     val c = LocalHubColors.current; val scope = rememberCoroutineScope()
     var providers by remember { mutableStateOf<List<HubApi.ModelProvider>?>(null) }; var err by remember { mutableStateOf<String?>(null) }
-    var ask by remember { mutableStateOf<Triple<String, String, String>?>(null) }; var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
+    var ask by remember { mutableStateOf<Triple<String, String?, String>?>(startAsk) }; var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { runCatching { providers = controls.models() }.onFailure { err = it.message ?: "Could not load the models" } }
     val p = providers?.firstOrNull { it.slug == sel }
     run {
@@ -145,9 +145,10 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                     Text(pending.first, style = MaterialTheme.typography.titleSmall, color = c.text)
                     Text(pending.third, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                     SoftButton({
-                        busy = true
-                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message; busy = false } }
+                        busy = true; err = null
+                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message ?: "Could not switch the model"; busy = false } }
                     }, enabled = hasSession && !busy) { Text("Switch anyway", color = c.accent) }
+                    SoftButton({ ask = null; err = null }, enabled = !busy) { Text("Cancel", color = c.textMuted) }
                 }
                 providers == null && err == null -> Text("Loading models…", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 providers.isNullOrEmpty() -> Text("This agent did not list any models.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)

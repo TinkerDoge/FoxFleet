@@ -311,7 +311,7 @@ fun ChatScreen(
             Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
-                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
@@ -332,7 +332,7 @@ fun ChatScreen(
     // A choice card belongs to the chat that opened it: another chat, a new chat or five minutes later and it is gone.
     LaunchedEffect(state.sessionId) { picker = null }
     picker?.takeIf { it.valid(state.sessionId) }?.let { pc ->
-        if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null })
+        if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null }, startAsk = pc.ask)
         else if (pc.kind == "choice") ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
     }
     // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away (or was hidden) closes it.
@@ -640,12 +640,12 @@ private fun MediaCard(ref: MediaRef, onLongClick: (() -> Unit)?, onClick: () -> 
 /** What a plain message means while the agent works (no picker). */
 internal fun plainMode(native: Boolean, modes: List<String>) = if (native) "auto" else if ("interrupt" in modes) "interrupt" else "queue"
 /** /model typed in the chat: no argument opens the picker; with arguments it sets the model of this chat only (never the profile default). */
-internal fun modelCommand(args: String, controls: NativeControls?, state: ChatState, picker: () -> Unit) {
+internal fun modelCommand(args: String, controls: NativeControls?, state: ChatState, picker: () -> Unit, onConfirm: (model: String, provider: String?, reason: String) -> Unit = { _, _, _ -> }) {
     if (args.isEmpty()) { picker(); return }
-    if (Regex("(^|\\s)--global(\\s|$)").containsMatchIn(args)) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
+    if (Regex("(^|\\s)--global(\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(args)) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
     if (state.sessionId == null || controls == null) { state.addNotice("Send the first message first: the model is set per conversation."); return }
     val provider = Regex("--provider\\s+(\\S+)").find(args)?.groupValues?.get(1); val model = args.replace(Regex("--provider\\s+\\S+"), "").trim()
-    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { state.addNotice(if (it is HubApi.ModelConfirmRequired) "Not switched yet. ${it.reason} Choose it from the /model list to confirm." else "Could not change the model") } }
+    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { if (it is HubApi.ModelConfirmRequired) onConfirm(model, provider, it.reason) else state.addNotice("Could not change the model") } }
 }
 /** Honest names for the send modes. */
 internal fun modeLabel(mode: String) = when (mode) { "steer" -> "Steer"; "interrupt" -> "Interrupt & send"; else -> "Queue" }
