@@ -133,6 +133,15 @@ To react to the user's message, put REACT: ❤️ (any one emoji) on its own lin
 
 The connector version is bumped, because the note changed.
 
+### Amendments made while planning
+
+- **Edit** is offered on Hermes agents (`kind === 'hermes'`); the bundled Hermes catalog always has `/undo` with availability `chat`.
+- **React and Delete** are left out of the menu (not greyed) until the message has a hub id; the menu never shows a control that cannot work.
+- **Undo after hiding** is an inline status row at the bottom of the transcript ("Message hidden · Undo", 5 s), like the existing reaction-error line. Neither app has a toast/snackbar system and this round does not add one.
+- **Copy** gives no extra toast: Android 13+ shows its own clipboard confirmation, and on web the menu closing is the feedback.
+- **`REACT:` grammar** (same in all three parsers): a line that is optional spaces/tabs, `REACT:`, optional spaces/tabs, a token of 1–32 UTF-16 units with no space, tab, CR or LF, optional spaces/tabs. The token must be *emoji-shaped*: no ASCII letters, and at least one code point ≥ U+2000. Emoji-shaped lines are removed from view; the hub applies the reaction only when the token also passes `validEmoji` (one RGI emoji). `parseMedia` returns the first emoji-shaped token as `react`.
+- **Delete** on the menu reads "Delete for me".
+
 ## Out of scope
 
 Stored reply ids and jump-to-original, real per-message deletion, multi-select, message pins, forking, notification quick reply, text-to-speech, and an MCP `hub_react` for Hermes. Each can be its own later round.
