@@ -18,6 +18,7 @@ import dev.foxfleet.app.ui.FoxfleetTheme
 import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.chat.ChatState
 import dev.foxfleet.app.ui.chat.MessageAction
+import dev.foxfleet.app.ui.chat.ReplyTarget
 import dev.foxfleet.app.ui.components.MessageMenuContent
 import dev.foxfleet.app.ui.screens.ChatScreen
 import org.junit.Rule
@@ -65,6 +66,31 @@ class MessengerScreenshotTest {
 
     @Test fun framesLight() = frames(false)
     @Test fun framesDark() = frames(true)
+
+    /** A sent reply (quote bubble over the text) and the composer with the next reply chosen. */
+    private fun reply(dark: Boolean) {
+        val agent = AgentStatus("Atlas", online = true, chatReady = true, managementReady = true)
+        val ts = 1_790_000_000_000L
+        val state = ChatState().apply {
+            load(listOf(
+                UiMessage("user", "Can you chart last week's tokens?", id = "m1", ts = ts),
+                UiMessage("assistant", "Done. Tokens peaked on Thursday at 1.2 M, mostly from the nightly report run.", id = "m2", ts = ts + 60_000),
+                UiMessage("user", "> Done. Tokens peaked on Thursday at 1.2 M, mostly from the nightly report run.\n\nCan we move that run to the weekend?", id = "m3", ts = ts + 120_000),
+                UiMessage("assistant", "Yes. I moved it to Saturday 02:00.", id = "m4", ts = ts + 180_000),
+            ), "a1b2c3d4e5")
+        }
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            FoxfleetTheme(AppPrefs(theme = if (dark) ThemeMode.Dark else ThemeMode.Light)) {
+                ChatScreen(agent, listOf(agent), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}, initialReply = ReplyTarget("Atlas", "Yes. I moved it to Saturday 02:00."))
+            }
+        }
+        compose.mainClock.advanceTimeBy(900)
+        compose.onRoot().captureRoboImage("$OUT/messenger-reply-${if (dark) "dark" else "light"}.png")
+    }
+
+    @Test fun replyLight() = reply(false)
+    @Test fun replyDark() = reply(true)
 
     /** Long-press sheet body: quick reactions plus every action row. */
     private fun menu(dark: Boolean) {

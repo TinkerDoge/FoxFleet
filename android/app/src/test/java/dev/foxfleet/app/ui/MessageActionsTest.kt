@@ -51,12 +51,40 @@ class MessageActionsTest {
     @Test fun menuActionsFollowRoleRecencyKindAndIds() {
         val a = UiMessage("assistant", "Hello", id = "a"); val u = UiMessage("user", "Hi", id = "u")
         assertEquals(listOf(MessageAction.Reply, MessageAction.Copy, MessageAction.Select, MessageAction.Share, MessageAction.Retry, MessageAction.Delete),
-            MessageActions.actions(a, newestAssistant = true, newestUser = false, streaming = false, hermes = true, canHide = true))
-        assertFalse(MessageAction.Retry in MessageActions.actions(a, newestAssistant = true, newestUser = false, streaming = true, hermes = true, canHide = true))
-        assertTrue(MessageAction.Edit in MessageActions.actions(u, newestAssistant = false, newestUser = true, streaming = false, hermes = true, canHide = true))
-        assertFalse(MessageAction.Edit in MessageActions.actions(u, newestAssistant = false, newestUser = true, streaming = false, hermes = false, canHide = true))
+            MessageActions.actions(a, newestAssistant = true, newestUser = false, busy = false, hermes = true, canHide = true))
+        assertFalse(MessageAction.Retry in MessageActions.actions(a, newestAssistant = true, newestUser = false, busy = true, hermes = true, canHide = true))
+        assertTrue(MessageAction.Edit in MessageActions.actions(u, newestAssistant = false, newestUser = true, busy = false, hermes = true, canHide = true))
+        assertFalse(MessageAction.Edit in MessageActions.actions(u, newestAssistant = false, newestUser = true, busy = false, hermes = false, canHide = true))
         assertEquals(listOf(MessageAction.Reply, MessageAction.Copy, MessageAction.Select, MessageAction.Share),
-            MessageActions.actions(UiMessage("user", "Hi"), newestAssistant = false, newestUser = false, streaming = false, hermes = true, canHide = true))
+            MessageActions.actions(UiMessage("user", "Hi"), newestAssistant = false, newestUser = false, busy = false, hermes = true, canHide = true))
+    }
+
+    @Test fun retryOnlyOnTheLastReplyEditOnlyOnAnsweredNewestUser() {
+        val u1 = UiMessage("user", "one", id = "u1"); val a1 = UiMessage("assistant", "A", id = "a1"); val u2 = UiMessage("user", "two", id = "u2"); val a2 = UiMessage("assistant", "B", id = "a2")
+        MessageActions.newestTargets(listOf(u1, a1, u2, a2)).let { assertTrue(it.assistant === a2); assertTrue(it.user === u2) }
+        // the newest user message has no reply yet: no Retry (the last message is not a reply) and no Edit (nothing to undo)
+        MessageActions.newestTargets(listOf(u1, a1, u2)).let { assertNull(it.assistant); assertNull(it.user) }
+        // notices do not count
+        val sys = UiMessage("system", "note")
+        MessageActions.newestTargets(listOf(u1, a1, sys)).let { assertTrue(it.assistant === a1); assertTrue(it.user === u1) }
+        // several replies after one user message: the last one retries, the user message edits
+        val a3 = UiMessage("assistant", "C")
+        MessageActions.newestTargets(listOf(u1, a1, a3)).let { assertTrue(it.assistant === a3); assertTrue(it.user === u1) }
+        MessageActions.newestTargets(emptyList()).let { assertNull(it.assistant); assertNull(it.user) }
+    }
+
+    @Test fun busyHidesRetryAndEdit() {
+        val a = UiMessage("assistant", "Hello", id = "a"); val u = UiMessage("user", "Hi", id = "u")
+        assertFalse(MessageAction.Retry in MessageActions.actions(a, newestAssistant = true, newestUser = false, busy = true, hermes = true, canHide = true))
+        assertFalse(MessageAction.Edit in MessageActions.actions(u, newestAssistant = false, newestUser = true, busy = true, hermes = true, canHide = true))
+    }
+
+    @Test fun pickingAnEmojiYouGaveTakesItBack() {
+        val me = ReactionActor("user:u", "Me", "human"); val them = ReactionActor("agent:a", "A", "agent")
+        assertTrue(MessageActions.nextReaction(emptyList(), me.id, "👍"))
+        assertFalse(MessageActions.nextReaction(listOf(ReactionGroup("👍", listOf(them, me))), me.id, "👍"))
+        assertTrue(MessageActions.nextReaction(listOf(ReactionGroup("👍", listOf(them))), me.id, "👍"))
+        assertTrue(MessageActions.nextReaction(listOf(ReactionGroup("❤️", listOf(me))), me.id, "👍"))
     }
 
     @Test fun doubleTapTogglesYourHeart() {

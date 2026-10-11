@@ -49,16 +49,34 @@ object MessageActions {
     fun visible(messages: List<UiMessage>, hidden: Set<String>): List<IndexedValue<UiMessage>> =
         messages.withIndex().filter { (_, m) -> (m.id == null || m.id !in hidden) && !emptyReply(m) }
 
-    fun actions(m: UiMessage, newestAssistant: Boolean, newestUser: Boolean, streaming: Boolean, hermes: Boolean, canHide: Boolean): List<MessageAction> = buildList {
+    /** What Retry and Edit apply to (null when nothing qualifies). */
+    data class Targets(val assistant: UiMessage?, val user: UiMessage?)
+
+    /**
+     * The messages Retry and Edit apply to. Retry: the newest reply, only while it is the last message (notices aside), since it
+     * sends the last user message again. Edit: the newest user message, only once a reply follows it (/undo takes back a whole exchange).
+     */
+    fun newestTargets(messages: List<UiMessage>): Targets {
+        val turns = messages.filter { it.role != "system" }
+        var user: UiMessage? = null; var replied = false
+        for (i in turns.indices.reversed()) { if (turns[i].role == "assistant") replied = true else if (turns[i].role == "user") { user = turns[i]; break } }
+        return Targets(turns.lastOrNull()?.takeIf { it.role == "assistant" }, if (replied) user else null)
+    }
+
+    /** Which actions a message offers, in menu order. Delete needs a hub id; Retry/Edit only on [newestTargets], and never while busy (a reply streaming or messages waiting). */
+    fun actions(m: UiMessage, newestAssistant: Boolean, newestUser: Boolean, busy: Boolean, hermes: Boolean, canHide: Boolean): List<MessageAction> = buildList {
         add(MessageAction.Reply)
         if (displayText(m).isNotBlank()) { add(MessageAction.Copy); add(MessageAction.Select); add(MessageAction.Share) }
-        if (m.role == "assistant" && newestAssistant && !streaming) add(MessageAction.Retry)
-        if (m.role == "user" && newestUser && hermes && !streaming) add(MessageAction.Edit)
+        if (m.role == "assistant" && newestAssistant && !busy) add(MessageAction.Retry)
+        if (m.role == "user" && newestUser && hermes && !busy) add(MessageAction.Edit)
         if (m.id != null && canHide) add(MessageAction.Delete)
     }
 
+    /** Picking an emoji adds it, or takes yours back when you already reacted with it (like a pill). Returns the `present` value to send. */
+    fun nextReaction(groups: List<ReactionGroup>, me: String, emoji: String) = groups.none { g -> g.emoji == emoji && g.actors.any { it.id == me } }
+
     /** Double-tap: add a heart, or take yours back. Returns the `present` value to send. */
-    fun nextHeart(groups: List<ReactionGroup>, me: String) = groups.none { g -> g.emoji == HEART && g.actors.any { it.id == me } }
+    fun nextHeart(groups: List<ReactionGroup>, me: String) = nextReaction(groups, me, HEART)
 
     /** A drag that starts within [edgePx] of the screen's left edge belongs to the system back gesture. */
     fun swipeAllowed(startXInWindow: Float, edgePx: Float) = startXInWindow > edgePx

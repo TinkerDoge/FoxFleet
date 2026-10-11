@@ -479,16 +479,23 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Edit (Hermes): /undo takes the last exchange back from the agent, the history reloads, then [onUndone] puts the text in the composer. */
-    fun editLast(agent: String, onUndone: () -> Unit) {
+    /**
+     * Edit (Hermes): /undo takes the last exchange back from the agent and the history reloads. Only when [target] is really gone
+     * does [onUndone] put its text back in the composer; otherwise the chat says the message could not be taken back.
+     */
+    fun editLast(agent: String, target: dev.foxfleet.app.data.UiMessage, onUndone: () -> Unit) {
         val state = chatFor(agent); val sid = state.sessionId ?: return
-        if (state.streaming || state.loading) return
+        if (state.streaming || state.loading || state.queue.any { it.state == "queued" || it.state == "awaiting_stop" }) return
+        fun copies(ms: List<dev.foxfleet.app.data.UiMessage>) = ms.count { it.role == "user" && it.content == target.content }
+        val before = copies(state.messages)
         jobs[agent] = viewModelScope.launch {
             try {
                 state.send(api, agent, "/undo", emptyList())
-                if (state.error != null || state.sessionId != sid) return@launch
-                val page = api.messages(agent, sid); if (state.sessionId == sid) state.load(page.messages, sid, page.hasMore)
-                onUndone()
+                if (state.error != null || state.sessionId != sid) return@launch // a failed /undo leaves the composer alone
+                val page = api.messages(agent, sid); if (state.sessionId != sid) return@launch
+                state.load(page.messages, sid, page.hasMore)
+                val gone = target.id?.let { id -> state.messages.none { it.id == id } } ?: (copies(state.messages) < before)
+                if (gone) onUndone() else state.addNotice("Couldn't take that message back.")
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
         }
     }

@@ -83,6 +83,8 @@ class ChatState {
     /** The message just hidden, while its Undo row shows (5 s). */
     var hiddenUndo by mutableStateOf<String?>(null)
         private set
+    /** The Undo row's 5 s are up: it goes, unless a newer hide already took its place. */
+    fun expireUndo(messageId: String) { if (hiddenUndo == messageId) hiddenUndo = null }
     private var reacting = 0
     /** False when the agent keeps the queue itself (Hermes): a queued message cannot be taken back from here. */
     var canCancel by mutableStateOf(true)
@@ -316,13 +318,14 @@ class ChatState {
     suspend fun hide(api: HubApi, agent: String, messageId: String, present: Boolean) {
         val s = sessionId ?: return; val before = reactions ?: return
         reactions = before.copy(hidden = if (present) before.hidden + messageId else before.hidden - messageId); reactionError = null; reacting++
-        hiddenUndo = if (present) messageId else null
+        // a new hide takes the Undo row over; Undo (present = false) closes only its own row
+        if (present) hiddenUndo = messageId else if (hiddenUndo == messageId) hiddenUndo = null
         var failed = false
         try {
             val snap = api.hide(agent, s, messageId, present)
             if (s == sessionId && reacting == 1) reactions = snap
         } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (_: Exception) {
-            failed = true; if (s == sessionId) { reactions = before; hiddenUndo = null; reactionError = "Couldn't hide the message. Try again." }
+            failed = true; if (s == sessionId) { reactions = before; if (hiddenUndo == messageId) hiddenUndo = null; reactionError = "Couldn't hide the message. Try again." }
         } finally { reacting-- }
         if (failed) refreshReactions(api, agent)
     }

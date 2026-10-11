@@ -61,7 +61,7 @@ class Batch6ScreenshotTest {
 
     private fun reasoning(dark: Boolean) = chat(dark, msgs = convo) {
         val tag = if (dark) "dark" else "light"
-        compose.onNodeWithTag("reasoning").assertIsDisplayed()
+        compose.onNodeWithTag("reasoning", useUnmergedTree = true).assertIsDisplayed() // the message frame (long press, double tap) merges its children
         compose.onNodeWithContentDescription("Show reasoning, Thought for 8 s").assertIsDisplayed()
         compose.onNodeWithText("Rayleigh scattering", substring = true).assertDoesNotExist() // collapsed by default
         compose.onRoot().captureRoboImage("$OUT/reasoning-1-collapsed-$tag.png")
@@ -82,7 +82,7 @@ class Batch6ScreenshotTest {
     }
 
     @Test fun reasoningOffInSettings() = chat(false, prefs = AppPrefs(showReasoning = false), msgs = convo) {
-        compose.onNodeWithTag("reasoning").assertDoesNotExist(); compose.onNodeWithText("Because air scatters", substring = true).assertExists()
+        compose.onNodeWithTag("reasoning", useUnmergedTree = true).assertDoesNotExist(); compose.onNodeWithText("Because air scatters", substring = true).assertExists()
         compose.onRoot().captureRoboImage("$OUT/reasoning-4-setting-off-light.png")
     }
 
