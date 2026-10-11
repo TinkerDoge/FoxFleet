@@ -76,4 +76,11 @@ class MessengerTest {
         assertEquals("42", api.historyMessage(Json.parseToJsonElement("""{"id":42,"role":"user","content":"x"}"""))!!.id)
         assertNull(api.historyMessage(Json.parseToJsonElement("""{"id":"t","role":"assistant","content":"","tools":[{"name":"terminal"}]}""")))
     }
+
+    @Test fun snapshotCarriesHiddenIds_andOldHubsHaveNone() {
+        val withHidden = HubApi.parseReactions(Json.parseToJsonElement("""{"actor":{"id":"user:u","name":"U","kind":"human"},"messages":{},"hidden":["m1","m2"]}""").jsonObject)
+        assertEquals(setOf("m1", "m2"), withHidden.hidden)
+        val old = HubApi.parseReactions(Json.parseToJsonElement("""{"actor":{"id":"user:u","name":"U","kind":"human"},"messages":{}}""").jsonObject)
+        assertTrue(old.hidden.isEmpty())
+    }
 }

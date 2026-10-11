@@ -275,6 +275,11 @@ class HubApi(private val store: SettingsStore) {
         parseReactions(request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/reactions", if (present) "PUT" else "DELETE",
             buildJsonObject { put("message_id", messageId); put("emoji", emoji) }.toString()))
     }
+    /** Delete for me: hide (or show again) one message for this sign-in. Idempotent; the agent keeps it. */
+    suspend fun hide(agent: String, sessionId: String, messageId: String, present: Boolean): ReactionSnapshot = withContext(Dispatchers.IO) {
+        parseReactions(request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/hidden", if (present) "PUT" else "DELETE",
+            buildJsonObject { put("message_id", messageId) }.toString()))
+    }
 
     suspend fun renameSession(agent: String, id: String, title: String) = withContext(Dispatchers.IO) {
         request(agentPath(agent) + "/sessions/" + enc(id), "PATCH", buildJsonObject { put("title", title) }.toString()); Unit
@@ -616,7 +621,8 @@ class HubApi(private val store: SettingsStore) {
                     ReactionGroup(emoji, runCatching { go["actors"]!!.jsonArray }.getOrNull().orEmpty().mapNotNull { actor(runCatching { it.jsonObject }.getOrNull()) }).takeIf { it.actors.isNotEmpty() }
                 }
             }.filterValues { it.isNotEmpty() }
-            return ReactionSnapshot(me, msgs)
+            val hidden = runCatching { o["hidden"]?.jsonArray }.getOrNull().orEmpty().mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }.toSet()
+            return ReactionSnapshot(me, msgs, hidden)
         }
         /** Only clarify and approval become cards; any other kind is ignored (the hub already declined it upstream, so nothing waits). */
         internal fun parseRequest(o: JsonObject): OpenRequest? {

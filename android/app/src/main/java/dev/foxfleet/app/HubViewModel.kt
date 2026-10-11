@@ -471,6 +471,28 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun hide(agent: String, messageId: String, present: Boolean) {
+        val state = chatFor(agent)
+        viewModelScope.launch {
+            try { state.hide(api, agent, messageId, present) }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+        }
+    }
+
+    /** Edit (Hermes): /undo takes the last exchange back from the agent, the history reloads, then [onUndone] puts the text in the composer. */
+    fun editLast(agent: String, onUndone: () -> Unit) {
+        val state = chatFor(agent); val sid = state.sessionId ?: return
+        if (state.streaming || state.loading) return
+        jobs[agent] = viewModelScope.launch {
+            try {
+                state.send(api, agent, "/undo", emptyList())
+                if (state.error != null || state.sessionId != sid) return@launch
+                val page = api.messages(agent, sid); if (state.sessionId == sid) state.load(page.messages, sid, page.hasMore)
+                onUndone()
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+        }
+    }
+
     fun openSession(agent: String, id: String) {
         detach(agent)
         val state = chatFor(agent)

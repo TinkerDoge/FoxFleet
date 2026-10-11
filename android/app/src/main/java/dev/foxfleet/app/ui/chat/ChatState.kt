@@ -80,6 +80,8 @@ class ChatState {
     var reactions by mutableStateOf<dev.foxfleet.app.data.ReactionSnapshot?>(null)
         private set
     var reactionError by mutableStateOf<String?>(null)
+    /** The message just hidden, while its Undo row shows (5 s). */
+    var hiddenUndo by mutableStateOf<String?>(null)
         private set
     private var reacting = 0
     /** False when the agent keeps the queue itself (Hermes): a queued message cannot be taken back from here. */
@@ -119,7 +121,7 @@ class ChatState {
     }
 
     fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
-        if (sessionId != this.sessionId) { reactions = null; reactionError = null }
+        if (sessionId != this.sessionId) { reactions = null; reactionError = null; hiddenUndo = null }
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
         this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
@@ -139,7 +141,7 @@ class ChatState {
 
     fun newConversation() {
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
-        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; persist(SavedChat())
+        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; hiddenUndo = null; persist(SavedChat())
         resetStream(); error = null
     }
 
@@ -306,6 +308,21 @@ class ChatState {
             if (s == sessionId && reacting == 1) reactions = snap
         } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (_: Exception) {
             failed = true; if (s == sessionId) { reactions = before; reactionError = "Couldn't update the reaction. Try again." }
+        } finally { reacting-- }
+        if (failed) refreshReactions(api, agent)
+    }
+
+    /** Optimistic delete-for-me: hides at once, rolls back and re-reads the hub when the change fails. */
+    suspend fun hide(api: HubApi, agent: String, messageId: String, present: Boolean) {
+        val s = sessionId ?: return; val before = reactions ?: return
+        reactions = before.copy(hidden = if (present) before.hidden + messageId else before.hidden - messageId); reactionError = null; reacting++
+        hiddenUndo = if (present) messageId else null
+        var failed = false
+        try {
+            val snap = api.hide(agent, s, messageId, present)
+            if (s == sessionId && reacting == 1) reactions = snap
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (_: Exception) {
+            failed = true; if (s == sessionId) { reactions = before; hiddenUndo = null; reactionError = "Couldn't hide the message. Try again." }
         } finally { reacting-- }
         if (failed) refreshReactions(api, agent)
     }
