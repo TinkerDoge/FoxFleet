@@ -49,3 +49,21 @@ test('screen.js uses the verdict (not a backing-store-only sample) and the asset
   const js = fs.readFileSync(new URL('../../android/app/src/main/assets/screen.js', import.meta.url), 'utf8');
   assert.match(js, /from '\.\/viewmetrics\.js'/); assert.match(js, /visibleVerdict/); assert.doesNotMatch(js, /sampleBlank/);
 });
+
+import { intersect, intersectRect, MAX_SCALE } from '../../android/app/src/main/assets/viewmetrics.js';
+test('clipped verdict: sized canvas with nothing inside the visible container is blank', () => {
+  const canvas = { left: 0, top: 0, right: 412, bottom: 258 }, sliver = { left: 0, top: 0, right: 2, bottom: 1 };
+  const vis = intersect(canvas, sliver); assert.deepEqual(vis, { w: 2, h: 1 });
+  const painted = lumaStats(rgba(10, 200, 90, 255));
+  assert.equal(visibleVerdict({ w: 412, h: 258 }, painted, vis), 'clipped');
+  assert.equal(visibleVerdict({ w: 412, h: 258 }, painted, intersect(canvas, { left: 0, top: 0, right: 412, bottom: 915 })), 'ok');
+  assert.equal(visibleVerdict({ w: 412, h: 258 }, painted, intersect(canvas, { left: 500, top: 0, right: 900, bottom: 900 })), 'clipped', 'disjoint');
+  assert.ok(isBlankVerdict('clipped'));
+  assert.deepEqual(intersectRect({ left: 5, top: 5, right: 10, bottom: 10 }, { left: 20, top: 0, right: 30, bottom: 30 }), { left: 20, top: 5, right: 20, bottom: 10 });
+  assert.deepEqual(intersect(null, canvas), { w: 0, h: 0 });
+});
+test('fitScale is clamped and never NaN/negative', () => {
+  assert.equal(fitScale(10, 10, 1e9, 1e9), MAX_SCALE);
+  assert.equal(fitScale(Infinity, 10, 100, 100), 0); assert.equal(fitScale(NaN, 10, 100, 100), 0); assert.equal(fitScale(10, 10, -5, 100), 0);
+  assert.equal(fitScale(1920, 1080, 1920, 1080), 1);
+});
