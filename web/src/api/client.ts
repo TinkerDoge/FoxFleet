@@ -176,6 +176,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     logout: () => request<unknown>('/api/auth/logout', { method: 'POST', body: {}, plain401: true }),
     reactions: (agent: string, session: string) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/reactions`),
     react: (agent: string, session: string, message: string, emoji: string, present: boolean) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/reactions`, { method: present ? 'PUT' : 'DELETE', body: { message_id: message, emoji }, retries: 2 }), // PUT/DELETE are idempotent, so a retry is safe
+    hide: (agent: string, session: string, message: string, present: boolean) => request<import('../chat/Reactions').ReactionSnapshot>(`/api/agents/${enc(agent)}/sessions/${enc(session)}/hidden`, { method: present ? 'PUT' : 'DELETE', body: { message_id: message }, retries: 2 }), // idempotent, like reactions
     pinAgent: async (agent: string, pinned: boolean): Promise<{ pinned: boolean; pins: string[] }> => request(`/api/agents/${enc(agent)}/pin`, { method: 'PUT', body: { pinned }, retries: 0 }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
 

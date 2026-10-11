@@ -2,14 +2,15 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'preact/ho
 import type { Client } from '../api/client';
 import { Icon } from '../components/Icon';
 import { t } from '../i18n/t';
+import { QUICK } from './messageActions';
 
 export interface ReactionActor { id: string; name: string; kind: 'human' | 'agent' }
 export interface ReactionGroup { emoji: string; actors: ReactionActor[] }
-/** The hub's answer for one conversation: who "you" are, and the reactions on each stable message id. */
-export interface ReactionSnapshot { actor: ReactionActor; messages: Record<string, ReactionGroup[]> }
+/** The hub's answer for one conversation: who "you" are, the reactions on each stable message id, and what you hid. */
+export interface ReactionSnapshot { actor: ReactionActor; messages: Record<string, ReactionGroup[]>; hidden?: string[] }
 export interface CatalogEntry { emoji: string; name: string; asset: string }
 
-export const QUICK = ['👍', '❤️', '😂', '🎉', '😮', '😢', '🙏', '🦊'];
+export { QUICK };
 
 /** Optimistic local change; the hub's idempotent PUT/DELETE make the same change, so a retry never flips it back. */
 export function applyReaction(s: ReactionSnapshot, message: string, emoji: string, present: boolean): ReactionSnapshot {
@@ -17,6 +18,11 @@ export function applyReaction(s: ReactionSnapshot, message: string, emoji: strin
   const at = groups.findIndex((g) => g.emoji === emoji);
   if (present) { if (at >= 0) groups[at].actors.push(s.actor); else groups.push({ emoji, actors: [s.actor] }); }
   return { ...s, messages: { ...s.messages, [message]: groups.filter((g) => g.actors.length) } };
+}
+/** Optimistic "delete for me"; the hub's PUT/DELETE make the same change. */
+export function applyHidden(s: ReactionSnapshot, message: string, present: boolean): ReactionSnapshot {
+  const h = new Set(s.hidden ?? []); if (present) h.add(message); else h.delete(message);
+  return { ...s, hidden: [...h] };
 }
 
 // ---- bundled Twemoji artwork (no CDN); Unicode is what we store, artwork is only how we draw it ----
@@ -129,5 +135,14 @@ export function useReactions(client: Client, agent: string, session: string | un
       .catch(() => { failed = true; if (key.current === k) { setSnap(before); setError(t('react.failed')); } })
       .finally(() => { pending.current--; if (failed) refresh(); }); // then trust the hub, not our guess
   };
-  return { snap, error, react, refresh };
+  const hide = (message: string, present: boolean) => {
+    if (!snap || !session) return;
+    const before = snap, k = current; let failed = false;
+    setSnap(applyHidden(snap, message, present)); setError(''); pending.current++;
+    void client.hide(agent, session, message, present)
+      .then((s) => { if (key.current === k && pending.current === 1) setSnap(s); })
+      .catch(() => { failed = true; if (key.current === k) { setSnap(before); setError(t('msg.hideFailed')); } })
+      .finally(() => { pending.current--; if (failed) refresh(); });
+  };
+  return { snap, error, react, hide, refresh };
 }

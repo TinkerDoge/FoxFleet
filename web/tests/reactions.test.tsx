@@ -1,7 +1,7 @@
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { applyReaction, ReactionBar, type ReactionSnapshot } from '../src/chat/Reactions';
+import { applyHidden, applyReaction, QUICK, ReactionBar, type ReactionSnapshot } from '../src/chat/Reactions';
 import { Message } from '../src/chat/Message';
 import { fromHistory } from '../src/lib/chat';
 
@@ -37,6 +37,16 @@ describe('reactions', () => {
     expect(host.querySelector('.react-add')).toBeNull();
     await act(() => render(<Message m={{ id: 'x', role: 'assistant', content: 'hi' }} onMedia={() => {}} reactions={{ groups: [], me: me.id, onReact: () => {} }} />, host));
     expect(host.querySelector('.react-add')).not.toBeNull();
+  });
+
+  it('quick row is like, dislike, heart, confetti, surprise', () => {
+    expect(QUICK).toEqual(['👍', '👎', '❤️', '🎉', '😮']);
+  });
+
+  it('hiding is optimistic and idempotent', () => {
+    let s: ReactionSnapshot = { actor: me, messages: {}, hidden: [] };
+    s = applyHidden(applyHidden(s, 'm', true), 'm', true); expect(s.hidden).toEqual(['m']);
+    s = applyHidden(applyHidden(s, 'm', false), 'm', false); expect(s.hidden).toEqual([]);
   });
 });
 
