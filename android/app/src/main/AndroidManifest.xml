@@ -3,6 +3,12 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <!-- Notifications: a foreground service (type remoteMessaging) holds the hub's event stream open. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
+    <!-- Restart the service after a reboot or an app update, only when the user turned notifications on. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <queries>
         <intent><action android:name="android.speech.RecognitionService" /></intent>
@@ -35,7 +41,23 @@
                 <!-- foxfleet://pair?hub=…&code=… : owner opened a machine pairing link on this phone -->
                 <data android:scheme="foxfleet" android:host="pair" />
             </intent-filter>
+            <!-- foxfleet://chat?hub=…&agent=…&chat=…[&approval=…] : a notification opens that chat (also usable with `adb shell am start -d`) -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="foxfleet" android:host="chat" />
+            </intent-filter>
         </activity>
+        <service
+            android:name=".notify.NotifyService"
+            android:exported="false"
+            android:foregroundServiceType="remoteMessaging" />
+        <receiver android:name=".notify.NotifyActionReceiver" android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.files"

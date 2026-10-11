@@ -124,6 +124,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun removeHub(id: String) { settings.removeHub(id); resetForHubChange(); route = Route.Fleet; boot() }
     private fun resetForHubChange() {
         authGeneration++; deactivateMedia()
+        dev.foxfleet.app.notify.NotifyController.onHubChanged(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear(); skills.clear()
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; username = ""; isOwner = false
     }
@@ -139,7 +140,26 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     private val chats = HashMap<String, ChatState>()
     private val jobs = HashMap<String, Job>()
 
-    init { boot() }
+    init {
+        dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { chatFor(it).sessionId }
+        boot()
+    }
+
+    /** A notification tapped (foxfleet://chat?...). Held until the user is signed in and the fleet is loaded, then the chat opens. */
+    var pendingOpen by mutableStateOf<dev.foxfleet.app.notify.NotifyTarget?>(null); private set
+    fun openNotification(link: String?) { dev.foxfleet.app.notify.NotifyTarget.parse(link)?.let { pendingOpen = it } }
+    fun consumePendingOpen() {
+        val t = pendingOpen ?: return
+        if (authed != true || !fleetLoadedOnce) return
+        pendingOpen = null
+        if (t.hub != settings.activeHubId || agent(t.agent) == null) return // a notification of another hub, or an agent that is gone
+        navigate(Route.Chat(t.agent)); openSession(t.agent, t.chat)
+        dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), t.agent, t.chat)
+        if (t.approval != null) viewModelScope.launch { // the open question or approval card comes from the queue
+            var n = 0; while (chatFor(t.agent).sessionId != t.chat && n++ < 25) delay(200)
+            runCatching { chatFor(t.agent).syncQueue(api, t.agent) }
+        }
+    }
 
     /** True while the first contact with the hub is being retried after a blip. */
     var bootReconnecting by mutableStateOf(false)
@@ -166,7 +186,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                     authed = false; break
                 }
             }
-            if (authed == true) refreshFleet()
+            if (authed == true) { dev.foxfleet.app.notify.NotifyController.onAuthed(getApplication(), settings.activeHubId, username); refreshFleet() }
         }
     }
 
@@ -176,6 +196,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     fun signOut() {
         authGeneration++; deactivateMedia(purge = true)
+        dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
         settings.clearSession()
@@ -219,7 +240,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun navigate(r: Route) {
         val leaving = (route as? Route.Chat)?.agent
         if (leaving != null && (r as? Route.Chat)?.agent != leaving) viewModelScope.launch { delay(900); refreshFleet(silent = true); delay(600); settings.markSeen(leaving, agents.firstOrNull { it.name == leaving }?.lastActivityAt) } // what arrived while you were in the chat is read
-        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent) }
+        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent); settings.savedChat(r.agent).session?.let { dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), r.agent, it) } }
+        dev.foxfleet.app.notify.NotifyForeground.agent = (r as? Route.Chat)?.agent
         route = r
     }
 

@@ -73,6 +73,8 @@ fun SettingsScreen(
     mediaCacheBytes: Long = 0L,
     clearingMedia: Boolean = false,
     onClearMedia: () -> Unit = {},
+    /** The "Notifications" section (see NotificationSettings.kt); empty where the screen is previewed without a hub. */
+    notifications: @Composable () -> Unit = {},
 ) {
     val c = LocalHubColors.current
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
@@ -133,10 +135,9 @@ fun SettingsScreen(
                     }
                     Hairline(Modifier.padding(start = 16.dp))
                     ToggleRow("Haptics", "A light tap when you send or sign in.", prefs.haptics) { onChange(prefs.copy(haptics = it)) }
-                    Hairline(Modifier.padding(start = 16.dp))
-                    ToggleRow("Notifications", "Not available yet: the hub has no push API.", false, enabled = false) {}
                 }
             }
+            notifications()
             SectionLabel("Chat & screen")
             SoftCard(Modifier.fillMaxWidth()) {
                 Column {

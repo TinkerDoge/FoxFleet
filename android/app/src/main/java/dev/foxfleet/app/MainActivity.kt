@@ -51,13 +51,16 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: android.content.Intent) {
         super.onNewIntent(intent)
-        intent.dataString?.let { vm.openConnectLink(it) }
+        intent.dataString?.let { vm.openConnectLink(it); vm.openNotification(it) }
     }
+
+    override fun onStart() { super.onStart(); dev.foxfleet.app.notify.NotifyForeground.visible = true }
+    override fun onStop() { dev.foxfleet.app.notify.NotifyForeground.visible = false; super.onStop() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
-        intent?.dataString?.let { vm.openConnectLink(it) }
+        intent?.dataString?.let { vm.openConnectLink(it); vm.openNotification(it) }
         setContent {
             val dark = isDark(vm.prefs.theme, isSystemInDarkTheme())
             LaunchedEffect(dark) {
@@ -149,6 +152,7 @@ private fun FoxfleetApp(vm: HubViewModel) {
 @Composable
 private fun RouteContent(vm: HubViewModel, route: Route) {
     LaunchedEffect(vm.authed, vm.pendingPair) { vm.consumePendingPair() }
+    LaunchedEffect(vm.authed, vm.fleetLoadedOnce, vm.pendingOpen) { vm.consumePendingOpen() }
     when (route) {
         Route.Fleet -> FleetScreen(
             agents = vm.agents, loading = vm.fleetLoading, loadedOnce = vm.fleetLoadedOnce, error = vm.fleetError,
@@ -203,6 +207,12 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             mediaCacheBytes = vm.mediaCacheBytes, clearingMedia = vm.clearingMedia, onClearMedia = vm::clearMediaCache,
             prefs = vm.prefs, onChange = vm::updatePrefs,
             onSignOut = vm::signOut, onBack = { vm.back() }, onAgents = { vm.navigate(Route.Agents) },
+            notifications = {
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                val scope = androidx.compose.runtime.rememberCoroutineScope()
+                val model = remember { dev.foxfleet.app.notify.NotifySettingsModel(dev.foxfleet.app.notify.AndroidNotifyEnv(ctx, vm.settings, vm.api, activity = { ctx as? android.app.Activity }), scope) }
+                dev.foxfleet.app.ui.screens.NotificationsSection(model)
+            },
             hubName = vm.hubName, hubVersion = vm.hubVersion, hubOld = dev.foxfleet.app.ui.HubCompat.isOld(vm.hubVersion, vm.hubFeatures), username = vm.username, isOwner = vm.isOwner, onAdmin = { vm.navigate(Route.Admin) }, onHubs = { vm.navigate(Route.Hubs) }, onDevices = { vm.navigate(Route.Devices) },
         )
         }
