@@ -8,7 +8,7 @@ package dev.foxfleet.app.ui.chat
 data class TagMedia(val ref: String, val kind: Kind, val name: String, val voice: Boolean = false) {
     enum class Kind { Image, Video, Audio, File }
 }
-data class ParsedMedia(val text: String, val media: List<TagMedia>)
+data class ParsedMedia(val text: String, val media: List<TagMedia>, val react: String? = null)
 
 object MediaTags {
     private val imageExts = listOf("png", "jpg", "jpeg", "gif", "webp", "bmp", "avif")
@@ -34,6 +34,27 @@ object MediaTags {
         m = quote.replace(m) { it.groupValues[1] + blank(it.groupValues[2]) }
         return inlineCode.replace(m) { blank(it.value) }
     }
+
+    // REACT: <one emoji> on its own line is the agent's reaction to the user's message. The hub applies it; the apps never show the line.
+    private val reactLine = Regex("^[ \\t]*REACT:[ \\t]*([^ \\t\\r\\n]{1,32})[ \\t]*$", RegexOption.MULTILINE)
+    private val partialReact = Regex("(?:^|\\n)[ \\t]*R(?:E(?:A(?:C(?:T(?::[^\\n]*)?)?)?)?)?$")
+    /** Emoji-shaped: no ASCII letters and at least one code point from U+2000 up (same rule as the hub). */
+    fun emojiShaped(s: String) = s.none { it in 'A'..'Z' || it in 'a'..'z' } && s.codePoints().anyMatch { it >= 0x2000 }
+    /** The text with REACT: lines removed, and the first one's token. Lines in code or quotes stay. */
+    fun takeReact(input: String): Pair<String, String?> {
+        if (!input.contains("REACT:")) return input to null
+        val scan = mask(input); val spans = ArrayList<IntArray>(); var react: String? = null
+        for (m in reactLine.findAll(scan)) {
+            val tok = m.groupValues[1]; if (!emojiShaped(tok)) continue
+            if (react == null) react = tok
+            val end = m.range.last + 1 // `$` stops before \r in CRLF text
+            val nl = if (input.startsWith("\r\n", end)) 2 else if (end < input.length && input[end] == '\n') 1 else 0
+            spans += intArrayOf(m.range.first, end + nl)
+        }
+        if (spans.isEmpty()) return input to null
+        var out = input; for (s in spans.asReversed()) out = out.substring(0, s[0]) + out.substring(s[1])
+        return out.replace(Regex("[ \\t]+\\n"), "\n").replace(Regex("\\n{3,}"), "\n\n").trim() to react
+    }
     private fun normalize(raw: String?): String {
         var p = (raw ?: "").trim()
         if (p.length >= 2 && p[0] == p.last() && p[0] in "`\"'") p = p.substring(1, p.length - 1).trim()
@@ -50,8 +71,8 @@ object MediaTags {
     fun nameOf(ref: String): String = if (isData(ref)) "image" else pathOf(ref).split('/', '\\').lastOrNull { it.isNotEmpty() }?.replace(Regex("[\\u0000-\\u001f\\u007f]"), "")?.take(120)?.ifEmpty { null } ?: "file"
 
     fun parse(input: String): ParsedMedia {
-        val text = input
-        if (!text.contains("MEDIA:") && !text.contains("[[") && !text.contains("](") && !text.contains("http") && !text.contains("data:image")) return ParsedMedia(text, emptyList())
+        val (text, react) = takeReact(input)
+        if (!text.contains("MEDIA:") && !text.contains("[[") && !text.contains("](") && !text.contains("http") && !text.contains("data:image")) return ParsedMedia(text, emptyList(), react)
         val voice = text.contains("[[audio_as_voice]]"); val asDoc = text.contains("[[as_document]]")
         val scan = mask(text); val spans = ArrayList<IntArray>(); val media = ArrayList<TagMedia>(); val seen = HashSet<String>()
         fun add(raw: String?, span: IntArray?, strip: Boolean = true, onlyAv: Boolean = false): Boolean {
@@ -71,12 +92,12 @@ object MediaTags {
         for (s in spans.sortedByDescending { it[0] }) out = out.substring(0, s[0]) + out.substring(s[1])
         out = out.replace("[[audio_as_voice]]", "").replace("[[as_document]]", "")
         if (spans.isNotEmpty() || voice || asDoc) out = out.replace(Regex("[ \\t]+\\n"), "\n").replace(Regex("\\n{3,}"), "\n\n").trim()
-        return ParsedMedia(out, media)
+        return ParsedMedia(out, media, react)
     }
 
-    /** While a reply streams, a tag is held back until its line is finished (a spaced path may still grow). */
+    /** While a reply streams, a tag (or a line that may become REACT:) is held back until its line is finished (a spaced path may still grow). */
     fun parseStreaming(input: String): ParsedMedia {
-        val cut = Regex("""[`"'*_]{0,3}MEDIA:[^\n]*$""", RegexOption.IGNORE_CASE).find(input)?.range?.first ?: -1
+        val cut = listOfNotNull(Regex("""[`"'*_]{0,3}MEDIA:[^\n]*$""", RegexOption.IGNORE_CASE).find(input)?.range?.first, partialReact.find(input)?.range?.first).minOrNull() ?: -1
         val r = parse(if (cut >= 0) input.substring(0, cut) else input)
         return r.copy(text = r.text.replace(Regex("""\[\[[a-z_]*]?$"""), "").trimEnd())
     }

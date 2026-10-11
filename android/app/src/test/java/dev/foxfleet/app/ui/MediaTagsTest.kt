@@ -27,7 +27,8 @@ class MediaTagsTest {
             val r = MediaTags.parse(v["input"]!!.jsonPrimitive.content)
             val want = v["media"]!!.jsonArray.map { it.jsonObject }.map { Triple(it["ref"]!!.jsonPrimitive.content, kind(it["kind"]!!.jsonPrimitive.content), it["voice"]?.jsonPrimitive?.boolean ?: false) }
             val got = r.media.map { Triple(it.ref, it.kind, it.voice) }
-            if (r.text != v["text"]!!.jsonPrimitive.content || got != want) failures += "${v["name"]!!.jsonPrimitive.content}: text='${r.text}' media=$got"
+            val wantReact = v["react"]?.jsonPrimitive?.content
+            if (r.text != v["text"]!!.jsonPrimitive.content || got != want || r.react != wantReact) failures += "${v["name"]!!.jsonPrimitive.content}: text='${r.text}' media=$got react=${r.react}"
         }
         assertTrue("vectors failed:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
@@ -36,6 +37,12 @@ class MediaTagsTest {
         assertTrue(MediaTags.parseStreaming("Here it is MEDIA:/tmp/ch").media.isEmpty())
         assertEquals("Here", MediaTags.parseStreaming("Here [[audio_as").text)
         assertEquals(1, MediaTags.parseStreaming("Done MEDIA:/tmp/a.png\nmore").media.size)
+    }
+    @Test fun streamingHidesAReactLineUntilDone() {
+        assertEquals("Nice", MediaTags.parseStreaming("Nice\nREAC").text)
+        assertEquals("Nice", MediaTags.parseStreaming("Nice\nREACT: ❤").text)
+        assertEquals("Nice\nMore", MediaTags.parseStreaming("Nice\nREACT: ❤️\nMore").text)
+        assertEquals("Really good", MediaTags.parseStreaming("Really good").text)
     }
     @Test fun aHugeReplyIsBounded() { assertTrue(MediaTags.parse((0 until 5000).joinToString("\n") { "MEDIA:/tmp/f$it.png" }).media.size <= 24) }
 }
