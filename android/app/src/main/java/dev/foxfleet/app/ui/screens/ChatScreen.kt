@@ -35,6 +35,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.ui.layout.layout
+import androidx.compose.foundation.border
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -401,41 +404,56 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
 private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOpen: (MediaRef) -> Unit, sessionId: String, reactions: MessageReactions? = null) {
     val c = LocalHubColors.current
     val haptic = rememberHaptic()
-    // Long-press (and a TalkBack action) opens the reaction picker; only messages with a stable hub id can be reacted to.
+    // One frame per message: everything it carries (pictures, files, text, time) sits inside, so it is clear what a reaction is on.
+    // Long-press the frame (or the TalkBack action) to react; the frame lights up while pressed.
+    val press = remember { MutableInteractionSource() }
+    val pressed by press.collectIsPressedAsState()
     val reactable = if (reactions == null) Modifier else Modifier
-        .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}, onLongClick = { haptic(HapticFeedbackType.LongPress); reactions.onPick() }, onLongClickLabel = "Add reaction")
+        .combinedClickable(interactionSource = press, indication = null, onClick = {}, onLongClick = { haptic(HapticFeedbackType.LongPress); reactions.onPick() }, onLongClickLabel = "Add reaction")
         .semantics { customActions = listOf(androidx.compose.ui.semantics.CustomAccessibilityAction("Add reaction") { reactions.onPick(); true }) }
+    val edge = if (pressed) c.accent else c.hairline
+    val lift = if (reactions?.groups?.isNotEmpty() == true) 10.dp else 0.dp // room inside the frame for the pills hanging on its edge
+    // Reactions hang on the frame's bottom edge (Messenger / iMessage), not loose under it.
+    val pills: @Composable (Modifier) -> Unit = { mod -> reactions?.let { r -> dev.foxfleet.app.ui.components.ReactionPills(r.groups, r.me, r.onReact, r.onPick, mod.layout { m, k -> val pl = m.measure(k); val up = 14.dp.roundToPx(); layout(pl.width, maxOf(0, pl.height - up)) { pl.place(0, -up) } }.padding(horizontal = 10.dp)) } }
     if (m.role == "user") {
-        Column(modifier.fillMaxWidth().then(reactable), horizontalAlignment = Alignment.End) {
-            m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 6.dp).size(180.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
-            if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.padding(bottom = 6.dp)) {
-                m.images.forEach { img ->
-                    // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
-                    val src = dev.foxfleet.app.media.attachmentSource(img.localPath, img.dataUrl)
-                    dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 180.dp else 96.dp).clip(RoundedCornerShape(14.dp)),
-                        onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) })
-                }
-            }
+        Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+            val shape = RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp)
             val (bodyText, files) = remember(m.content) { FileMarker.split(m.content) }
-            files.forEach { (path, size) -> FileChip(path.substringAfterLast('/').substringAfter('-'), size, Modifier.padding(bottom = 6.dp)) }
-            if (bodyText.isNotBlank()) Text(bodyText, style = MaterialTheme.typography.bodyLarge, color = c.text,
-                modifier = Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp))
-                    .background(c.userBubble).padding(horizontal = 14.dp, vertical = 10.dp))
-            reactions?.let { r -> dev.foxfleet.app.ui.components.ReactionPills(r.groups, r.me, r.onReact, r.onPick) }
+            Column(
+                Modifier.widthIn(max = 300.dp).clip(shape).background(c.userBubble).border(1.dp, if (pressed) c.accent else Color.Transparent, shape).then(reactable).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp + lift),
+                horizontalAlignment = Alignment.End,
+            ) {
+                m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+                if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 4.dp)) {
+                    m.images.forEach { img ->
+                        // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
+                        val src = dev.foxfleet.app.media.attachmentSource(img.localPath, img.dataUrl)
+                        dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 220.dp else 104.dp).clip(RoundedCornerShape(14.dp)),
+                            onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) })
+                    }
+                }
+                files.forEach { (path, size) -> FileChip(path.substringAfterLast('/').substringAfter('-'), size, Modifier.padding(bottom = 4.dp)) }
+                if (bodyText.isNotBlank()) Text(bodyText, style = MaterialTheme.typography.bodyLarge, color = c.text, modifier = Modifier.align(Alignment.Start).padding(horizontal = 8.dp, vertical = 4.dp))
+                if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(horizontal = 8.dp))
+            }
+            pills(Modifier)
         }
     } else {
-        Row(modifier.fillMaxWidth().then(reactable)) {
+        Row(modifier.fillMaxWidth()) {
             AgentAvatar(agentName, null, 28.dp)
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
-                if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
-                m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
-                    modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(14.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
-                AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
-                if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(top = 4.dp))
-                val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
-                media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
-                reactions?.let { r -> dev.foxfleet.app.ui.components.ReactionPills(r.groups, r.me, r.onReact, r.onPick) }
+                val shape = RoundedCornerShape(6.dp, 18.dp, 18.dp, 18.dp)
+                Column(Modifier.clip(shape).background(c.surface).border(1.dp, edge, shape).then(reactable).padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp + lift)) {
+                    if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
+                    m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
+                        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
+                    AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
+                    val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
+                    media.forEach { ref -> MediaCard(ref) { onOpen(ref) } }
+                    if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
+                }
+                pills(Modifier)
             }
         }
     }
@@ -450,13 +468,16 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
     val reduce = reduceMotion()
     Row(modifier.fillMaxWidth()) {
         AgentAvatar(agentName, null, 28.dp)
-        Spacer(Modifier.width(12.dp))
+        Spacer(Modifier.width(10.dp))
         Column(Modifier.weight(1f).animateContentSize()) {
-            if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
             val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
             val text = parsedStream.text
             val active = state.tools.active
             val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty()) null else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
+            // The reply being written already sits in the frame it will keep; activity and status stay outside it.
+            val shape = RoundedCornerShape(6.dp, 18.dp, 18.dp, 18.dp)
+            if (state.streamReasoning.isNotBlank() || text.isNotBlank() || parsedStream.media.isNotEmpty()) Column(Modifier.clip(shape).background(c.surface).border(1.dp, c.hairline, shape).padding(horizontal = 14.dp, vertical = 10.dp)) {
+            if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
             if (text.isNotBlank()) {
                 val fadeFrom = if (reduce) text.length else maxOf(0, text.length - STREAM_FADE_CHARS)
                 Text(
@@ -470,6 +491,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
                 )
             }
             AgentMediaCards(agentName, parsedStream.media, onOpen)
+            }
             ToolActivityStrip(active)
             androidx.compose.animation.Crossfade(status, animationSpec = androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionStatusMs), label = "status") { st ->
                 if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }

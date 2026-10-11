@@ -160,9 +160,11 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
       }
       return json(res, 200, { actor: me, messages: reactions[key] });
     }
+    if (p.startsWith('/api/media/')) { const n = decodeURIComponent(p.slice(11)); const f = (n === 'photo.jpg' ? demo('photo.jpg') : demo('chart.png')) || path.join(dist, 'fox.png'); res.writeHead(200, { 'content-type': f.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }); return res.end(fs.readFileSync(f)); }
     const a = /^\/api\/agents\/([^/]+)\/(sessions|skills|chat|files|media|screen)(?:\/([^/]+))?(?:\/messages)?$/.exec(p);
     if (a) {
       const [, agent, what, sid] = a;
+      if (what === 'media' && !sid && req.method === 'POST') { const ref = (await body(req)).ref || ''; const name = String(ref).split('/').pop() || 'chart.png'; return json(res, 200, { url: '/api/media/' + encodeURIComponent(name), kind: /\.(png|jpe?g|gif|webp)$/i.test(name) ? 'image' : 'file', name }); }
       if (what === 'media') { const f = (sid === 'photo.jpg' ? demo('photo.jpg') : demo('chart.png')) || path.join(dist, 'fox.png'); res.writeHead(200, { 'content-type': f.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }); return res.end(fs.readFileSync(f)); }
       if (what === 'skills') return json(res, 200, { skills: ['review', 'research', 'deploy-notes', 'translate'] });
       if (what === 'sessions' && !sid) { const all = chatSessions[agent] || [], off = Number(url.searchParams.get('offset') || 0), lim = Number(url.searchParams.get('limit') || 30); return json(res, 200, { sessions: all.slice(off, off + lim), total: all.length }); }

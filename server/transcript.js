@@ -6,6 +6,20 @@
 import { toolMedia, withMediaLines } from './media-tags.js';
 const CONTROL = [/<system-reminder>[\s\S]*?<\/system-reminder>/gi, /<memory-context>[\s\S]*?<\/memory-context>/gi, /<tool_call>[\s\S]*?<\/tool_call>/gi, /<tool_response>[\s\S]*?<\/tool_response>/gi, /<\/?(?:tool_calls?|function_calls?)>/gi];
 const THINK = /<(think|thinking|reasoning)>([\s\S]*?)<\/\1>/gi;
+// Hermes stores its own scaffolding as user rows: background-process and delegation notices, wake-ups, compaction context.
+// New rows carry display_kind (never a user turn); older ones are known by the prefixes Hermes itself skips (context_compressor).
+const SYNTHETIC = /^\s*(?:\[(?:IMPORTANT: Background process|System:|SYSTEM:|SYSTEM NOTICE|CONTEXT|PRIOR CONTEXT|Your active task list|Planning state preserved|ASYNC DELEGATION|OUT-OF-BAND)|Cronjob Response:)/;
+const SKILL = '[IMPORTANT: The user has invoked the ', SKILL_ASK = 'The user has provided the following instruction alongside the skill invocation: ';
+/** A slash-skill turn embeds the whole skill body; show it the way the user typed it ("/name instruction"), as Hermes does. */
+export function skillInvocation(text) {
+  if (!text.startsWith(SKILL)) return null;
+  const name = (/^"([^"]*)"/.exec(text.slice(SKILL.length))?.[1] ?? '').trim(), label = name.startsWith('/') ? name : '/' + name;
+  let ask = '';
+  if (text.includes(' skill bundle,')) { const i = text.indexOf('\nUser instruction: '); if (i >= 0) ask = text.slice(i + 19).split('\n\n[Loaded as part of the ')[0]; }
+  else { const i = text.lastIndexOf(SKILL_ASK); if (i >= 0) ask = text.slice(i + SKILL_ASK.length).split('\n\n[Runtime note:')[0]; }
+  ask = ask.replace(/\s+/g, ' ').trim();
+  return name ? (ask ? `${label} ${ask}` : label) : ask || null;
+}
 const clip = (s, n) => (s.length > n ? s.slice(0, n) + '…' : s);
 const ms = (t) => { if (typeof t === 'string' && /^\d{4}-\d\d-\d\d/.test(t)) { const d = Date.parse(t); return Number.isFinite(d) ? d : undefined; } const n = Number(t); return Number.isFinite(n) && n > 0 ? Math.round(n < 1e12 ? n * 1000 : n) : undefined; };
 
@@ -47,8 +61,9 @@ export function normalizeTranscript(rows) {
       continue;
     }
     if (role !== 'user' && role !== 'assistant') continue;
+    if (role === 'user' && (m.display_kind || SYNTHETIC.test(flattenContent(m.content).text))) continue; // a notice, not the user's words
     for (const tc of Array.isArray(m.tool_calls) ? m.tool_calls : []) if (tc?.id) { let a = tc?.function?.arguments ?? tc?.arguments; if (typeof a === 'string') { try { a = JSON.parse(a); } catch { a = {}; } } callInfo.set(tc.id, { name: tc?.function?.name ?? tc?.name, args: a }); }
-    const flat = flattenContent(m.content), images = flat.images, text = role === 'user' ? flat.text.replace(/^<foxfleet-note>[\s\S]*?<\/foxfleet-note>\s*/, '') : flat.text, cleaned = cleanText(text); // the connector's fallback awareness note is not the user's words
+    const flat = flattenContent(m.content), images = flat.images, text = role === 'user' ? (u => skillInvocation(u) ?? u)(flat.text.replace(/^<foxfleet-note>[\s\S]*?<\/foxfleet-note>\s*/, '')) : flat.text, cleaned = cleanText(text); // the connector's fallback awareness note is not the user's words
     const reasoning = [typeof m.reasoning_content === 'string' ? m.reasoning_content : typeof m.reasoning === 'string' ? m.reasoning : '', cleaned.reasoning].filter(Boolean).join('\n\n').trim();
     const tools = (Array.isArray(m.tool_calls) ? m.tool_calls : []).map((tc) => { const e = { name: String(tc?.function?.name ?? tc?.name ?? 'tool'), ...(argSummary(tc?.function?.arguments ?? tc?.arguments) ? { args: argSummary(tc?.function?.arguments ?? tc?.arguments) } : {}) }; if (tc?.id) pending.set(tc.id, e); return e; });
     const base = { role, content: cleaned.text, ...(reasoning ? { reasoning } : {}), ...(tools.length ? { tools } : {}), ...(images.length ? { images } : {}), ...(ms(m.timestamp) ? { ts: ms(m.timestamp) } : {}), ...(m.id != null ? { id: String(m.id) } : {}) };

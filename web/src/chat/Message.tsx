@@ -46,7 +46,7 @@ export function Message({ m, onMedia, grouped = false, reactions }: { m: UiMessa
   if (m.role === 'user') {
     const { text, files } = splitFiles(m.content);
     return (
-      <div class={`msg user${grouped ? ' grouped' : ''}`}>
+      <div class={`msg user${grouped ? ' grouped' : ''}${reactions?.groups.length ? ' has-reacts' : ''}`}>
         <div class="msg-row">
           {!reactions?.groups.length && <AddReact r={reactions} />}
           <div class="bubble">
@@ -61,13 +61,19 @@ export function Message({ m, onMedia, grouped = false, reactions }: { m: UiMessa
     );
   }
   return (
-    <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}`}>
-      {m.reasoning && <Reasoning text={m.reasoning} ms={m.reasoningMs} />}
-      {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
-      <AssistantText text={m.content} onMedia={onMedia} />
-      {m.interrupted && <small class="interrupted muted">{t('chat.interrupted')}</small>}
+    <div class={`msg assistant${m.error ? ' err' : ''}${grouped ? ' grouped' : ''}${reactions?.groups.length ? ' has-reacts' : ''}`}>
+      {/* One frame per reply: reasoning, text, pictures and time belong to it, so it is clear what a reaction is on. */}
+      <div class="msg-row">
+        <div class="msg-card">
+          {m.reasoning && <Reasoning text={m.reasoning} ms={m.reasoningMs} />}
+          {m.images?.length ? <div class="thumbs">{m.images.map((im, i) => <button key={i} class="thumb" aria-label={t('chat.openImage')} onClick={() => onMedia({ kind: 'image', src: im.dataUrl })}><img src={im.dataUrl} alt="" /></button>)}</div> : null}
+          <AssistantText text={m.content} onMedia={onMedia} />
+          {m.interrupted && <small class="interrupted muted">{t('chat.interrupted')}</small>}
+          <Time ts={m.ts} />
+        </div>
+        {!reactions?.groups.length && <AddReact r={reactions} />}
+      </div>
       <Reacts r={reactions} />
-      <div class="msg-foot"><Time ts={m.ts} />{!reactions?.groups.length && <AddReact r={reactions} />}</div>
     </div>
   );
 }

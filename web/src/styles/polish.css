@@ -109,9 +109,9 @@
 
 /* messages: soft surface cards for the agent, tinted pill bubbles for you (Grok / Telegram look) */
 .msg.assistant { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
-.msg.assistant > .md:not(.plain) { background: var(--surface); border: 1px solid var(--hairline); border-radius: 20px 20px 20px 6px; padding: 10px 16px; max-width: min(100%, 680px); box-sizing: border-box; }
-.msg.assistant.grouped > .md:not(.plain) { border-top-left-radius: 8px; }
-.msg.assistant .status, .msg.assistant .msg-time { padding-inline: 6px; }
+.msg-card { background: var(--surface); border: 1px solid var(--hairline); border-radius: 20px 20px 20px 6px; padding: 10px 16px 6px; max-width: min(100%, 680px); min-width: 0; box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; box-shadow: 0 1px 2px #0000000d; transition: border-color var(--motion-fast), box-shadow var(--motion-fast); }
+.msg.assistant.grouped .msg-card { border-top-left-radius: 8px; }
+.msg.assistant .status { padding-inline: 6px; }
 .bubble { border-radius: 20px 20px 6px 20px; padding: 10px 16px; }
 .msg.user.grouped .bubble { border-top-right-radius: 8px; }
 /* the "Completed" line is a confirmation, not furniture: it fades away */
@@ -138,11 +138,29 @@
 
 /* ---- messenger: compact rhythm, warm canvas, activity strip, reactions ---- */
 .messages { gap: 14px; background: radial-gradient(120% 60% at 50% 0%, color-mix(in srgb, var(--accent) 5%, transparent), transparent 70%); }
-.msg.assistant > .md:not(.plain) { box-shadow: 0 1px 2px #0000000d; }
 .msg.user { flex-direction: column; align-items: flex-end; gap: 4px; }
-.msg-row { display: flex; align-items: center; justify-content: flex-end; gap: 6px; width: 100%; }
-.msg-foot { display: flex; align-items: center; gap: 4px; min-height: 20px; }
+.msg-row { display: flex; align-items: flex-end; justify-content: flex-end; gap: 6px; width: 100%; }
+.msg.assistant .msg-row { justify-content: flex-start; }
 .msg-time { color: var(--text-faint); }
+
+/* everything a reply carries lives inside its frame: reasoning, text, pictures, time */
+.msg-card > .reasoning { margin: 0 -8px; }
+.msg-card .media-cards { margin-top: 0; }
+.msg-card .media-card.image, .msg-card .media-card.video, .msg-card .media-card.loading { border: 1px solid var(--hairline); border-radius: 12px; }
+.msg-card .md img { display: block; border: 1px solid var(--hairline); border-radius: 12px; }
+.msg-card > .msg-time, .bubble > .msg-time { align-self: flex-end; margin: -2px 0 0; padding: 0; line-height: 16px; }
+/* a picture-only reply: the frame hugs the picture */
+.msg-card:not(:has(> .md, > .reasoning)) { padding: 6px 6px 4px; }
+.msg-card:not(:has(> .md, > .reasoning)) > .msg-time { padding-inline: 8px; }
+/* the message you point at (or long-press) is the one that gets the reaction */
+.msg.assistant:hover .msg-card, .msg.assistant:focus-within .msg-card { border-color: color-mix(in srgb, var(--accent) 40%, var(--hairline)); }
+.msg.user:hover .bubble, .msg.user:focus-within .bubble { box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 40%, transparent); }
+/* reactions hang on the frame's bottom edge (Messenger / iMessage), not loose under it */
+.msg.user.has-reacts .bubble, .msg.assistant.has-reacts .msg-card { padding-bottom: 16px; } /* room for the pills on the edge */
+.msg.has-reacts > .reactions { margin-top: -12px; padding-inline: 12px; position: relative; z-index: 1; }
+.msg.user.has-reacts > .reactions { justify-content: flex-end; }
+.msg.has-reacts .react-pill, .msg.has-reacts .react-add.small { box-shadow: 0 0 0 2px var(--bg); }
+.msg.has-reacts .react-add.small { background: var(--surface); }
 
 /* temporary tool activity: one quiet line per running call, gone when it ends */
 .activity { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }

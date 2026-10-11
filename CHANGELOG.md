@@ -8,6 +8,11 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## 0.3.7-alpha (unreleased, Android versionCode 15)
 
+### Changed: one frame per message, quieter history, shorter agent note
+- *Message frames (web + Android):* each message is one card that holds its reasoning, text, pictures, files and time; reactions hang on the card's bottom edge. Pointing at (web) or pressing (Android) a message outlines it, so it is clear what you react to. A reply being written already sits in the frame it keeps.
+- *History:* Hermes' own notices (background-process results, delegation results, wake-ups, compaction context) no longer show as your messages when a chat loads; a skill turn shows as you typed it (`/review check PR 4`) instead of the whole skill text.
+- *Connector 0.3.7-alpha:* the FoxFleet note for agents is about half as long (568 instead of 1297 characters) and says each thing once. If you opted in, the installed note updates on the next connector start; otherwise new chats get the new text.
+
 ### Added: messenger polish (web + Android)
 - *Reactions:* react to any message with emoji (quick row plus the full searchable catalog, skin tones included); pills show counts and who reacted, humans and agents apart. Web: the smiley button on a message; Android: long-press (or the TalkBack action) and a bottom sheet. Changes show at once and roll back if the hub refuses. A second client picks them up within 30 s.
 - *Hub:* reactions are stored per account (`reactions.json`) by stable message id and the signed-in actor (never an actor from the request). `PUT`/`DELETE /api/agents/{name}/sessions/{id}/reactions` are idempotent. Deleting a chat, an agent or an account removes its reactions; they expire after 90 days.

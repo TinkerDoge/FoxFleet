@@ -125,8 +125,10 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         {reactions.error && <p class="react-error error small" role="alert">{reactions.error}</p>}
         {c.streaming && (
           <div class="msg assistant">
-            {c.streamReasoning && <Reasoning text={c.streamReasoning} live={!c.streamText} ms={c.reasoningMs} />}
-            {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
+            {(c.streamReasoning || c.streamText) && <div class="msg-card">
+              {c.streamReasoning && <Reasoning text={c.streamReasoning} live={!c.streamText} ms={c.reasoningMs} />}
+              {c.streamText && <AssistantText text={c.streamText} onMedia={setViewer} streaming />}
+            </div>}
             {active.length > 0 && <ul class="activity" aria-label={t('tool.activity')} role="status" aria-live="polite">{active.map((x) => { const p = toolPresentation(x.name); return <li key={x.key} class="activity-row"><Icon name={p.icon} size={16} /><span>{p.label}</span><span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></li>; })}</ul>}
             {status && <p class="status shimmer" key={status} role="status" aria-live="polite">{status}<span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></p>}
           </div>

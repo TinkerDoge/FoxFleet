@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.components
 
+import androidx.compose.ui.graphics.compositeOver
 import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -102,7 +103,7 @@ fun ReactionPills(groups: List<ReactionGroup>, me: String, onReact: (String, Boo
             val who = g.actors.joinToString { if (it.id == me) "You" else if (it.kind == "agent") "${it.name} (agent)" else it.name }
             Row(
                 Modifier.heightIn(min = 32.dp).clip(RoundedCornerShape(50))
-                    .background(if (mine) c.accent.copy(alpha = 0.14f) else c.surface)
+                    .background(if (mine) c.accent.copy(alpha = 0.14f).compositeOver(c.surface) else c.surface) // opaque: pills sit on the message frame's edge
                     .border(1.dp, if (mine) c.accent.copy(alpha = 0.55f) else c.hairline, RoundedCornerShape(50))
                     .semantics { contentDescription = "${g.emoji} ${g.actors.size}: $who"; selected = mine }
                     .clickable(role = Role.Button) { onReact(g.emoji, !mine) }
@@ -114,7 +115,7 @@ fun ReactionPills(groups: List<ReactionGroup>, me: String, onReact: (String, Boo
                 Text("${g.actors.size}", style = MaterialTheme.typography.labelMedium, color = if (mine) c.accent else c.text)
             }
         }
-        Box(Modifier.size(32.dp).clip(RoundedCornerShape(50)).border(1.dp, c.hairline, RoundedCornerShape(50)).semantics { contentDescription = "Add reaction" }.clickable(role = Role.Button, onClick = onAdd), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(32.dp).clip(RoundedCornerShape(50)).background(c.surface).border(1.dp, c.hairline, RoundedCornerShape(50)).semantics { contentDescription = "Add reaction" }.clickable(role = Role.Button, onClick = onAdd), contentAlignment = Alignment.Center) {
             Icon(FoxIcons.get("react"), null, tint = c.textMuted, modifier = Modifier.size(16.dp))
         }
     }

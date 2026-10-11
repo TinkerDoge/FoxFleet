@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.6-alpha';
+export const VERSION = '0.3.7-alpha';
 /** What this connector can do for the hub (reported in the profiles frame; the hub shows it as the Media row of an agent). */
 export const FEATURES = ['media', 'mediaRoots', 'mediaCheck', 'agentNote'];
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
@@ -448,15 +448,16 @@ const tilde = (p, home = os.homedir()) => (p === home ? '~' : p.startsWith(home 
 export function agentNote({ cfg = {}, roots = [], home = os.homedir(), features = FEATURES } = {}) {
   const maxMb = Math.round((Number(cfg.mediaMaxBytes) || MEDIA_DEFAULT_MAX) / 1048576), upload = typeof cfg.uploadDir === 'string' && cfg.uploadDir ? cfg.uploadDir : '~/foxfleet-uploads';
   const shown = [...new Set(roots.map((r) => tilde(r, home)))].sort().slice(0, 6);
+  // Short on purpose: it sits in every prompt. Only what differs from a terminal, once.
   const lines = [
-    'You are chatting through FoxFleet (web/Android app), not a terminal or the Hermes TUI. The user is often on a phone.',
-    'Formatting: Markdown renders (headings, lists, tables, code fences). Keep answers short and scannable; put long output in a file instead of pasting walls of text. ANSI colors, cursor control, clipboard access and TUI-only features (panes, keybindings, spinners) do not exist here.',
+    'You are in FoxFleet, a chat app (often on a phone), not a terminal.',
+    'Markdown renders. Keep replies short; put long output in a file. No ANSI, TUI keys or interactive terminal programs.',
     features.includes('media')
-      ? `Files: to show or send a file, write MEDIA:/absolute/path/to/file on its own line. Images and video render inline; other files become download cards. Only files under these shared folders can be delivered: ${shown.join(', ') || '(none yet)'}. Files over ${maxMb} MB or outside them show "Not available". Save what you want to deliver into one of those folders first. Remote images: ![alt](https://...).`
-      : 'Files: there is no attachment channel here; give the absolute file path as text.',
-    `Attachments from the user arrive as files in ${upload}; read them from there.`,
-    'Prompts: approvals and clarifying questions appear as tap-to-answer cards, so ask one clear question with short options and wait; never ask the user to type into a terminal prompt or press keys.',
-    `Commands: slash commands are typed as plain messages; only these work remotely: ${REMOTE_COMMANDS.map((c) => '/' + c).join(' ')}. Do not suggest TUI hotkeys or interactive terminal programs.`,
+      ? `Send a file: MEDIA:/absolute/path on its own line (images/video show inline). Only from ${shown.join(', ') || '(none yet)'}, up to ${maxMb} MB.`
+      : 'Files: no attachment channel; give the absolute path as text.',
+    `User uploads are in ${upload}.`,
+    'Approvals and questions show as tap-to-answer cards: ask one question with short options.',
+    `Slash commands that work here: ${REMOTE_COMMANDS.map((c) => '/' + c).join(' ')}.`,
   ];
   const body = lines.join('\n'), hash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 8);
   return { hash, text: `${lines[0]} (foxfleet-note v${hash})\n${lines.slice(1).join('\n')}`, version: hash };

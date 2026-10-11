@@ -85,6 +85,19 @@ test('transcript: odd shapes do not throw (orphan tool rows, junk content, huge 
   assert.equal(flattenContent([{ type: 'image_url', image_url: { url: 'http://insecure/x.png' } }]).text, '[image]');
   assert.deepEqual(sessionRow({ id: 's1', title: ' Plan ', last_active: 1790000000, message_count: 4, preview: 'hello\nthere' }), { id: 's1', title: 'Plan', updated: 1790000000000, started: null, messages: 4, preview: 'hello there' });
 });
+test('transcript: Hermes notices are not user messages; a skill turn shows as typed', () => {
+  const skill = '[IMPORTANT: The user has invoked the "review" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]\n\nLong skill body\n\nThe user has provided the following instruction alongside the skill invocation: check PR 4\n\n[Runtime note: x]';
+  const bundle = '[IMPORTANT: The user has invoked the "/clean /work" skill bundle, follow them.]\nUser instruction: tidy up\n\n[Loaded as part of the bundle: body]';
+  const out = normalizeTranscript([
+    { role: 'user', content: 'start the build' }, { role: 'assistant', content: 'started' },
+    { role: 'user', content: '[IMPORTANT: Background process proc_9 completed (exit 0).\nOutput: ...]' },
+    { role: 'user', content: 'wake up', display_kind: 'internal_notification' }, { role: 'user', content: 'done', display_kind: 'async_delegation_complete' },
+    { role: 'user', content: [{ type: 'text', text: '[System: context compacted]' }] },
+    { role: 'assistant', content: 'build passed' },
+    { role: 'user', content: skill }, { role: 'assistant', content: 'ok' }, { role: 'user', content: bundle },
+  ]);
+  assert.deepEqual(out.map((m) => [m.role, m.content]), [['user', 'start the build'], ['assistant', 'started\n\nbuild passed'], ['user', '/review check PR 4'], ['assistant', 'ok'], ['user', '/clean /work tidy up']]);
+});
 
 test('Hermes sessions through the hub: list rows, paged messages are normalised', async (t) => {
   const mock = await mockHermes(t, { messages: ROWS }), { call } = await setup(t, [mock.connection]);

@@ -89,6 +89,9 @@ class ChatState {
     private var gen = 0
     private var submitting = 0
 
+    /** Previews/screenshot tests: show reactions without a hub. */
+    internal fun simulateReactions(snapshot: dev.foxfleet.app.data.ReactionSnapshot) { reactions = snapshot }
+
     /** Previews/screenshot tests: put the live overlays into a mid-stream state. */
     internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null) {
         streaming = true; streamText = text; streamReasoning = reasoning; toolLabel = tool

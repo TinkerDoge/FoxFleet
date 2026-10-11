@@ -23,7 +23,7 @@ test('the note: golden text, small, deterministic, hash follows the words', () =
   const n = agentNote(FIXED);
   if (process.env.UPDATE_GOLDEN) fs.writeFileSync(GOLDEN, n.text + '\n');
   assert.equal(n.text + '\n', fs.readFileSync(GOLDEN, 'utf8'), 'contract/agent-note.golden.txt (regenerate with UPDATE_GOLDEN=1 when the wording changes on purpose)');
-  assert.ok(n.text.length < 1800, `short enough for a cached prompt prefix: ${n.text.length}`);
+  assert.ok(n.text.length < 800, `short: it rides in every prompt: ${n.text.length}`);
   assert.deepEqual(agentNote(FIXED), n); assert.match(n.text, /\(foxfleet-note v[0-9a-f]{8}\)/);
   for (const must of ['FoxFleet', 'not a terminal', 'MEDIA:/absolute/path', '/tmp, ~/.hermes/cache, ~/work', 'tap-to-answer cards', '/compress', 'phone', 'ANSI']) assert.ok(n.text.includes(must), must);
   assert.notEqual(agentNote({ ...FIXED, cfg: { mediaMaxBytes: 5 * 1048576 } }).hash, n.hash);
@@ -129,7 +129,7 @@ test('real gateway: the model receives the FoxFleet note (and not the TUI text),
   const turn = async (rt, text) => { const n = x.events.filter((e) => e.type === 'message.complete' && e.session_id === rt).length; await ui.call(agent, 'submit', { session_id: rt, text }); await waitFor(async () => (x.events.filter((e) => e.type === 'message.complete' && e.session_id === rt).length > n ? true : null), { tries: 300, ms: 100 }); };
   const c = await ui.call(agent, 'create', {}); await turn(c.session_id, 'where am I?'); await turn(c.session_id, 'and now?');
   const s0 = systemOf('where am I?'), s1 = systemOf('and now?');
-  assert.ok(s0.includes('You are chatting through FoxFleet') && s0.includes('(foxfleet-note v' + hash + ')'), 'note present');
+  assert.ok(s0.includes('You are in FoxFleet') && s0.includes('(foxfleet-note v' + hash + ')'), 'note present');
   assert.ok(!/terminal UI \(TUI\)/.test(s0) && !/You are in a plain terminal/.test(s0), 'the TUI hint is gone');
   assert.ok(!reqFor('where am I?').messages.some((q) => q.role === 'user' && String(q.content).includes('foxfleet-note')), 'installed note is not repeated in the user message');
   assert.equal(s1, s0, 'system prompt is byte-stable across turns');
