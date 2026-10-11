@@ -49,7 +49,7 @@ event: notify
 data: {"id":7,"v":1,"type":"reply_finished","agent":"nova","chat":"h_abc","priority":"normal","at":1791400000000,"muted":false,"run_id":"…"}
 
 event: foxfleet.ready        (once, after the replay; carries no id)
-data: {"contract":"foxfleet.notify/1","cursor":7}
+data: {"contract":"foxfleet.notify/1","cursor":7,"dropped":0}
 
 : keep-alive                 (comment, every 15 s)
 ```
@@ -76,7 +76,7 @@ happened while the service was down (and for unread dots, since it includes mute
 ## Retention and limits
 
 The log keeps the **newest 500 events per account, with no time limit** (older ones are dropped by count; the cursor never goes back). It is saved to `notify.json` in the account's data directory, coalesced: changes inside 250 ms cost one write; a mute change is written immediately.
-To stop a burst from flushing the log, `reply_finished` and `error` events are limited to **60 per minute per account**; the excess is dropped (not logged, not pushed). `approval` events are never dropped, and `test` has its own 10-per-minute limit on the route.
+To stop a burst from flushing the log, `reply_finished` and `error` events are limited to **60 per minute per account**; the excess is dropped (not logged, not pushed) and counted: `dropped` in `GET /api/notify/prefs` and in the stream's `foxfleet.ready` frame is how many were dropped since the hub started (it resets on restart). A client can show "some notifications were skipped" when it grows. `approval` events are never dropped, and `test` has its own 10-per-minute limit on the route.
 
 ## Mute and master switch
 
@@ -88,14 +88,16 @@ Mute rules (checked when an event is created, so a mute never hides something th
 
 Muted events are still logged. Timed mutes expire by themselves.
 
-- `GET /api/notify/prefs` → `{ "enabled": true, "storage": { "ok": true }, "agents": [{ "agent": "nova", "until": null }], "chats": [{ "agent": "nova", "chat": "h_abc", "until": 1791403600000 }] }` (`until` = ms epoch, or `null` = until unmuted). `storage.ok` is `false` (with an `error` code such as `ENOSPC`) when the last write of the log file failed: mutes and events still work in memory but would be lost on a hub restart; a Settings screen can show a hint. The hub also logs one `notify.save_failed` line (error code only) per minute.
+- `GET /api/notify/prefs` → `{ "enabled": true, "storage": { "ok": true }, "dropped": 0, "agents": [{ "agent": "nova", "until": null }], "chats": [{ "agent": "nova", "chat": "h_abc", "until": 1791403600000 }] }` (`until` = ms epoch, or `null` = until unmuted). `storage.ok` is `false` (with an `error` code such as `ENOSPC`) when the last write of the log file failed: mutes and events still work in memory but would be lost on a hub restart; a Settings screen can show a hint. The hub also logs one `notify.save_failed` line (error code only) per minute, and retries a failed write by itself (1 s, 2 s, 4 s, 8 s, 16 s, then stops until the next change).
 - `PUT /api/notify/prefs` body `{ "enabled": false }` → the same view. `enabled` must be a boolean.
 - `PUT /api/notify/mute` body `{ "agent": "nova", "chat": "h_abc"?, "muted": true, "for_ms": 3600000? }` → the prefs view.
   Without `chat` it mutes the agent. `muted: false` clears it. No `for_ms` means until unmuted; otherwise 1000 ms to 366 days (`400` outside that).
   Unknown agent → `404`. At most 200 mutes per kind.
 - `POST /api/notify/test` body `{}` → `{ "event": { …type "test"… } }`. At most 10 per minute per account, then `429` with `Retry-After: 60`. Use it for the Settings "test" button: if `event.muted` is true the master switch is off, so tell the user. The same event is pushed on the stream.
 
-Errors are JSON `{ "error": "…" }` with the usual status codes (`400` invalid input, `401` login, `404`, `429`).
+Errors are JSON `{ "error": "…" }` with the usual status codes (`400` invalid input, `401` login, `403` foreign Origin or untrusted host, `404`, `413` body over 4 KiB, `415` not `application/json`, `429` with `Retry-After` on `/test`). All are declared in `contract/openapi.json`.
+
+On a clean hub shutdown (SIGTERM/SIGINT) pending events are written to disk before exit; after a crash (SIGKILL, power loss) the last ~250 ms of events can be lost, and ids may then be reused: a client holding a newer cursor sees `gap: true`.
 
 ## Not in phase 1
 
