@@ -20,6 +20,7 @@ test('previews are one short plain line: no Markdown, no MEDIA tags, no secrets,
   assert.equal(previewOf('see https://hub.example.com/path?token=1 now'), 'see hub.example.com now');
   assert.equal(previewOf('x'.repeat(500)).length, 140); assert.ok(previewOf('x'.repeat(500)).endsWith('…'));
   assert.equal(previewOf('a\u0000b\tc\n\nd'), 'a b c d'); assert.equal(previewOf(null), '');
+  assert.equal(previewOf('> the old words\n\nship it now'), 'ship it now'); assert.equal(previewOf('> only a quote'), 'only a quote'); assert.equal(previewOf('hi\n\n> not leading'), 'hi not leading');
 });
 
 import { readFileSync } from 'node:fs';

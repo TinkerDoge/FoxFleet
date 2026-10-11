@@ -11,6 +11,7 @@ import { readFileSync } from 'node:fs';
 const HERMES = JSON.parse(readFileSync(new URL('../../server/hermes-commands.json', import.meta.url), 'utf8'));
 const queue = [];
 const reactions = {}; // session key -> message id -> [{ emoji, actors }]
+const hidden = {}; // session key -> [message id] (Delete for me)
 const toolHold = Number(process.env.MOCK_TOOL_HOLD || 1200); // how long each mock tool call stays on screen
 const NATIVE = process.env.MOCK_NATIVE === '1'; // atlas behaves like a native Hermes session: cards, acknowledgements, model picker
 const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, ...o });
@@ -148,17 +149,19 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (c && m === 'PUT') { await body(req); return json(res, 200, { connection: saved.find((s) => s.name === decodeURIComponent(c[1])) ?? { name: c[1], kind: 'openai' } }); }
     if (c && m === 'DELETE') { saved = saved.filter((s) => s.name !== decodeURIComponent(c[1])); return json(res, 200, { ok: true }); }
     // Reactions: one in-memory store, the signed-in owner as "you", the agent already reacted to the first answer.
-    const rx = /^\/api\/agents\/([^/]+)\/sessions\/([^/]+)\/reactions$/.exec(p);
+    const rx = /^\/api\/agents\/([^/]+)\/sessions\/([^/]+)\/(reactions|hidden)$/.exec(p);
     if (rx) {
       const me = { id: 'user:owner1', name: 'owner1', kind: 'human' }, key = rx[1] + '/' + rx[2];
       reactions[key] ??= { msg_a2: [{ emoji: '🦊', actors: [{ id: 'agent:' + rx[1], name: rx[1], kind: 'agent' }] }] };
-      if (m === 'PUT' || m === 'DELETE') {
+      if (rx[3] === 'hidden') {
+        if (m === 'PUT' || m === 'DELETE') { const b = await body(req), h = new Set(hidden[key] ?? []); if (m === 'PUT') h.add(b.message_id); else h.delete(b.message_id); hidden[key] = [...h]; }
+      } else if (m === 'PUT' || m === 'DELETE') {
         const b = await body(req), groups = (reactions[key][b.message_id] ??= []);
         for (const g of groups) g.actors = g.actors.filter((x) => x.id !== me.id || g.emoji !== b.emoji);
         if (m === 'PUT') { const g = groups.find((x) => x.emoji === b.emoji); if (g) g.actors.push(me); else groups.push({ emoji: b.emoji, actors: [me] }); }
         reactions[key][b.message_id] = groups.filter((g) => g.actors.length);
       }
-      return json(res, 200, { actor: me, messages: reactions[key] });
+      return json(res, 200, { actor: me, messages: reactions[key], hidden: hidden[key] ?? [] });
     }
     if (p.startsWith('/api/media/')) { const n = decodeURIComponent(p.slice(11)); const f = (n === 'photo.jpg' ? demo('photo.jpg') : demo('chart.png')) || path.join(dist, 'fox.png'); res.writeHead(200, { 'content-type': f.endsWith('.jpg') ? 'image/jpeg' : 'image/png' }); return res.end(fs.readFileSync(f)); }
     const a = /^\/api\/agents\/([^/]+)\/(sessions|skills|chat|files|media|screen)(?:\/([^/]+))?(?:\/messages)?$/.exec(p);

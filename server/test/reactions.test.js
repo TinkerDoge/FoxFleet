@@ -108,6 +108,12 @@ test('agent reactions come from REACT: lines and land on the nearest earlier use
   assert.deepEqual(merged.u1, [{ emoji: '👋', actors: [bot] }]);
 });
 
+test('a REACT: symbol without the emoji variation selector gets one', () => {
+  const bot = { id: 'agent:atlas', name: 'Atlas', kind: 'agent' };
+  const msgs = [{ id: 'u1', role: 'user', content: 'hi' }, { id: 'a1', role: 'assistant', content: 'REACT: \u2764' }, { id: 'u2', role: 'user', content: 'ok' }, { id: 'a2', role: 'assistant', content: 'REACT: \u263A' }, { id: 'u3', role: 'user', content: 'x' }, { id: 'a3', role: 'assistant', content: 'REACT: A' }];
+  assert.deepEqual(agentReactions(msgs, bot), [{ message: 'u1', emoji: '\u2764\uFE0F', actor: bot }, { message: 'u2', emoji: '\u263A\uFE0F', actor: bot }]);
+});
+
 test('HTTP: agent REACT: lines show as reactions, and hiding is per account and idempotent', async t => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hide-http-'));
   const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });

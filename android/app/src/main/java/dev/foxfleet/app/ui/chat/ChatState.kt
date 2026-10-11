@@ -15,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 
 const val PAGE = 80
+private val PENDING_STATES = setOf("queued", "awaiting_stop", "sending", "failed")
 
 /** Per-agent conversation state: message history, streaming overlays, session id. */
 class ChatState {
@@ -67,6 +68,8 @@ class ChatState {
         private set
     var halted by mutableStateOf(false)
         private set
+    /** Messages are waiting (queued, waiting for a stop, sending, failed): same set as web's PENDING. A failed one stays until dismissed, so Retry and Edit wait for it. */
+    val queuePending: Boolean get() = queue.any { it.state in PENDING_STATES }
     /** Questions and approvals the agent waits on (native sessions): one card each, answered once by id. */
     var requests by mutableStateOf<List<HubApi.OpenRequest>>(emptyList())
         private set
@@ -122,6 +125,7 @@ class ChatState {
      */
     fun applyUndo(sid: String, page: List<UiMessage>, hasMore: Boolean, target: UiMessage, copiesBefore: Int): Boolean? {
         if (sessionId != sid) return null // another chat opened: its own load owns the flag
+        // deliberately not queuePending: a leftover rejected/failed item must not block the reload after /undo for good
         if (streaming || queue.any { it.state != "rejected" && it.state != "failed" }) { loading = false; return null }
         load(page, sid, hasMore)
         return target.id?.let { id -> messages.none { it.id == id } } ?: (userCopies(target) < copiesBefore)
@@ -333,7 +337,7 @@ class ChatState {
     /** Optimistic delete-for-me: hides at once, rolls back and re-reads the hub when the change fails. */
     suspend fun hide(api: HubApi, agent: String, messageId: String, present: Boolean) {
         val s = sessionId ?: return; val before = reactions ?: return
-        reactions = before.copy(hidden = if (present) before.hidden + messageId else before.hidden - messageId); reactionError = null; reacting++
+        reactions = before.copy(hidden = (before.hidden ?: emptySet()).let { if (present) it + messageId else it - messageId }); reactionError = null; reacting++
         // a new hide takes the Undo row over; Undo (present = false) closes only its own row
         if (present) hiddenUndo = messageId else if (hiddenUndo == messageId) hiddenUndo = null
         var failed = false

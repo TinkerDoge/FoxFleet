@@ -342,9 +342,9 @@ fun ChatScreen(
     LaunchedEffect(menuFor, menuMsg) { if (menuFor != null && menuMsg == null) menuFor = null }
     menuMsg?.let { m ->
         val newest = MessageActions.newestTargets(state.messages)
-        val busy = state.streaming || state.queue.any { it.state == "queued" || it.state == "awaiting_stop" }
+        val busy = state.streaming || state.queuePending
         MessageMenuSheet(
-            actions = MessageActions.actions(m, newestAssistant = m === newest.assistant, newestUser = m === newest.user, busy = busy, hermes = agent.isHermes && onEditLast != null, canHide = onHide != null && state.reactions != null),
+            actions = MessageActions.actions(m, newestAssistant = m === newest.assistant, newestUser = m === newest.user, busy = busy, hermes = agent.isHermes && onEditLast != null, canHide = onHide != null && state.reactions?.hidden != null),
             canReact = m.id != null && state.reactions != null,
             onReact = { e -> menuFor = null; m.id?.let { toggle(it, e) } },
             onMoreReactions = { menuFor = null; reactingTo = m.id },

@@ -107,4 +107,4 @@ data class ToolEvent(val type: String, val turnId: String?, val toolId: String?,
 data class ReactionActor(val id: String, val name: String, val kind: String)
 data class ReactionGroup(val emoji: String, val actors: List<ReactionActor>)
 /** The hub's reactions for one conversation: who "you" are, the reactions on each stable message id, and what you hid ("delete for me"). */
-data class ReactionSnapshot(val actor: ReactionActor, val messages: Map<String, List<ReactionGroup>>, val hidden: Set<String> = emptySet())
+data class ReactionSnapshot(val actor: ReactionActor, val messages: Map<String, List<ReactionGroup>>, val hidden: Set<String>? = null)

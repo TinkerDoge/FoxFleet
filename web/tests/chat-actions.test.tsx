@@ -45,6 +45,14 @@ describe('message actions in the chat', () => {
     expect(host.querySelector('.hide-undo')).toBeNull();
   });
 
+  it('an old hub (no hidden list in the snapshot) gets no Delete for me', async () => {
+    const client = fakeClient(); const old = { actor: me, messages: {} };
+    client.reactions = vi.fn(async () => old); client.react = vi.fn(async () => old);
+    await mount(client);
+    await rightClick(host.querySelector('.msg-card')!);
+    expect(items().map((b) => b.textContent)).toEqual(['Reply', 'Copy', 'Retry']);
+  });
+
   it('Reply puts a chip over the composer and focuses it; Escape returns focus to the ⋯ button', async () => {
     const client = fakeClient(); await mount(client);
     const more = host.querySelector<HTMLButtonElement>('.msg.assistant .msg-more')!;

@@ -485,7 +485,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
      */
     fun editLast(agent: String, target: dev.foxfleet.app.data.UiMessage, onUndone: () -> Unit) {
         val state = chatFor(agent); val sid = state.sessionId ?: return
-        if (state.streaming || state.loading || state.queue.any { it.state == "queued" || it.state == "awaiting_stop" }) return
+        if (state.streaming || state.loading || state.queuePending) return
         val before = state.userCopies(target)
         jobs[agent] = viewModelScope.launch {
             try {

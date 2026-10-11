@@ -10,6 +10,7 @@ import dev.foxfleet.app.ui.chat.toolPresentation
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -81,6 +82,13 @@ class MessengerTest {
         val withHidden = HubApi.parseReactions(Json.parseToJsonElement("""{"actor":{"id":"user:u","name":"U","kind":"human"},"messages":{},"hidden":["m1","m2"]}""").jsonObject)
         assertEquals(setOf("m1", "m2"), withHidden.hidden)
         val old = HubApi.parseReactions(Json.parseToJsonElement("""{"actor":{"id":"user:u","name":"U","kind":"human"},"messages":{}}""").jsonObject)
-        assertTrue(old.hidden.isEmpty())
+        assertNull(old.hidden) // a 0.3.8 hub: no hidden list, so Delete for me is not offered
+    }
+
+    @Test fun queuePendingMatchesWeb_failedCounts() {
+        fun pending(state: String) = dev.foxfleet.app.ui.chat.ChatState().also { it.simulateNative(queue = listOf(HubApi.QueuedMessage("q", state, "queue", "x"))) }.queuePending
+        for (st in listOf("queued", "awaiting_stop", "sending", "failed")) assertTrue(st, pending(st))
+        assertFalse(pending("guidance_accepted")); assertFalse(pending("rejected"))
+        assertFalse(dev.foxfleet.app.ui.chat.ChatState().queuePending)
     }
 }

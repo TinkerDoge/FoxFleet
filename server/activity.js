@@ -9,7 +9,8 @@ export const PREVIEW_MAX = 140, MAX_PINS = 50;
 
 /** One short line of plain text from a reply or a message. */
 export function previewOf(input, max = PREVIEW_MAX) {
-  const parsed = parseMedia(typeof input === 'string' ? input : ''); let t = parsed.text;
+  // a reply starts with a "> quote" line (then a blank line): the preview shows the user's new words, not the quoted ones
+  const parsed = parseMedia((typeof input === 'string' ? input : '').replace(/^> [^\n]*\n\n/, '')); let t = parsed.text;
   t = t.replace(/```[\s\S]*?(```|$)/g, ' [code] ').replace(/`([^`\n]*)`/g, '$1').replace(/!\[([^\]]*)\]\([^)]*\)/g, (_, a) => (a ? `[${a}]` : '[image]'))
     .replace(/\[([^\]]+)\]\((?:[^)]*)\)/g, '$1').replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, '').replace(/[*_~]{1,3}([^*_~\n]+)[*_~]{1,3}/g, '$1')
     .replace(/<[^>]{1,200}>/g, ' ').replace(/\bhttps?:\/\/\S+/g, (u) => { try { return new URL(u).hostname; } catch { return 'link'; } });

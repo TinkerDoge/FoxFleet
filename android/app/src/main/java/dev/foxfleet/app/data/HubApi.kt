@@ -621,7 +621,8 @@ class HubApi(private val store: SettingsStore) {
                     ReactionGroup(emoji, runCatching { go["actors"]!!.jsonArray }.getOrNull().orEmpty().mapNotNull { actor(runCatching { it.jsonObject }.getOrNull()) }).takeIf { it.actors.isNotEmpty() }
                 }
             }.filterValues { it.isNotEmpty() }
-            val hidden = runCatching { o["hidden"]?.jsonArray }.getOrNull().orEmpty().mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }.toSet()
+            // null = a hub older than 0.3.9 (no "hidden" field): Delete for me is not offered
+            val hidden = runCatching { o["hidden"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }?.toSet()
             return ReactionSnapshot(me, msgs, hidden)
         }
         /** Only clarify and approval become cards; any other kind is ignored (the hub already declined it upstream, so nothing waits). */

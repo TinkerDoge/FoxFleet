@@ -12,10 +12,17 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Message menu:* long-press (Android; also on a picture inside a message) or right-click, long-press, the ⋯ button or the keyboard's context-menu key (web) opens a menu: quick reactions 👍 👎 ❤️ 🎉 😮 plus the full picker (an emoji you already gave is taken back), Reply, Copy, Select text (Android), Share, Retry, Edit, Delete for me. Retry shows on the newest reply only while it is the last message. Edit shows on your newest message once a reply follows it, for Hermes agents only, and neither shows while the agent is busy. Edit runs `/undo` and puts the text back in the box; if the agent refuses `/undo`, the text stays out and a notice says so.
 - *Hearts and replies:* double-tap a message to heart it or take your heart back (touch only on web; a mouse double-click still selects a word). Swipe a message right to reply (Android; not from the screen's left edge, which stays the system back gesture). The empty chat hint now says "Long-press a message for more."
 - *Replies:* a reply starts with a `> quote` line; both apps draw it as a reply bubble and the composer shows a "Replying to" chip. A slash command is sent as typed, without the quote.
-- *Delete for me:* hides a message from your own view with an Undo line (web) and keeps it in the agent's history. Hidden messages stay hidden on your other devices.
+- *Delete for me:* hides a message from your own view with an Undo line (web + Android) and keeps it in the agent's history. Hidden messages stay hidden on your other devices.
 - *Hub:* `PUT`/`DELETE /api/agents/{name}/sessions/{id}/hidden` keep a per-account hidden list (the agent keeps the message); the reactions snapshot gains `hidden`. The list is cleaned up with the chat, agent or account, and the oldest entries drop when it is full.
 - *Agents:* Hermes agents react by writing `REACT: <emoji>` on its own line; the hub shows it as the agent's reaction on your message, and the line is never shown (a reply that is only that line draws no row). `agentReactions` is now true for Hermes. The agent note gains one line (connector 0.3.9-alpha).
 - *Icons:* `reply`, `share`, `selectAll` and `edit` join the shared set.
+
+### Compatibility / upgrade order
+- *Order:* update the hub first, then the connector and the apps.
+- *Apps 0.3.8 and older* show `REACT:` lines as raw text, and a reply that is only that line shows as a bubble.
+- *New connector on an old hub:* the agent note tells Hermes about `REACT:`, but a 0.3.8 hub does not read it, so agent reactions are lost.
+- *Delete for me* needs hub 0.3.9. The new apps hide the action on older hubs.
+- *Downgrading the hub to 0.3.8* drops the hidden list the next time it writes `reactions.json`.
 
 ## 0.3.8-alpha (unreleased, Android versionCode 16)
 

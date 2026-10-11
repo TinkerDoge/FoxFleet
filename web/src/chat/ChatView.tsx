@@ -114,7 +114,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   const openMenu = (m: UiMessage, x: number, y: number, from?: HTMLElement | null) => { returnTo.current = from ?? null; setMenu({ m, x, y }); };
   const { assistant: newestA, user: newestU } = newestTargets(c.messages);
   const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
-  const actionsFor = (m: UiMessage) => messageActions(m, { newestAssistant: m === newestA, newestUser: m === newestU, busy: c.streaming || queuePending(c), hermes: agent.kind === 'hermes', canShare, canHide: Boolean(reactions.snap), selectable: false });
+  const actionsFor = (m: UiMessage) => messageActions(m, { newestAssistant: m === newestA, newestUser: m === newestU, busy: c.streaming || queuePending(c), hermes: agent.kind === 'hermes', canShare, canHide: Array.isArray(reactions.snap?.hidden), selectable: false });
   const act = (m: UiMessage, a: MessageAction) => {
     if (a === 'reply') returnTo.current = false; // the composer takes focus
     setMenu(null);

@@ -13,7 +13,10 @@ export function agentReactions(messages, actor) {
     if (m?.role === 'user') { user = m.id != null ? String(m.id) : null; continue; }
     if (m?.role !== 'assistant' || !user || typeof m.content !== 'string') continue;
     const { react } = takeReact(m.content);
-    if (react && validEmoji(react)) out.push({ message: user, emoji: react, actor });
+    if (!react) continue;
+    // an agent may write a bare symbol (❤, ☺) without the emoji variation selector
+    const emoji = validEmoji(react) ? react : validEmoji(react + '\uFE0F') ? react + '\uFE0F' : null;
+    if (emoji) out.push({ message: user, emoji, actor });
   }
   return out;
 }
