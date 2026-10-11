@@ -338,6 +338,71 @@
       "text": "![x](data:text/html;base64,PGgxPmhpPC9oMT4=)",
       "media": [],
       "input": "![x](data:text/html;base64,PGgxPmhpPC9oMT4=)"
+    },
+    {
+      "name": "react directive",
+      "input": "Love it!\nREACT: ❤️",
+      "text": "Love it!",
+      "media": [],
+      "react": "❤️"
+    },
+    {
+      "name": "react skin tone",
+      "input": "REACT: 👍🏽\nNice",
+      "text": "Nice",
+      "media": [],
+      "react": "👍🏽"
+    },
+    {
+      "name": "react zwj, no space, padded",
+      "input": "Done.\n  REACT:👩‍💻  ",
+      "text": "Done.",
+      "media": [],
+      "react": "👩‍💻"
+    },
+    {
+      "name": "react inside a fence stays",
+      "input": "```\nREACT: ❤️\n```",
+      "text": "```\nREACT: ❤️\n```",
+      "media": []
+    },
+    {
+      "name": "react mentioned inline stays",
+      "input": "Use REACT: ❤️ to react",
+      "text": "Use REACT: ❤️ to react",
+      "media": []
+    },
+    {
+      "name": "react twice: first wins, both removed",
+      "input": "REACT: 🎉\nGreat\nREACT: ❤️",
+      "text": "Great",
+      "media": [],
+      "react": "🎉"
+    },
+    {
+      "name": "react with a word stays",
+      "input": "REACT: like",
+      "text": "REACT: like",
+      "media": []
+    },
+    {
+      "name": "react only",
+      "input": "REACT: 😮",
+      "text": "",
+      "media": [],
+      "react": "😮"
+    },
+    {
+      "name": "react with media",
+      "input": "REACT: ❤️\nMEDIA:/tmp/a.png",
+      "text": "",
+      "media": [
+        {
+          "ref": "/tmp/a.png",
+          "kind": "image"
+        }
+      ],
+      "react": "❤️"
     }
   ]
 }
