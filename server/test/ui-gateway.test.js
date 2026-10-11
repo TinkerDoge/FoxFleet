@@ -91,3 +91,17 @@ test('gateway crash: pending calls fail, open requests are reported withdrawn, t
   const info = await ui.call(agent, 'info', {}, 35_000); assert.equal(info.ready, true);
   await assert.rejects(ui.call(agent, 'attach', { stored_session_id: c.stored_session_id }), (e) => e.rpc === 4007, 'a restarted owner does not know the old session (the hub journal must reconcile)');
 });
+
+test('hub link closed while its forwarders are still being created leaks no listening server', async () => {
+  const { EventEmitter } = await import('node:events'), { connectorHub } = await import('../connector.js'), http = await import('node:http');
+  const hub = connectorHub(), ws = Object.assign(new EventEmitter(), { send() {}, close() {} });
+  const link = await hub.attach('leak-test', ws), listening = [], orig = http.Server.prototype.listen; let started;
+  const firstListen = new Promise((r) => { started = r; });
+  http.Server.prototype.listen = function (...a) { listening.push(this); started(); return orig.apply(this, a); };
+  try {
+    const first = link.expose(['a', 'b']); await firstListen; link.close(); await first; await link.expose(['c']); // close() lands mid-expose; later frames must not revive it
+    await waitFor(async () => listening.every((s) => !s.listening), { tries: 50, ms: 20 });
+    assert.ok(listening.length >= 1); assert.equal(listening.filter((s) => s.listening).length, 0, 'every forwarder server is closed');
+    assert.equal(link.servers.length, 0);
+  } finally { http.Server.prototype.listen = orig; for (const s of listening) if (s.listening) s.close(); }
+});

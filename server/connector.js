@@ -49,16 +49,21 @@ export function connectorHub() {
     async attach(connectorId, ws, hooks = {}) {
       links.get(connectorId)?.close(); // a new connection replaces the old one
       const link = { streams: new Map(), seen: Date.now(), servers: [], agents: new Set(), send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
-        close() { for (const [, p] of this.mediaPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { safe: true, status: 503 })); } this.mediaPending?.clear(); for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) server.close(); for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
+        close() { this.closed = true; for (const [, p] of this.mediaPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { safe: true, status: 503 })); } this.mediaPending?.clear(); for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) { server.close(); server.closeAllConnections?.(); } for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
       // Profiles the machine exposes: one pair of loopback forwarders each, replaced wholesale on every `profiles` frame.
-      link.expose = async (names) => {
+      // Serialised, and aware of close(): a link that closes while a forwarder is still being created used to leak that listening
+      // server (it was pushed after close() had already walked link.servers), which kept the process alive forever.
+      let exposing = Promise.resolve();
+      link.expose = (names) => (exposing = exposing.catch(() => {}).then(async () => {
         const want = new Set(names);
         for (const a of [...link.agents]) if (!want.has(a)) { link.agents.delete(a); tunnelPorts.delete(`${connectorId}:${a}`); const keep = []; for (const e of link.servers) if (e.agent === a) e.server.close(); else keep.push(e); link.servers = keep; }
         for (const a of want) if (!link.agents.has(a)) {
+          if (link.closed) return;
           const dash = await forwarder(link, a, 'dashboard'), api = await forwarder(link, a, 'api');
+          if (link.closed) { dash.server.close(); api.server.close(); return; }
           link.servers.push({ ...dash, agent: a }, { ...api, agent: a }); link.agents.add(a); tunnelPorts.set(`${connectorId}:${a}`, { dashboard: dash.port, api: api.port });
         }
-      };
+      }));
       // Native Hermes UI gateway, reached through the connector's allowlist (see connector `ui-call`). One call = one frame out, one frame back.
       link.uiPending = new Map(); link.uiListeners = new Set(); link.uiCaps = {}; link.mediaPending = new Map();
       // Ask the machine for one local file an agent named in a MEDIA: tag. The machine decides (roots, type, size); we only cap and collect.
