@@ -69,7 +69,7 @@ object Tokens {
         const val maxEdge = 1600
         const val quality = 82
         val solids: List<Solid> = listOf(
-            Solid("sand", "Sand", Color(0xFFEDE6DA), Color(0xFF181410)),
+            Solid("sand", "Sand", Color(0xFFEDE6DA), Color(0xFF1A150D)),
             Solid("sage", "Sage", Color(0xFFDDE7DB), Color(0xFF111A13)),
             Solid("sky", "Sky", Color(0xFFDCE8F2), Color(0xFF0F1722)),
             Solid("blush", "Blush", Color(0xFFF3DFDC), Color(0xFF1F1414)),

@@ -178,7 +178,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         authGeneration++; deactivateMedia(purge = true)
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
-        settings.clearSession()
+        settings.clearSession(); runCatching { dev.foxfleet.app.data.ChatBackgroundStore(getApplication()).clearAll() }
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
     }
 
