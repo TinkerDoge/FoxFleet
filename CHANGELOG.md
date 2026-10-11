@@ -4,7 +4,9 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased
 
-(nothing yet)
+### Changed: shorter agent note, new foxfleet skill
+- *Skill:* `skills/foxfleet/SKILL.md` is a Hermes skill with the full FoxFleet chat rules (files, reactions, reply quotes, question cards, remote slash commands, common mistakes). It also tells agents that older notes saying FoxFleet ignores `MEDIA:` are out of date. How to teach it: `docs/AGENT-AWARENESS.md`.
+- *Agent note:* 7 lines down to 4 (658 to 481 bytes): the core `MEDIA:` and `REACT:` syntax, this machine's folders, size limit and upload folder, and a pointer to the skill. The question-card and slash-command lines moved to the skill. A new note version means an installed note shows as stale until `agent-note install` (automatic with `agentNote: true`).
 
 ## 0.3.9-alpha (Android versionCode 17)
 

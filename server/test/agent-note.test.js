@@ -25,7 +25,7 @@ test('the note: golden text, small, deterministic, hash follows the words', () =
   assert.equal(n.text + '\n', fs.readFileSync(GOLDEN, 'utf8'), 'contract/agent-note.golden.txt (regenerate with UPDATE_GOLDEN=1 when the wording changes on purpose)');
   assert.ok(n.text.length < 800, `short: it rides in every prompt: ${n.text.length}`);
   assert.deepEqual(agentNote(FIXED), n); assert.match(n.text, /\(foxfleet-note v[0-9a-f]{8}\)/);
-  for (const must of ['FoxFleet', 'not a terminal', 'MEDIA:/absolute/path', '/tmp, ~/.hermes/cache, ~/work', 'tap-to-answer cards', 'REACT: ❤️', '/compress', 'phone', 'ANSI']) assert.ok(n.text.includes(must), must);
+  for (const must of ['FoxFleet', 'not a terminal', 'MEDIA:/absolute/path', '/tmp, ~/.hermes/cache, ~/work', 'REACT: ❤️', 'skill `foxfleet`', '~/foxfleet-uploads', 'phone', 'ANSI']) assert.ok(n.text.includes(must), must);
   assert.notEqual(agentNote({ ...FIXED, cfg: { mediaMaxBytes: 5 * 1048576 } }).hash, n.hash);
   assert.ok(agentNote({ ...FIXED, features: [] }).text.includes('no attachment channel'));
 });

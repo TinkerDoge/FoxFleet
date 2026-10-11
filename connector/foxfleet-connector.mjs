@@ -442,23 +442,19 @@ export const SESSION_SOURCE = 'foxfleet';
 export const NOTE_BEGIN = '# foxfleet-agent-note:begin (managed by the Foxfleet connector; remove with: foxfleet-connector agent-note remove)';
 export const NOTE_END = '# foxfleet-agent-note:end';
 export const NOTE_TAG = ['<foxfleet-note>', '</foxfleet-note>'];
-const REMOTE_COMMANDS = [...DISPATCH_OK, 'model', 'busy'];
 const tilde = (p, home = os.homedir()) => (p === home ? '~' : p.startsWith(home + path.sep) ? '~' + p.slice(home.length) : p);
 /** The text Hermes shows the agent. Pure: same inputs, same bytes (it sits in the cached prompt prefix). `hash` changes when any word changes. */
 export function agentNote({ cfg = {}, roots = [], home = os.homedir(), features = FEATURES } = {}) {
   const maxMb = Math.round((Number(cfg.mediaMaxBytes) || MEDIA_DEFAULT_MAX) / 1048576), upload = typeof cfg.uploadDir === 'string' && cfg.uploadDir ? cfg.uploadDir : '~/foxfleet-uploads';
   const shown = [...new Set(roots.map((r) => tilde(r, home)))].sort().slice(0, 6);
-  // Short on purpose: it sits in every prompt. Only what differs from a terminal, once.
+  // Short on purpose: it sits in every prompt. Only the core syntax and this machine's settings; the full rules are the foxfleet skill (skills/foxfleet).
   const lines = [
-    'You are in FoxFleet, a chat app (often on a phone), not a terminal.',
-    'Markdown renders. Keep replies short; put long output in a file. No ANSI, TUI keys or interactive terminal programs.',
+    'You are in FoxFleet, a chat app on a phone, not a terminal. Markdown renders. Keep replies short. No ANSI or interactive programs.',
     features.includes('media')
-      ? `Send a file: MEDIA:/absolute/path on its own line (images/video show inline). Only from ${shown.join(', ') || '(none yet)'}, up to ${maxMb} MB.`
-      : 'Files: no attachment channel; give the absolute path as text.',
-    `User uploads are in ${upload}.`,
-    'Approvals and questions show as tap-to-answer cards: ask one question with short options.',
-    "To react to the user's message, put REACT: ❤️ (any one emoji) on its own line. Use it sparingly.",
-    `Slash commands that work here: ${REMOTE_COMMANDS.map((c) => '/' + c).join(' ')}.`,
+      ? `Send a file: MEDIA:/absolute/path on its own line in your reply (a tool echoing it sends nothing). Only from ${shown.join(', ') || '(none yet)'}, up to ${maxMb} MB. Uploads: ${upload}.`
+      : `Files: no attachment channel; give the absolute path as text. Uploads: ${upload}.`,
+    'React to the user: REACT: ❤️ (one emoji) on its own line, sparingly.',
+    'Full rules: skill `foxfleet` (load it when sending files or unsure).',
   ];
   const body = lines.join('\n'), hash = crypto.createHash('sha256').update(body).digest('hex').slice(0, 8);
   return { hash, text: `${lines[0]} (foxfleet-note v${hash})\n${lines.slice(1).join('\n')}`, version: hash };

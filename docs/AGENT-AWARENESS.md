@@ -9,6 +9,17 @@ Hermes describes the chat surface to the model (terminal, Telegram, desktop app.
    - *Recommended:* `platform_hints.foxfleet.replace` in the profile's `config.yaml`. Hermes puts it in the cached prefix. Written by `node foxfleet-connector.mjs doctor --fix` or `agent-note install` after you confirm.
    - *Fallback:* the note is added in front of the first message of each new chat (`<foxfleet-note>...</foxfleet-note>`; the hub removes it from the transcript). Used when you declined, the profile has its own `platform_hints.foxfleet`, or Hermes is too old.
 
+## The foxfleet skill
+The note keeps only the core syntax and this machine's settings. The full rules (file types, what is not delivered, `[[audio_as_voice]]`, reply quotes, question cards, remote slash commands, common mistakes) are in the Hermes skill [`skills/foxfleet/SKILL.md`](../skills/foxfleet/SKILL.md). Hermes lists installed skills in the system prompt and the agent loads this one only when it needs it, so the details cost nothing on ordinary turns.
+
+To teach an agent: upload `SKILL.md` in a FoxFleet chat and send:
+
+```
+Install the file I just uploaded as your skill `foxfleet`: copy it to ~/.hermes/skills/communication/foxfleet/SKILL.md (create the folders, keep the text as is), then run skills_list and confirm it shows. If any skill or memory of yours says FoxFleet ignores MEDIA: tags, that is out of date: update it.
+```
+
+For a Hermes profile other than the default, the folder is `<profile home>/skills/communication/foxfleet/`. Without the skill the note still works: agents just know less.
+
 ## Commands
 ```
 node foxfleet-connector.mjs agent-note status     # per profile: installed / stale / missing / user-owned / unsupported / disabled
