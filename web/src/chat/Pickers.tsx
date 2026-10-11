@@ -10,17 +10,32 @@ const msg = (e: unknown) => (e instanceof ApiError ? e.message : t('error.generi
 /** Step 1: providers. Step 2: that provider's models (paged, searchable). Choosing calls setmodel for this chat only; Back and Cancel are always there. */
 export function ModelPicker({ client, picker, onDone }: { client: Client; picker: Picker; onDone: (text: string) => void }) {
   const [prov, setProv] = useState<Providers | null>(null), [err, setErr] = useState(''), [sel, setSel] = useState<string | null>(null), [q, setQ] = useState(''), [page, setPage] = useState(0), [busy, setBusy] = useState(false);
+  const [ask, setAsk] = useState<{ value: string; model: string; message: string } | null>(picker.confirm ? { value: picker.confirm.value, model: picker.confirm.value.split(' --')[0], message: picker.confirm.message || t('picker.confirmDefault') } : null);
   useEffect(() => { let on = true; void client.models(picker.agent).then((r) => on && setProv(r.providers)).catch((e) => on && setErr(msg(e))); return () => { on = false; }; }, [picker.id]);
   const cancel = () => closePicker(picker.agent, picker.id);
   async function choose(slug: string, model: string) {
     if (!picker.session || busy) return; setBusy(true);
-    try { const r = await client.setModel(picker.agent, picker.session, `${model}${slug ? ` --provider ${slug}` : ''}`); closePicker(picker.agent, picker.id); onDone(r?.confirm_required ? String(r.confirm_message ?? '') : t('picker.modelSet', { model })); }
+    try { await pick(`${model}${slug ? ` --provider ${slug}` : ''}`, model, false); }
     catch (e) { setErr(msg(e)); } finally { setBusy(false); }
   }
+  /** Hermes switches only when the pick is not guarded or the user confirmed it: a confirm_required reply means NOT switched yet. */
+  async function pick(value: string, model: string, confirm: boolean) {
+    const r = confirm ? await client.setModel(picker.agent, picker.session as string, value, true) : await client.setModel(picker.agent, picker.session as string, value);
+    if (r?.confirm_required) { setAsk({ value, model, message: String(r.confirm_message ?? '') || t('picker.confirmDefault') }); return; }
+    closePicker(picker.agent, picker.id); onDone(t('picker.modelSet', { model }));
+  }
+  async function confirmPick() { if (!ask || busy) return; setBusy(true); try { await pick(ask.value, ask.model, true); } catch (e) { setErr(msg(e)); } finally { setBusy(false); } }
   const p = prov?.find((x) => x.slug === sel), needle = q.trim().toLowerCase();
   const provRows = (prov ?? []).filter((x) => `${x.name} ${x.slug}`.toLowerCase().includes(needle));
   const all = p ? p.models.filter((m) => m.toLowerCase().includes(needle)) : [];
   const pg = pageOf<any>(p ? all : provRows, page);
+  if (ask) return (
+    <div class="card picker" role="group" aria-label={t('picker.model.title')} onKeyDown={(e) => { if (e.key === 'Escape') cancel(); }}>
+      <p><b>{ask.model}</b></p><p role="alert">{ask.message}</p>
+      {err && <p class="error" role="alert">{err}</p>}
+      <div class="row"><button class="btn" disabled={busy || !picker.session} onClick={() => void confirmPick()}>{t('picker.confirm')}</button><button class="btn text" onClick={cancel}>{t('picker.cancel')}</button></div>
+    </div>
+  );
   return (
     <div class="card picker" role="group" aria-label={t('picker.model.title')} onKeyDown={(e) => { if (e.key === 'Escape') cancel(); }}>
       <p><b>{p ? t('picker.model.step2', { provider: p.name }) : t('picker.model.step1')}</b></p>

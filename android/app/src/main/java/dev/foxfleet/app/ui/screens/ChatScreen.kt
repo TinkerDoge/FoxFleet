@@ -73,6 +73,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.data.AgentStatus
 import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.UiMessage
@@ -644,7 +645,7 @@ internal fun modelCommand(args: String, controls: NativeControls?, state: ChatSt
     if (Regex("(^|\\s)--global(\\s|$)").containsMatchIn(args)) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
     if (state.sessionId == null || controls == null) { state.addNotice("Send the first message first: the model is set per conversation."); return }
     val provider = Regex("--provider\\s+(\\S+)").find(args)?.groupValues?.get(1); val model = args.replace(Regex("--provider\\s+\\S+"), "").trim()
-    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { state.addNotice("Could not change the model") } }
+    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { state.addNotice(if (it is HubApi.ModelConfirmRequired) "Not switched yet. ${it.reason} Choose it from the /model list to confirm." else "Could not change the model") } }
 }
 /** Honest names for the send modes. */
 internal fun modeLabel(mode: String) = when (mode) { "steer" -> "Steer"; "interrupt" -> "Interrupt & send"; else -> "Queue" }

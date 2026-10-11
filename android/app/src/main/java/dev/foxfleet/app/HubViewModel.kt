@@ -370,6 +370,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun nativeControls(agent: String): dev.foxfleet.app.ui.screens.NativeControls = dev.foxfleet.app.ui.screens.NativeControls(
         models = { api.models(agent) },
         setModel = { m, p -> api.setModel(agent, chatFor(agent).sessionId ?: error("No conversation yet"), m, p) },
+        confirmModel = { m, p -> api.setModel(agent, chatFor(agent).sessionId ?: error("No conversation yet"), m, p, confirm = true) },
         busy = { api.profileBusy(agent) }, setBusy = { api.setProfileBusy(agent, it) },
     )
     suspend fun answerRequest(agent: String, id: String, result: kotlinx.serialization.json.JsonObject): String? = chatFor(agent).answerRequest(api, agent, id, result)

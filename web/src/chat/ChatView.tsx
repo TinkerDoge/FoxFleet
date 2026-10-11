@@ -39,7 +39,7 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     if (!args) { openPicker({ agent: agent.name, session: c.session, kind: 'model' }); return; }
     if (/(^|\s)--global(\s|$)/.test(args)) { notice(agent.name, t('picker.noGlobal')); return; }
     if (!c.session) { notice(agent.name, t('ctl.modelNeedsChat')); return; }
-    void client.setModel(agent.name, c.session, args).then((r) => notice(agent.name, r?.confirm_required ? String(r.confirm_message ?? '') : t('picker.modelSet', { model: String(r?.model ?? args) }))).catch(() => notice(agent.name, t('error.generic')));
+    void client.setModel(agent.name, c.session, args).then((r) => { if (r?.confirm_required) openPicker({ agent: agent.name, session: c.session, kind: 'model', confirm: { value: args, message: String(r.confirm_message ?? '') } }); else notice(agent.name, t('picker.modelSet', { model: String(r?.model ?? args) })); }).catch(() => notice(agent.name, t('error.generic')));
   };
   const [viewer, setViewer] = useState<MediaItem | null>(null), [sessionsOpen, setSessionsOpen] = useState(false), [historyError, setHistoryError] = useState('');
   const scroller = useRef<HTMLDivElement>(null), stick = useRef(true), follow = useRef(createFollow()), [jumpUi, setJumpUi] = useState<{ far: boolean; unread: number; pinned: boolean }>({ far: false, unread: 0, pinned: true });

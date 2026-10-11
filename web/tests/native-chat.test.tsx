@@ -120,6 +120,16 @@ describe('model picker and profile setting', () => {
     expect(setModel).toHaveBeenCalledWith('a', 'sess-9', 'm-0 --provider openrouter'); expect(JSON.stringify(setModel.mock.calls)).not.toContain('global');
     expect(done).toHaveBeenCalledWith(expect.stringContaining('m-0')); expect(activePicker('a', 'sess-9')).toBeUndefined();
   });
+  it('a guarded model asks for confirmation instead of silently not switching; Switch anyway sends the confirmation', async () => {
+    const setModel = vi.fn(async (_a: string, _s: string, _m: string, confirm?: boolean) => confirm ? { model: 'm-0', scope: 'session' } : { model: 'm-0', confirm_required: true, confirm_message: 'Pricey model', scope: 'session' });
+    const client = { models: vi.fn(async () => models), setModel } as unknown as Client, done = vi.fn();
+    const el = document.createElement('div'); document.body.append(el); const p = openPicker({ agent: 'a', session: 'sess-9', kind: 'model' });
+    await mount(el, <ModelPicker client={client} picker={p} onDone={done} />); await flush();
+    await act(async () => { btn(el, 'OpenRouter').click(); }); await act(async () => { btn(el, 'm-0').click(); }); await flush();
+    expect(done).not.toHaveBeenCalled(); expect(activePicker('a', 'sess-9')).toBeTruthy(); expect(el.textContent).toContain('Pricey model');
+    await act(async () => { btn(el, 'Switch anyway').click(); }); await flush();
+    expect(setModel).toHaveBeenLastCalledWith('a', 'sess-9', 'm-0 --provider openrouter', true); expect(done).toHaveBeenCalledWith(expect.stringContaining('m-0')); expect(activePicker('a', 'sess-9')).toBeUndefined();
+  });
   it('a card belongs to the chat that opened it and expires; Cancel closes it; without a chat nothing can be chosen', async () => {
     const t0 = Date.now(); openPicker({ agent: 'a', session: 's1', kind: 'model' }, t0);
     expect(activePicker('a', 's1', t0 + 1000)).toBeTruthy(); expect(activePicker('a', 's2', t0 + 1000)).toBeUndefined(); expect(activePicker('a', undefined, t0 + 1000)).toBeUndefined();

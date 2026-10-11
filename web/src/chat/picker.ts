@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 
 /** A Telegram-style choice card shown in the message stream. It belongs to the chat that opened it and expires. */
-export interface Picker { id: string; agent: string; session?: string; kind: 'model' | 'choice'; command?: string; options?: string[]; openedAt: number }
+export interface Picker { id: string; agent: string; session?: string; kind: 'model' | 'choice'; command?: string; options?: string[]; /** A model pick Hermes wants confirmed first (kind 'model'). */ confirm?: { value: string; message: string }; openedAt: number }
 export const PICKER_TTL_MS = 5 * 60_000;
 const open = new Map<string, Picker>(); const subs = new Set<() => void>();
 let seq = 1;

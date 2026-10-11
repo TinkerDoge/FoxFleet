@@ -296,7 +296,8 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     /** Models the agent's profile offers (native sessions). */
     models: async (agent: string): Promise<{ providers: { slug: string; name: string; models: string[]; current?: boolean }[]; current?: string }> => { const r = await request<any>(`/api/agents/${enc(agent)}/native/models`); return { providers: (Array.isArray(r?.providers) ? r.providers : []).map((p: any) => ({ slug: String(p?.slug ?? ''), name: String(p?.name ?? p?.slug ?? ''), models: (Array.isArray(p?.models) ? p.models : []).map(String), ...(p?.current === true ? { current: true } : {}) })), ...(typeof r?.current === 'string' ? { current: r.current } : {}) }; },
     /** Session-scoped model change: this conversation only, never the profile default. */
-    setModel: (agent: string, session: string, model: string) => request<any>(`/api/agents/${enc(agent)}/native/sessions/${enc(session)}/model`, { body: { model } }),
+    /** `confirm` answers a confirm_required reply (a guarded, e.g. very expensive, model): Hermes does not switch until it is sent. */
+    setModel: (agent: string, session: string, model: string, confirm = false) => request<any>(`/api/agents/${enc(agent)}/native/sessions/${enc(session)}/model`, { body: confirm ? { model, confirm: true } : { model } }),
     /** The profile-wide "messages sent while it works" default of the agent. Changing it affects every chat of that profile. */
     profileBusy: async (agent: string): Promise<string> => String((await request<any>(`/api/agents/${enc(agent)}/native/busy`)).mode ?? ''),
     setProfileBusy: (agent: string, mode: SendMode) => request<any>(`/api/agents/${enc(agent)}/native/busy`, { body: { mode, confirm: true } }),

@@ -65,6 +65,8 @@ internal fun approvalAnswer(allow: Boolean): JsonObject = buildJsonObject { put(
 class NativeControls(
     val models: suspend () -> List<HubApi.ModelProvider>,
     val setModel: suspend (model: String, provider: String?) -> String,
+    /** Same as [setModel] but with the user's confirmation of a guarded model. */
+    val confirmModel: (suspend (model: String, provider: String?) -> String)? = null,
     val busy: suspend () -> String,
     val setBusy: suspend (String) -> Unit,
 )
@@ -130,14 +132,23 @@ internal fun ModelPickerSheet(controls: NativeControls, hasSession: Boolean, onD
 internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "") {
     val c = LocalHubColors.current; val scope = rememberCoroutineScope()
     var providers by remember { mutableStateOf<List<HubApi.ModelProvider>?>(null) }; var err by remember { mutableStateOf<String?>(null) }
-    var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
+    var ask by remember { mutableStateOf<Triple<String, String, String>?>(null) }; var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { runCatching { providers = controls.models() }.onFailure { err = it.message ?: "Could not load the models" } }
     val p = providers?.firstOrNull { it.slug == sel }
     run {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(if (p == null) "Choose a provider" else "Models from ${p.name}", style = MaterialTheme.typography.titleMedium, color = c.text)
             if (!hasSession) Text("Send the first message first: the model is set per conversation.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            val pending = ask
             when {
+                pending != null -> {
+                    Text(pending.first, style = MaterialTheme.typography.titleSmall, color = c.text)
+                    Text(pending.third, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+                    SoftButton({
+                        busy = true
+                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message; busy = false } }
+                    }, enabled = hasSession && !busy) { Text("Switch anyway", color = c.accent) }
+                }
                 providers == null && err == null -> Text("Loading models…", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 providers.isNullOrEmpty() -> Text("This agent did not list any models.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 else -> {
@@ -152,7 +163,7 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                             if (row is HubApi.ModelProvider) ChoiceRow("${row.name} · ${row.models.size}", true) { sel = row.slug; q = ""; page = 0 }
                             else { val m = row.toString(); ChoiceRow(m, hasSession && !busy) {
                                 busy = true
-                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { err = it.message; busy = false } }
+                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { if (it is HubApi.ModelConfirmRequired) ask = Triple(m, p!!.slug, it.reason) else err = it.message; busy = false } }
                             } }
                         }
                     }

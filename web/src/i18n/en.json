@@ -341,6 +341,8 @@
   "picker.page": "Page {n} of {total}",
   "picker.back": "Back",
   "picker.cancel": "Cancel",
+  "picker.confirm": "Switch anyway",
+  "picker.confirmDefault": "Hermes asks you to confirm this model before it switches.",
   "picker.modelSet": "Model for this chat is now {model}. Your Hermes default is unchanged.",
   "chat.busyCmd": "Send behaviour while Hermes works is a profile setting: open Agents ▸ your Hermes agent. Type /steer, /queue or /stop for a single message.",
   "chat.sendSteer": "Send",

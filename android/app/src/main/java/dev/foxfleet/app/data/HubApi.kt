@@ -528,10 +528,13 @@ class HubApi(private val store: SettingsStore) {
         } ?: emptyList()
     }
     /** Session-scoped: this conversation only. The profile default is never touched from here. */
-    suspend fun setModel(agent: String, session: String, model: String, provider: String?): String = withContext(Dispatchers.IO) {
+    /** Hermes did NOT switch: the model is guarded (e.g. very expensive) and needs the user's confirmation, sent by calling [setModel] again with confirm = true. */
+    class ModelConfirmRequired(val reason: String) : Exception(reason)
+    suspend fun setModel(agent: String, session: String, model: String, provider: String?, confirm: Boolean = false): String = withContext(Dispatchers.IO) {
         val value = if (provider.isNullOrBlank()) model else "$model --provider $provider"
-        val r = request(agentPath(agent) + "/native/sessions/" + enc(session) + "/model", "POST", buildJsonObject { put("model", value) }.toString(), timeoutSec = 30)
-        if (r.bool("confirm_required") == true) r.str("confirm_message") ?: "Confirm in Hermes" else "Model for this chat: $model"
+        val r = request(agentPath(agent) + "/native/sessions/" + enc(session) + "/model", "POST", buildJsonObject { put("model", value); if (confirm) put("confirm", true) }.toString(), timeoutSec = 30)
+        if (r.bool("confirm_required") == true) throw ModelConfirmRequired(r.str("confirm_message") ?: "Hermes asks you to confirm this model before it switches.")
+        "Model for this chat: $model"
     }
     suspend fun profileBusy(agent: String): String = withContext(Dispatchers.IO) { request(agentPath(agent) + "/native/busy", timeoutSec = 15).str("mode").orEmpty() }
     suspend fun setProfileBusy(agent: String, mode: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/native/busy", "POST", buildJsonObject { put("mode", mode); put("confirm", true) }.toString(), timeoutSec = 15); Unit }

@@ -90,6 +90,14 @@ test('models and commands pass through the allowlist; /model is session scoped; 
   assert.equal((await x.json(`${x.A}/sessions/${sid}/model`, { model: 'x --global' })).status >= 400, true);
 });
 
+test('a guarded (expensive) model is not switched until the client confirms; the confirmation reaches Hermes', async (t) => {
+  const x = await boot(t), sid = (await x.json(`${x.A}/sessions`, {})).body.session_id, url = `${x.A}/sessions/${sid}/model`;
+  const first = (await x.json(url, { model: 'expensive-1 --provider custom' })).body; assert.equal(first.confirm_required, true); assert.match(first.confirm_message, /expensive/i);
+  const again = (await x.json(url, { model: 'expensive-1 --provider custom' })).body; assert.equal(again.confirm_required, true, 'asking again without confirming never switches');
+  const ok = (await x.json(url, { model: 'expensive-1 --provider custom', confirm: true })).body; assert.equal(ok.confirm_required, undefined); assert.equal(ok.model, 'expensive-1'); assert.equal(ok.scope, 'session');
+  assert.equal((await x.json(url, { model: 'x --global', confirm: true })).status >= 400, true, 'confirming never unlocks profile defaults');
+});
+
 test('hub link drop mid-turn: the owner on the machine keeps running, the viewer re-attaches and the turn is not duplicated', async (t) => {
   const x = await boot(t), sid = (await x.json(`${x.A}/sessions`, {})).body.session_id, f = x.follow(sid);
   await x.json(`${x.A}/sessions/${sid}/messages`, { text: 'slow story' }); assert.ok(await f.wait((e) => e.type === 'message.delta'));

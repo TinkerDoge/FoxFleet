@@ -555,7 +555,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             if (what === 'messages' && req.method === 'POST') { const b = await readJson(req, LIMITS.chat); if (b.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(b.client_id))) throw fault(400, 'Invalid client_id'); const r = await nat.send(scope, mid, prof, sid, { text: b.text, mode: typeof b.mode === 'string' ? b.mode : 'auto', clientId: b.client_id }); return sendJson(res, r.duplicate ? 200 : 202, r); }
             if (what === 'messages' && req.method === 'GET') return sendJson(res, 200, { messages: nat.list(scope, prof, sid) });
             if (what === 'interrupt' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await nat.interrupt(scope, mid, prof, sid)); }
-            if (what === 'model' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.setModel(scope, mid, prof, sid, b.model)); }
+            if (what === 'model' && req.method === 'POST') { const b = await readJson(req); return sendJson(res, 200, await nat.setModel(scope, mid, prof, sid, b.model, b.confirm === true)); }
             if (what === 'events' && req.method === 'GET') { // SSE: hub cursor, replay + live, any number of viewers
               const after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0), n = Number.isInteger(after) && after > 0 ? after : 0;
               res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); res.write('retry: 3000\n\n');
