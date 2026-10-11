@@ -13,6 +13,15 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Web:* Settings gets a small Notifications card (hub with the `notify` feature only): the hub-side master switch, agent mutes with a duration and an Unmute list, and a test button. The web app shows no alerts itself.
 - *Hub:* needs hub 0.3.9-alpha with the `notify` feature; an older hub shows "too old" and the controls stay hidden.
 
+### Fixed: review of the Android notifications
+- *Login lost:* a single 401 or `foxfleet.auth` no longer wipes notifications. The service stops, the switch and the resume id stay, and Settings says "Log in again to get notifications" (kept across restarts). Only a real sign-out or another account/hub clears them; the next login resumes the service.
+- *Threads:* the service reads chat state through a thread-safe map instead of a `HashMap` the UI also changes.
+- *Bad event:* an event that cannot be turned into a notification is logged by id and skipped, so the stream moves on instead of replaying it forever; the service's own retry now uses the stream's backoff with jitter.
+- *Rotation:* the notification link that launched the app is handled once; rotating the phone no longer re-opens the chat. A tap on a chat that no longer exists says so.
+- *Connection:* the backoff resets only after the link stayed up 45 s, a returning network wakes a waiting retry, stopping the service cancels the open request, and an HTTP-date `Retry-After` is honoured.
+- *Alerts:* an approval has its own notification, so a later reply or error in the same chat no longer replaces it. Revoking the notification permission while the service runs stops it cleanly (status "Permission missing"). "Mute 1 h" on a notification shows a message when it fails.
+- *Settings:* a battery hint with a link to the system battery settings (we do not ask for the exemption). Note: turning notifications on in the app also turns the hub-side master switch on; turning them off only stops the service on this phone.
+
 ## 0.3.9-alpha (Android versionCode 17)
 
 ### Added: message actions (web + Android)
