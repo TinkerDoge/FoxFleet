@@ -38,17 +38,29 @@ export function emptyReply(m: UiMessage): boolean {
 }
 export const visibleMessages = (messages: UiMessage[], hidden: ReadonlySet<string>) => messages.filter((m) => !(m.id && hidden.has(m.id)) && !emptyReply(m));
 
-/** Which actions a message offers, in menu order. Delete needs a hub id; Retry/Edit only on the newest message of that side. */
-export function messageActions(m: UiMessage, o: { newestAssistant: boolean; newestUser: boolean; streaming: boolean; hermes: boolean; canShare: boolean; canHide: boolean; selectable: boolean }): MessageAction[] {
+/**
+ * The messages Retry and Edit apply to. Retry: the newest reply, only while it is the last message (notices aside), since it
+ * sends the last user message again. Edit: the newest user message, only once a reply follows it (/undo takes back a whole exchange).
+ */
+export function newestTargets(messages: UiMessage[]): { assistant?: UiMessage; user?: UiMessage } {
+  const turns = messages.filter((m) => m.role !== 'system'), last = turns[turns.length - 1];
+  let user: UiMessage | undefined, replied = false;
+  for (let i = turns.length - 1; i >= 0; i--) { if (turns[i].role === 'assistant') replied = true; else if (turns[i].role === 'user') { user = turns[i]; break; } }
+  return { assistant: last?.role === 'assistant' ? last : undefined, user: replied ? user : undefined };
+}
+/** Which actions a message offers, in menu order. Delete needs a hub id; Retry/Edit only on the newest message of that side, and never while busy (a reply streaming or messages waiting). */
+export function messageActions(m: UiMessage, o: { newestAssistant: boolean; newestUser: boolean; busy: boolean; hermes: boolean; canShare: boolean; canHide: boolean; selectable: boolean }): MessageAction[] {
   const out: MessageAction[] = ['reply'];
   if (displayText(m).trim()) { out.push('copy'); if (o.selectable) out.push('select'); if (o.canShare) out.push('share'); }
-  if (m.role === 'assistant' && o.newestAssistant && !o.streaming) out.push('retry');
-  if (m.role === 'user' && o.newestUser && o.hermes && !o.streaming) out.push('edit');
+  if (m.role === 'assistant' && o.newestAssistant && !o.busy) out.push('retry');
+  if (m.role === 'user' && o.newestUser && o.hermes && !o.busy) out.push('edit');
   if (m.id && o.canHide) out.push('delete');
   return out;
 }
-/** Double-tap: add a heart, or take yours back. Returns the `present` value to send. */
-export const nextHeart = (groups: ReactionGroup[], me: string) => !groups.some((g) => g.emoji === HEART && g.actors.some((a) => a.id === me));
+/** Picking an emoji adds it, or takes yours back when you already reacted with it (like a pill). Returns the `present` value to send. */
+export const nextReaction = (groups: ReactionGroup[], me: string, emoji: string) => !groups.some((g) => g.emoji === emoji && g.actors.some((a) => a.id === me));
+/** Double-tap: add a heart, or take yours back. */
+export const nextHeart = (groups: ReactionGroup[], me: string) => nextReaction(groups, me, HEART);
 /** Touch double-tap: two taps within 300 ms and 24 px (a third tap starts over). */
 export function createDoubleTap(now: () => number = () => Date.now()) {
   let last: { t: number; x: number; y: number } | null = null;

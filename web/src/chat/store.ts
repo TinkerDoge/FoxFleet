@@ -213,6 +213,8 @@ export async function reconnectReply(client: Client, agent: string, onAuthLost: 
 }
 
 const PENDING = new Set(['queued', 'awaiting_stop', 'sending', 'failed']);
+/** Messages are waiting in the queue: a plain send would queue too, so Retry and Edit wait. */
+export const queuePending = (c: Pick<ChatState, 'queue'>) => c.queue.some((q) => PENDING.has(q.state));
 const uid = () => (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `c${Date.now()}${Math.random().toString(36).slice(2)}`);
 /**
  * Send. Idle: start the reply and stream it. Busy (a reply is running, or messages are waiting): never dropped, never overwriting the
@@ -286,14 +288,20 @@ export async function retryLast(client: Client, agent: string, onAuthLost: () =>
   await send(client, agent, last.content, last.images ?? [], [], onAuthLost);
 }
 
-/** Edit (Hermes): /undo takes the last exchange back from the agent, the history reloads, then the text goes back in the composer. */
-export async function editLast(client: Client, agent: string, text: string, onAuthLost: () => void) {
-  const c = chatOf(agent); if (c.streaming || c.loading || !c.session || c.queue.some((q) => PENDING.has(q.state))) return;
-  const session = c.session;
+/**
+ * Edit (Hermes): /undo takes the last exchange back from the agent, the history reloads, then `text` goes back in the composer.
+ * Hermes may refuse in plain text ("Nothing to undo"), so the reloaded history decides: only when `target` is gone is the text put back.
+ */
+export async function editLast(client: Client, agent: string, target: UiMessage, text: string, onAuthLost: () => void) {
+  const c = chatOf(agent); if (c.streaming || c.loading || !c.session || queuePending(c)) return;
+  const session = c.session, users = (ms: UiMessage[]) => ms.filter((m) => m.role === 'user' && m.content === target.content).length, before = users(c.messages);
   await send(client, agent, '/undo', [], [], onAuthLost);
   const after = chatOf(agent); if (after.error || after.session !== session) return; // a failed /undo leaves the draft alone
   await restore(client, agent, session, onAuthLost, true);
-  if (chatOf(agent).session === session && !chatOf(agent).error) restoreDraft(draftKey(agent, session), text);
+  const now = chatOf(agent); if (now.session !== session || now.error) return;
+  const gone = target.id ? !now.messages.some((m) => m.id === target.id) : users(now.messages) < before;
+  if (!gone) { notice(agent, t('msg.editFailed')); return; }
+  if (!restoreDraft(draftKey(agent, session), text)) notice(agent, t('msg.editKept'));
 }
 
 /** Answers a card. The card goes away once the hub took the answer; if it was already closed elsewhere (404) it goes away as well. */

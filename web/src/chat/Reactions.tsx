@@ -135,14 +135,19 @@ export function useReactions(client: Client, agent: string, session: string | un
       .catch(() => { failed = true; if (key.current === k) { setSnap(before); setError(t('react.failed')); } })
       .finally(() => { pending.current--; if (failed) refresh(); }); // then trust the hub, not our guess
   };
-  const hide = (message: string, present: boolean) => {
-    if (!snap || !session) return;
-    const before = snap, k = current; let failed = false;
+  // Hide and unhide of one message go to the hub in order: an Undo must never overtake its own hide (the late hide would win).
+  const chains = useRef(new Map<string, Promise<unknown>>());
+  /** Resolves true once the hub took it; false (after rolling back and showing an error) when it did not. */
+  const hide = (message: string, present: boolean): Promise<boolean> => {
+    if (!snap || !session) return Promise.resolve(false);
+    const k = current, chainKey = `${k}\u0000${message}`; let failed = false;
     setSnap(applyHidden(snap, message, present)); setError(''); pending.current++;
-    void client.hide(agent, session, message, present)
-      .then((s) => { if (key.current === k && pending.current === 1) setSnap(s); })
-      .catch(() => { failed = true; if (key.current === k) { setSnap(before); setError(t('msg.hideFailed')); } })
-      .finally(() => { pending.current--; if (failed) refresh(); });
+    const run = (chains.current.get(chainKey) ?? Promise.resolve()).then(() => client.hide(agent, session, message, present))
+      .then((s) => { if (key.current === k && pending.current === 1) setSnap(s); return true; })
+      .catch(() => { failed = true; if (key.current === k) { setSnap((cur) => (cur ? applyHidden(cur, message, !present) : cur)); setError(t(present ? 'msg.hideFailed' : 'msg.unhideFailed')); } return false; })
+      .finally(() => { pending.current--; if (chains.current.get(chainKey) === run) chains.current.delete(chainKey); if (failed) refresh(); });
+    chains.current.set(chainKey, run);
+    return run;
   };
   return { snap, error, react, hide, refresh };
 }

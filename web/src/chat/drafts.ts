@@ -46,7 +46,8 @@ export function setDraftScope(userId?: string) {
 }
 export function discardDraft(key: string) { abortUploads(drafts.get(key)); drafts.delete(key); dirty.delete(key); const k = storeKey(key); if (k) safe(() => localStorage.removeItem(k), undefined); notify(); }
 /** Puts text back in a composer (a rejected or taken-back message). Never overwrites what the user has typed since. */
-export function restoreDraft(key: string, text: string) { const d = read(key); if (d?.text.trim()) return; drafts.set(key, { text, pending: d?.pending ?? [] }); schedule(key); notify(); }
+/** Puts text back in a composer that is empty. Returns false (and changes nothing) when the composer already has text. */
+export function restoreDraft(key: string, text: string): boolean { const d = read(key); if (d?.text.trim()) return false; drafts.set(key, { text, pending: d?.pending ?? [] }); schedule(key); notify(); return true; }
 /** A new chat gets its session id mid-conversation: text typed meanwhile follows the chat instead of being orphaned under the old key (never overwrites an existing draft). */
 export function moveDraft(from: string, to: string) {
   const d = read(from); if (!d || from === to || read(to)) return;

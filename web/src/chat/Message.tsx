@@ -40,8 +40,11 @@ export function AssistantText({ text, onMedia, streaming = false }: { text: stri
 /** Reactions for one message: pills plus an add button. Absent until the message has a stable hub id. */
 export interface MessageReactions { groups: ReactionGroup[]; me: string; onReact: (emoji: string, present: boolean) => void }
 const Reacts = ({ r }: { r?: MessageReactions }) => (r ? <ReactionBar groups={r.groups} me={r.me} onReact={r.onReact} /> : null);
-/** How a message reacts to the hand: open the menu at a point, or toggle your heart. */
-export interface MessageGestures { open: (x: number, y: number) => void; heart?: () => void }
+/**
+ * How a message reacts to the hand: open the menu at a point, or toggle your heart. `open` gets the element focus returns to
+ * when the menu was opened from the ⋯ button or the keyboard (none for a pointer or touch). `menuId` is set while this message's menu is open.
+ */
+export interface MessageGestures { open: (x: number, y: number, from?: HTMLElement | null) => void; heart?: () => void; menuId?: string }
 /** Presses on these stay theirs: links, pictures and buttons keep their own tap, long-press and native menu. */
 const INTERACTIVE = 'a,button,img,video,audio,input,textarea,summary';
 const NATIVE_MENU = 'a,img,video,audio';
@@ -61,12 +64,14 @@ function useGestures(g: MessageGestures | undefined, kind: string) {
   useEffect(() => {
     const node = el.current, p = press.current;
     if (!on || !node) return;
-    const cancel = () => { if (p.timer) clearTimeout(p.timer); p.timer = 0; };
-    const longOpen = (x: number, y: number) => { p.opened = true; try { getSelection()?.removeAllRanges(); } catch { /* no selection API */ } latest.current?.open(x, y); };
+    // While a finger is down the frame does not start a text selection (the long press is ours); text stays selectable otherwise.
+    const pressing = (on: boolean) => node.classList.toggle('pressing', on);
+    const cancel = () => { if (p.timer) clearTimeout(p.timer); p.timer = 0; pressing(false); };
+    const longOpen = (x: number, y: number) => { p.opened = true; pressing(false); try { getSelection()?.removeAllRanges(); } catch { /* no selection API */ } latest.current?.open(x, y); };
     const down = (e: PointerEvent) => {
       cancel(); p.opened = false; p.touching = e.pointerType === 'touch';
       if (!p.touching || inside(e.target, INTERACTIVE)) return;
-      p.x = e.clientX; p.y = e.clientY;
+      p.x = e.clientX; p.y = e.clientY; pressing(true);
       p.timer = setTimeout(() => { p.timer = 0; longOpen(p.x, p.y); }, LONG_PRESS);
     };
     // A still finger still jitters a few pixels; only a real move (a scroll or a drag) cancels the press.
@@ -89,12 +94,13 @@ function useGestures(g: MessageGestures | undefined, kind: string) {
       e.preventDefault();
       // The context-menu key reports 0,0: open at the message instead of the window corner.
       const r = node.getBoundingClientRect(), key = !e.clientX && !e.clientY;
-      latest.current?.open(key ? r.left : e.clientX, key ? r.top : e.clientY);
+      if (key) latest.current?.open(r.left, r.top, document.activeElement instanceof HTMLElement ? document.activeElement : null);
+      else latest.current?.open(e.clientX, e.clientY);
     };
     node.addEventListener('pointerdown', down); node.addEventListener('pointermove', move); node.addEventListener('pointerup', up);
     node.addEventListener('pointercancel', stop); node.addEventListener('contextmenu', menu);
     return () => {
-      cancel();
+      cancel(); p.touching = false;
       node.removeEventListener('pointerdown', down); node.removeEventListener('pointermove', move); node.removeEventListener('pointerup', up);
       node.removeEventListener('pointercancel', stop); node.removeEventListener('contextmenu', menu);
     };
@@ -103,7 +109,8 @@ function useGestures(g: MessageGestures | undefined, kind: string) {
 }
 const HeartPop = ({ n }: { n: number }) => (n ? <span key={n} class="heart-pop" aria-hidden="true">❤️</span> : null);
 const More = ({ g }: { g?: MessageGestures }) => (g ? <button type="button" class="msg-more" aria-label={t('msg.actions')} title={t('msg.actions')} aria-haspopup="menu"
-  onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); g.open(r.left, r.bottom); }}><Icon name="more" size={18} /></button> : null);
+  aria-expanded={g.menuId ? 'true' : 'false'} aria-controls={g.menuId}
+  onClick={(e) => { const b = e.currentTarget, r = b.getBoundingClientRect(); g.open(r.left, r.bottom, b); }}><Icon name="more" size={18} /></button> : null);
 const Actions = ({ r, g }: { r?: MessageReactions; g?: MessageGestures }) => (r || g ? <span class="msg-actions">{r && !r.groups.length && <ReactButton onPick={(e) => r.onReact(e, true)} />}<More g={g} /></span> : null);
 
 export function Message({ m, onMedia, grouped = false, reactions, gestures }: { m: UiMessage; onMedia: (m: MediaItem) => void; grouped?: boolean; reactions?: MessageReactions; gestures?: MessageGestures }) {

@@ -2,11 +2,11 @@ import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Message } from '../src/chat/Message';
-import { MessageMenu } from '../src/chat/MessageMenu';
-import { createDoubleTap, displayText, emptyReply, excerpt, messageActions, nextHeart, splitQuote, visibleMessages, withQuote } from '../src/chat/messageActions';
+import { MessageMenu, clampToView } from '../src/chat/MessageMenu';
+import { createDoubleTap, displayText, emptyReply, excerpt, messageActions, newestTargets, nextHeart, nextReaction, splitQuote, visibleMessages, withQuote } from '../src/chat/messageActions';
 import type { UiMessage } from '../src/lib/chat';
 
-const opts = { newestAssistant: false, newestUser: false, streaming: false, hermes: true, canShare: true, canHide: true, selectable: false };
+const opts = { newestAssistant: false, newestUser: false, busy: false, hermes: true, canShare: true, canHide: true, selectable: false };
 
 describe('message actions', () => {
   it('a reply quote round-trips and only a leading "> line + blank line" counts', () => {
@@ -41,11 +41,27 @@ describe('message actions', () => {
   it('menu actions follow role, recency, agent kind and stable ids', () => {
     const a: UiMessage = { id: 'a', role: 'assistant', content: 'Hello' }, u: UiMessage = { id: 'u', role: 'user', content: 'Hi' };
     expect(messageActions(a, { ...opts, newestAssistant: true })).toEqual(['reply', 'copy', 'share', 'retry', 'delete']);
-    expect(messageActions(a, { ...opts, newestAssistant: true, streaming: true })).toEqual(['reply', 'copy', 'share', 'delete']);
+    expect(messageActions(a, { ...opts, newestAssistant: true, busy: true })).toEqual(['reply', 'copy', 'share', 'delete']);
     expect(messageActions(u, { ...opts, newestUser: true })).toEqual(['reply', 'copy', 'share', 'edit', 'delete']);
     expect(messageActions(u, { ...opts, newestUser: true, hermes: false })).toEqual(['reply', 'copy', 'share', 'delete']);
+    expect(messageActions(u, { ...opts, newestUser: true, busy: true })).toEqual(['reply', 'copy', 'share', 'delete']);
     expect(messageActions({ role: 'user', content: 'Hi' }, { ...opts, canShare: false })).toEqual(['reply', 'copy']);
     expect(messageActions({ id: 'i', role: 'user', content: '', images: [{ dataUrl: 'x' }] }, opts)).toEqual(['reply', 'delete']);
+  });
+
+  it('Retry is for a reply that is the last message; Edit for the newest user message once a reply follows it', () => {
+    const u1: UiMessage = { role: 'user', content: 'a' }, a1: UiMessage = { role: 'assistant', content: 'b' }, u2: UiMessage = { role: 'user', content: 'c' };
+    const note: UiMessage = { role: 'system', content: 'Model set' };
+    expect(newestTargets([u1, a1])).toEqual({ assistant: a1, user: u1 });
+    expect(newestTargets([u1, a1, note])).toEqual({ assistant: a1, user: u1 });
+    expect(newestTargets([u1, a1, u2])).toEqual({ assistant: undefined, user: undefined });
+    expect(newestTargets([])).toEqual({ assistant: undefined, user: undefined });
+  });
+
+  it('picking an emoji you already gave takes it back', () => {
+    const me = { id: 'user:u', name: 'Me', kind: 'human' as const };
+    expect(nextReaction([{ emoji: '👍', actors: [me] }], me.id, '👍')).toBe(false);
+    expect(nextReaction([{ emoji: '👍', actors: [me] }], me.id, '🎉')).toBe(true);
   });
 
   it('double-tap toggles your heart', () => {
@@ -111,6 +127,22 @@ describe('message gestures', () => {
     expect(open).not.toHaveBeenCalled(); expect(ev.defaultPrevented).toBe(false);
   });
 
+  it('a touch press blocks text selection only while the finger is down', async () => {
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open: () => {} }} />, host));
+    const card = host.querySelector('.msg-card')!;
+    card.dispatchEvent(pointer('pointerdown', 'touch')); expect(card.classList.contains('pressing')).toBe(true);
+    card.dispatchEvent(pointer('pointerup', 'touch')); expect(card.classList.contains('pressing')).toBe(false);
+    card.dispatchEvent(pointer('pointerdown', 'mouse')); expect(card.classList.contains('pressing')).toBe(false);
+  });
+
+  it('the ⋯ button says whether its menu is open and which one', async () => {
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open: () => {}, menuId: 'm1' }} />, host));
+    const more = host.querySelector('.msg-more')!;
+    expect(more.getAttribute('aria-expanded')).toBe('true'); expect(more.getAttribute('aria-controls')).toBe('m1');
+    await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open: () => {} }} />, host));
+    expect(more.getAttribute('aria-expanded')).toBe('false'); expect(more.hasAttribute('aria-controls')).toBe(false);
+  });
+
   it('the ⋯ button opens the same menu (keyboard reachable)', async () => {
     const open = vi.fn();
     await act(() => render(<Message m={{ id: 'a', role: 'assistant', content: 'Hello' }} onMedia={() => {}} gestures={{ open, heart: () => {} }} />, host));
@@ -122,6 +154,34 @@ describe('message gestures', () => {
     await act(() => render(<Message m={{ role: 'user', content: '> Ship it?\n\nYes' }} onMedia={() => {}} />, host));
     expect(host.querySelector('.reply-quote')!.textContent).toBe('Ship it?');
     expect(host.querySelector('.user-text')!.textContent).toBe('Yes');
+  });
+
+  it('the menu is clamped to the viewport by its real size', () => {
+    expect(clampToView(300, 200, 360)).toBe(152);
+    expect(clampToView(2, 200, 360)).toBe(8);
+    expect(clampToView(100, 350, 360)).toBe(8); // wider than the view minus margins: pinned at the margin
+  });
+
+  it('the picker, measured wider than a narrow phone, sits at the margin', async () => {
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const picker = !!this.querySelector('.emoji-picker');
+      return { left: 0, top: 0, right: 0, bottom: 0, x: 0, y: 0, width: picker ? 344 : 240, height: picker ? 420 : 300, toJSON() {} } as DOMRect;
+    });
+    const w = innerWidth, h = innerHeight; Object.assign(window, { innerWidth: 360, innerHeight: 640 });
+    try {
+      await act(() => render(<MessageMenu x={200} y={500} actions={['reply']} canReact onReact={() => {}} onAction={() => {}} onClose={() => {}} />, host));
+      const menu = host.querySelector<HTMLElement>('.msg-menu')!;
+      expect([menu.style.left, menu.style.top]).toEqual(['112px', '332px']);
+      await act(() => host.querySelector<HTMLButtonElement>('.msg-menu-quick .more')!.click());
+      expect([menu.style.left, menu.style.top]).toEqual(['8px', '212px']);
+    } finally { rect.mockRestore(); Object.assign(window, { innerWidth: w, innerHeight: h }); }
+  });
+
+  it('focus moving outside closes the menu', async () => {
+    const onClose = vi.fn(), outside = document.createElement('button'); document.body.append(outside);
+    await act(() => render(<MessageMenu x={10} y={10} actions={['reply']} canReact={false} onReact={() => {}} onAction={() => {}} onClose={onClose} />, host));
+    expect(onClose).not.toHaveBeenCalled();
+    await act(() => outside.focus()); expect(onClose).toHaveBeenCalled(); outside.remove();
   });
 
   it('the menu offers the quick row, the picker and the actions', async () => {
