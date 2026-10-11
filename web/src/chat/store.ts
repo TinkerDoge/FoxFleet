@@ -286,6 +286,16 @@ export async function retryLast(client: Client, agent: string, onAuthLost: () =>
   await send(client, agent, last.content, last.images ?? [], [], onAuthLost);
 }
 
+/** Edit (Hermes): /undo takes the last exchange back from the agent, the history reloads, then the text goes back in the composer. */
+export async function editLast(client: Client, agent: string, text: string, onAuthLost: () => void) {
+  const c = chatOf(agent); if (c.streaming || c.loading || !c.session || c.queue.some((q) => PENDING.has(q.state))) return;
+  const session = c.session;
+  await send(client, agent, '/undo', [], [], onAuthLost);
+  const after = chatOf(agent); if (after.error || after.session !== session) return; // a failed /undo leaves the draft alone
+  await restore(client, agent, session, onAuthLost, true);
+  if (chatOf(agent).session === session && !chatOf(agent).error) restoreDraft(draftKey(agent, session), text);
+}
+
 /** Answers a card. The card goes away once the hub took the answer; if it was already closed elsewhere (404) it goes away as well. */
 export async function answerRequest(client: Client, agent: string, id: string, result: Record<string, unknown>, onAuthLost: () => void): Promise<string | null> {
   const c = chatOf(agent); if (!c.session) return 'no session';

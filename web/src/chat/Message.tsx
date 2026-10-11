@@ -102,7 +102,7 @@ function useGestures(g: MessageGestures | undefined, kind: string) {
   return { ref: el, pop };
 }
 const HeartPop = ({ n }: { n: number }) => (n ? <span key={n} class="heart-pop" aria-hidden="true">❤️</span> : null);
-const More = ({ g }: { g?: MessageGestures }) => (g ? <button type="button" class="msg-more react-add" aria-label={t('msg.actions')} title={t('msg.actions')} aria-haspopup="menu"
+const More = ({ g }: { g?: MessageGestures }) => (g ? <button type="button" class="msg-more" aria-label={t('msg.actions')} title={t('msg.actions')} aria-haspopup="menu"
   onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); g.open(r.left, r.bottom); }}><Icon name="more" size={18} /></button> : null);
 const Actions = ({ r, g }: { r?: MessageReactions; g?: MessageGestures }) => (r || g ? <span class="msg-actions">{r && !r.groups.length && <ReactButton onPick={(e) => r.onReact(e, true)} />}<More g={g} /></span> : null);
 

@@ -1,7 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Client, StreamOpts } from '../src/api/client';
 import { ApiError, AuthRequiredError, NetworkError } from '../src/api/errors';
-import { chatOf, loadAgent, loadSessions, newChat, openSession, reconnectReply, resetChats, restore, send } from '../src/chat/store';
+import { chatOf, editLast, loadAgent, loadSessions, newChat, openSession, reconnectReply, resetChats, restore, send } from '../src/chat/store';
+import { setDraftScope } from '../src/chat/drafts';
+import { useDraftForTest } from './draft-peek';
 import { forgetAll, saveChat } from '../src/lib/persist';
 
 const deferred = <T,>() => { let resolve!: (v: T) => void; const promise = new Promise<T>((r) => { resolve = r; }); return { promise, resolve }; };
@@ -102,5 +104,26 @@ describe('request status', () => {
   it('shows a failed terminal event as failure even when the stream closes normally', async () => {
     const c = client({ chat: vi.fn(async (_a, _h, o) => { o.onRun('r1'); o.onRunState('error'); return 's1'; }) });
     await send(c, 'a', 'Work', [], [], () => {}); expect(chatOf('a').runState).toBe('failed'); expect(chatOf('a').error).toBeTruthy();
+  });
+});
+
+describe('edit (Hermes /undo)', () => {
+  it('sends /undo, reloads the history, then puts the text back in the composer', async () => {
+    setDraftScope('u1'); localStorage.clear();
+    const chat = vi.fn(async (_a: string, _h: unknown, o: StreamOpts) => { o.onContent?.('Undid 1 turn'); return 's1'; });
+    const c = client({ chat }); await openSession(c, 'a', 's1', () => {});
+    await editLast(c, 'a', 'Fix the typo', () => {});
+    expect((chat.mock.calls[0][1] as { content: string }[]).at(-1)!.content).toBe('/undo');
+    expect((c.messages as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThanOrEqual(2); // opened, then reloaded
+    expect(useDraftForTest('a', 's1')).toBe('Fix the typo');
+  });
+  it('a failed /undo leaves the draft alone, and nothing runs while a reply streams', async () => {
+    setDraftScope('u1'); localStorage.clear();
+    const chat = vi.fn(async () => { throw new ApiError(400, 'bad'); });
+    const c = client({ chat }); await openSession(c, 'a', 's1', () => {});
+    await editLast(c, 'a', 'Fix the typo', () => {});
+    expect(chatOf('a').error).toBeTruthy(); expect(useDraftForTest('a', 's1')).toBe('');
+    const idle = vi.fn(); const busy = client({ chat: idle }); await openSession(busy, 'b', 's2', () => {});
+    chatOf('b').streaming = true; await editLast(busy, 'b', 'x', () => {}); expect(idle).not.toHaveBeenCalled();
   });
 });

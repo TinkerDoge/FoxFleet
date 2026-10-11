@@ -10,13 +10,16 @@ import { ModelPicker, ChoicePicker } from './Pickers';
 import { openPicker, closePicker, usePicker } from './picker';
 import { AssistantText, Message } from './Message';
 import { useReactions } from './Reactions';
+import { MessageMenu } from './MessageMenu';
+import { HEART, displayText, excerpt, messageActions, nextHeart, visibleMessages, type MessageAction, type ReplyTarget } from './messageActions';
+import type { UiMessage } from '../lib/chat';
 import { toolPresentation } from './toolActivity';
 import { MediaContext, DiagnoseContext } from './MediaCards';
 import { control, createFollow, type Follow, type Role } from './scrollFollow';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
-import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued, reconcileMessages } from './store';
+import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, editLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued, reconcileMessages } from './store';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
 import { navigate, parseRoute } from '../router';
@@ -87,6 +90,43 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
   const reactions = useReactions(client, agent.name, c.session, ids, Boolean(agent.capabilities?.reactions) && !c.loading);
   const reactionsFor = (id?: string) => (id && reactions.snap ? { groups: reactions.snap.messages[id] ?? [], me: reactions.snap.actor.id, onReact: (emoji: string, present: boolean) => reactions.react(id, emoji, present) } : undefined);
   const name = agent.displayName || agent.name;
+  // Message actions: one menu at a time (right-click, long-press or ⋯), a reply target for the composer, and the Undo line after hiding.
+  const [menu, setMenu] = useState<{ m: UiMessage; x: number; y: number } | null>(null), [reply, setReply] = useState<ReplyTarget | null>(null), [undo, setUndo] = useState<string | null>(null);
+  const returnTo = useRef<HTMLElement | null>(null);
+  useEffect(() => { setMenu(null); setReply(null); setUndo(null); }, [agent.name, c.session]);
+  useEffect(() => { if (!undo) return; const id = setTimeout(() => setUndo(null), 5000); return () => clearTimeout(id); }, [undo]);
+  useEffect(() => { if (reactions.error) setUndo(null); }, [reactions.error]); // a failed hide brings the message back; its error line replaces the Undo
+  const hidden = useMemo(() => new Set(reactions.snap?.hidden ?? []), [reactions.snap]);
+  const shown = useMemo(() => visibleMessages(c.messages, hidden), [c.messages, hidden]);
+  // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away closes it.
+  const menuMsg = menu ? shown.find((m) => m === menu.m) ?? (menu.m.id ? shown.find((m) => m.id === menu.m.id) : undefined) : undefined;
+  useEffect(() => { if (menu && !menuMsg) setMenu(null); }, [menu, menuMsg]);
+  // Focus goes back where the menu was opened from (the ⋯ button), unless something else took it (an outside click, Reply's composer).
+  useEffect(() => {
+    if (menu) return;
+    const el = returnTo.current; returnTo.current = null;
+    if (!el || (document.activeElement && document.activeElement !== document.body)) return;
+    if (el.isConnected) el.focus(); else scroller.current?.focus({ preventScroll: true });
+  }, [menu]);
+  const openMenu = (m: UiMessage, x: number, y: number) => { returnTo.current = document.activeElement instanceof HTMLElement && document.activeElement !== document.body ? document.activeElement : null; setMenu({ m, x, y }); };
+  let newestA: UiMessage | undefined, newestU: UiMessage | undefined;
+  for (let i = c.messages.length - 1; i >= 0 && (!newestA || !newestU); i--) { const m = c.messages[i]; if (m.role === 'assistant') newestA ??= m; else if (m.role === 'user') newestU ??= m; }
+  const canShare = typeof navigator !== 'undefined' && typeof navigator.share === 'function';
+  const actionsFor = (m: UiMessage) => messageActions(m, { newestAssistant: m === newestA, newestUser: m === newestU, streaming: c.streaming, hermes: agent.kind === 'hermes', canShare, canHide: Boolean(reactions.snap), selectable: false });
+  const act = (m: UiMessage, a: MessageAction) => {
+    if (a === 'reply') returnTo.current = null; // the composer takes focus
+    setMenu(null);
+    if (a === 'reply') setReply({ author: m.role === 'user' ? t('msg.you') : name, excerpt: excerpt(m) });
+    else if (a === 'copy') void navigator.clipboard?.writeText(displayText(m)).catch(() => {});
+    else if (a === 'share') void navigator.share?.({ text: displayText(m) }).catch(() => {});
+    else if (a === 'retry') void retryLast(client, agent.name, onAuthLost);
+    else if (a === 'edit') void editLast(client, agent.name, displayText(m), onAuthLost);
+    else if (a === 'delete' && m.id) { reactions.hide(m.id, true); setUndo(m.id); }
+  };
+  const gesturesFor = (m: UiMessage) => {
+    const r = reactionsFor(m.id);
+    return { open: (x: number, y: number) => openMenu(m, x, y), heart: r && m.id ? () => r.onReact(HEART, nextHeart(r.groups, r.me)) : undefined };
+  };
   const recovery = () => {
     if (c.recovery === 'retry') void retryLast(client, agent.name, onAuthLost);
     else if (c.recovery === 'reload' || (c.recovery === 'check' && c.session)) void restore(client, agent.name, c.session, onAuthLost, true);
@@ -121,7 +161,8 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <div class="msg-skeleton" role="status" aria-label={t('home.loading')}><i class="sk-bubble w60" /><i class="sk-bubble me w40" /><i class="sk-bubble w75" /></div>}
         {!c.loading && !c.error && c.messages.length === 0 && !c.streaming && <div class="empty"><Icon name="chat" size={48} class="icon-hero" /><p>{t('chat.empty', { agent: name })}</p></div>}
-        {c.messages.map((m, i) => <Message key={m.id ?? i} m={m} onMedia={setViewer} grouped={c.messages[i - 1]?.role === m.role} reactions={reactionsFor(m.id)} />)}
+        {shown.map((m, i) => <Message key={m.id ?? i} m={m} onMedia={setViewer} grouped={shown[i - 1]?.role === m.role} reactions={reactionsFor(m.id)} gestures={gesturesFor(m)} />)}
+        {undo && <p class="hide-undo muted small" role="status">{t('msg.hidden')} <button type="button" class="btn text" onClick={() => { reactions.hide(undo, false); setUndo(null); scroller.current?.focus({ preventScroll: true }); }}>{t('msg.undo')}</button></p>}
         {reactions.error && <p class="react-error error small" role="alert">{reactions.error}</p>}
         {c.streaming && (
           <div class="msg assistant">
@@ -158,7 +199,10 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
         aria-label={k === 'pill' ? (jumpUi.unread > 1 ? t('chat.newMessages', { n: String(jumpUi.unread) }) : t('chat.newMessage')) : t('chat.toBottom')}>{k === 'pill' ? <><span>{jumpUi.unread > 1 ? t('chat.newMessages', { n: String(jumpUi.unread) }) : t('chat.newMessage')}</span><Icon name="chevronDown" size={18} /></> : <Icon name="chevronDown" size={22} />}</button>; })()}
       </div>
       <Composer key={draftKey(agent.name, c.session)} client={client} agent={agent} history={c.messages} streaming={c.streaming} disabled={c.loading} skills={c.skills} draftKey={draftKey(agent.name, c.session)} session={c.session} queue={c.queue} onCancelQueued={(id) => void cancelQueued(client, agent.name, id)}
-        onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })} />
+        onSend={(text, imgs, files, mode) => void send(client, agent.name, text, imgs, files, onAuthLost, mode)} onStop={() => stop(agent.name, client)} onLocal={local} onModel={onModel} onChoices={(command, options) => openPicker({ agent: agent.name, session: c.session, kind: 'choice', command, options })}
+        reply={reply} onClearReply={() => setReply(null)} />
+      {menu && menuMsg && <MessageMenu x={menu.x} y={menu.y} actions={actionsFor(menuMsg)} canReact={Boolean(menuMsg.id && reactions.snap)}
+        onReact={(e) => { const id = menuMsg.id; setMenu(null); if (id) reactions.react(id, e, true); }} onAction={(a) => act(menuMsg, a)} onClose={() => setMenu(null)} />}
       {viewer && <MediaViewer item={viewer} onClose={() => setViewer(null)} />}
     </section>
     </DiagnoseContext.Provider></MediaContext.Provider>

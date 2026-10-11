@@ -101,3 +101,31 @@ describe('composer drafts across navigation', () => {
     await show('atlas', 's1'); expect(editor().value).toBe('Earlier session draft');
   });
 });
+
+describe('reply', () => {
+  it('a reply target shows a chip, sends the quote first, and clears after sending', async () => {
+    const key = draftKey('atlas'), onClearReply = vi.fn();
+    await act(() => render(<Composer key={key} draftKey={key} client={{ uploadFile } as unknown as Client} agent={agent('atlas')}
+      history={[]} streaming={false} skills={[]} onSend={onSend} onStop={() => {}} onLocal={() => {}}
+      reply={{ author: 'Atlas', excerpt: 'Ship it?' }} onClearReply={onClearReply} />, host));
+    expect(host.querySelector('.reply-chip')!.textContent).toContain('Ship it?');
+    expect(document.activeElement).toBe(editor());
+    await type('Yes');
+    await act(() => host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.click());
+    expect(onSend.mock.calls[0][0]).toBe('> Ship it?\n\nYes');
+    expect(onClearReply).toHaveBeenCalled();
+  });
+
+  it('the ✕ cancels the reply, and a slash command is never quoted', async () => {
+    const key = draftKey('atlas'), onClearReply = vi.fn();
+    await act(() => render(<Composer key={key} draftKey={key} client={{ uploadFile } as unknown as Client} agent={agent('atlas')}
+      history={[]} streaming={false} skills={[]} onSend={onSend} onStop={() => {}} onLocal={() => {}}
+      reply={{ author: 'Atlas', excerpt: 'Ship it?' }} onClearReply={onClearReply} />, host));
+    await act(() => host.querySelector<HTMLButtonElement>('.reply-chip button')!.click());
+    expect(onClearReply).toHaveBeenCalledTimes(1);
+    await type('/undo');
+    await act(() => host.querySelector<HTMLButtonElement>('button.send:not(.stop)')!.click());
+    expect(onSend.mock.calls[0][0]).toBe('/undo');
+    expect(onClearReply).toHaveBeenCalledTimes(1);
+  });
+});

@@ -176,6 +176,8 @@
 .react-add { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
 .react-add:hover, .react-add:focus-visible, .react-add[aria-expanded="true"] { background: var(--surface-alt); color: var(--accent); }
 .react-add.small { width: 28px; height: 28px; border: 1px solid var(--hairline); }
+.msg-more { display: inline-grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: var(--text-muted); cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
+.msg-more:hover, .msg-more:focus-visible, .msg-more[aria-expanded="true"] { background: var(--surface-alt); color: var(--accent); }
 .reactions { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; max-width: min(100%, 680px); }
 .react-pill { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 10px 0 7px; border-radius: var(--radius-pill); border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-press) var(--ease-out); }
 .react-pill:hover { background: var(--surface-alt); }

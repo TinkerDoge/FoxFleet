@@ -11,6 +11,7 @@ import { t } from '../i18n/t';
 import { useDraft, type PendingAttachment as Pending } from './drafts';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
+import { withQuote, type ReplyTarget } from './messageActions';
 
 const SR: any = typeof window !== 'undefined' ? (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition : undefined;
 let nextId = 1;
@@ -22,6 +23,7 @@ export function Composer(props: {
   client: Client; agent: AgentSummary; history: UiMessage[]; streaming: boolean; skills: string[]; draftKey: string; session?: string; disabled?: boolean; queue?: QueueItem[]; onCancelQueued?: (id: string) => void;
   onSend: (text: string, images: UiImage[], files: FileRef[], mode: SendMode) => void; onStop: () => void; onLocal: (c: LocalCommand, args?: string) => void;
   onModel?: (args: string) => void; onChoices?: (command: string, options: string[]) => void;
+  reply?: ReplyTarget | null; onClearReply?: () => void;
 }) {
   const { client, agent, streaming, skills } = props;
   const caps = agent.capabilities ?? {};
@@ -37,6 +39,7 @@ export function Composer(props: {
   const ta = useRef<HTMLTextAreaElement>(null), listRef = useRef<HTMLUListElement>(null), recog = useRef<any>(null), photo = useRef<HTMLInputElement>(null), cam = useRef<HTMLInputElement>(null), file = useRef<HTMLInputElement>(null);
   useEffect(() => () => recog.current?.abort(), []);
   useEffect(() => { const el = ta.current; if (el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 168) + 'px'; } }, [text]);
+  useEffect(() => { if (props.reply) ta.current?.focus(); }, [props.reply]);
   const skillNames = useMemo(() => [...new Set([...(isHermes ? skills : []), ...(catalog.skills ?? [])])], [skills, catalog, isHermes]);
   const suggestions = useMemo(() => commandSuggestions(text, skillNames, Number.POSITIVE_INFINITY, isHermes, catalog), [text, skillNames, isHermes, catalog]);
   useEffect(() => setSel(0), [text]);
@@ -103,7 +106,9 @@ export function Composer(props: {
     if (!canSend) return;
     const out = { text: text.trim(), imgs: images.map((i) => ({ dataUrl: i.dataUrl })), refs: fileRefs.flatMap((f) => (f.ref ? [f.ref] : [])) };
     setDraft({ text: '', pending: [] }); setNote(null); setMenu(false); // clear first: the hub may assign the session id (and move the draft) while sending
-    props.onSend(out.text, out.imgs, out.refs, mode);
+    // A slash command is sent as typed (a quote in front would stop the agent reading it as a command); the reply stays for the next message.
+    if (props.reply && !out.text.startsWith('/')) { props.onSend(withQuote(props.reply, out.text), out.imgs, out.refs, mode); props.onClearReply?.(); }
+    else props.onSend(out.text, out.imgs, out.refs, mode);
   }
   function pick(s: Suggestion) {
     if (s.label === '/help' || s.label === '/palette') { setText(''); setNote(null); setMenu(false); setBrowser(true); return; }
@@ -141,6 +146,11 @@ export function Composer(props: {
           {suggestions.map((s, i) => <>{s.group && s.group !== suggestions[i - 1]?.group && <li role="presentation" class="grp">{s.group}</li>}<li key={s.label} role="option" aria-selected={i === sel} aria-disabled={s.availability === 'unavailable' ? 'true' : undefined} class={`${i === sel ? 'on' : ''}${s.availability === 'unavailable' ? ' off' : ''}`} onMouseDown={(e) => { e.preventDefault(); pick(s); }}><b>{s.label}{s.args && <em> {s.args}</em>}</b><small>{s.hint}</small></li></>)}
         </ul>
       )}
+      {props.reply && <div class="reply-chip" role="status">
+        <span class="reply-bar" aria-hidden="true" />
+        <div class="grow"><small class="reply-who">{t('msg.replyingTo', { name: props.reply.author })}</small><p class="reply-text">{props.reply.excerpt}</p></div>
+        <button type="button" class="icon-btn" aria-label={t('msg.cancelReply')} onClick={() => { props.onClearReply?.(); ta.current?.focus(); }}><Icon name="close" size={16} /></button>
+      </div>}
       {pending.length > 0 && (
         <div class="attachments">
           {pending.map((p) => p.kind === 'image'
