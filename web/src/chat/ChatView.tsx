@@ -19,6 +19,9 @@ import { control, createFollow, type Follow, type Role } from './scrollFollow';
 import { MediaViewer, type MediaItem } from '../components/MediaViewer';
 import { Icon } from '../components/Icon';
 import { ActionMenu } from '../components/ActionMenu';
+import { ChatBackground, useChatBg } from './ChatBackground';
+import { BackgroundPicker } from './BackgroundPicker';
+import { chatBgKey } from '../lib/chatBg';
 import { chatOf, deleteSession, loadAgent, loadOlder, loadSessions, newChat, renameSession, restore, retryLast, editLast, reconnectReply, send, stop, notice, answerRequest, useChat, resumeQueue, cancelQueued, reconcileMessages, queuePending } from './store';
 import { rememberAgent } from '../lib/persist';
 import type { LocalCommand } from '../lib/commands';
@@ -140,14 +143,20 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
     else if (c.recovery === 'reconnect') void reconnectReply(client, agent.name, onAuthLost);
     else openHistory(true);
   };
-  const secondary = [...(agent.capabilities?.screen && agent.online ? [{ icon: 'screen' as const, label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { icon: 'add' as const, label: t('chat.new'), onSelect: startNew }];
+  // Per-chat background (device only). A new chat's look moves to the chat when the hub gives it an id (the first message).
+  const bgKey = chatBgKey(agent.name, c.session), lastBg = useRef({ key: bgKey, agent: agent.name, session: c.session }), [bgOpen, setBgOpen] = useState(false);
+  const bgFrom = lastBg.current.agent === agent.name && !lastBg.current.session && c.session && (c.messages.length > 0 || c.streaming) ? lastBg.current.key : undefined;
+  const chatBg = useChatBg(bgKey, bgFrom);
+  useEffect(() => { lastBg.current = { key: bgKey, agent: agent.name, session: c.session }; }, [bgKey]);
+  useEffect(() => { setBgOpen(false); }, [bgKey]);
+  const secondary = [...(agent.capabilities?.screen && agent.online ? [{ icon: 'screen' as const, label: t('chat.screen'), onSelect: () => navigate('screen', { agent: agent.name }) }] : []), { icon: 'add' as const, label: t('chat.new'), onSelect: startNew }, { icon: 'wallpaper' as const, label: t('chatbg.open'), onSelect: () => setBgOpen((o) => !o) }];
   const [live, setLive] = useState(false); // entrance animation only for messages that arrive after the history has loaded
   useEffect(() => { setLive(false); if (c.loading) return; const id = setTimeout(() => setLive(true), 700); return () => clearTimeout(id); }, [c.loading, c.session]);
   const resolveMedia = useMemo(() => (ref: string) => client.media(agent.name, ref), [client, agent.name]);
   const diagnoseMedia = useMemo(() => (url: string) => client.mediaDiagnose(url), [client]);
   return (
     <MediaContext.Provider value={resolveMedia}><DiagnoseContext.Provider value={diagnoseMedia}>
-    <section class="chat" aria-label={name}>
+    <section class="chat" aria-label={name} data-bg={chatBg.bg.mode === 'default' ? undefined : chatBg.bg.mode}>
       <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{announce}</div>
       <header class="chat-head">
         <span class={`dot ${agent.online ? 'on' : 'off'}`} aria-hidden="true" />
@@ -164,6 +173,8 @@ export function ChatView({ client, agent, onAuthLost, session }: { client: Clien
       </header>
       {c.runState && <p class={`run-status ${c.runState}`} role="status">{t(('chat.run.' + c.runState) as K)}</p>}
       <div class="messages-host">
+      <ChatBackground bg={chatBg.bg} url={chatBg.url} />
+      {bgOpen && <BackgroundPicker bg={chatBg.bg} hasImage={chatBg.bg.image} error={chatBg.error} onChange={chatBg.update} onPick={(f) => void chatBg.pick(f)} onReset={() => void chatBg.reset()} onClose={() => setBgOpen(false)} />}
       <div class={`messages${live ? ' live' : ''}`} ref={scroller} onLoadCapture={() => { if (stick.current) toEnd(); }} onScroll={(e) => { const el = e.currentTarget as HTMLElement; if (before.current === 0) show(follow.current.scroll(el.scrollHeight - el.scrollTop - el.clientHeight)); if (el.scrollTop < 60) older(); }} role="log" aria-label={t('chat.message')} aria-live="off" tabIndex={0}>
         {c.hasOlder && <button class="btn text older" disabled={c.loadingOlder} onClick={older}>{c.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {c.loading && <div class="msg-skeleton" role="status" aria-label={t('home.loading')}><i class="sk-bubble w60" /><i class="sk-bubble me w40" /><i class="sk-bubble w75" /></div>}
