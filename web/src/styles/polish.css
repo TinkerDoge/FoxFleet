@@ -227,3 +227,9 @@ img.emoji { display: inline-block; vertical-align: -3px; object-fit: contain; }
 @keyframes heart-pop { 0% { transform: scale(.4); opacity: 0; } 45% { transform: scale(1.15); opacity: 1; } 100% { transform: scale(1); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .heart-pop { display: none; } .msg-menu { animation: none; } }
 :root[data-motion="reduce"] .heart-pop { display: none; }
+
+/* attachment menu: icon + label rows, 44 px targets */
+.action-menu button { display: flex; align-items: center; gap: var(--space-md); min-height: 40px; }
+.action-menu button .icon { flex: none; color: var(--text-muted); }
+.composer .attach .icon-btn { min-width: var(--touch); min-height: var(--touch); }
+.attachments .att.file .icon { color: var(--text-muted); }

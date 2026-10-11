@@ -19,10 +19,13 @@ import { ScreenView } from '../screen/ScreenView';
 import { loadHub, setTheme } from '../state';
 import { navigate, useRoute } from '../router';
 import { forgetAll, lastAgent } from '../lib/persist';
+import { claimBgOwner, ownerKey } from '../lib/chatBg';
 import { t } from '../i18n/t';
 
 /** The signed-in frame: agent list + chat on desktop (sidebar), drawer on phones. */
 export function Shell({ client, info, onSignedOut }: { client: Client; info: AuthInfo; onSignedOut: () => void }) {
+  // Chat backgrounds survive sign-out; a different account or hub signing in on this device clears them before any chat is drawn.
+  useState(() => claimBgOwner(ownerKey(info.user?.id, loadHub())));
   const route = useRoute();
   const [open, setOpen] = useState(false);
   const [mobile, setMobile] = useState(() => typeof matchMedia !== 'undefined' && matchMedia('(max-width:760px)').matches);

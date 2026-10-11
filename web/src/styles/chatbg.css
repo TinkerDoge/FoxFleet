@@ -1,0 +1,47 @@
+/* ---- per-chat background (see src/lib/chatBg.ts; presets come from design/tokens.json) ---- */
+.chat-bg { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+.chat-bg > * { position: absolute; inset: 0; }
+.chat-bg-pattern { background: var(--text); opacity: var(--pat-o, .12); -webkit-mask-repeat: repeat; mask-repeat: repeat; }
+.chat-bg-img { background-size: cover; background-position: center; transition: filter var(--motion-base); }
+.chat-bg-dim { background: #000; } /* the darkening slider; black on purpose in both themes */
+.messages-host > .messages { position: relative; z-index: 1; }
+.messages-host > .to-bottom { z-index: 2; }
+
+/* a bubble must read over anything: opaque, and loose text gets a quiet chip */
+.chat[data-bg] .bubble { background: var(--user-bubble-solid); }
+.chat[data-bg] .msg-card { box-shadow: 0 1px 3px #00000026; }
+.chat[data-bg] .empty p, .chat[data-bg] .msg.notice, .chat[data-bg] .hide-undo, .chat[data-bg] .older, .chat[data-bg] .queue-paused, .chat[data-bg] .msg-skeleton,
+.chat[data-bg] .msg.assistant > .status, .chat[data-bg] .activity, .chat[data-bg] .react-error {
+  background: color-mix(in srgb, var(--surface) 88%, transparent); border-radius: var(--radius-pill); padding: 4px 12px; width: fit-content; backdrop-filter: blur(6px);
+}
+.chat[data-bg] .msg.notice { margin-inline: auto; }
+.chat[data-bg] .empty { color: var(--text); }
+.chat[data-bg] .empty p { margin: 8px auto 0; }
+.chat[data-bg] .empty .icon-hero { color: var(--text-muted); }
+.chat[data-bg] .older { margin-inline: auto; }
+
+/* the panel */
+.bg-panel { position: absolute; z-index: 5; top: 8px; right: clamp(8px, 2vw, 24px); width: min(360px, calc(100% - 16px)); max-height: calc(100% - 16px); overflow: auto; display: flex; flex-direction: column; gap: var(--space-md); padding: var(--space-lg); box-shadow: 0 12px 40px #0004; animation: panel-in var(--motion-panel-in) var(--ease-out); }
+.bg-head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-sm); }
+.bg-head h2 { margin: 0; font-size: 1rem; font-weight: 600; }
+.bg-section { display: flex; flex-direction: column; gap: var(--space-sm); }
+.bg-section h3 { margin: 0; font-size: .8rem; font-weight: 500; color: var(--text-muted); }
+.bg-modes { display: grid; grid-template-columns: repeat(4, 1fr); gap: 2px; padding: 3px; background: var(--surface-alt); border-radius: var(--radius-control); }
+.bg-mode { font: inherit; font-size: .866667rem; min-height: 36px; padding: 0 6px; border: 0; border-radius: var(--radius-small); background: none; color: var(--text-muted); cursor: pointer; transition: background var(--motion-fast), color var(--motion-fast); }
+.bg-mode.on { background: var(--surface); color: var(--text); font-weight: 500; box-shadow: 0 1px 2px #0000001f; }
+.bg-mode:focus-visible, .bg-swatch:focus-visible, .bg-slider input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bg-swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(44px, 1fr)); gap: var(--space-sm); }
+.bg-swatch { position: relative; min-width: 44px; min-height: 44px; aspect-ratio: 1; border-radius: var(--radius-control); border: 1px solid var(--hairline); padding: 0; cursor: pointer; overflow: hidden; transition: transform var(--motion-fast), box-shadow var(--motion-fast); }
+.bg-swatch:hover { transform: scale(1.04); }
+.bg-swatch.on { box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent); }
+.bg-swatch.plain { background: var(--bg); }
+.bg-swatch.pat i { position: absolute; inset: 0; background: var(--text); opacity: min(1, calc(var(--pat-o, .12) * 3)); -webkit-mask-repeat: repeat; mask-repeat: repeat; }
+.bg-slider { display: grid; grid-template-columns: 3.2rem 1fr 2.6rem; align-items: center; gap: var(--space-sm); min-height: 44px; }
+.bg-slider label { font-size: .866667rem; color: var(--text-muted); }
+.bg-slider input[type=range] { width: 100%; accent-color: var(--accent); min-height: 44px; margin: 0; }
+.bg-slider output { text-align: right; font-size: .866667rem; font-variant-numeric: tabular-nums; color: var(--text-muted); }
+.bg-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-sm); }
+.bg-actions .btn { min-height: var(--touch); }
+.bg-note { margin: 0; }
+@media (max-width: 760px) { .bg-panel { left: 8px; right: 8px; width: auto; } }
+@media (prefers-reduced-motion: reduce) { .bg-panel, .chat-bg-img, .bg-swatch { animation: none; transition: none; } }

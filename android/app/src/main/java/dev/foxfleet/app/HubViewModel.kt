@@ -22,6 +22,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 sealed interface Route {
     data object Fleet : Route
@@ -179,7 +180,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             while (true) {
                 try {
                     val info = api.authInfo(); if (generation != authGeneration) return@launch; username = info.username.orEmpty(); isOwner = info.isOwner; hubVersion = info.hubVersion; hubFeatures = info.hubFeatures
-                    authed = !info.required || info.authenticated; if (authed == true) activateMedia(username.ifBlank { "anonymous-hub" }); bootReconnecting = false; break
+                    val signedIn = !info.required || info.authenticated
+                    // Only a real, signed-in session claims the backgrounds (a failed or cancelled sign-in never does); done before any chat can draw.
+                    if (signedIn) withContext(kotlinx.coroutines.Dispatchers.IO) { dev.foxfleet.app.data.ChatBackgroundStore(getApplication()).claimOwner(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl)) }
+                    if (generation != authGeneration) return@launch
+                    authed = signedIn; if (authed == true) activateMedia(username.ifBlank { "anonymous-hub" }); bootReconnecting = false; break
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     val transient = (e as? dev.foxfleet.app.data.HubApiException)?.transient == true
                     if (transient && attempt < 7) { bootReconnecting = true; delay(dev.foxfleet.app.data.backoffMs(attempt++, 700, 8000)); continue }
@@ -201,7 +206,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
-        settings.clearSession()
+        settings.clearSession() // chat backgrounds stay: they are cleared only when a different account or hub signs in (see claimBackgroundOwner)
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
     }
 

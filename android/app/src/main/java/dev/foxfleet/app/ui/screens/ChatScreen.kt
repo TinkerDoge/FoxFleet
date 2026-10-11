@@ -95,6 +95,14 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
+import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.runtime.CompositionLocalProvider
+import dev.foxfleet.app.ui.components.FoxIcon
+import dev.foxfleet.app.ui.chat.ChatBackgroundLayer
+import dev.foxfleet.app.ui.chat.ChatBackgroundSheet
+import dev.foxfleet.app.ui.chat.LocalChatBgActive
+import dev.foxfleet.app.ui.chat.bgChip
+import dev.foxfleet.app.ui.chat.rememberChatBackground
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -286,8 +294,15 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
+    // Per-chat background (kept on this phone only); a new chat's look moves to the chat when the hub gives it an id.
+    val bgState = rememberChatBackground(agent.name, state.sessionId, state.messages.isNotEmpty() || state.streaming)
+    var bgSheet by remember { mutableStateOf(false) }
+    CompositionLocalProvider(LocalChatBgActive provides !bgState.bg.isDefault) {
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
+            // Narrow phones (under 400 dp) or large text: Screen, Background and History move into one "More" menu so the name keeps room; New chat stays an icon. All targets stay 44 dp or more.
+            val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 400 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.15f
+            var moreMenu by remember { mutableStateOf(false) }
             Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
                 SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
                 Spacer(Modifier.width(4.dp))
@@ -296,19 +311,33 @@ fun ChatScreen(
                 Spacer(Modifier.width(10.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(agent.label ?: agent.name, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
+                        Text(agent.label ?: agent.name, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         agent.badge?.let { Spacer(Modifier.width(6.dp)); KindBadge(it) }
                     }
                     // Connection here; what the agent is doing shows once, under the reply it is writing.
                     if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
-                    else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted)
+                    else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
-                if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
-                if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
+                if (!compact) {
+                    if (onOpenScreen != null) SoftIconButton(FoxIcons.get("screen"), "Agent's screen", onOpenScreen)
+                    SoftIconButton(FoxIcons.get("wallpaper"), "Chat background", { bgSheet = true })
+                    if (agent.capabilities.sessions) SoftIconButton(FoxIcons.get("history"), "Chat history", { history = true })
+                }
                 SoftIconButton(FoxIcons.get("add"), "New chat", onNewChat)
+                if (compact) Box {
+                    SoftIconButton(FoxIcons.get("more"), "More actions", { moreMenu = true })
+                    DropdownMenu(moreMenu, { moreMenu = false }, containerColor = c.surface) {
+                        if (onOpenScreen != null) DropdownMenuItem(text = { Text("Agent's screen") }, leadingIcon = { FoxIcon("screen", null, tint = c.textMuted) }, onClick = { moreMenu = false; onOpenScreen() })
+                        DropdownMenuItem(text = { Text("Chat background") }, leadingIcon = { FoxIcon("wallpaper", null, tint = c.textMuted) }, onClick = { moreMenu = false; bgSheet = true })
+                        if (agent.capabilities.sessions) DropdownMenuItem(text = { Text("Chat history") }, leadingIcon = { FoxIcon("history", null, tint = c.textMuted) }, onClick = { moreMenu = false; history = true })
+                    }
+                }
             }
             Hairline()
-            Transcript(agent.name, state, Modifier.weight(1f), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                ChatBackgroundLayer(bgState.bg, bgState.bitmap)
+                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+            }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
                 modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
@@ -355,8 +384,10 @@ fun ChatScreen(
     reactingTo?.let { id -> dev.foxfleet.app.ui.components.EmojiPickerSheet(onPick = { e -> reactingTo = null; toggle(id, e) }, onDismiss = { reactingTo = null }) }
     selecting?.let { SelectTextDialog(it) { selecting = null } }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
+    if (bgSheet) ChatBackgroundSheet(bgState) { bgSheet = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
         viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
+    }
     }
 }
 
@@ -393,8 +424,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             AgentAvatar(agentName, null, 56.dp)
             Spacer(Modifier.size(14.dp))
-            Text("Start a conversation with $agentName", style = MaterialTheme.typography.titleMedium, color = c.text)
-            Text("Replies stream in live. Long-press a message for more.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            Text("Start a conversation with $agentName", style = MaterialTheme.typography.titleMedium, color = c.text, modifier = Modifier.bgChip())
+            Spacer(Modifier.size(6.dp))
+            Text("Replies stream in live. Long-press a message for more.", style = MaterialTheme.typography.bodySmall, color = if (LocalChatBgActive.current) c.text else c.textMuted, modifier = Modifier.bgChip())
         }
         return
     }
@@ -410,7 +442,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
     ) {
         itemsIndexed(state.notices.reversed(), key = { i, _ -> "notice-$i" }) { _, n ->
-            Text(n, style = MaterialTheme.typography.bodySmall, color = c.textMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp))
+            Text(n, style = MaterialTheme.typography.bodySmall, color = c.textMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).wrapContentWidth().bgChip())
         }
         state.hiddenUndo?.let { id -> item(key = "hide-undo") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
@@ -510,7 +542,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
             val (bodyText, files) = remember(m.content) { FileMarker.split(m.content) }
             Box(contentAlignment = Alignment.Center) {
             Column(
-                Modifier.widthIn(max = 300.dp).clip(shape).background(c.userBubble).border(1.dp, if (pressed) c.accent else Color.Transparent, shape).then(reactable).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp + lift),
+                Modifier.widthIn(max = 300.dp).clip(shape).background(if (LocalChatBgActive.current) androidx.compose.ui.graphics.lerp(c.surface, c.accent, c.userBubble.alpha) else c.userBubble).border(1.dp, if (pressed) c.accent else Color.Transparent, shape).then(reactable).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp + lift),
                 horizontalAlignment = Alignment.End,
             ) {
                 m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = "Message actions") }
@@ -596,7 +628,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
             }
             ToolActivityStrip(active)
             androidx.compose.animation.Crossfade(status, animationSpec = androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionStatusMs), label = "status") { st ->
-                if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }
+                if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp).bgChip(), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }
             }
         }
     }
@@ -878,13 +910,13 @@ private fun Composer(
                 if (allowImages || onUploadFile != null) Box {
                     SoftIconButton(FoxIcons.get("attach"), "Attach", { menu = true })
                     DropdownMenu(menu, { menu = false }, containerColor = c.surface) {
-                        if (onUploadFile != null) DropdownMenuItem(text = { Text("File (PDF, docs, zip…)") }, onClick = {
+                        if (onUploadFile != null) DropdownMenuItem(text = { Text("File (PDF, docs, zip…)") }, leadingIcon = { FoxIcon("file", null, tint = c.textMuted) }, onClick = {
                             menu = false; docPicker.launch(arrayOf("*/*"))
                         })
-                        if (allowImages) DropdownMenuItem(text = { Text("Photo library") }, onClick = {
+                        if (allowImages) DropdownMenuItem(text = { Text("Photo library") }, leadingIcon = { FoxIcon("image", null, tint = c.textMuted) }, onClick = {
                             menu = false; picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                         })
-                        if (allowImages) DropdownMenuItem(text = { Text("Take photo") }, onClick = {
+                        if (allowImages) DropdownMenuItem(text = { Text("Take photo") }, leadingIcon = { FoxIcon("camera", null, tint = c.textMuted) }, onClick = {
                             menu = false
                             val dir = java.io.File(ctx.cacheDir, "camera").apply { mkdirs() }
                             val f = java.io.File(dir, "cam-${System.currentTimeMillis()}.jpg")
