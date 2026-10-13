@@ -1,0 +1,115 @@
+{
+  "app": "DogeDownloader",
+  "style": "pixel-art Shiba",
+  "palette": [
+    "#F4C56B",
+    "#FFF1CB",
+    "#835200",
+    "#241D13"
+  ],
+  "launcher": {
+    "width": 1254,
+    "transparent": true,
+    "file": "doge-launcher.png",
+    "height": 1254
+  },
+  "sprites": {
+    "file": "doge-sprites.png",
+    "alphaThreshold": 16,
+    "height": 1024,
+    "cellWidth": 512,
+    "columns": 3,
+    "frames": [
+      {
+        "index": 0,
+        "name": "idle",
+        "x": 109,
+        "y": 43,
+        "width": 381,
+        "height": 460,
+        "opaquePixels": 137782
+      },
+      {
+        "index": 1,
+        "name": "blink_half",
+        "x": 576,
+        "y": 44,
+        "width": 389,
+        "height": 459,
+        "opaquePixels": 139836
+      },
+      {
+        "index": 2,
+        "name": "blink_closed",
+        "x": 1070,
+        "y": 44,
+        "width": 384,
+        "height": 459,
+        "opaquePixels": 138469
+      },
+      {
+        "index": 3,
+        "name": "downloading",
+        "x": 100,
+        "y": 520,
+        "width": 394,
+        "height": 457,
+        "opaquePixels": 137633
+      },
+      {
+        "index": 4,
+        "name": "success",
+        "x": 574,
+        "y": 521,
+        "width": 392,
+        "height": 456,
+        "opaquePixels": 137569
+      },
+      {
+        "index": 5,
+        "name": "error",
+        "x": 1063,
+        "y": 559,
+        "width": 397,
+        "height": 423,
+        "opaquePixels": 137812
+      }
+    ],
+    "cellHeight": 512,
+    "width": 1536,
+    "rows": 2
+  },
+  "generation": "built-in imagegen",
+  "interpolation": "nearest-neighbor",
+  "uiGlyphs": [
+    "check",
+    "clipboard",
+    "delete",
+    "download",
+    "error",
+    "folder",
+    "link",
+    "more",
+    "music",
+    "play",
+    "refresh",
+    "share",
+    "video"
+  ],
+  "alignment": "bottom-center, common logical frame height 460",
+  "idleAnimation": {
+    "durationMs": [
+      3000,
+      100,
+      100,
+      100
+    ],
+    "pauseWhenBackgrounded": true,
+    "frames": [
+      0,
+      1,
+      2,
+      1
+    ]
+  }
+}
