@@ -2,7 +2,19 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (next: 0.3.10-alpha)
+## 0.3.10-alpha (2026-10-13, Android versionCode 20)
+
+### Changed: Android permissions and tests
+- *Manifest:* declares `ACCESS_NETWORK_STATE` (the notification service listens for a returning network).
+- *Tests:* Android unit tests run in forked JVMs (1 GB heap, a new fork every 8 classes), which stops the Robolectric exit-134 aborts; the hub test-count guard is raised to 349.
+
+### Added: notifications on the hub (phase 1)
+- *Events:* each account gets a small event log (newest 500, `notify.json`, mode 0600): `reply_finished` and `error` when a run ends, `approval` when a native agent asks. Events carry ids only, never message text.
+- *Routes:* `GET /api/notify/stream` (server-sent events with `Last-Event-ID` / `?after` resume, a `gap` notice, 15 s heartbeat, at most 8 streams), `GET /api/notify/events`, prefs with a master switch, per-agent and per-chat mute (timed or until unmuted; approvals pass a chat mute) and a rate-limited test event. Documented in `docs/notifications-api.md` and the OpenAPI contract; `hub.features` gains `notify`.
+- *Safety:* signing out, revoking or disabling a device closes its streams with a final `foxfleet.auth` frame; replies and errors are capped at 60 per minute per account (approvals never dropped, a `dropped` count is reported); saves are coalesced, retried after a failed write and flushed on a clean shutdown (SIGTERM/SIGINT).
+
+### Fixed: model picker
+- A pick of a model that Hermes guards (`confirm_required`) never switched, while Android even said "Model is now X". The hub and connector now relay the confirmation, and web and Android show a **Switch anyway** step with its own Cancel; a typed `/model X` opens the same card. `--GLOBAL` / `--Once` are refused like the lower-case forms.
 
 ### Added: notifications on Android
 - *Service:* **Settings > Notifications** turns on a foreground service (type `remoteMessaging`) that holds the hub's `GET /api/notify/stream` open. Its own notification is a quiet, low-importance "Connected" line that tap-opens the app and changes to Connecting, Reconnecting or Offline. It resumes with `Last-Event-ID` (saved per account + hub), reconnects with a 1 s to 60 s jittered backoff, treats 45 s of silence as a dead link, reads the rotated `X-Session-Token` from the stream response before anything else, and never reconnects after `foxfleet.auth` or a 401 (it signs the device out of notifications instead). A `gap` frame refreshes unread chats from the hub instead of trusting the stream.
@@ -11,7 +23,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - *Permission (Android 13+):* a short explanation first, then the system dialog; after "Don't ask again" the section says so and opens the system settings.
 - *Boot:* the service restarts after a reboot or an app update only if you turned notifications on and a login is stored. Signing out, or signing in as another account or on another hub, stops it and clears the resume id, the settings and every notification of the old pair.
 - *Web:* Settings gets a small Notifications card (hub with the `notify` feature only): the hub-side master switch, agent mutes with a duration and an Unmute list, and a test button. The web app shows no alerts itself.
-- *Hub:* needs hub 0.3.9-alpha with the `notify` feature; an older hub shows "too old" and the controls stay hidden.
+- *Hub:* needs hub 0.3.10-alpha with the `notify` feature; an older hub shows "too old" and the controls stay hidden.
 
 ### Fixed: review of the Android notifications
 - *Login lost:* a single 401 or `foxfleet.auth` no longer wipes notifications. The service stops, the switch and the resume id stay, and Settings says "Log in again to get notifications" (kept across restarts). Only a real sign-out or another account/hub clears them; the next login resumes the service.
