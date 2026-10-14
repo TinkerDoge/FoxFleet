@@ -88,7 +88,6 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
     },
     hidden(agent, session) { return hidden.filter(h => h.agent === agent && h.session === session).map(h => h.message); },
     remove(agent, session) { return mutate((next, nextHidden) => { drop(next, agent, session); drop(nextHidden, agent, session); }); },
-    retain(agent, sessions) { const keep = new Set(sessions); return mutate((next, nextHidden) => { for (const list of [next, nextHidden]) for (let i = list.length - 1; i >= 0; i--) if (list[i].agent === agent && !keep.has(list[i].session)) list.splice(i, 1); }); },
     clear() { return mutate((next, nextHidden) => { next.length = 0; nextHidden.length = 0; }); },
     flush: () => pending,
   };

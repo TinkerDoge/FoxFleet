@@ -19,9 +19,8 @@ export function nativeFeatures(capabilities) {
 }
 /** The busy-input modes a client may offer for this agent: only what the adapter can really do. */
 export function busyModes({ kind, native }) {
-  if (kind === 'mcp-inbox') return ['queue'];
   if (kind === 'hermes') return native?.runs ? ['queue', ...(native.steer ? ['steer'] : []), 'interrupt'] : ['queue', 'interrupt'];
-  return ['queue', 'interrupt']; // OpenAI-compatible / Grok: queue, or abort the stream and resubmit
+  return ['queue', 'interrupt']; // any other kind: queue, or abort the stream and resubmit
 }
 
 /** Turns one upstream event into zero or more normalised frames and records terminal state on `link`. */

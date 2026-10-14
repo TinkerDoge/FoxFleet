@@ -15,12 +15,24 @@ import { validate } from '../../contract/validate.mjs';
 import { spec } from '../../contract/run.mjs';
 import { setup as setupNative } from './ui-helpers.js';
 import { waitFor } from './machine-helpers.js';
+import { mockHermes } from './fixtures.js';
 
 const open = new WeakMap(); // per test: stores opened here are closed (pending saves cancelled) before the temp dir goes, whatever order the hooks run in
 const openStore = async (t, file, o) => { const st = await notifyStore(file, o); (open.get(t) ?? open.set(t, []).get(t)).push(st); return st; };
 const tmp = async (t) => { const dir = await mkdtemp(path.join(os.tmpdir(), 'foxfleet-notify-')); t.after(async () => { for (const st of open.get(t) ?? []) await st.close(); await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 }); }); return dir; };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const listen = (s) => new Promise((r) => s.listen(0, '127.0.0.1', () => r(`http://127.0.0.1:${s.address().port}`)));
+const OK_REPLY = (res) => res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n');
+// Adds a Hermes agent "atlas" (no native runs, so chat goes through /v1/chat/completions) whose reply stream `reply(res)` writes.
+async function hermesAgent(t, x, reply = OK_REPLY) {
+  const up = await mockHermes(t, { apiRoute: async (req, res, route) => {
+    if (route !== '/v1/chat/completions') return false;
+    req.resume(); await new Promise((r) => req.on('end', r));
+    res.writeHead(200, { 'Content-Type': 'text/event-stream', 'X-Hermes-Session-Id': req.headers['x-hermes-session-id'] || 'sess-new' }); reply(res); return true;
+  } });
+  assert.equal((await x.call('/api/connections', { ...up.connection, name: 'atlas' })).status, 201);
+  return up;
+}
 
 async function hub(t, opts = {}) {
   const dir = await tmp(t), server = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true, ...opts });
@@ -136,35 +148,30 @@ test('stream: heartbeat comments keep coming while idle (comments, not events)',
 });
 
 test('stream: muted events are logged but not pushed; cursor still advances; approval passes a chat mute', async (t) => {
-  const x = await hub(t), api = http.createServer((req, res) => { req.resume(); req.on('end', () => { if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"data":[{"id":"m"}]}'); } res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'); }); });
-  const upstream = await listen(api); t.after(() => { api.closeAllConnections(); api.close(); });
-  assert.equal((await x.call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: upstream + '/v1', model: 'm', apiKey: 'k' })).status, 201);
-  assert.equal((await x.call('/api/notify/mute', { agent: 'glm', chat: 'h_mutedchat', muted: true }, 'PUT')).status, 200);
-  assert.deepEqual((await x.call('/api/notify/prefs')).body.chats, [{ agent: 'glm', chat: 'h_mutedchat', until: null }]);
+  const x = await hub(t); await hermesAgent(t, x);
+  assert.equal((await x.call('/api/notify/mute', { agent: 'atlas', chat: 'h_mutedchat', muted: true }, 'PUT')).status, 200);
+  assert.deepEqual((await x.call('/api/notify/prefs')).body.chats, [{ agent: 'atlas', chat: 'h_mutedchat', until: null }]);
   const s = sse(t, `${x.base}/api/notify/stream`); await s.wait((f) => f.event === 'foxfleet.ready');
-  const ask = async (session) => { const r = await fetch(`${x.base}/api/agents/glm/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], session_id: session }), signal: AbortSignal.timeout(10_000) }); await r.text(); };
+  const ask = async (session) => { const r = await fetch(`${x.base}/api/agents/atlas/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], session_id: session }), signal: AbortSignal.timeout(10_000) }); await r.text(); };
   await ask('h_mutedchat'); const logged = await waitFor(async () => { const l = (await x.call('/api/notify/events')).body.events; return l.length ? l : null; }, { tries: 100, ms: 50 });
   assert.equal(logged[0].muted, true); assert.equal(logged[0].chat, 'h_mutedchat'); assert.equal(s.notifies().length, 0, 'a muted chat is not pushed');
   await ask('h_otherchat'); const pushed = await s.wait((f) => f.event === 'notify'); assert.equal(pushed.data.chat, 'h_otherchat'); assert.equal(pushed.id, 2, 'the muted event used id 1: ids are continuous');
-  assert.equal((await x.call('/api/notify/mute', { agent: 'glm', muted: true }, 'PUT')).status, 200); await ask('h_otherchat'); await waitFor(async () => ((await x.call('/api/notify/events')).body.events.length >= 3 ? true : null), { tries: 100, ms: 50 });
+  assert.equal((await x.call('/api/notify/mute', { agent: 'atlas', muted: true }, 'PUT')).status, 200); await ask('h_otherchat'); await waitFor(async () => ((await x.call('/api/notify/events')).body.events.length >= 3 ? true : null), { tries: 100, ms: 50 });
   assert.equal(s.notifies().length, 1, 'an agent mute stops pushes too'); assert.equal((await x.call('/api/notify/events')).body.events[2].muted, true);
 });
 
 test('events: reply_finished and error come from finished chat runs (never message text)', async (t) => {
   const x = await hub(t); let mode = 'ok';
-  const api = http.createServer((req, res) => { req.resume(); req.on('end', () => {
-    if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"data":[{"id":"m"}]}'); }
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+  await hermesAgent(t, x, (res) => {
     if (mode === 'ok') return void res.end('data: {"choices":[{"delta":{"content":"SECRET-REPLY-TEXT"}}]}\n\ndata: [DONE]\n\n');
-    res.write('data: {"choices":[{"delta":{"content":"partial SECRET-REPLY-TEXT"}}]}\n\n'); setTimeout(() => res.destroy(), 30); }); });
-  const upstream = await listen(api); t.after(() => { api.closeAllConnections(); api.close(); });
-  assert.equal((await x.call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: upstream + '/v1', model: 'm', apiKey: 'k' })).status, 201);
+    res.write('data: {"choices":[{"delta":{"content":"partial SECRET-REPLY-TEXT"}}]}\n\n'); setTimeout(() => res.destroy(), 30);
+  });
   const s = sse(t, `${x.base}/api/notify/stream`); await s.wait((f) => f.event === 'foxfleet.ready');
-  const ask = async () => { const r = await fetch(`${x.base}/api/agents/glm/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal: AbortSignal.timeout(10_000) }); const sid = r.headers.get('x-hermes-session-id'); await r.text().catch(() => ''); return sid; };
+  const ask = async () => { const r = await fetch(`${x.base}/api/agents/atlas/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal: AbortSignal.timeout(10_000) }); const sid = r.headers.get('x-hermes-session-id'); await r.text().catch(() => ''); return sid; };
   const sid = await ask(); const done = await s.wait((f) => f.data?.type === 'reply_finished');
-  assert.equal(done.data.agent, 'glm'); assert.equal(done.data.chat, sid); assert.equal(done.data.priority, 'normal'); assert.equal(done.data.v, 1); assert.match(done.data.run_id, /\S/);
+  assert.equal(done.data.agent, 'atlas'); assert.equal(done.data.chat, sid); assert.equal(done.data.priority, 'normal'); assert.equal(done.data.v, 1); assert.match(done.data.run_id, /\S/);
   mode = 'break'; const sid2 = await ask(); const err = await s.wait((f) => f.data?.type === 'error');
-  assert.equal(err.data.agent, 'glm'); assert.equal(err.data.chat, sid2); assert.equal(err.data.priority, 'high'); assert.equal(err.data.message, 'The agent turn failed');
+  assert.equal(err.data.agent, 'atlas'); assert.equal(err.data.chat, sid2); assert.equal(err.data.priority, 'high'); assert.equal(err.data.message, 'The agent turn failed');
   assert.ok(!JSON.stringify(s.frames.map((f) => f.raw)).includes('SECRET-REPLY-TEXT'), 'no reply text in notifications');
   assert.ok(!JSON.stringify((await x.call('/api/notify/events')).body).includes('SECRET-REPLY-TEXT'));
 });
@@ -261,10 +268,10 @@ test('P8: every /api/notify route is in contract/openapi.json and the real respo
   const want = { '/api/notify/stream': ['get'], '/api/notify/events': ['get'], '/api/notify/prefs': ['get', 'put'], '/api/notify/mute': ['put'], '/api/notify/test': ['post'] };
   for (const [p, methods] of Object.entries(want)) for (const m of methods) { const op = spec.paths[p]?.[m]; assert.ok(op?.operationId, `${m} ${p} in the spec`); assert.ok(op.responses['401'], `${m} ${p} documents 401`); }
   const x = await hub(t), check = (p, m, status, body) => { const decl = spec.paths[p][m].responses[String(status)]; assert.ok(decl, `${m} ${p} ${status} declared`); const schema = decl.content?.['application/json']?.schema ?? spec.components.responses.Error.content['application/json'].schema; assert.deepEqual(validate(schema, body, spec), [], `${m} ${p} ${status}`); };
-  assert.equal((await x.call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: 'https://api.example.com/v1', model: 'm', apiKey: 'k' })).status, 201);
+  await hermesAgent(t, x);
   let r = await x.call('/api/notify/prefs'); check('/api/notify/prefs', 'get', 200, r.body);
   r = await x.call('/api/notify/prefs', { enabled: true }, 'PUT'); check('/api/notify/prefs', 'put', 200, r.body); r = await x.call('/api/notify/prefs', { enabled: 'x' }, 'PUT'); check('/api/notify/prefs', 'put', 400, r.body);
-  r = await x.call('/api/notify/mute', { agent: 'glm', chat: 'h_c1', muted: true, for_ms: 60000 }, 'PUT'); check('/api/notify/mute', 'put', 200, r.body); assert.equal(r.body.chats.length, 1);
+  r = await x.call('/api/notify/mute', { agent: 'atlas', chat: 'h_c1', muted: true, for_ms: 60000 }, 'PUT'); check('/api/notify/mute', 'put', 200, r.body); assert.equal(r.body.chats.length, 1);
   r = await x.call('/api/notify/mute', { agent: 'ghost', muted: true }, 'PUT'); check('/api/notify/mute', 'put', 404, r.body);
   r = await x.call('/api/notify/test', {}); check('/api/notify/test', 'post', 200, r.body); r = await x.call('/api/notify/events'); check('/api/notify/events', 'get', 200, r.body);
   r = await x.call('/api/notify/events?since=abc'); check('/api/notify/events', 'get', 400, r.body);
@@ -329,11 +336,9 @@ test('a failed write is retried by itself with backoff, capped, then stops; a ne
 });
 
 test('dropped: the rate-cap drop count is visible in /prefs and in the stream ready frame', async (t) => {
-  const x = await hub(t), api = http.createServer((req, res) => { req.resume(); req.on('end', () => { if (req.url.endsWith('/models')) { res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"data":[{"id":"m"}]}'); } res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'); }); });
-  const up = await listen(api); t.after(() => { api.closeAllConnections(); api.close(); });
-  assert.equal((await x.call('/api/connections', { name: 'glm', kind: 'openai', baseUrl: up + '/v1', model: 'm', apiKey: 'k' })).status, 201);
+  const x = await hub(t); await hermesAgent(t, x);
   assert.equal((await x.call('/api/notify/prefs')).body.dropped, 0);
-  const ask = async () => { const r = await fetch(`${x.base}/api/agents/glm/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal: AbortSignal.timeout(10_000) }); await r.text(); };
+  const ask = async () => { const r = await fetch(`${x.base}/api/agents/atlas/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: 'hi' }] }), signal: AbortSignal.timeout(10_000) }); await r.text(); };
   for (let i = 0; i < 62; i++) await ask(); // 60 per minute are kept
   await waitFor(async () => ((await x.call('/api/notify/prefs')).body.dropped >= 2 ? true : null), { tries: 100, ms: 50 });
   assert.equal((await x.call('/api/notify/prefs')).body.dropped, 2); assert.equal((await x.call('/api/notify/events?limit=500')).body.events.filter((e) => e.type === 'reply_finished').length, 60);

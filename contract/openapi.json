@@ -1188,7 +1188,7 @@
       },
       "post": {
         "operationId": "createConnection",
-        "summary": "Add an agent. Connector bootstrap or mailbox token is returned once.",
+        "summary": "Add an agent (a Hermes install the hub dials directly). Agents on a paired machine are added by its connector instead.",
         "tags": [
           "registry"
         ],
@@ -1419,57 +1419,6 @@
         }
       }
     },
-    "/api/connections/{name}/token": {
-      "post": {
-        "operationId": "rotateToken",
-        "summary": "New connector bootstrap (Hermes connector) or mailbox token; the old one stops working.",
-        "tags": [
-          "registry"
-        ],
-        "responses": {
-          "200": {
-            "description": "Token",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          }
-        },
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object"
-              }
-            }
-          }
-        },
-        "parameters": [
-          {
-            "name": "name",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "string"
-            },
-            "description": ""
-          }
-        ]
-      }
-    },
     "/api/agents": {
       "get": {
         "operationId": "listAgents",
@@ -1508,7 +1457,7 @@
     "/api/agents/{name}/sessions": {
       "get": {
         "operationId": "listSessions",
-        "summary": "Past sessions, newest activity first. Hermes agents: the dashboard's sessions. API-key agents: hub-stored history (see /api/history/settings).",
+        "summary": "Past sessions, newest activity first (the Hermes dashboard's sessions).",
         "tags": [
           "agents"
         ],
@@ -1702,7 +1651,7 @@
                           },
                           "id": {
                             "type": "string",
-                            "description": "Stable message id (hub-assigned for API-key agents, provider id for Hermes). Reactions address messages by this id, never by position."
+                            "description": "Stable message id (the id Hermes gives the message). Reactions address messages by this id, never by position."
                           }
                         }
                       }
@@ -2592,98 +2541,6 @@
             "$ref": "#/components/responses/Error"
           },
           "404": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      }
-    },
-    "/api/history/settings": {
-      "get": {
-        "operationId": "getHistorySettings",
-        "summary": "History retention for the signed-in user.",
-        "tags": [
-          "agents"
-        ],
-        "responses": {
-          "200": {
-            "description": "Settings",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "retentionDays"
-                  ],
-                  "properties": {
-                    "retentionDays": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 3650,
-                      "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Error"
-          }
-        }
-      },
-      "put": {
-        "operationId": "setHistorySettings",
-        "summary": "Set history retention (days).",
-        "tags": [
-          "agents"
-        ],
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": [
-                  "retentionDays"
-                ],
-                "properties": {
-                  "retentionDays": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 3650,
-                    "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Settings",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "required": [
-                    "retentionDays"
-                  ],
-                  "properties": {
-                    "retentionDays": {
-                      "type": "integer",
-                      "minimum": 0,
-                      "maximum": 3650,
-                      "description": "How long the hub keeps chat history for API-key agents (this user). 0 = keep nothing."
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/Error"
-          },
-          "401": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -5621,9 +5478,6 @@
           "sessions": {
             "type": "boolean"
           },
-          "mailbox": {
-            "type": "boolean"
-          },
           "busy": {
             "type": "array",
             "items": {
@@ -5683,9 +5537,7 @@
                 "type": "string",
                 "enum": [
                   "native",
-                  "http",
-                  "mcp",
-                  "chat"
+                  "http"
                 ]
               },
               "tags": {
@@ -5703,7 +5555,7 @@
           },
           "agentReactions": {
             "type": "boolean",
-            "description": "The agent can react itself (MCP inbox agents: the hub_react tool)."
+            "description": "The agent can react itself (Hermes: a REACT: line in its reply)."
           }
         }
       },
@@ -5912,16 +5764,10 @@
           "connection": {
             "$ref": "#/components/schemas/Connection"
           },
-          "inboxToken": {
-            "type": "string"
-          },
           "connectorToken": {
             "type": "string"
           },
           "bootstrap": {
-            "type": "string"
-          },
-          "mcpUrl": {
             "type": "string"
           }
         }

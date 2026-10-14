@@ -55,6 +55,7 @@ const UNIT = cfg('FOXFLEET_UNIT', 'foxfleet');
 const PORT = Number(cfg('FOXFLEET_PORT') || cfg('PORT') || 3080), HOST = cfg('FOXFLEET_HOST', '127.0.0.1');
 const LOCAL_URL = (flags.url && flags.url !== true ? String(flags.url) : cfg('FOXFLEET_URL')) || `http://127.0.0.1:${PORT}`;
 const RELEASES_API = (cfg('FOXFLEET_RELEASES_API') || 'https://api.github.com/repos/TinkerDoge/FoxFleet').replace(/\/$/, '');
+// inbox.json and history.json are no longer written (MCP-inbox and API-key chat agents were removed) but older installs have them: keep backing them up.
 const DATA_FILES = ['config.json', 'config.json.bak', 'accounts', 'users', 'inbox.json', 'machines.json', 'history.json'];
 const APPS_DIR = cfg('FOXFLEET_APPS_DIR') || path.join(path.dirname(DATA), 'foxfleet-app'); // versioned installs live here (install.sh); `current` points at the active one
 

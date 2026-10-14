@@ -1,7 +1,6 @@
 // Chat controls (docs/HERMES-CHAT-CONTROLS.md): command catalog, hub message coordinator, Hermes native runs, queue/steer/interrupt/stop.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -38,7 +37,7 @@ async function boot(t, connections, dir) {
 const nativeHub = async (t, opts = {}) => { const fake = fakeNative(opts), mock = await mockHermes(t, { features: opts.legacy ? undefined : NATIVE_FEATURES, legacy: false, apiRoute: opts.legacy ? undefined : async (req, res, route, u) => (await fake.route(req, res, route, u)) !== false }); return { fake, mock, hub: await boot(t, [mock.connection]) }; };
 const chunk = (c) => ({ delta: c });
 
-test('catalog: per-agent, with handlers; steer only where the agent has it; generic agents never show Hermes commands', async (t) => {
+test('catalog: per-agent, with handlers; steer only where the agent has it', async (t) => {
   const { hub } = await nativeHub(t), a = hub.api('fixture'); const cat = await a.commands();
   const by = Object.fromEntries(cat.commands.map((c) => [c.name, c]));
   assert.deepEqual(cat.busy, ['queue', 'steer', 'interrupt']);
@@ -158,19 +157,4 @@ test('native event stream is normalised: deltas, status, no duplicate final text
   await waitFor(async () => (await a.runs()).runs[0].state === 'done'); const all = await a.events(first.run_id);
   assert.equal((all.match(/"content":"Hel"/g) || []).length, 1); assert.match(all, /hermes\.tool\.progress/); assert.equal((all.match(/"content":"Hello"/g) || []).length, 0, 'already streamed output is not repeated');
   const ids = [...all.matchAll(/^id: (\d+)/gm)].map((m) => Number(m[1])), cut = ids[1], tail = await a.events(first.run_id, cut); assert.ok(!tail.includes(`id: ${cut}\n`));
-});
-
-test('OpenAI-compatible agents (Grok): queue, and abort + resubmit with updated history; no steer', async (t) => {
-  const seen = []; const up = http.createServer(async (req, res) => {
-    let b = ''; for await (const c of req) b += c; if (!req.url.endsWith('/chat/completions')) { res.writeHead(404); return res.end(); } const body = JSON.parse(b); seen.push(body.messages.map((m) => m.content));
-    res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.write(`data: ${JSON.stringify({ choices: [{ delta: { content: 'a' + seen.length } }] })}\n\n`);
-    if (body.messages.at(-1).content === 'slow') { const k = setInterval(() => res.write('data: {"choices":[]}\n\n'), 20); res.on('close', () => clearInterval(k)); return; } res.end('data: [DONE]\n\n');
-  }); await new Promise((r) => up.listen(0, '127.0.0.1', r)); t.after(() => { up.closeAllConnections(); up.close(); });
-  const hub = await boot(t, [{ name: 'grok1', kind: 'grok', baseUrl: `http://127.0.0.1:${up.address().port}/v1`, model: 'g', apiKey: 'k' }]), a = hub.api('grok1');
-  const cat = await a.commands(); assert.equal(cat.commands.some((c) => c.name === 'skills'), false); assert.deepEqual(cat.busy, ['queue', 'interrupt']);
-  const first = await a.send('slow'); assert.equal(first.message.state, 'running'); const sid = first.session_id; assert.ok(sid);
-  assert.equal((await a.send('steer', { mode: 'steer', session_id: sid })).status, 400);
-  const r = await a.send('replacement', { mode: 'interrupt', session_id: sid }); assert.equal(r.message.state, 'awaiting_stop');
-  await waitFor(() => seen.length === 2); assert.deepEqual(seen[1].at(-1), 'replacement'); assert.equal(seen[1].length >= 1, true);
-  const q = await a.send('then this', { session_id: sid }); assert.ok(['queued', 'running', 'done'].includes(q.message.state));
 });

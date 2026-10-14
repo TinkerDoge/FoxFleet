@@ -6,23 +6,19 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, isChatKind, CHAT_KINDS } from './config.js';
+import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf } from './config.js';
 import { hermesClient, upstreamJson, boundedBytes, safeAgentData } from './hermes.js';
 import { artifactRegistry } from './artifacts.js';
 import { scanAvatarPacks } from './avatars.js';
 import { screenRelay } from './screen.js';
-import { inboxStore } from './inbox.js';
-import { mcpHandler, bearer } from './mcp.js';
 import { runRegistry } from './runs.js';
 import { coordinator } from './coordinator.js';
 import { nativeFeatures, busyModes, nativeRun, nativeControl } from './hermes-runs.js';
 import { nativeHub } from './hermes-ui.js';
 import { nativeFacade, viewOf } from './native-facade.js';
 import { applyLive, catalogFor, readLiveCatalog } from './commands.js';
-import { historyStore, newSessionId, validSessionId } from './history.js';
 import { activityStore, sortAgents } from './activity.js';
 import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
-import { openaiClient } from './openai.js';
 import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
@@ -37,7 +33,6 @@ import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
 
-const CHAT_KINDS_LIST = CHAT_KINDS;
 const DIR = path.dirname(fileURLToPath(import.meta.url)), WEB_DIR = path.resolve(process.env.FOXFLEET_WEB_DIR || path.join(DIR, '..', 'web', 'dist'));
 // Strict CSP for the web app: same-origin scripts only (Vite emits no inline script), inline style attributes allowed for layout.
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; frame-src 'self'; worker-src 'self'; manifest-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'";
@@ -75,14 +70,15 @@ function sendJson(res, status, data, headers = {}) {
   if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', ...headers }); res.end(JSON.stringify(data));
 }
-async function readJson(req, limit = BODY_LIMIT, allowArray = false) {
+async function readJson(req, limit = BODY_LIMIT) {
   if (Number(req.headers['content-length']) > limit) { req.resume(); throw fault(413, 'Request body too large'); }
   let size = 0, chunks = [];
   for await (const chunk of req) { size += chunk.length; if (size > limit) { req.resume(); throw fault(413, 'Request body too large'); } chunks.push(chunk); }
-  try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); if (!value || (Array.isArray(value) && !allowArray) || typeof value !== 'object') throw new Error(); return value; }
+  try { const value = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}'); if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error(); return value; }
   catch { throw fault(400, 'Invalid JSON body'); }
 }
 const pageInt = (v, lo, hi, d) => { const n = Number(v ?? d); return Number.isInteger(n) ? Math.min(Math.max(n, lo), hi) : d; };
+const validSessionId = (s) => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(String(s ?? ''));
 function sessionId(value) { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value)) throw fault(400, 'Invalid session ID'); return value; }
 async function serveStatic(url, res, avatarBase = DEFAULT_AVATAR_DIR) {
   let name; try { name = decodeURIComponent(url.pathname); } catch { throw fault(400, 'Invalid path'); }
@@ -117,10 +113,6 @@ const safeFileName = (value) => {
   const base = String(value || '').split(/[\\/]/).pop().normalize('NFC').replace(/[\x00-\x1f\x7f]/g, '').replace(/[^\p{L}\p{N} ._()+-]/gu, '_').replace(/^\.+/, '').slice(-120).trim();
   return base || 'file';
 };
-const sse = (res, text, headers = {}) => {
-  res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Content-Type-Options': 'nosniff', ...headers });
-  res.end(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', content: text } }] })}\n\ndata: [DONE]\n\n`);
-};
 // Bundled Hermes slash-command catalog (generated from hermes-agent's COMMAND_REGISTRY by design/tools/gen-hermes-commands.py).
 const HERMES_COMMANDS = JSON.parse(readFileSync(new URL('./hermes-commands.json', import.meta.url), 'utf8'));
 const scopeOf = (ctx) => ctx?.auth?.user?.id ?? 'local';
@@ -152,14 +144,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
   const runs = runRegistry(); runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.notify.fromRun(r, state)).catch(() => {}); });
-  runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), openai = openaiClient(timeoutMs), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
-  // Per-user registry: own agents, secrets, inbox, upstream caches and screen tickets. Handlers reach it through these scoped views.
+  runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
+  // Per-user registry: own agents, secrets, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
-      const up = hermesClient(timeoutMs), reg = { history: await historyStore(path.join(dir, 'history.json')), store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), inbox: await inboxStore(path.join(dir, 'inbox.json')), activity: await activityStore(path.join(dir, 'activity.json')) };
+      const up = hermesClient(timeoutMs), reg = { store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), activity: await activityStore(path.join(dir, 'activity.json')) };
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
-      reg.mcp = mcpHandler(reg.inbox, reg.reactions); reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
+      reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json'));
       reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); });
       return reg;
@@ -167,24 +159,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return registries.get(userId);
   }
   const scoped = (key) => new Proxy({}, { get: (_, prop) => { const t = als.getStore()?.reg?.[key]; if (!t) throw fault(401, 'Login required'); const v = t[prop]; return typeof v === 'function' ? v.bind(t) : v; } });
-  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens'), inbox = scoped('inbox'), history = scoped('history'), mcp = (...a) => als.getStore().reg.mcp(...a);
+  const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens');
   const allRegistries = async () => singleUser ? [await registryFor('local', true)] : Promise.all(accounts.users().map((u) => registryFor(u.id, u.role === 'owner')));
   await allRegistries(); // fail fast on unreadable saved config
   const secureRequest = (req) => req.headers['x-forwarded-proto'] === 'https' || trusted.has(`https://${req.headers.host}`);
   const kindOf = (m) => m.kind || 'hermes';
-  const mcpHits = new Map();
-  async function inboxAgent(req) {
-    const hash = createHash('sha256').update(bearer(req)).digest('hex');
-    for (const reg of await allRegistries()) {
-      const agent = reg.store.all().find((m) => m.kind === 'mcp-inbox' && m.inboxTokenHash.length === hash.length && timingSafeEqual(Buffer.from(m.inboxTokenHash), Buffer.from(hash)));
-      if (!agent) continue;
-      const now = Date.now(), key = createHash('sha1').update(hash).digest('hex'), hit = mcpHits.get(key) || { count: 0, until: now + 60000 };
-      if (hit.until < now) { hit.count = 0; hit.until = now + 60000; }
-      if (++hit.count > 120) throw fault(429, 'Too many requests');
-      mcpHits.set(key, hit); return { agent, reg };
-    }
-    throw fault(401, 'Invalid token');
-  }
   const hubOrigin = (req) => `${secureRequest(req) ? 'https' : 'http'}://${req.headers.host}`;
   // ---- machines (one connector per computer) ----
   const safeOrigin = (req) => { const o = hubOrigin(req); if (!/^https?:\/\/[A-Za-z0-9.\-:\[\]]{1,200}$/.test(o)) throw fault(400, 'Unusable host header'); return o; };
@@ -199,7 +178,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
   const media = mediaHub({ connectors }); // MEDIA: tags -> cards (see media.js)
-  const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n)) n = `${base}-${i++}`; return n; };
+  const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n) || reg.store.reserved(n)) n = `${base}-${i++}`; return n; };
   // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
   async function syncProfiles(machine, msg, link) {
     const user = ownerOf(machine.userId); if (!user) throw fault(403, 'Owner is gone');
@@ -218,25 +197,24 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     await link.expose(names); await machines.setProfiles(machine.id, out); reg.upstream.clear();
     return { agents: out };
   }
-  const newInboxToken = () => { const value = randomBytes(32).toString('base64url'); return { value, hash: createHash('sha256').update(value).digest('hex') }; };
   // The only agent shape clients get: no host, port, URL, profile path or upstream version strings.
   // Negotiation order: native UI gateway (through the machine connector) > HTTP /v1/runs > /v1/chat/completions.
   const nativeUi = (m) => Boolean(kindOf(m) === 'hermes' && m.machineId && connectors.ui(m.machineId)?.caps(m.profile)?.native);
   // Who can deliver this agent's media: the hub (this build), the connector on the agent's machine (needs >= 0.3.5 to report a version; older ones still serve files), and the agent itself.
   function mediaInfo(m) {
-    const mach = m.machineId ? machines.get(m.machineId) : null, kind = kindOf(m);
+    const mach = m.machineId ? machines.get(m.machineId) : null;
     return { hub: true, hubVersion: HUB_VERSION, local: Boolean(m.machineId), connector: mach ? { version: mach.connectorVersion ?? null, online: connectors.isOnline(m.machineId), media: mach.connectorFeatures?.includes('media') ?? false } : null,
-      agent: kind === 'hermes' ? (nativeUi(m) ? 'native' : 'http') : kind === 'mcp-inbox' ? 'mcp' : 'chat', tags: true, toolMedia: nativeUi(m) };
+      agent: nativeUi(m) ? 'native' : 'http', tags: true, toolMedia: nativeUi(m) };
   }
   function agentView(m, p, index) {
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'mcp-inbox' || kindOf(m) === 'hermes', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
+      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'hermes', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
-      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), ...(isChatKind(kindOf(m)) ? {} : { media: mediaCheck(m) }) } };
+      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: mediaCheck(m) } };
   }
   /** The "Media" row: can pictures, videos and files from this agent reach the chat? Names versions, never paths. */
   function mediaCheck(m) {
@@ -263,25 +241,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   /** The agent-list fields, per user: when, what and which chat was last active, pin state, and whether the agent works or waits for an answer. Never an address. */
   function withActivity(ctx, m, view) {
-    const reg = ctx.reg, scope = scopeOf(ctx); let a = reg.activity.get(m.name);
-    if (!a && isChatKind(kindOf(m))) { // chats from before this feature: take the newest stored session
-      const top = reg.history.list(m.name, { limit: 1 }).sessions?.[0];
-      if (top) { const last = reg.history.messages(m.name, top.id, { limit: 1 }).messages?.at(-1); reg.activity.seed(m.name, { at: top.updated, role: last?.role === 'user' ? 'user' : 'assistant', text: last?.content ?? top.preview ?? '', title: top.title, session: top.id }); a = reg.activity.get(m.name); }
-    }
-    else if (!a && kindOf(m) === 'hermes') seedFromHermes(ctx, m); // Hermes keeps its own sessions (native/connector or old /chat path): read them once, in the background
+    const reg = ctx.reg, scope = scopeOf(ctx), a = reg.activity.get(m.name);
+    if (!a && kindOf(m) === 'hermes') seedFromHermes(ctx, m); // Hermes keeps its own sessions (native/connector or old /chat path): read them once, in the background
     const pins = reg.activity.pins(), pinIndex = pins.indexOf(m.name);
     const needs = kindOf(m) === 'hermes' && nativeUi(m) && m.machineId ? reg.native.openRequests(scope, m.machineId, m.profile) > 0 : false;
     return { ...view, last_activity_at: a?.at ?? null, last_session_title: a?.title || null, last_message_preview: a?.preview || null, last_role: a?.role ?? null,
       pinned: pinIndex >= 0, pin_order: pinIndex >= 0 ? pinIndex : null, working: runs.working(scope, m.name), needs_input: needs };
   }
   function probeAny(m) {
-    if (isChatKind(kindOf(m))) return openai.probe(m);
-    if (kindOf(m) === 'mcp-inbox') { const seen = inbox.lastSeen(m.name); return Promise.resolve({ name: m.name, kind: 'mcp-inbox', label: m.label, online: seen > Date.now() - 24 * 3600 * 1000, chatReady: true, managementReady: false, lastSeen: seen ? new Date(seen).toISOString() : null, checks: { inbox: { ok: true, message: seen ? 'Agent checked in' : 'Waiting for the agent to connect' } }, capabilities: { object: 'foxfleet.bridge', features: { chat_completions: true, mailbox: true, images: false, files: false, screen: false, sessions: true } } }); }
     if (m.machineId && !connectors.isOnline(m.machineId)) return Promise.resolve({ name: m.name, kind: 'hermes', label: m.label, online: false, chatReady: false, managementReady: false, checks: { connector: { ok: false, message: 'Waiting for the machine to connect' } } });
     return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
   function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
-  // Which native run controls this Hermes profile advertises (GET /v1/capabilities), cached briefly. Chat kinds have none.
+  // Which native run controls this Hermes profile advertises (GET /v1/capabilities), cached briefly. Other kinds have none.
   const nativeCache = new Map();
   async function nativeFor(m) {
     if (kindOf(m) !== 'hermes') return null;
@@ -294,16 +266,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   function launcher(m, ctx, native) {
     const reg = ctx.reg, scope = scopeOf(ctx);
     return { async launch(item, { rebuild }) {
-      const isChat = isChatKind(kindOf(m)), hist = reg.history;
       reg.activity.touch(m.name, { role: 'user', text: item.text, session: item.session || undefined });
-      if (isChat) {
-        const sid = validSessionId(item.session) ? item.session : newSessionId();
-        let messages = item.body?.messages;
-        if (rebuild || !messages) { const past = hist.messages(m.name, sid, { limit: 200, offset: 0 })?.messages ?? []; messages = [...past.filter((x) => x.role === 'user' || x.role === 'assistant').map((x) => ({ role: x.role, content: typeof x.content === 'string' ? x.content : x.text ?? '' })), item.message]; }
-        return runs.start({ scope, agent: m.name, session: sid, open: (signal) => openai.chat(m, messages, signal), timeoutMs: Math.max(timeoutMs, 30000),
-          check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { 'X-Hermes-Session-Id': sid }; },
-          onFinish: (r, state) => { if (r.text && state !== 'error') void hist.append(m.name, sid, item.text, r.text); } });
-      }
       const link = {};
       if (native?.runs) {
         const content = item.message.content, input = typeof content === 'string' ? content : [{ role: 'user', content }];
@@ -414,14 +377,6 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (auth && !singleUser) await accounts.revoke(auth.user.id, auth.device).catch(() => {});
         return sendJson(res, 200, { authenticated: singleUser }, { 'Set-Cookie': cookieFor(req, '', 0) });
       }
-      if (url.pathname === '/mcp') {
-        // Bridged agents (Scribe) authenticate with their own per-agent bearer token, not a user session.
-        if (req.method !== 'POST') { res.writeHead(405, { Allow: 'POST', 'Cache-Control': 'no-store' }); return res.end(); }
-        const { agent, reg } = await inboxAgent(req); ctx.reg = reg;
-        const body = await readJson(req, 256 * 1024, true), reply = await mcp(agent, body);
-        if (!reply) { res.writeHead(202, { 'Cache-Control': 'no-store' }); return res.end(); }
-        return sendJson(res, 200, reply);
-      }
       if (parts[0] === 'api' && !auth) throw fault(401, 'Login required');
       if (parts[0] === 'api' && parts[1] === 'auth') {
         const me = auth.user, route = parts[2];
@@ -459,11 +414,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (url.pathname === '/api/connections') {
         if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicConnection) });
         if (req.method === 'POST') {
-          const data = await readJson(req), token = data?.kind === 'mcp-inbox' ? newInboxToken() : null;
+          const data = await readJson(req);
           if (data?.connection === 'machine' || data?.machineId) throw fault(400, 'Machine agents are added by connecting a machine (Manage > Machines)');
-          const m = await store.add(token ? { ...data, inboxTokenHash: token.hash } : data);
-          // Tokens are shown once; only their hashes are stored.
-          return sendJson(res, 201, { connection: publicConnection(m), ...(token ? { inboxToken: token.value, mcpUrl: '/mcp' } : {}) });
+          const m = await store.add(data);
+          return sendJson(res, 201, { connection: publicConnection(m) });
         }
       }
       if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
@@ -509,22 +463,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (url.pathname === '/api/connections/test' && req.method === 'POST') { // Probe a draft without saving; editing drafts inherit saved write-only fields.
         const data = await readJson(req); let prior; try { prior = data?.name ? store.get(data.name) : undefined; } catch {}
         if (prior && data.kind && kindOf(prior) !== data.kind) prior = undefined;
-        const draft = validateConnection(data?.kind === 'mcp-inbox' && !prior ? { ...data, inboxTokenHash: '0'.repeat(64) } : data, prior);
+        const draft = validateConnection(data, prior);
         const result = await probeAny(draft);
         return sendJson(res, 200, { checks: agentView(draft, result, 0).checks, ok: Boolean(result.chatReady || result.online) });
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
         if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicConnection(m) }); }
-        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); inbox.drop(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
-        if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') {
-          const prior = store.get(parts[2]);
-          if (prior.kind !== 'mcp-inbox') throw fault(400, 'This agent has no token'); const t = newInboxToken(); const m = await store.edit(parts[2], { inboxTokenHash: t.hash }); return sendJson(res, 200, { connection: publicConnection(m), inboxToken: t.value, mcpUrl: '/mcp' });
-        }
+        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
-      }
-      if (url.pathname === '/api/history/settings' && ['GET', 'PUT'].includes(req.method)) { // how long the hub keeps chat history for API-key agents (this user only)
-        if (req.method === 'PUT') { const b = await readJson(req, 1024); await history.setRetention(b.retentionDays); for (const a of store.all().filter(m => isChatKind(kindOf(m)))) await ctx.reg.reactions.retain(a.name, history.list(a.name, { limit: 300 }).sessions.map(s => s.id)); }
-        return sendJson(res, 200, { retentionDays: history.retentionDays });
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
         const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, agentView(m, await probeAny(m), i)))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
@@ -536,9 +482,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const sid = sessionId(parts[4]);
           let messages;
           try {
-            messages = isChatKind(kindOf(m)) ? history.messages(m.name, sid, { limit: 1000 }).messages
-              : kindOf(m) === 'mcp-inbox' ? inbox.messages(m.name, sid).messages
-              : normalizeTranscript((await upstream.messages(m, sid)).messages);
+            messages = normalizeTranscript((await upstream.messages(m, sid)).messages);
           } catch (e) { if (e.status === 404) await ctx.reg.reactions.remove(m.name, sid); throw e; }
           current(m);
           const actor = { id: 'user:' + scopeOf(ctx), name: auth?.user?.username || 'You', kind: 'human' };
@@ -616,7 +560,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (parts.length === 5 && req.method === 'DELETE') throw fault(409, 'Hermes owns this queue: a queued message cannot be taken back from here');
           throw fault(404, 'Not found');
         }
-        if (route === 'queue' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) { // the hub-side message queue of one conversation
+        if (route === 'queue' && kindOf(m) === 'hermes') { // the hub-side message queue of one conversation
           const scope = scopeOf(ctx), session = url.searchParams.get('session_id') || '', native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
           if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { ...ctx.reg.coord.list(scope, m.name, session), modes });
           if (parts.length === 5 && parts[4] === 'resume' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, { ...(await ctx.reg.coord.resume(launcher(m, ctx, native), scope, m.name, session)), modes }); }
@@ -631,7 +575,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const images = userImages(flat), r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: images.length ? (flat.text.trim() || 'Look at the attached image.') : text, images, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id }); ctx.reg.activity.touch(m.name, { role: 'user', text, session: data.session_id });
           return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
         }
-        if (route === 'messages' && parts.length === 4 && req.method === 'POST' && ['hermes', ...CHAT_KINDS_LIST].includes(kindOf(m))) {
+        if (route === 'messages' && parts.length === 4 && req.method === 'POST' && kindOf(m) === 'hermes') {
           // Send while the agent may be busy. Persisted + acknowledged first; follow the reply through /runs/{id}/events.
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
           const native = await nativeFor(m), modes = busyModes({ kind: kindOf(m), native });
@@ -648,34 +592,6 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (parts.length === 6 && parts[5] === 'events' && req.method === 'GET') { const r = runs.get(scope, m.name, parts[4]), after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0); return runs.attach(req, res, r, Number.isInteger(after) && after > 0 ? after : 0); }
           if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') { await readJson(req); const r = runs.get(scope, m.name, parts[4]); const confirmed = await ctx.reg.coord.stop(scope, m.name, r.session || '', r); return sendJson(res, 200, { run: runs.view(r), confirmed }); }
           throw fault(404, 'Not found');
-        }
-        if (isChatKind(kindOf(m))) {
-          if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
-            const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
-            const sid = validSessionId(data.session_id) ? data.session_id : newSessionId(), hist = ctx.reg.history;
-            const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-            const res1 = await ctx.reg.coord.submit(launcher(m, ctx, null), { scope: scopeOf(ctx), agent: m.name, session: sid, mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
-            return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
-          }
-          if (route === 'sessions') { // hub-side history (no native sessions on these agents); retention is a per-user setting
-            if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, history.list(m.name, { limit: pageInt(url.searchParams.get('limit'), 1, 100, 30), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0), q: (url.searchParams.get('q') || '').slice(0, 200) }));
-            if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') { const page = history.messages(m.name, sessionId(parts[4]), { limit: pageInt(url.searchParams.get('limit'), 1, 200, 80), offset: pageInt(url.searchParams.get('offset'), 0, 100000, 0) }); for (const x of page?.messages ?? []) if (x.role === 'assistant' && typeof x.content === 'string') media.note(scopeOf(ctx), m.name, x.content); return sendJson(res, 200, page); }
-            if (parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); return sendJson(res, 200, await history.rename(m.name, sessionId(parts[4]), b.title)); }
-            if (parts.length === 5 && req.method === 'DELETE') { await history.remove(m.name, sessionId(parts[4])); await ctx.reg.reactions.remove(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
-          }
-          throw fault(404, 'Not available for this agent');
-        }
-        if (kindOf(m) === 'mcp-inbox') {
-          if (route === 'chat' && parts.length === 4 && req.method === 'POST') {
-            const data = await readJson(req, LIMITS.json), payload = chatBody(data); current(m);
-            const last = [...payload.messages].reverse().find((x) => x.role === 'user');
-            if (!last) throw fault(400, 'Invalid chat messages');
-            const { thread } = inbox.fromOwner(m.name, data.session_id, last.content), who = m.label || m.name;
-            return sse(res, `📬 Delivered to ${who}'s inbox. The reply will appear in this conversation when ${who} checks in.`, { 'X-Hermes-Session-Id': thread });
-          }
-          if (route === 'sessions' && parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { sessions: inbox.sessions(m.name) });
-          if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return sendJson(res, 200, inbox.messages(m.name, sessionId(parts[4])));
-          throw fault(404, 'Not available for this agent');
         }
         if (route === 'files' && parts.length === 4 && req.method === 'POST') {
           const declared = Number(req.headers['content-length']);

@@ -33,14 +33,15 @@ export async function runContract(base, { fetchImpl = fetch, username = 'owner1'
   await call('login', '/api/auth/login', { method: 'POST', body: { ...creds, password: 'wrong wrong wrong' }, status: 401, auth: false }).catch(async (e) => { if (!/got 429|got 403/.test(String(e))) throw e; });
 
   await call('listAgentKinds', '/api/agent-kinds');
-  await call('createConnection', '/api/connections', { method: 'POST', status: 201, body: { kind: 'openai', name: 'contract-chat', baseUrl: 'https://api.example.com/v1', model: 'm', apiKey: 'k' } });
+  // A Hermes agent the hub dials directly; nothing listens on its port, so only hub-side routes are exercised here.
+  const desk = { kind: 'hermes', host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9, apiServerKey: 'contract-secret-key' };
+  await call('createConnection', '/api/connections', { method: 'POST', status: 201, body: { ...desk, name: 'contract-chat' } });
   const list = await call('listConnections', '/api/connections');
   if (!list.connections.some((c) => c.name === 'contract-chat')) throw new Error('created connection is not listed');
-  if (JSON.stringify(list).includes('api.example.com') || JSON.stringify(list).includes('"apiKey"')) throw new Error('listConnections leaked an address or secret');
-  await call('updateConnection', '/api/connections/contract-chat', { method: 'PUT', body: { model: 'm2' } });
-  await call('getHistorySettings', '/api/history/settings'); await call('setHistorySettings', '/api/history/settings', { method: 'PUT', body: { retentionDays: 30 } });
-  await call('listSessions', '/api/agents/contract-chat/sessions?limit=10'); await call('listRuns', '/api/agents/contract-chat/runs'); await call('listCommands', '/api/agents/contract-chat/commands');
-  await call('createConnection', '/api/connections', { method: 'POST', status: 201, body: { kind: 'openai', name: 'contract-two', baseUrl: 'https://api.example.com/v1', model: 'm', apiKey: 'k' } });
+  if (JSON.stringify(list).includes('127.0.0.1') || JSON.stringify(list).includes('contract-secret-key')) throw new Error('listConnections leaked an address or secret');
+  await call('updateConnection', '/api/connections/contract-chat', { method: 'PUT', body: { label: 'Contract' } });
+  await call('listRuns', '/api/agents/contract-chat/runs'); await call('listCommands', '/api/agents/contract-chat/commands');
+  await call('createConnection', '/api/connections', { method: 'POST', status: 201, body: { ...desk, name: 'contract-two' } });
   await call('reorderConnections', '/api/connections/order', { method: 'POST', body: { names: ['contract-two', 'contract-chat'] } });
   await call('listAgents', '/api/agents');
   await call('deleteConnection', '/api/connections/contract-two', { method: 'DELETE' });

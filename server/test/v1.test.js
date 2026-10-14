@@ -1,7 +1,6 @@
 // v1.0: provider plugins + config v3, multi-user accounts/login gate, reverse connector.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { spawn } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -97,13 +96,14 @@ test('per-user registries: agents and secrets are isolated between users', async
   const h = await hub(t); const o = await owner(h);
   await h.call('/api/admin/settings', { token: o, method: 'PUT', data: { registration: 'open' } });
   const alice = (await (await h.call('/api/auth/register', { data: { username: 'alice', password: PW, client: 'app' } })).json()).token;
-  const add = await h.call('/api/connections', { token: o, data: { name: 'Chat', kind: 'openrouter', apiKey: 'sk-or-owner-secret', model: 'x/y' } }); assert.equal(add.status, 201);
+  const desk = { name: 'Chat', host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9 };
+  const add = await h.call('/api/connections', { token: o, data: { ...desk, apiServerKey: 'sk-owner-secret', label: 'Owner desk' } }); assert.equal(add.status, 201);
   assert.deepEqual((await (await h.call('/api/connections', { token: alice })).json()).connections, []);
   assert.deepEqual((await (await h.call('/api/agents', { token: alice })).json()).agents, []);
   assert.equal((await h.call('/api/connections/Chat', { token: alice, method: 'DELETE' })).status, 404);
-  await h.call('/api/connections', { token: alice, data: { name: 'Chat', kind: 'grok', apiKey: 'xai-alice-secret' } });
-  const mine = (await (await h.call('/api/connections', { token: o })).json()).connections; assert.equal(mine.length, 1); assert.equal(mine[0].kind, 'openrouter');
-  const text = await (await h.call('/api/connections', { token: alice })).text(); assert.ok(!text.includes('xai-alice-secret') && !text.includes('sk-or-owner-secret'));
+  assert.equal((await h.call('/api/connections', { token: alice, data: { ...desk, apiServerKey: 'sk-alice-secret', label: 'Alice desk' } })).status, 201);
+  const mine = (await (await h.call('/api/connections', { token: o })).json()).connections; assert.equal(mine.length, 1); assert.equal(mine[0].label, 'Owner desk');
+  const text = await (await h.call('/api/connections', { token: alice })).text(); assert.ok(text.includes('Alice desk') && !text.includes('sk-alice-secret') && !text.includes('sk-owner-secret'));
 });
 
 test('setup code: a hub bound beyond loopback demands the printed setup code', async (t) => {
@@ -122,50 +122,22 @@ test('legacy FOXFLEET_PASSWORD bootstraps owner "owner" and adopts the existing 
   const agents = (await (await h.call('/api/agents', { token: (await r.json()).token })).json()).agents; assert.equal(agents.length, 1);
 });
 
-test('plugins: kinds list api_key chat plugins with auth + warnings; no URLs leak', async (t) => {
+test('kinds: the Hermes schema offers direct connection as an advanced option; no URLs leak', async (t) => {
   const h = await hub(t, { singleUser: true });
   const kinds = (await (await h.call('/api/agent-kinds')).json()).kinds, by = Object.fromEntries(kinds.map((k) => [k.kind, k]));
-  for (const k of ['openai', 'openrouter', 'zai', 'opencode', 'grok']) { assert.deepEqual(by[k].auth, ['api_key']); assert.equal(by[k].capabilities.screen, false); assert.equal(by[k].capabilities.files, false); }
-  assert.ok(by.zai.warnings[0].includes('Coding Plan')); assert.equal(by.zai.capabilities.images, false);
+  assert.deepEqual(Object.keys(by), ['hermes']);
   assert.equal(by.hermes.fields.find((f) => f.key === 'connection').default, 'direct');
   assert.ok(by.hermes.fields.find((f) => f.key === 'host').advanced);
   assert.doesNotMatch(JSON.stringify(kinds), /https?:\/\//);
 });
 
-test('plugins: presets, validation, masking and edit-keeps-secret', async (t) => {
-  const h = await hub(t, { singleUser: true });
-  assert.equal((await h.call('/api/connections', { data: { name: 'R', kind: 'openrouter', model: 'a/b' } })).status, 400, 'key required');
-  const r = await h.call('/api/connections', { data: { name: 'R', kind: 'openrouter', apiKey: 'sk-or-1' } }); assert.equal(r.status, 201);
-  const z = await h.call('/api/connections', { data: { name: 'Z', kind: 'zai', apiKey: 'zk', endpoint: 'coding' } }); assert.equal(z.status, 201);
-  assert.equal((await h.call('/api/connections', { data: { name: 'Z2', kind: 'zai', apiKey: 'zk', endpoint: 'weird' } })).status, 400);
-  const stored = JSON.parse(await readFile(h.configPath, 'utf8')).machines;
-  assert.equal(stored.find((m) => m.name === 'R').baseUrl, 'https://openrouter.ai/api/v1'); assert.match(stored.find((m) => m.name === 'Z').baseUrl, /coding/);
-  const listed = await (await h.call('/api/connections')).text(); assert.doesNotMatch(listed, /sk-or-1|openrouter\.ai|api\.z\.ai/); assert.match(listed, /"hasApiKey":true/);
-  assert.equal((await h.call('/api/connections/R', { method: 'PUT', data: { model: 'c/d', apiKey: '' } })).status, 200);
-  assert.equal(JSON.parse(await readFile(h.configPath, 'utf8')).machines.find((m) => m.name === 'R').apiKey, 'sk-or-1');
-  assert.equal((await h.call('/api/connections', { data: { name: 'G', kind: 'grok', apiKey: 'xai-1' } })).status, 201);
-});
-
-test('plugins: opencode chat streams through a self-hosted base URL with the key sent as bearer', async (t) => {
-  let seen;
-  const up = http.createServer((req, res) => { seen = { auth: req.headers.authorization, url: req.url }; if (req.url.endsWith('/models')) { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify({ data: [{ id: 'm' }] })); } res.writeHead(200, { 'Content-Type': 'text/event-stream' }); res.end('data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: [DONE]\n\n'); });
-  await new Promise((r) => up.listen(0, '127.0.0.1', r)); t.after(() => up.close());
-  const h = await hub(t, { singleUser: true });
-  assert.equal((await h.call('/api/connections', { data: { name: 'Oc', kind: 'opencode', model: 'm', apiKey: 'oc-key', baseUrl: `http://127.0.0.1:${up.address().port}/v1` } })).status, 201);
-  const a = (await (await h.call('/api/agents')).json()).agents[0]; assert.equal(a.chatReady, true); assert.equal(a.kind, 'opencode'); assert.doesNotMatch(JSON.stringify(a), /127\.0\.0\.1/);
-  const chat = await h.call('/api/agents/Oc/chat', { data: { messages: [{ role: 'user', content: 'yo' }] } }); assert.equal(chat.status, 200); assert.match(await chat.text(), /hi/);
-  assert.equal(seen.auth, 'Bearer oc-key'); assert.equal(seen.url, '/v1/chat/completions');
-});
-
-test('migration v2 -> v3: provider hosts become plugins, hermes becomes direct; backup kept', async (t) => {
-  const h = await hub(t, { singleUser: true, raw: { version: 2, machines: [
-    { name: 'A', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'm', apiKey: 'k' },
-    { name: 'B', kind: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', model: 'glm', apiKey: 'k' },
-    { name: 'C', kind: 'openai', baseUrl: 'https://my.llm.example/v1', model: 'm', apiKey: 'k' },
-    { name: 'D', host: '10.0.0.5', profile: 'default', dashboardPort: 9119, apiServerPort: 8642 }] } });
+test('migration v2 -> v3: hermes becomes direct; agents of removed kinds stay in the file untouched; backup kept', async (t) => {
+  t.mock.method(console, 'warn', () => {}); // "ignoring 2 saved agent(s)" (see v05.test.js)
+  const legacy = [{ name: 'A', kind: 'openai', baseUrl: 'https://openrouter.ai/api/v1', model: 'm', apiKey: 'k' }, { name: 'B', kind: 'openai', baseUrl: 'https://api.z.ai/api/coding/paas/v4', model: 'glm', apiKey: 'k' }];
+  const h = await hub(t, { singleUser: true, raw: { version: 2, machines: [...legacy, { name: 'D', host: '10.0.0.5', profile: 'default', dashboardPort: 9119, apiServerPort: 8642 }] } });
   const stored = JSON.parse(await readFile(h.configPath, 'utf8')); assert.equal(stored.version, 3);
-  assert.deepEqual(stored.machines.map((m) => m.kind ?? 'hermes'), ['openrouter', 'zai', 'openai', 'hermes']);
-  assert.equal(stored.machines[1].endpoint, 'coding'); assert.equal(stored.machines[3].connection, 'direct');
+  assert.deepEqual(stored.machines.map((m) => m.name), ['D', 'A', 'B']); assert.deepEqual(stored.machines.slice(1), legacy);
+  assert.equal(stored.machines[0].connection, 'direct');
   assert.match(await readFile(h.configPath + '.v2.bak', 'utf8'), /"version":\s*2/);
 });
 

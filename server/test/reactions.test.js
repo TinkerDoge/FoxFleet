@@ -4,8 +4,21 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { reactionStore, validEmoji, agentReactions, mergeReactions } from '../reactions.js';
-import { historyStore } from '../history.js';
 import { createHub } from '../index.js';
+import { mockHermes } from './fixtures.js';
+
+// A hub with one Hermes agent ("fixture") whose dashboard serves `messages(sessionPath)` for every session transcript.
+async function hermesHub(t, messages) {
+  let route = '';
+  const up = await mockHermes(t, { beforeDashboardResponse: (req, u) => { route = u.pathname; }, get messages() { return messages(route); } });
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-reaction-http-'));
+  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
+  await new Promise(r => hub.listen(0, '127.0.0.1', r));
+  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
+  const call = (p, method = 'GET', body) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+  assert.equal((await call('/api/connections', 'POST', up.connection)).status, 201);
+  return call;
+}
 
 test('reactions persist, retry idempotently, and isolate conversations and actors', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-reactions-'));
@@ -31,39 +44,17 @@ test('emoji validation accepts one complete emoji and rejects text, multiple emo
   for (const e of ['', 'hello', 'a🦊', '🦊🦊', ' ', '1', '<script>', '🦊\n', '🦊\u200b']) assert.equal(validEmoji(e), false, e);
 });
 
-test('legacy and new history messages get distinct persisted IDs, including identical messages', async (t) => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-ids-')); t.after(() => rm(dir, { recursive: true, force: true }));
-  const file = path.join(dir, 'history.json'), now = Date.now();
-  await writeFile(file, JSON.stringify({ version: 1, retentionDays: 90, agents: { a: { sessions: [{ id: 's', title: 't', updated: now, messages: [{ role: 'user', content: 'same', ts: now }, { role: 'user', content: 'same', ts: now }] }] } } }));
-  const h = await historyStore(file); const ids = h.messages('a', 's').messages.map(m => m.id);
-  assert.ok(ids.every(id => typeof id === 'string' && id.length > 0)); assert.equal(new Set(ids).size, 2);
-  await h.flush(); assert.deepEqual((await historyStore(file)).messages('a', 's').messages.map(m => m.id), ids);
-  await h.append('a', 's', 'same', 'answer'); const all = h.messages('a', 's').messages;
-  assert.equal(new Set(all.map(m => m.id)).size, 4);
-  assert.equal(h.messages('a', 's', { limit: 1, offset: 2 }).messages[0].id, ids[1]);
-});
 
-test('HTTP and agent MCP reactions share state, bind actors, and reject other messages', async t => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-reaction-http-'));
-  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
-  await new Promise(r => hub.listen(0, '127.0.0.1', r));
-  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
-  const call = (p, method = 'GET', body, token) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  const added = await (await call('/api/connections', 'POST', { name: 'scribe', kind: 'mcp-inbox' })).json();
-  assert.ok(added.inboxToken);
-  const sent = await call('/api/agents/scribe/chat', 'POST', { messages: [{ role: 'user', content: 'Please check this' }] });
-  const sid = sent.headers.get('x-hermes-session-id'); await sent.text();
-  const message = (await (await call(`/api/agents/scribe/sessions/${sid}/messages`)).json()).messages[0];
-  const endpoint = `/api/agents/scribe/sessions/${sid}/reactions`;
-  const r = await call(endpoint, 'PUT', { message_id: message.id, emoji: '🦊', actor: { id: 'agent:fake' } }); assert.equal(r.status, 200);
-  const human = await r.json(); assert.equal(human.messages[message.id][0].actors[0].kind, 'human');
-  const rpc = await (await call('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hub_react', arguments: { thread_id: sid, message_id: message.id, emoji: '🦊' } } }, added.inboxToken)).json();
-  assert.equal(rpc.result.isError, false);
-  const shared = await (await call(endpoint)).json(); assert.equal(shared.messages[message.id][0].actors.length, 2);
+test('HTTP reactions bind the signed-in actor, merge with the agent\'s REACT: lines, and reject other messages', async t => {
+  const call = await hermesHub(t, () => [{ id: 'u1', role: 'user', content: 'Please check this' }, { id: 'a1', role: 'assistant', content: 'Looks fine\nREACT: 🦊' }]);
+  const endpoint = '/api/agents/fixture/sessions/sess-1/reactions';
+  const r = await call(endpoint, 'PUT', { message_id: 'u1', emoji: '🦊', actor: { id: 'agent:fake' } }); assert.equal(r.status, 200);
+  const human = await r.json(); assert.equal(human.messages.u1[0].actors[0].kind, 'human');
+  const shared = await (await call(endpoint)).json(); assert.equal(shared.messages.u1[0].actors.length, 2);
   assert.equal((await call(endpoint, 'PUT', { message_id: 'fake', emoji: '🦊' })).status, 404);
-  assert.equal((await call(endpoint, 'PUT', { message_id: message.id, emoji: 'not emoji' })).status, 400);
-  await call(endpoint, 'DELETE', { message_id: message.id, emoji: '🦊' });
-  const remaining = await (await call(endpoint)).json(); assert.equal(remaining.messages[message.id][0].actors[0].id, 'agent:scribe');
+  assert.equal((await call(endpoint, 'PUT', { message_id: 'u1', emoji: 'not emoji' })).status, 400);
+  await call(endpoint, 'DELETE', { message_id: 'u1', emoji: '🦊' });
+  const remaining = await (await call(endpoint)).json(); assert.equal(remaining.messages.u1[0].actors[0].id, 'agent:fixture');
 });
 
 test('hidden messages: idempotent, per conversation, survive reload, cleaned with sessions, agents and accounts', async (t) => {
@@ -79,7 +70,6 @@ test('hidden messages: idempotent, per conversation, survive reload, cleaned wit
   assert.deepEqual(again.hidden('a', 's'), ['m1', 'm2']);
   await again.hide('a', 's', 'm2', false); await again.hide('a', 's', 'm2', false);
   assert.deepEqual(again.hidden('a', 's'), ['m1']);
-  await again.retain('a', ['s']); assert.deepEqual(again.hidden('a', 'other'), []); assert.deepEqual(again.hidden('a', 's'), ['m1']);
   await again.remove('a', 's'); assert.deepEqual(again.hidden('a', 's'), []);
   assert.deepEqual(again.hidden('b', 's'), ['m1']); await again.remove('b'); assert.deepEqual(again.hidden('b', 's'), []);
   await again.hide('c', 's', 'x', true); await again.clear(); assert.deepEqual(again.hidden('c', 's'), []);
@@ -115,30 +105,19 @@ test('a REACT: symbol without the emoji variation selector gets one', () => {
 });
 
 test('HTTP: agent REACT: lines show as reactions, and hiding is per account and idempotent', async t => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hide-http-'));
-  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
-  await new Promise(r => hub.listen(0, '127.0.0.1', r));
-  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
-  const call = (p, method = 'GET', body, token) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: { ...(body ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: 'Bearer ' + token } : {}) }, body: body ? JSON.stringify(body) : undefined });
-  const added = await (await call('/api/connections', 'POST', { name: 'scribe', kind: 'mcp-inbox' })).json();
-  const sent = await call('/api/agents/scribe/chat', 'POST', { messages: [{ role: 'user', content: 'I fixed the bug' }] });
-  const sid = sent.headers.get('x-hermes-session-id'); await sent.text();
-  const rpc = await (await call('/mcp', 'POST', { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'hub_post_message', arguments: { thread_id: sid, text: 'Nice work!\nREACT: ❤️' } } }, added.inboxToken)).json();
-  assert.equal(rpc.result.isError, false);
-  const msgs = (await (await call(`/api/agents/scribe/sessions/${sid}/messages`)).json()).messages;
-  const user = msgs.find(m => m.role === 'user'), reply = msgs.find(m => m.role === 'assistant');
-  const snap = await (await call(`/api/agents/scribe/sessions/${sid}/reactions`)).json();
-  assert.deepEqual(snap.messages[user.id], [{ emoji: '❤️', actors: [{ id: 'agent:scribe', name: 'scribe', kind: 'agent' }] }]);
+  const call = await hermesHub(t, () => [{ id: 'u1', role: 'user', content: 'I fixed the bug' }, { id: 'a1', role: 'assistant', content: 'Nice work!\nREACT: ❤️' }]);
+  const snap = await (await call('/api/agents/fixture/sessions/sess-1/reactions')).json();
+  assert.deepEqual(snap.messages.u1, [{ emoji: '❤️', actors: [{ id: 'agent:fixture', name: 'fixture', kind: 'agent' }] }]);
   assert.deepEqual(snap.hidden, []);
-  const hiddenUrl = `/api/agents/scribe/sessions/${sid}/hidden`;
+  const hiddenUrl = '/api/agents/fixture/sessions/sess-1/hidden';
   assert.equal((await call(hiddenUrl, 'PUT', { message_id: 'nope' })).status, 404);
-  const h1 = await (await call(hiddenUrl, 'PUT', { message_id: reply.id })).json();
-  const h2 = await (await call(hiddenUrl, 'PUT', { message_id: reply.id })).json();
-  assert.deepEqual(h1.hidden, [reply.id]); assert.deepEqual(h2.hidden, [reply.id]);
-  assert.deepEqual((await (await call(`/api/agents/scribe/sessions/${sid}/reactions`)).json()).hidden, [reply.id]);
-  assert.deepEqual((await (await call(hiddenUrl, 'DELETE', { message_id: reply.id })).json()).hidden, []);
+  const h1 = await (await call(hiddenUrl, 'PUT', { message_id: 'a1' })).json();
+  const h2 = await (await call(hiddenUrl, 'PUT', { message_id: 'a1' })).json();
+  assert.deepEqual(h1.hidden, ['a1']); assert.deepEqual(h2.hidden, ['a1']);
+  assert.deepEqual((await (await call('/api/agents/fixture/sessions/sess-1/reactions')).json()).hidden, ['a1']);
+  assert.deepEqual((await (await call(hiddenUrl, 'DELETE', { message_id: 'a1' })).json()).hidden, []);
   const agents = (await (await call('/api/agents')).json()).agents;
-  assert.equal(agents.find(a => a.name === 'scribe').capabilities.agentReactions, true);
+  assert.equal(agents.find(a => a.name === 'fixture').capabilities.agentReactions, true);
 });
 
 test('hidden messages: the global cap evicts the oldest, the per-conversation cap rejects', async (t) => {
@@ -170,17 +149,8 @@ test('mergeReactions copes with a message id of __proto__', () => {
 });
 
 test('HTTP: /hidden refuses ids from another conversation and other methods', async t => {
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'ff-hide-http2-'));
-  const hub = await createHub({ configPath: path.join(dir, 'config.json'), singleUser: true });
-  await new Promise(r => hub.listen(0, '127.0.0.1', r));
-  t.after(async () => { hub.closeAllConnections(); await new Promise(r => hub.close(r)); await rm(dir, { recursive: true, force: true, maxRetries: 5 }); });
-  const call = (p, method = 'GET', body) => fetch(`http://127.0.0.1:${hub.address().port}${p}`, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
-  await call('/api/connections', 'POST', { name: 'scribe', kind: 'mcp-inbox' });
-  const chat = async (text) => { const r = await call('/api/agents/scribe/chat', 'POST', { messages: [{ role: 'user', content: text }] }); const sid = r.headers.get('x-hermes-session-id'); await r.text(); return sid; };
-  const one = await chat('first'), two = await chat('second');
-  assert.notEqual(one, two);
-  const other = (await (await call(`/api/agents/scribe/sessions/${two}/messages`)).json()).messages.find(m => m.role === 'user');
-  assert.ok(other?.id);
-  assert.equal((await call(`/api/agents/scribe/sessions/${one}/hidden`, 'PUT', { message_id: other.id })).status, 404);
-  assert.equal((await call(`/api/agents/scribe/sessions/${one}/hidden`, 'POST', { message_id: other.id })).status, 405);
+  const call = await hermesHub(t, (route) => route.includes('/one/') ? [{ id: 'm-one', role: 'user', content: 'first' }] : [{ id: 'm-two', role: 'user', content: 'second' }]);
+  assert.equal((await call('/api/agents/fixture/sessions/one/hidden', 'PUT', { message_id: 'm-two' })).status, 404);
+  assert.equal((await call('/api/agents/fixture/sessions/two/hidden', 'PUT', { message_id: 'm-two' })).status, 200);
+  assert.equal((await call('/api/agents/fixture/sessions/one/hidden', 'POST', { message_id: 'm-one' })).status, 405);
 });

@@ -28,35 +28,67 @@ function assertNoLeaks(label, body) {
 test('privacy: agent and connection lists, detail, kinds and test results contain no IP, URL or host:port', async (t) => {
   const mock = await mockHermes(t);
   const { request } = await setup(t, { version: 2, machines: [{ ...mock.connection, name: 'Atlas', dashboardUrl: 'https://box-01.lan:9443', uploadDir: '/home/atlas/up', description: 'Studio lead' }] });
-  const glm = await request('/api/connections', { name: 'GLM', kind: 'openai', baseUrl: 'http://192.0.2.10:8080/v1', model: 'glm-5.3', apiKey: 'sk-secret-value-123456' }, 'POST');
-  assert.equal(glm.status, 201); const created = await glm.json(); assertNoLeaks('create', created); assert.equal(created.connection.hasBaseUrl, true);
-  const muse = await (await request('/api/connections', { name: 'Scribe', kind: 'mcp-inbox', label: 'Scribe' }, 'POST')).json();
-  assert.equal(typeof muse.inboxToken, 'string'); assertNoLeaks('inbox create', muse);
+  const desk = await request('/api/connections', { name: 'Desk', kind: 'hermes', host: '192.0.2.10', dashboardPort: 8080, apiServerKey: 'sk-secret-value-123456', apiServerUrl: 'https://desk.internal' }, 'POST');
+  assert.equal(desk.status, 201); const created = await desk.json(); assertNoLeaks('create', created); assert.equal(created.connection.hasHost, true); assert.equal(created.connection.hasApiServerUrl, true);
   const agents = await (await request('/api/agents')).json(); assertNoLeaks('/api/agents', agents);
   for (const a of agents.agents) {
     assert.deepEqual(Object.keys(a).filter((k) => !['id', 'name', 'displayName', 'kind', 'order', 'description', 'avatar', 'status', 'online', 'chatReady', 'managementReady', 'capabilities', 'activeSessions', 'last_activity_at', 'last_session_title', 'last_message_preview', 'last_role', 'pinned', 'pin_order', 'working', 'needs_input', 'lastSeen', 'checks'].includes(k)), [], a.name);
     for (const k of ['host', 'profile', 'baseUrl', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'model', 'version']) assert.equal(a[k], undefined, `${a.name}.${k}`);
   }
-  assert.deepEqual(agents.agents.map((a) => a.kind), ['hermes', 'openai', 'mcp-inbox']);
+  assert.deepEqual(agents.agents.map((a) => a.kind), ['hermes', 'hermes']);
   assertNoLeaks('/api/agents?bridged=1', await (await request('/api/agents?bridged=1')).json());
   assertNoLeaks('/api/agents/Atlas', await (await request('/api/agents/Atlas')).json());
   const connections = await (await request('/api/connections')).json(); assertNoLeaks('/api/connections', connections);
   assert.ok(!JSON.stringify(connections).includes('sk-secret-value') && !JSON.stringify(connections).includes('/home/atlas'));
   assertNoLeaks('/api/agent-kinds', await (await request('/api/agent-kinds')).json());
   assertNoLeaks('saved test', await (await request('/api/connections/Atlas/test', {}, 'POST')).json());
-  assertNoLeaks('draft test', await (await request('/api/connections/test', { name: 'Draft', kind: 'openai', baseUrl: 'http://127.0.0.1:9/v1', model: 'x' }, 'POST')).json());
+  assertNoLeaks('draft test', await (await request('/api/connections/test', { name: 'Draft', kind: 'hermes', host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9 }, 'POST')).json());
   assertNoLeaks('edit', await (await request('/api/connections/Atlas', { description: 'Lead' }, 'PUT')).json());
 });
 
-test('registry: kinds expose schemas; planned kinds are listed but rejected', async (t) => {
+test('registry: only the Hermes kind is offered; other kinds are rejected', async (t) => {
   const { request } = await setup(t);
   const { kinds } = await (await request('/api/agent-kinds')).json();
-  assert.deepEqual(kinds.map((k) => k.kind), ['hermes', 'openai', 'openrouter', 'zai', 'opencode', 'grok', 'mcp-inbox', 'a2a', 'webhook']);
-  const hermes = kinds.find((k) => k.kind === 'hermes');
+  assert.deepEqual(kinds.map((k) => k.kind), ['hermes']);
+  const hermes = kinds[0];
   assert.equal(hermes.fields.find((f) => f.key === 'host').writeOnly, true); assert.equal(hermes.fields.find((f) => f.key === 'dashboardPass').writeOnly, true);
   assert.equal(hermes.fields.find((f) => f.key === 'profile').writeOnly, false); assert.equal(hermes.capabilities.screen, true);
-  assert.equal(kinds.find((k) => k.kind === 'a2a').planned, true);
-  const r = await request('/api/connections', { name: 'x', kind: 'a2a' }, 'POST'); assert.equal(r.status, 400); assert.match((await r.json()).error, /not available yet/);
+  for (const kind of ['openai', 'openrouter', 'zai', 'opencode', 'grok', 'mcp-inbox', 'a2a', 'webhook']) {
+    const r = await request('/api/connections', { name: 'x', kind, apiKey: 'k', model: 'm' }, 'POST'); assert.equal(r.status, 400, kind); assert.match((await r.json()).error, /Invalid agent kind/);
+  }
+  assert.equal((await request('/api/connections', { name: 'desk', host: '127.0.0.1' }, 'POST')).status, 201);
+  assert.equal((await request('/api/connections/desk', { kind: 'openai' }, 'PUT')).status, 400, 'kind cannot change');
+});
+
+test('registry: saved agents of a kind this hub does not run are ignored with one warning and kept on disk unchanged', async (t) => {
+  const mock = await mockHermes(t);
+  const legacy = [
+    { name: 'GLM', kind: 'openai', baseUrl: 'https://api.z.ai/api/paas/v4', model: 'glm-5.1', apiKey: 'sk-legacy-secret-1234', label: 'GLM' },
+    { name: 'Scribe', kind: 'mcp-inbox', inboxTokenHash: 'a'.repeat(64) },
+    { name: 'Grok', kind: 'grok', baseUrl: 'https://api.x.ai/v1', model: 'grok-4.7', apiKey: 'xai-legacy' },
+  ];
+  const raw = { version: 2, machines: [mock.connection, ...legacy] };
+  const warn = t.mock.method(console, 'warn', () => {});
+  const { request, configPath } = await setup(t, raw);
+  assert.equal(warn.mock.callCount(), 1); assert.match(warn.mock.calls[0].arguments[0], /ignoring 3 saved agent\(s\) .*\(openai, mcp-inbox, grok\)/);
+  assert.deepEqual(JSON.parse(await readFile(configPath + '.v2.bak', 'utf8')), raw, 'the migration backup is the original file');
+  const kept = async () => JSON.parse(await readFile(configPath, 'utf8')).machines.filter((m) => (m.kind ?? 'hermes') !== 'hermes');
+  assert.deepEqual(await kept(), legacy, 'the migration kept them verbatim');
+  // Invisible to clients, and their names stay taken.
+  assert.deepEqual((await (await request('/api/agents')).json()).agents.map((a) => a.name), ['fixture']);
+  assert.deepEqual((await (await request('/api/connections')).json()).connections.map((c) => c.name), ['fixture']);
+  assert.equal((await request('/api/agents/GLM')).status, 404);
+  assert.equal((await request('/api/connections/GLM', undefined, 'DELETE')).status, 404);
+  assert.equal((await request('/api/connections', { name: 'GLM', host: '127.0.0.1' }, 'POST')).status, 409);
+  // Every save writes them back unchanged.
+  assert.equal((await request('/api/connections/fixture', { label: 'Atlas' }, 'PUT')).status, 200);
+  assert.equal((await request('/api/connections', { name: 'desk', host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9 }, 'POST')).status, 201);
+  assert.deepEqual((await (await request('/api/connections/order', { names: ['desk', 'fixture'] }, 'POST')).json()).order, ['desk', 'fixture']);
+  assert.equal((await request('/api/connections/desk', undefined, 'DELETE')).status, 200);
+  assert.deepEqual(await kept(), legacy);
+  // A restart loads the same file again without failing.
+  warn.mock.resetCalls(); const again = await createHub({ configPath, singleUser: true }); again.close();
+  assert.equal(warn.mock.callCount(), 1); assert.deepEqual(await kept(), legacy);
 });
 
 test('registry: blank write-only fields keep saved values; secrets never round-trip', async (t) => {
@@ -74,7 +106,7 @@ test('registry: blank write-only fields keep saved values; secrets never round-t
 
 test('registry: reorder lists every agent once and drives /api/agents order', async (t) => {
   const { request } = await setup(t);
-  for (const name of ['a', 'b', 'c']) assert.equal((await request('/api/connections', { name, kind: 'mcp-inbox' }, 'POST')).status, 201);
+  for (const name of ['a', 'b', 'c']) assert.equal((await request('/api/connections', { name, host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9 }, 'POST')).status, 201);
   assert.equal((await request('/api/connections/order', { names: ['c', 'a'] }, 'POST')).status, 400);
   assert.equal((await request('/api/connections/order', { names: ['c', 'a', 'a'] }, 'POST')).status, 400);
   assert.deepEqual((await (await request('/api/connections/order', { names: ['c', 'a', 'b'] }, 'POST')).json()).order, ['c', 'a', 'b']);

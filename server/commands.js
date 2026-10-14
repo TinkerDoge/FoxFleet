@@ -7,17 +7,8 @@ const HUB = {
   steer: { handler: 'hub:steer', busy: 'control' },
   busy: { handler: 'hub:busy', busy: 'control' },
 };
-const GENERIC = [
-  { name: 'new', aliases: ['reset'], description: 'Start a new chat', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'new' },
-  { name: 'history', aliases: ['sessions', 'resume'], description: 'Browse previous chats', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'history' },
-  { name: 'retry', aliases: [], description: 'Send the last message again', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'retry' },
-  { name: 'title', aliases: [], description: 'Rename this chat', category: 'Session', args: '[name]', subcommands: [], availability: 'app', app: 'title' },
-  { name: 'stop', aliases: [], description: 'Stop the reply that is running', category: 'Session', args: '', subcommands: [], availability: 'app', app: 'stop' },
-  { name: 'queue', aliases: ['q'], description: 'Queue a message for the next turn', category: 'Session', args: '[<prompt>|list|rm N|clear]', subcommands: ['list', 'rm', 'clear', 'add'], availability: 'chat' },
-  { name: 'busy', aliases: [], description: 'Choose how messages behave while the agent is replying', category: 'Configuration', args: '[queue|interrupt|status]', subcommands: ['queue', 'interrupt', 'status'], availability: 'app' },
-];
 export function catalogFor({ kind, bundled, modes }) {
-  const base = kind === 'hermes' ? bundled : kind === 'mcp-inbox' ? [] : GENERIC;
+  const base = kind === 'hermes' ? bundled : []; // other kinds bring their own catalog when they return
   return base.map((c) => {
     const hub = HUB[c.name], out = { ...c };
     if (hub) {
