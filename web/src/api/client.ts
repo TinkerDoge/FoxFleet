@@ -217,13 +217,11 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     // ---- agent registry (owner) ----
     agentKinds: async (): Promise<AgentKind[]> => parseKinds(await request('/api/agent-kinds')),
     savedAgents: async (): Promise<SavedAgent[]> => ((await request<any>('/api/connections')).connections ?? []).map(parseSaved),
-    addAgent: async (fields: object): Promise<SaveResult> => { const o = await request<any>('/api/connections', { body: fields }); return { agent: parseSaved(o.connection), inboxToken: o.inboxToken }; },
+    addAgent: async (fields: object): Promise<SaveResult> => { const o = await request<any>('/api/connections', { body: fields }); return { agent: parseSaved(o.connection) }; },
     editAgent: async (name: string, fields: object): Promise<SaveResult> => ({ agent: parseSaved((await request<any>('/api/connections/' + enc(name), { method: 'PUT', body: fields })).connection) }),
     deleteAgent: (name: string) => request<unknown>('/api/connections/' + enc(name), { method: 'DELETE' }),
     reorderAgents: (names: string[]) => request<unknown>('/api/connections/order', { body: { names } }),
     testAgent: async (fields: object): Promise<TestResult> => parseTest(await request('/api/connections/test', { body: fields })),
-    /** A new MCP token for an inbox agent (the old one stops working at once). */
-    newToken: async (name: string): Promise<{ inboxToken?: string }> => { const o = await request<any>('/api/connections/' + enc(name) + '/token', { body: {} }); return { inboxToken: o.inboxToken }; },
 
     // ---- machines: one connector per computer, paired with a short-lived code ----
     machines: async (): Promise<Machine[]> => ((await request<{ machines?: Machine[] }>('/api/machines')).machines ?? []),
@@ -249,8 +247,6 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     deleteSession: (agent: string, id: string) => request<unknown>(`/api/agents/${enc(agent)}/sessions/${enc(id)}`, { method: 'DELETE' }),
     /** Slash-command catalog for this agent. A connected Hermes gateway replaces the bundled list's skills and adds commands it discovered. `session` is the stored chat id, so project skills follow that conversation. */
     commands: async (agent: string, session?: string): Promise<Catalog> => { try { const r = await request<any>(`/api/agents/${enc(agent)}/commands${session ? `?session=${enc(session)}` : ''}`); const skills = Array.isArray(r.skills) ? [...new Set<string>(r.skills.filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200) : []; return { source: String(r.source ?? ''), commands: Array.isArray(r.commands) ? r.commands : [], ...(skills.length ? { skills } : {}), ...(typeof r.warning === 'string' && r.warning ? { warning: r.warning } : {}) }; } catch (e) { if (e instanceof AuthRequiredError) throw e; return BUNDLED_CATALOG; } },
-    historyRetention: async (): Promise<number> => Number((await request<any>('/api/history/settings')).retentionDays),
-    setHistoryRetention: (retentionDays: number) => request<unknown>('/api/history/settings', { method: 'PUT', body: { retentionDays } }),
     skills: async (agent: string): Promise<string[]> => { try { const o = await request<any>(`/api/agents/${enc(agent)}/skills`); const a = o.skills ?? o.data ?? []; return [...new Set<string>(a.map((x: any) => (typeof x === 'string' ? x : x?.name)).filter((x: unknown): x is string => typeof x === 'string' && !!x))].slice(0, 200); } catch (e) { if (e instanceof AuthRequiredError) throw e; return []; } },
 
     /**

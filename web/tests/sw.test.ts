@@ -29,9 +29,9 @@ describe('service worker', () => {
     const sw = load('abc'); let done: Promise<any> = Promise.resolve(); await sw.listeners.install({ waitUntil: (p: Promise<any>) => (done = p) }); await done;
     expect([...sw.store.keys()]).toEqual(['foxfleet-shell-abc']); expect([...sw.store.get('foxfleet-shell-abc')!.keys()]).toEqual(['/', '/index.html', '/assets/app-AbCd1234.js']);
   });
-  it('NEVER intercepts the API, health, mcp, connector, pairing page or non-GET / cross-origin / range requests', () => {
+  it('NEVER intercepts the API, health, connector, pairing page or non-GET / cross-origin / range requests', () => {
     const sw = load();
-    for (const u of ['/api/agents', '/api/auth', '/api/agents/a/chat', '/api/agents/a/screen/ws', '/health', '/mcp', '/connector.mjs', '/pair', '/avatars/x.png']) expect(sw.fire({ url: O + u }), u).toBeNull();
+    for (const u of ['/api/agents', '/api/auth', '/api/agents/a/chat', '/api/agents/a/screen/ws', '/health', '/connector.mjs', '/pair', '/avatars/x.png']) expect(sw.fire({ url: O + u }), u).toBeNull();
     expect(sw.fire({ url: O + '/assets/app-AbCd1234.js', method: 'POST' })).toBeNull();
     expect(sw.fire({ url: 'https://cdn.example.net/assets/x.js' })).toBeNull();
     expect(sw.fire({ url: O + '/assets/app-AbCd1234.js', headers: { range: 'bytes=0-9' } })).toBeNull();

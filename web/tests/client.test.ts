@@ -37,7 +37,7 @@ describe('api client', () => {
     expect(seen.url).toBe('https://hub.example.com/api/auth/register'); expect(seen.init.credentials).toBe('same-origin');
     expect(JSON.parse(seen.init.body)).toEqual({ username: 'al', password: 'pw-pw-pw-pw', invite: 'CODE1234', client: 'web' });
   });
-  it('lists agents', async () => { expect(await client(reply(200, { agents: [{ id: 'a', name: 'A', kind: 'openai', online: true, chatReady: true }] }) as any).agents()).toHaveLength(1); });
+  it('lists agents', async () => { expect(await client(reply(200, { agents: [{ id: 'a', name: 'A', kind: 'hermes', online: true, chatReady: true }] }) as any).agents()).toHaveLength(1); });
 });
 
 describe('auth mode and strings', () => {

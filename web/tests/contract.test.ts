@@ -16,6 +16,6 @@ describe('contract: web mock hub honours contract/openapi.json (same scenario as
   it('the web registry parser accepts what the contract says agent-kinds look like', async () => {
     const cookie = await fetch(base + '/api/auth/login', { method: 'POST', body: JSON.stringify({ username: 'a', password: 'b', client: 'app' }) }).then((r) => r.json());
     const kinds = parseKinds(await (await fetch(base + '/api/agent-kinds', { headers: { Authorization: `Bearer ${cookie.token}` } })).json());
-    expect(kinds.map((k) => k.kind)).toEqual(['hermes', 'openai', 'openrouter']); expect(spec.paths['/api/agent-kinds']).toBeTruthy();
+    expect(kinds.map((k) => k.kind)).toEqual(['hermes']); expect(spec.paths['/api/agent-kinds']).toBeTruthy();
   });
 });

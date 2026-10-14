@@ -14,7 +14,7 @@ const reactions = {}; // session key -> message id -> [{ emoji, actors }]
 const hidden = {}; // session key -> [message id] (Delete for me)
 const toolHold = Number(process.env.MOCK_TOOL_HOLD || 1200); // how long each mock tool call stays on screen
 const NATIVE = process.env.MOCK_NATIVE === '1'; // atlas behaves like a native Hermes session: cards, acknowledgements, model picker
-const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, ...o });
+const caps = (o) => ({ chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, ...o });
 const REPLY = `Here is the **weekly summary** you asked for. Atlas handled most of the load, and Friday was the busiest day.
 
 | Agent | Tokens | Status |
@@ -35,7 +35,7 @@ def weekly_tokens(rows):
 
 ![Tokens per day, last 7 days](/api/agents/atlas/media/chart.png)
 
-Next step: rotate Echo's API key, then I can re-run the report. Want me to open a task for it?
+Next step: bring Echo's machine back online, then I can re-run the report. Want me to open a task for it?
 `;
 
 export function createMock({ dist = path.join(here, '..', 'dist'), delay = Number(process.env.MOCK_DELAY || 25), setupFirst = process.env.MOCK_SETUP === '1' } = {}) {
@@ -45,10 +45,6 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
       field('connection', 'Connection', 'enum', { options: ['direct'], default: 'direct', help: 'Advanced: the hub dials the agent. Use Connect a machine for the normal outbound-only setup.' }),
       field('host', 'Address', 'text', { required: true, writeOnly: true, advanced: true, when: { connection: 'direct' } }), field('port', 'Port', 'port', { advanced: true, when: { connection: 'direct' } }),
       field('apiKey', 'API key', 'secret', { writeOnly: true, advanced: true })] },
-    { kind: 'openai', label: 'OpenAI-compatible', summary: 'Any chat API that speaks the OpenAI format.', planned: false, auth: ['api_key'], warnings: [], fields: [
-      field('name', 'ID', 'text', { required: true }), field('label', 'Display name', 'text'), field('baseUrl', 'Base URL', 'url', { required: true, writeOnly: true }), field('apiKey', 'API key', 'secret', { required: true, writeOnly: true }), field('model', 'Model', 'text', { required: true })] },
-    { kind: 'openrouter', label: 'OpenRouter', summary: 'One key, many models.', planned: false, auth: ['api_key'], warnings: [], fields: [
-      field('name', 'ID', 'text', { required: true }), field('apiKey', 'API key', 'secret', { required: true, writeOnly: true }), field('model', 'Model', 'text', { required: true })] },
   ];
   let setupDone = !setupFirst, registration = 'invite';
   const sessions = new Map(); // token -> user
@@ -56,8 +52,8 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     { name: 'atlas', kind: 'hermes', label: 'Atlas', description: 'Research and code on the workstation', connection: 'machine', hasHost: false },
     { name: 'coder', kind: 'hermes', label: 'Coder', description: 'Reviews and refactors the repos', connection: 'machine', hasHost: false },
     { name: 'research', kind: 'hermes', label: 'Research', description: 'Reads papers and summarises them', connection: 'machine', hasHost: false },
-    { name: 'nova', kind: 'openrouter', label: 'Nova', hasApiKey: true, model: 'vendor/model-large' },
-    { name: 'echo', kind: 'openai', label: 'Echo', hasApiKey: true, model: 'chat-small', hasBaseUrl: true },
+    { name: 'nova', kind: 'hermes', label: 'Nova', description: 'Writes and edits on the laptop', connection: 'direct', hasHost: true },
+    { name: 'echo', kind: 'hermes', label: 'Echo', description: 'Home server helper', connection: 'direct', hasHost: true },
   ];
   const users = [{ id: 'u1', username: 'owner1', role: 'owner', disabled: false, created: Date.now() - 9e8 }, { id: 'u2', username: 'guest1', role: 'user', disabled: false, created: Date.now() - 3e8 }];
   const ALPHA = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789', pairings = new Map();
@@ -68,8 +64,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
   const devices = [{ id: 'd1', name: 'Desktop browser', kind: 'web', created: Date.now() - 5e8, lastSeen: Date.now() - 1000 }, { id: 'd2', name: 'Phone', kind: 'app', created: Date.now() - 4e8, lastSeen: Date.now() - 36e5 }, { id: 'd3', name: 'Laptop', kind: 'web', created: Date.now() - 2e8, lastSeen: Date.now() - 86400e3 }];
   let lease = null, screenOn = true;
   const agentsOut = () => saved.map((s) => ({ id: s.name, name: s.name, displayName: s.label || s.name, kind: s.kind, online: s.name !== 'echo', chatReady: true, managementReady: s.kind === 'hermes', description: s.description || '',
-    capabilities: s.kind === 'hermes' ? caps({ images: true, files: true, voice: true, skills: true, screen: true, reactions: true, busy: ['queue', 'steer', 'interrupt'], ...(NATIVE ? { nativeUi: true } : {}) }) : caps({ images: s.name === 'nova', sessions: false, busy: ['queue', 'interrupt'] }) }));
-  let retention = 90;
+    capabilities: caps({ images: true, files: true, voice: true, skills: true, screen: true, reactions: true, busy: ['queue', 'steer', 'interrupt'], ...(NATIVE ? { nativeUi: true } : {}) }) }));
   const H = 3600_000, T0 = Date.now();
   const chatSessions = { atlas: [
     { id: 'sess_a1', title: 'Weekly usage summary', updated: T0 - 0.4 * H, messages: 6, preview: 'Atlas handled most of the load, and the cheap model took the rest.' },
@@ -130,8 +125,7 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (us && m === 'PATCH') { const b = await body(req), u = users.find((x) => x.id === us[1]); if (!u) return json(res, 404, { error: 'Unknown user' }); if (u.role === 'owner') return json(res, 400, { error: 'The owner cannot be disabled' }); u.disabled = Boolean(b.disabled); return json(res, 200, { user: publicUser(u) }); }
     if (p === '/api/media-proxy') return /^https:/.test(url.searchParams.get('url') || '') ? json(res, 403, { error: 'That address is not allowed' }) : json(res, 400, { error: 'Only https images can be proxied' });
     if (p === '/api/agents') return json(res, 200, { agents: agentsOut() });
-    if (p === '/api/history/settings') { if (m === 'PUT') { const b = await body(req); retention = b.retentionDays; } return json(res, 200, { retentionDays: retention }); }
-    if (/^\/api\/agents\/[^/]+\/commands$/.test(p)) { const kind = saved.find((x) => x.name === p.split('/')[3])?.kind ?? 'openai', modes = kind === 'hermes' ? ['queue', 'steer', 'interrupt'] : ['queue', 'interrupt']; return json(res, 200, { source: kind === 'hermes' ? 'bundled' : 'local', busy: modes, commands: catalogFor({ kind, bundled: HERMES.commands, modes }) }); }
+    if (/^\/api\/agents\/[^/]+\/commands$/.test(p)) { const kind = saved.find((x) => x.name === p.split('/')[3])?.kind ?? 'hermes', modes = kind === 'hermes' ? ['queue', 'steer', 'interrupt'] : ['queue', 'interrupt']; return json(res, 200, { source: kind === 'hermes' ? 'bundled' : 'local', busy: modes, commands: catalogFor({ kind, bundled: HERMES.commands, modes }) }); }
     if (NATIVE && /^\/api\/agents\/[^/]+\/native\/models$/.test(p)) return json(res, 200, { providers: [{ slug: 'openrouter', name: 'OpenRouter', current: true, models: ['anthropic/claude-sonnet', 'openai/gpt-5', 'z-ai/glm-4.6'] }, { slug: 'custom', name: 'Local', current: false, models: ['qwen3-coder'] }] });
     if (NATIVE && /^\/api\/agents\/[^/]+\/native\/busy$/.test(p)) { if (m === 'POST') await body(req); return json(res, 200, { mode: 'queue', scope: 'profile' }); }
     if (NATIVE && /\/native\/sessions\/[^/]+\/(model|requests\/[^/]+)$/.test(p)) { await body(req); return json(res, 200, { ok: true, model: 'openai/gpt-5', scope: 'session' }); }
@@ -140,13 +134,12 @@ export function createMock({ dist = path.join(here, '..', 'dist'), delay = Numbe
     if (/^\/api\/agents\/[^/]+\/runs$/.test(p)) return json(res, 200, { runs: [] });
     if (p === '/api/agent-kinds') return json(res, 200, { kinds });
     if (p === '/api/connections' && m === 'GET') return json(res, 200, { connections: saved });
-    if (p === '/api/connections' && m === 'POST') { const b = await body(req); const c = { name: b.name, kind: b.kind, label: b.label || '', hasApiKey: !!b.apiKey }; saved.push(c);
+    if (p === '/api/connections' && m === 'POST') { const b = await body(req); const c = { name: b.name, kind: b.kind ?? 'hermes', label: b.label || '', connection: 'direct', hasHost: !!b.host }; saved.push(c);
       return json(res, 201, { connection: c }); }
     if (p === '/api/connections/order') { const { names } = await body(req); saved = names.map((n) => saved.find((s) => s.name === n)).filter(Boolean); return json(res, 200, { order: saved.map((s) => s.name) }); }
     if (p === '/api/connections/test') { await body(req); await new Promise((r) => setTimeout(r, 200)); return json(res, 200, { ok: true, checks: { api: { ok: true, message: 'Reachable' }, connector: { ok: true, message: 'Connected' } } }); }
-    const c = /^\/api\/connections\/([^/]+)(\/token)?$/.exec(p);
-    if (c && c[2] && m === 'POST') return json(res, 200, { bootstrap: 'Connect this machine to my Foxfleet hub. Token: fft_EXAMPLE_NEW_TOKEN' });
-    if (c && m === 'PUT') { await body(req); return json(res, 200, { connection: saved.find((s) => s.name === decodeURIComponent(c[1])) ?? { name: c[1], kind: 'openai' } }); }
+    const c = /^\/api\/connections\/([^/]+)$/.exec(p);
+    if (c && m === 'PUT') { await body(req); return json(res, 200, { connection: saved.find((s) => s.name === decodeURIComponent(c[1])) ?? { name: c[1], kind: 'hermes' } }); }
     if (c && m === 'DELETE') { saved = saved.filter((s) => s.name !== decodeURIComponent(c[1])); return json(res, 200, { ok: true }); }
     // Reactions: one in-memory store, the signed-in owner as "you", the agent already reacted to the first answer.
     const rx = /^\/api\/agents\/([^/]+)\/sessions\/([^/]+)\/(reactions|hidden)$/.exec(p);

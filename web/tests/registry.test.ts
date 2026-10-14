@@ -65,8 +65,8 @@ describe('api client: registry and chat', () => {
     const f = (async (url: string, init: any = {}) => { seen.push([init.method ?? 'GET', url.replace('https://hub.example.com', ''), init.body ? JSON.parse(init.body) : undefined]); return new Response(JSON.stringify({ kinds: [], connections: [], connection: { name: 'a', kind: 'hermes' }, checks: { api: { ok: false, message: 'refused at 10.0.0.9:80' } } }), { status: 200, headers: { 'content-type': 'application/json' } }); }) as any;
     const cl = c(f);
     await cl.agentKinds(); await cl.savedAgents(); await cl.addAgent({ kind: 'hermes', name: 'a' }); await cl.editAgent('a b', { description: 'x' }); await cl.deleteAgent('a'); await cl.reorderAgents(['b', 'a']);
-    const t = await cl.testAgent({ name: 'a' }); await cl.newToken('a');
-    expect(seen.map(([m, u]) => `${m} ${u}`)).toEqual(['GET /api/agent-kinds', 'GET /api/connections', 'POST /api/connections', 'PUT /api/connections/a%20b', 'DELETE /api/connections/a', 'POST /api/connections/order', 'POST /api/connections/test', 'POST /api/connections/a/token']);
+    const t = await cl.testAgent({ name: 'a' });
+    expect(seen.map(([m, u]) => `${m} ${u}`)).toEqual(['GET /api/agent-kinds', 'GET /api/connections', 'POST /api/connections', 'PUT /api/connections/a%20b', 'DELETE /api/connections/a', 'POST /api/connections/order', 'POST /api/connections/test']);
     expect(seen[5][2]).toEqual({ names: ['b', 'a'] }); expect(t.checks[0][1].message).not.toMatch(/10\.0/);
   });
   it('lists sessions and skills, tolerating shape variants and failures', async () => {

@@ -49,8 +49,7 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
   const saved = initial.saved; const editing = Boolean(saved);
   const [kind, setKind] = useState<AgentKind | undefined>(initial.kind);
   const [form, setForm] = useState<Form>(() => ({ ...(saved?.values ?? {}) }));
-  const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState<'test' | 'save' | 'token' | null>(null), [test, setTest] = useState<TestResult | null>(null);
-  const [secret, setSecret] = useState<{ title: string; text: string } | null>(null), [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null), [busy, setBusy] = useState<'test' | 'save' | null>(null), [test, setTest] = useState<TestResult | null>(null);
   if (!kind) {
     return (
       <div class="page"><header class="page-head"><h1>{t('manage.pickType')}</h1><TextButton onClick={onClose}>{t('manage.back')}</TextButton></header>
@@ -61,25 +60,14 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
   const set = (key: string, v: string) => { setForm((f) => ({ ...f, [key]: v })); setTest(null); };
   const fields = kind.fields.filter((f) => visible(f, form, kind));
   const problem = validate(kind, form, editing, saved);
-  const guard = async (which: 'test' | 'save' | 'token', fn: () => Promise<void>) => { setBusy(which); setError(null); try { await fn(); } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError(fail(e)); } finally { setBusy(null); } };
+  const guard = async (which: 'test' | 'save', fn: () => Promise<void>) => { setBusy(which); setError(null); try { await fn(); } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError(fail(e)); } finally { setBusy(null); } };
   const body = () => ({ ...payload(kind, form, editing), ...(editing ? { name: saved!.name, kind: kind.kind } : {}) });
   const doTest = () => guard('test', async () => setTest(await client.testAgent(body())));
   const doSave = () => guard('save', async () => {
-    const r = editing ? await client.editAgent(saved!.name, payload(kind, form, true)) : await client.addAgent(payload(kind, form, false));
+    if (editing) await client.editAgent(saved!.name, payload(kind, form, true)); else await client.addAgent(payload(kind, form, false));
     await onSaved();
-    if (r.inboxToken) setSecret({ title: t('manage.inboxTitle'), text: r.inboxToken });
-    else onClose();
+    onClose();
   });
-  const newToken = () => guard('token', async () => { const r = await client.newToken(saved!.name); if (r.inboxToken) setSecret({ title: t('manage.inboxTitle'), text: r.inboxToken }); });
-  if (secret) {
-    return (
-      <div class="page"><header class="page-head"><h1>{secret.title}</h1></header>
-        <div class="card stack"><p class="muted">{t('manage.bootstrapBody')}</p><pre class="secret" tabIndex={0}>{secret.text}</pre>
-          <button class="btn primary" onClick={() => { void navigator.clipboard?.writeText(secret.text); setCopied(true); }}>{copied ? t('chat.copied') : t('manage.copy')}</button>
-          <TextButton onClick={() => { setSecret(null); onClose(); }}>{t('manage.done')}</TextButton></div>
-      </div>
-    );
-  }
   const basic = fields.filter((f) => !f.advanced), adv = fields.filter((f) => f.advanced);
   const render = (f: KindField) => <FieldInput key={f.key} f={f} value={form[f.key] ?? f.default ?? ''} savedSecret={saved?.saved.includes(f.key) ?? false} editing={editing} onInput={(v) => set(f.key, v)} />;
   return (
@@ -97,7 +85,6 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
           <PrimaryButton busy={busy === 'save'} disabled={Boolean(problem) || busy !== null}>{busy === 'save' ? t('manage.saving') : t('manage.save')}</PrimaryButton>
         </div>
         {problem && <p class="muted small">{problem}</p>}
-        {editing && kind.kind === 'mcp-inbox' && <TextButton onClick={newToken}>{t('manage.newToken')}</TextButton>}
       </form>
       {editing && kind.kind === 'hermes' && <ProfileBusy client={client} agent={saved!.name} />}
     </div>

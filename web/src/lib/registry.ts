@@ -7,7 +7,7 @@ export interface AgentKind { kind: string; label: string; summary: string; plann
 export interface SavedAgent { name: string; kind: string; values: Record<string, string>; saved: string[] }
 export interface CheckResult { ok: boolean; message: string }
 export interface TestResult { ok: boolean; checks: [string, CheckResult][] }
-export interface SaveResult { agent: SavedAgent; inboxToken?: string }
+export interface SaveResult { agent: SavedAgent }
 export type Form = Record<string, string>;
 
 const str = (v: unknown) => (typeof v === 'string' ? v : undefined);
@@ -81,4 +81,4 @@ export function moved<T>(items: T[], index: number, delta: number): T[] {
 export function scrubAddresses(s: string): string {
   return s.replace(/\bhttps?:\/\/\S+/gi, '[hidden]').replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '[hidden]').replace(/\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:lan|local|internal|home\.arpa|io|com|net|org|dev|app|vn)(?::\d+)?\b/gi, '[hidden]');
 }
-export const CHECK_LABELS: Record<string, string> = { dashboard: 'Dashboard', management: 'Management', api: 'Chat API', inbox: 'Mailbox', connector: 'Connector', media: 'Media' };
+export const CHECK_LABELS: Record<string, string> = { dashboard: 'Dashboard', management: 'Management', api: 'Chat API', connector: 'Connector', media: 'Media' };

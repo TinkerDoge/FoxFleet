@@ -35,7 +35,7 @@ try:
         # create the owner (web cookie) and some agents
         cookie, _ = post('/api/auth/setup', {'username': 'owner', 'password': 'correct horse battery', 'client': 'web'})
         ck = cookie.split(';')[0]
-        post('/api/connections', {'name': 'Atlas', 'kind': 'openrouter', 'apiKey': 'sk-demo-key-123456', 'model': 'demo/model'}, ck)
+        post('/api/connections', {'name': 'Atlas', 'kind': 'hermes', 'host': '127.0.0.1', 'dashboardPort': 9, 'apiServerPort': 9}, ck)
         post('/api/connections', {'name': 'Orion', 'kind': 'hermes', 'connection': 'connector'}, ck)
         # 3. sign-in and join
         shot('signin-light', HUB + '/'); shot('signin-dark', HUB + '/', 'dark')

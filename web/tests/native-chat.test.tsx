@@ -84,7 +84,7 @@ describe('cards', () => {
   });
 });
 
-const agent = (nativeUi: boolean): AgentSummary => ({ name: 'a', displayName: 'Atlas', kind: 'hermes', online: true, capabilities: { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, mailbox: false, busy: ['queue', 'steer', 'interrupt'], nativeUi } } as AgentSummary);
+const agent = (nativeUi: boolean): AgentSummary => ({ name: 'a', displayName: 'Atlas', kind: 'hermes', online: true, capabilities: { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, busy: ['queue', 'steer', 'interrupt'], nativeUi } } as AgentSummary);
 describe('composer without a mode picker', () => {
   const mount = (a: AgentSummary) => { const el = document.createElement('div'); document.body.append(el); const client = { commands: vi.fn(async () => ({ source: 'local', busy: [], commands: [] })) } as unknown as Client; act(() => render(<Composer client={client} agent={a} history={[]} streaming skills={[]} draftKey="k" session="s" onSend={() => {}} onStop={() => {}} onLocal={() => {}} />, el)); return el; };
   it('neither kind of agent shows a mode selector: the composer is text, Send and Stop', () => {

@@ -1,11 +1,11 @@
 /* Foxfleet service worker: caches the app shell only.
- * - Never touches /api, /health, /mcp, /connector.mjs or anything non-GET / cross-origin: those always go to the network.
+ * - Never touches /api, /health, /connector.mjs or anything non-GET / cross-origin: those always go to the network.
  * - Versioned: the build stamps the version and file list below; a new version waits until the user taps "Reload" (no silent swap).
  * - Offline: navigations fall back to the cached shell, which then explains it can't reach the hub. */
 const VERSION = '__VERSION__';
 const SHELL = __SHELL__;
 const CACHE = 'foxfleet-shell-' + VERSION;
-const NEVER = /^\/(api|health|mcp|connector\.mjs|connect-agent\.md|pair|avatars)(\/|$)/;
+const NEVER = /^\/(api|health|connector\.mjs|connect-agent\.md|pair|avatars)(\/|$)/;
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));

@@ -18,7 +18,7 @@ export interface AgentSummary {
   last_activity_at?: number | null; last_session_title?: string | null; last_message_preview?: string | null; last_role?: 'user' | 'assistant' | null;
   pinned?: boolean; pin_order?: number | null; working?: boolean; needs_input?: boolean;
 }
-export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; mailbox: boolean; busy?: ('queue' | 'steer' | 'interrupt')[]; nativeRuns?: boolean; nativeUi?: boolean; reactions?: boolean; agentReactions?: boolean }
+export interface Capabilities { chat: boolean; images: boolean; files: boolean; screen: boolean; voice: boolean; skills: boolean; sessions: boolean; busy?: ('queue' | 'steer' | 'interrupt')[]; nativeRuns?: boolean; nativeUi?: boolean; reactions?: boolean; agentReactions?: boolean }
 export interface SessionInfo { id: string; title?: string; updated?: number; preview?: string; messages?: number; pinned?: boolean }
 export interface SessionPage { sessions: SessionInfo[]; total: number }
 export interface HistoryPage { messages: import('../lib/chat').UiMessage[]; hasMore: boolean }
