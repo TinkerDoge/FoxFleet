@@ -340,11 +340,6 @@ private fun EmptyState(icon: String, title: String, body: String, action: String
 
 /** Second line of an agent card: the owner's description, else what kind of agent it is. Never an address. */
 fun fleetSubtitle(a: AgentStatus): String = buildString {
-    append(a.description.lineSequence().firstOrNull()?.takeIf { it.isNotBlank() } ?: when (a.kind) {
-        "mcp-inbox" -> "Mailbox · replies when ${a.displayName} checks in"
-        "openai" -> "OpenAI-compatible"
-        "hermes" -> "Hermes agent"
-        else -> a.kind
-    })
+    append(a.description.lineSequence().firstOrNull()?.takeIf { it.isNotBlank() } ?: kindName(a.kind))
     a.activeSessions?.takeIf { it > 0 }?.let { append(" · $it active") }
 }

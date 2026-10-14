@@ -70,9 +70,9 @@ class V1LogicTest {
         {"key":"connection","label":"Connection","type":"enum","required":false,"writeOnly":false,"default":"connector","options":["connector","direct"]},
         {"key":"host","label":"Host","type":"host","required":true,"writeOnly":true,"advanced":true,"when":{"connection":"direct"}},
         {"key":"dashboardPass","label":"Dashboard password","type":"secret","required":false,"writeOnly":true}]},
-      {"kind":"zai","label":"Z.ai (GLM)","summary":"s","auth":["api_key"],"warnings":["Coding Plan is restricted"],"fields":[
+      {"kind":"bot","label":"Bot client","summary":"s","auth":["api_key"],"warnings":["Test-only kind"],"fields":[
         {"key":"name","label":"ID","type":"id","required":true,"writeOnly":false},
-        {"key":"endpoint","label":"Endpoint","type":"enum","required":false,"writeOnly":false,"default":"general","options":["general","coding"]},
+        {"key":"mode","label":"Mode","type":"enum","required":false,"writeOnly":false,"default":"poll","options":["poll","push"]},
         {"key":"apiKey","label":"API key","type":"secret","required":true,"writeOnly":true}]}]}""").jsonObject)
 
     @Test fun parsesPluginSchemaExtras() {
@@ -94,11 +94,11 @@ class V1LogicTest {
         assertEquals("10.0.0.5", Registry.payload(hermes, direct + ("host" to "10.0.0.5"), editing = false)["host"])
     }
 
-    @Test fun apiKeyPluginRequiresKeyAndDefaultsEndpoint() {
-        val zai = kinds[1]
-        assertEquals("API key is required", Registry.validate(zai, mapOf("name" to "GLM"), editing = false))
-        val sent = Registry.payload(zai, mapOf("name" to "GLM", "apiKey" to "k"), editing = false)
-        assertEquals("general", sent["endpoint"]); assertEquals("zai", sent["kind"])
+    @Test fun requiredSecretAndEnumDefaultComeFromTheSchema() {
+        val bot = kinds[1]
+        assertEquals("API key is required", Registry.validate(bot, mapOf("name" to "B"), editing = false))
+        val sent = Registry.payload(bot, mapOf("name" to "B", "apiKey" to "k"), editing = false)
+        assertEquals("poll", sent["mode"]); assertEquals("bot", sent["kind"])
     }
 
     @Test fun errorsNeverShowAddresses() {

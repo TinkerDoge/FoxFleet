@@ -9,7 +9,6 @@ data class Capabilities(
     val voice: Boolean = false,
     val skills: Boolean = false,
     val sessions: Boolean = false,
-    val mailbox: Boolean = false,
     /** Send modes while the agent is replying: "queue", "steer", "interrupt" (only what the agent can really do). */
     val busy: List<String> = listOf("queue"),
     /** The agent runs through Hermes's native session gateway: approval/question cards, a model picker and a real Redirect exist. */
@@ -23,8 +22,6 @@ data class Capabilities(
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
         fun forKind(kind: String) = when (kind) {
             "hermes" -> Capabilities(images = true, files = true, screen = true, voice = true, skills = true, sessions = true, busy = listOf("queue", "interrupt"))
-            "openai" -> Capabilities(images = true, sessions = true, busy = listOf("queue", "interrupt"))
-            "mcp-inbox" -> Capabilities(sessions = true, mailbox = true)
             else -> Capabilities()
         }
     }
@@ -40,7 +37,7 @@ data class AgentStatus(
     val chatReady: Boolean,
     val managementReady: Boolean,
     val activeSessions: Int? = null,
-    /** "hermes", "openai" (OpenAI-compatible) or "mcp-inbox" (mailbox agent such as Scribe). */
+    /** "hermes" (the only kind today; kept so other kinds can return). */
     val kind: String = "hermes",
     val label: String? = null,
     val description: String = "",
@@ -61,9 +58,8 @@ data class AgentStatus(
     val id get() = name
     val displayName get() = label ?: name
     val isHermes get() = kind == "hermes"
-    val isInbox get() = kind == "mcp-inbox"
     /** Short badge for non-Hermes agents in lists; null for Hermes. */
-    val badge: String? get() = when (kind) { "mcp-inbox" -> "Inbox"; "openai" -> "API"; "hermes" -> null; else -> kind.replaceFirstChar { it.uppercase() } }
+    val badge: String? get() = if (kind == "hermes") null else kind.replaceFirstChar { it.uppercase() }
 }
 
 data class SessionInfo(val id: String, val title: String?, val updated: Long = 0L, val preview: String = "", val messages: Int = 0)

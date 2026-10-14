@@ -27,15 +27,6 @@ private val kinds1 = listOf(
         KindField("dashboardPass", "Dashboard password", "secret", writeOnly = true),
         KindField("host", "Host or IP", "host", required = true, writeOnly = true, advanced = true, whenKey = "connection", whenValue = "direct"),
     )),
-    AgentKind("openrouter", "OpenRouter", "Hundreds of models through one OpenRouter API key.", false, common1 + listOf(
-        KindField("model", "Model", "text", required = true, default = "openai/gpt-4o-mini"), KindField("apiKey", "API key", "secret", required = true, writeOnly = true))),
-    AgentKind("zai", "Z.ai (GLM)", "GLM models from Z.ai with your API key.", false, common1 + listOf(
-        KindField("endpoint", "Endpoint", "enum", default = "general", options = listOf("general", "coding")),
-        KindField("model", "Model", "text", required = true, default = "glm-5.1"), KindField("apiKey", "API key", "secret", required = true, writeOnly = true)),
-        auth = listOf("api_key"), warnings = listOf("The Coding Plan endpoint is licensed by Z.ai for officially supported coding tools only. Use the general endpoint unless you accept the risk.")),
-    AgentKind("opencode", "OpenCode", "OpenCode Zen models with your OpenCode API key.", false, common1),
-    AgentKind("grok", "Grok (xAI)", "Grok models with your xAI API key.", false, common1),
-    AgentKind("mcp-inbox", "MCP inbox", "A mailbox an outside agent (e.g. an outside agent) reads and answers over MCP.", false, common1),
 )
 
 @RunWith(RobolectricTestRunner::class)
@@ -52,8 +43,8 @@ class V1ScreenshotTest {
     }
     private val noTest: suspend (AgentKind, Map<String, Any>) -> TestResult = { _, _ -> TestResult(true, emptyList()) }
     private val noSave: suspend (AgentKind, Map<String, Any>) -> SaveResult = { _, _ -> SaveResult(SavedAgent("x", "hermes")) }
-    private fun editor(name: String, dark: Boolean, kind: String?, token: String? = null, test: TestResult? = null) = shot(name, dark) {
-        AgentEditorScreen(kinds1, null, {}, noTest, noSave, {}, {}, initialKind = kind, initialToken = token, initialTest = test)
+    private fun editor(name: String, dark: Boolean, kind: String?, test: TestResult? = null) = shot(name, dark) {
+        AgentEditorScreen(kinds1, null, {}, noTest, noSave, {}, {}, initialKind = kind, initialTest = test)
     }
 
     @Test fun hubAddressFirstLaunch() = shot("hub-address", false) { HubAddressScreen("", false, null, { _, _ -> }) }
@@ -73,6 +64,4 @@ class V1ScreenshotTest {
     @Test fun pickType() = editor("add-type", false, null)
     @Test fun addHermesDirect() = editor("add-hermes-direct", false, "hermes")
     @Test fun addHermesDirectDark() = editor("add-hermes-direct", true, "hermes")
-    @Test fun addZai() = editor("add-zai", false, "zai")
-    @Test fun addOpenRouter() = editor("add-openrouter", false, "openrouter")
 }

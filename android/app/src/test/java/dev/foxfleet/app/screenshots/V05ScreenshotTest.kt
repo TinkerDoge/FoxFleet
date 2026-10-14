@@ -30,8 +30,7 @@ private val OUT = System.getProperty("foxfleet.shots") ?: "build/outputs/roboraz
 private val fleet05 = listOf(
     AgentStatus("Atlas", true, true, true, activeSessions = 2, description = "Studio lead and system architect"),
     AgentStatus("Nova", true, true, true, description = "Keeps repos tidy and ships releases"),
-    AgentStatus("GLM", true, true, false, kind = "openai", label = "GLM 5.3", description = "Fast second opinion"),
-    AgentStatus("Scribe", false, true, false, kind = "mcp-inbox", label = "Scribe"),
+    AgentStatus("Sora", true, true, true, label = "Sora", description = "Fast second opinion"),
     AgentStatus("Echo", false, false, false, description = "Video editor and clip harvester"),
 )
 
@@ -51,20 +50,11 @@ val kinds05 = listOf(
         KindField("apiServerKey", "Chat API key", "secret", writeOnly = true),
         KindField("dashboardUrl", "Dashboard HTTPS origin", "url", writeOnly = true, advanced = true),
     )),
-    AgentKind("openai", "OpenAI-compatible", "Any /chat/completions API: GLM, OpenRouter, OpenCode server, local models.", false, common + listOf(
-        KindField("baseUrl", "Base URL", "url", required = true, writeOnly = true, help = "The API root including its version path, ending before /chat/completions"),
-        KindField("model", "Model", "text", required = true),
-        KindField("apiKey", "API key", "secret", writeOnly = true),
-    )),
-    AgentKind("mcp-inbox", "MCP inbox", "A mailbox an outside agent (e.g. an outside agent) reads and answers over MCP. The token is shown once.", false, common),
-    AgentKind("a2a", "A2A agent", "Google Agent2Agent JSON-RPC endpoint.", true, emptyList()),
-    AgentKind("webhook", "Webhook", "POST a task to a URL and receive the reply on a callback.", true, emptyList()),
 )
 private val saved05 = listOf(
     SavedAgent("Atlas", "hermes", mapOf("description" to "Studio lead and system architect", "profile" to "companion", "dashboardUser" to "admin"), setOf("host", "dashboardPort", "apiServerPort", "dashboardPass", "apiServerKey")),
     SavedAgent("Nova", "hermes", mapOf("description" to "Keeps repos tidy and ships releases", "profile" to "release"), setOf("host")),
-    SavedAgent("GLM", "openai", mapOf("label" to "GLM 5.3", "model" to "glm-5.3", "description" to "Fast second opinion"), setOf("baseUrl", "apiKey")),
-    SavedAgent("Scribe", "mcp-inbox", mapOf("label" to "Scribe"), setOf("inboxTokenHash")),
+    SavedAgent("Sora", "hermes", mapOf("description" to "Fast second opinion", "profile" to "sora"), setOf("host")),
     SavedAgent("Echo", "hermes", mapOf("description" to "Video editor and clip harvester"), setOf("host")),
 )
 
@@ -84,11 +74,11 @@ class V05ScreenshotTest {
     private val noTest: suspend (AgentKind, Map<String, Any>) -> TestResult = { _, _ -> TestResult(true, emptyList()) }
     private val noSave: suspend (AgentKind, Map<String, Any>) -> SaveResult = { _, f -> SaveResult(SavedAgent("x", "hermes")) }
 
-    private fun editor(name: String, dark: Boolean, existing: SavedAgent?, kind: String?, test: TestResult? = null, token: String? = null) = shot(name, dark) {
-        AgentEditorScreen(kinds05, existing, {}, noTest, noSave, {}, {}, initialKind = kind, initialTest = test, initialToken = token)
+    private fun editor(name: String, dark: Boolean, existing: SavedAgent?, kind: String?, test: TestResult? = null) = shot(name, dark) {
+        AgentEditorScreen(kinds05, existing, {}, noTest, noSave, {}, {}, initialKind = kind, initialTest = test)
     }
 
-    @Test fun fleetLight() = shot("fleet", false) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { it.name == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
+    @Test fun fleetLight() = shot("fleet", false) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { it.name == "Sora" }, onRefresh = {}, onOpen = {}, onSettings = {}) }
     @Test fun fleetDark() = shot("fleet", true) { FleetScreen(fleet05, loading = false, loadedOnce = true, error = null, unread = { false }, onRefresh = {}, onOpen = {}, onSettings = {}) }
     @Test fun settingsLight() = shot("settings", false) { SettingsScreen(AppPrefs(), {}, {}, {}, {}) }
     @Test fun agentsLight() = shot("agents", false) { AgentsScreen(saved05, null, {}, {}, {}, { _, _ -> }) }
@@ -96,11 +86,9 @@ class V05ScreenshotTest {
     @Test fun agentsEmpty() = shot("agents-empty", false) { AgentsScreen(emptyList(), null, {}, {}, {}, { _, _ -> }) }
     @Test fun addPickType() = editor("add-type", false, null, null)
     @Test fun addPickTypeDark() = editor("add-type", true, null, null)
-    @Test fun addOpenAi() = editor("add-openai", false, null, "openai")
     @Test fun addHermesTested() = editor("add-hermes-tested", false, null, "hermes", TestResult(false, listOf(
         "dashboard" to CheckResult(true, "Dashboard reachable"), "management" to CheckResult(true, "Management authenticated"),
         "api" to CheckResult(false, "Chat API unavailable, invalid or authentication failed"))))
     @Test fun editHermes() = editor("edit-hermes", false, saved05[0], "hermes")
     @Test fun editHermesDark() = editor("edit-hermes", true, saved05[0], "hermes")
-    @Test fun inboxToken() = editor("inbox-token", false, null, "mcp-inbox", token = "EXAMPLE-TOKEN-0000000000000000000000000000")
 }

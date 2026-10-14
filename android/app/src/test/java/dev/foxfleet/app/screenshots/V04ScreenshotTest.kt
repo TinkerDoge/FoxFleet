@@ -32,8 +32,7 @@ private val OUT = System.getProperty("foxfleet.shots") ?: "build/outputs/roboraz
 private val fleet04 = listOf(
     AgentStatus("Atlas", online = true, chatReady = true, managementReady = true, activeSessions = 2),
     AgentStatus("Nova", online = true, chatReady = true, managementReady = true),
-    AgentStatus("Scribe", online = true, chatReady = true, managementReady = false, kind = "mcp-inbox", label = "Scribe"),
-    AgentStatus("GLM", online = true, chatReady = true, managementReady = false, kind = "openai", label = "GLM 5.3"),
+    AgentStatus("Sora", online = true, chatReady = true, managementReady = true, label = "Sora"),
     AgentStatus("Echo", online = false, chatReady = false, managementReady = false),
 )
 
@@ -50,8 +49,8 @@ class V04ScreenshotTest {
         compose.onRoot().captureRoboImage("$OUT/$name-${if (dark) "dark" else "light"}.png")
     }
 
-    private fun fleet(dark: Boolean) = shot("fleet-bridged", dark) {
-        FleetScreen(fleet04, loading = false, loadedOnce = true, error = null, unread = { it.name == "Scribe" }, onRefresh = {}, onOpen = {}, onSettings = {})
+    private fun fleet(dark: Boolean) = shot("fleet-v04", dark) {
+        FleetScreen(fleet04, loading = false, loadedOnce = true, error = null, unread = { it.name == "Sora" }, onRefresh = {}, onOpen = {}, onSettings = {})
     }
 
     private fun files(dark: Boolean) {
@@ -69,19 +68,6 @@ class V04ScreenshotTest {
         }
     }
 
-    private fun muse(dark: Boolean) {
-        val state = ChatState().apply {
-            load(listOf(
-                UiMessage("user", "Can you plan Saturday around the rain?"),
-                UiMessage("assistant", "📬 Delivered to Scribe's inbox. The reply will appear in this conversation when Scribe checks in."),
-                UiMessage("assistant", "**Saturday**: museum in the morning, pho at noon, the hike moves to Sunday (dry from 9am)."),
-            ), "inbox-1")
-        }
-        shot("chat-muse-inbox", dark) {
-            ChatScreen(fleet04[2], fleet04, state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}, allowImages = false)
-        }
-    }
-
     private fun screen(phase: ScreenPhase) = shot("screen-${phase.name.lowercase()}", true) {
         ScreenScreen("Atlas", api = null, onBack = {}, onLeaveInControl = {}, preview = true, initialPhase = phase,
             initialHandBackAt = if (phase == ScreenPhase.Control) System.currentTimeMillis() + 14 * 60_000 + 30_000 else 0)
@@ -93,11 +79,10 @@ class V04ScreenshotTest {
         shot("login-brand", dark) { LoginScreen("hub.example.com", HubApi(store), null, {}, {}, previewInfo = dev.foxfleet.app.data.AuthInfo()) }
     }
 
-    @Test fun fleetBridgedLight() = fleet(false)
-    @Test fun fleetBridgedDark() = fleet(true)
+    @Test fun fleetLight() = fleet(false)
+    @Test fun fleetDark() = fleet(true)
     @Test fun filesLight() = files(false)
     @Test fun filesDark() = files(true)
-    @Test fun museLight() = muse(false)
     @Test fun screenWatching() = screen(ScreenPhase.Watching)
     @Test fun screenControl() = screen(ScreenPhase.Control)
     @Test fun screenStopped() = screen(ScreenPhase.Stopped)

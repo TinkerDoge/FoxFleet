@@ -336,15 +336,6 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         return api.uploadFile(agent, name, resolver.getType(uri), size, { resolver.openInputStream(uri) ?: throw java.io.IOException("Can't open file") }, onProgress)
     }
 
-    /** Mailbox agents (Scribe) answer later: refresh the open thread while the chat is visible. */
-    suspend fun pollInbox(agent: String) {
-        val state = chatFor(agent)
-        val id = state.sessionId ?: return
-        if (state.streaming) return
-        val fresh = runCatching { api.messages(agent, id) }.getOrNull() ?: return
-        if (fresh.messages.size != state.messages.size && !state.streaming && state.sessionId == id) state.load(fresh.messages, id, fresh.hasMore)
-    }
-
     // ---- agent registry (Settings → Agents) ----
     var savedAgents by mutableStateOf<List<dev.foxfleet.app.data.SavedAgent>?>(null); private set
     var agentKinds by mutableStateOf<List<dev.foxfleet.app.data.AgentKind>>(emptyList()); private set

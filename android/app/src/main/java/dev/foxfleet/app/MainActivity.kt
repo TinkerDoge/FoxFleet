@@ -194,9 +194,6 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onOpenScreen = if (agent.capabilities.screen) ({ vm.navigate(Route.Screen(agent.name)) }) else null,
             )
             LaunchedEffect(agent.name) { if (agent.capabilities.skills) vm.loadSkills(agent.name) }
-            if (agent.capabilities.mailbox) LaunchedEffect(agent.name) {
-                while (true) { vm.pollInbox(agent.name); kotlinx.coroutines.delay(15_000) }
-            }
         }
         is Route.Screen -> dev.foxfleet.app.ui.screens.ScreenScreen(
             agentName = route.agent, api = vm.api, onBack = { vm.back() }, hubKnown = vm.hubKnown, debug = vm.prefs.screenDebug, hubVersion = vm.hubVersion,
@@ -243,7 +240,6 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onSave = { _, fields -> vm.saveAgent(route.agent, fields) },
                 onDelete = { vm.deleteAgent(route.agent!!) },
                 onDone = { vm.navigate(Route.Agents) },
-                onNewToken = { existing?.let { vm.api.newInboxToken(it.name) } },
                 nativeControls = existing?.takeIf { it.kind == "hermes" }?.let { vm.nativeControls(it.name) },
             )
         }

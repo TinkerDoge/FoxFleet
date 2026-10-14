@@ -342,7 +342,6 @@ fun ChatScreen(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
                 modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
-                placeholder = if (agent.isInbox) "Message ${agent.label ?: agent.name} (inbox)" else null,
                 agentCommands = agent.capabilities.skills,
                 reply = reply, onClearReply = { reply = null }, disabled = state.loading,
                 prefill = prefill, onPrefilled = { applied -> prefill = null; if (!applied) state.addNotice("Your edited text wasn't put back because the box isn't empty.") },

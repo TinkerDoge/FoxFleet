@@ -22,11 +22,13 @@ import java.util.concurrent.atomic.AtomicReference
 
 /**
  * End-to-end against a REAL hub (server/index.js), driving the real stream client. Skipped unless the harness is running:
- *   FOXFLEET_E2E_HUB, FOXFLEET_E2E_TOKEN, FOXFLEET_E2E_TOKEN2, FOXFLEET_E2E_DEVICE2, FOXFLEET_E2E_CONTROL (see notifications report).
+ *   FOXFLEET_E2E_HUB, FOXFLEET_E2E_TOKEN, FOXFLEET_E2E_TOKEN2, FOXFLEET_E2E_DEVICE2, FOXFLEET_E2E_CONTROL (see notifications report),
+ *   and FOXFLEET_E2E_AGENT: a Hermes agent whose model is server/test/fake-llm.js (default "atlas").
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
 class NotifyHubE2ETest {
+    private val agent = System.getenv("FOXFLEET_E2E_AGENT") ?: "atlas"
     private val hub = System.getenv("FOXFLEET_E2E_HUB"); private val token = System.getenv("FOXFLEET_E2E_TOKEN"); private val token2 = System.getenv("FOXFLEET_E2E_TOKEN2")
     private val device2 = System.getenv("FOXFLEET_E2E_DEVICE2"); private val control = System.getenv("FOXFLEET_E2E_CONTROL")
     private val http = OkHttpClient()
@@ -62,14 +64,14 @@ class NotifyHubE2ETest {
         val t1 = api.test(); until("live test event") { sink1.events.any { it.first.id == t1.id } }
         assertEquals(t1.id, mem.lastId); assertTrue(t1.id > before); assertFalse(sink1.events.first { it.first.id == t1.id }.second)
 
-        // 2. a REAL reply: send a chat message to the fake-LLM agent, get reply_finished with ids only, then fetch the content from the hub
+        // 2. a REAL reply: send a chat message to the Hermes agent (fake LLM model), get reply_finished with ids only, then fetch the content from the hub
         val settings = SettingsStore(ApplicationProvider.getApplicationContext<android.app.Application>().getSharedPreferences("e2e", 0)).also { it.addHub(hub); it.sessionToken = mem.token }
         val hubApi = HubApi(settings)
-        val sent = hubApi.sendMessage("glm", UiMessage("user", "hello e2e"), null, "queue", "cid-e2e-1")
+        val sent = hubApi.sendMessage(agent, UiMessage("user", "hello e2e"), null, "queue", "cid-e2e-1")
         until("reply_finished", 20000) { sink1.events.any { it.first.type == NotifyType.ReplyFinished } }
         val reply = sink1.events.first { it.first.type == NotifyType.ReplyFinished }.first
-        assertEquals("glm", reply.agent); assertNotNull(reply.chat); assertNull("event carries no text", reply.message)
-        val content = HubNotifyContent(hubApi, seenAt = { null }).lastReply("glm", reply.chat!!)
+        assertEquals(agent, reply.agent); assertNotNull(reply.chat); assertNull("event carries no text", reply.message)
+        val content = HubNotifyContent(hubApi, seenAt = { null }).lastReply(agent, reply.chat!!)
         assertNotNull(content); assertTrue("fetched text: ${content!!.text}", content.text.contains("ok: hello e2e"))
 
         // 3. resume: stop, make two events while away, reconnect with the stored id: exactly those two come back, as replay, in order
@@ -112,8 +114,8 @@ class NotifyHubE2ETest {
         until("runner ended") { end.get() != null }; assertEquals(RunEnd.SignedOut, end.get()); j6.join()
 
         // 7. mute + prefs round trip through the real routes
-        val p = api.mute("glm", null, true, 60_000); assertNotNull(p.agentMute("glm", System.currentTimeMillis())); assertTrue(api.test().muted.not())
-        val p2 = api.mute("glm", null, false); assertNull(p2.agentMute("glm", System.currentTimeMillis()))
+        val p = api.mute(agent, null, true, 60_000); assertNotNull(p.agentMute(agent, System.currentTimeMillis())); assertTrue(api.test().muted.not())
+        val p2 = api.mute(agent, null, false); assertNull(p2.agentMute(agent, System.currentTimeMillis()))
         val off = api.setEnabled(false); assertFalse(off.enabled); assertTrue("test is muted while the master switch is off", api.test().muted); api.setEnabled(true)
         skew(0)
     }

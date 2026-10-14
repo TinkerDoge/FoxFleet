@@ -37,8 +37,8 @@ private val fleetAgents = listOf(
     AgentStatus("Atlas", online = true, chatReady = true, managementReady = true, activeSessions = 2, description = "Research and code on the workstation"),
     AgentStatus("Coder", online = true, chatReady = true, managementReady = true, description = "Reviews and refactors the repos"),
     AgentStatus("Research", online = true, chatReady = true, managementReady = true, description = "Reads papers and summarises them"),
-    AgentStatus("Nova", online = true, chatReady = true, managementReady = false, kind = "openrouter", description = "Fast general chat"),
-    AgentStatus("Echo", online = false, chatReady = false, managementReady = false, kind = "openai", description = "Needs a new API key"),
+    AgentStatus("Nova", online = true, chatReady = true, managementReady = true, description = "Writes and edits on the laptop"),
+    AgentStatus("Echo", online = false, chatReady = false, managementReady = false, description = "Home server helper (machine offline)"),
 )
 
 private val QR_ROWS = listOf(

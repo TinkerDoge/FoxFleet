@@ -58,8 +58,7 @@ class ChatControlsTest {
 
     @Test fun supportedBusyModesFallBackSensibly() {
         assertEquals(listOf("queue", "interrupt"), Capabilities.forKind("hermes").busy)
-        assertEquals(listOf("queue", "interrupt"), Capabilities.forKind("openai").busy)
-        assertEquals(listOf("queue"), Capabilities.forKind("mcp-inbox").busy)
+        assertEquals(listOf("queue"), Capabilities.forKind("other").busy) // a kind this app does not know yet: plain queueing only
     }
 
     @Test fun labelsAreHonest() {

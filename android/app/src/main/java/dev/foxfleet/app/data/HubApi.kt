@@ -222,15 +222,12 @@ class HubApi(private val store: SettingsStore) {
 
     suspend fun addAgent(fields: Map<String, Any>): SaveResult = withContext(Dispatchers.IO) {
         val obj = request("/api/connections", "POST", jsonOf(fields))
-        SaveResult(parseSaved(obj["connection"]!!.jsonObject), obj["inboxToken"]?.jsonPrimitive?.contentOrNull)
+        SaveResult(parseSaved(obj["connection"]!!.jsonObject))
     }
 
     suspend fun editAgent(name: String, fields: Map<String, Any>): SaveResult = withContext(Dispatchers.IO) {
         SaveResult(parseSaved(request("/api/connections/" + enc(name), "PUT", jsonOf(fields))["connection"]!!.jsonObject))
     }
-
-    /** New connector token for a Hermes agent (the old one stops working immediately). */
-    suspend fun newInboxToken(name: String): String? = withContext(Dispatchers.IO) { request("/api/connections/" + enc(name) + "/token", "POST", "{}")["inboxToken"]?.jsonPrimitive?.contentOrNull }
 
     suspend fun deleteAgent(name: String) = withContext(Dispatchers.IO) { request("/api/connections/" + enc(name), "DELETE"); Unit }
 
@@ -241,10 +238,6 @@ class HubApi(private val store: SettingsStore) {
     /** Probes a draft without saving; when editing, the hub reuses the saved endpoint and secrets. */
     suspend fun testAgent(fields: Map<String, Any>): TestResult = withContext(Dispatchers.IO) {
         parseTest(request("/api/connections/test", "POST", jsonOf(fields), timeoutSec = 45))
-    }
-
-    suspend fun rotateInboxToken(name: String): String = withContext(Dispatchers.IO) {
-        request("/api/connections/" + enc(name) + "/token", "POST", "{}")["inboxToken"]?.jsonPrimitive?.content ?: throw HubApiException(0, "No token returned")
     }
 
     // ---- sessions ----
@@ -285,10 +278,6 @@ class HubApi(private val store: SettingsStore) {
         request(agentPath(agent) + "/sessions/" + enc(id), "PATCH", buildJsonObject { put("title", title) }.toString()); Unit
     }
     suspend fun deleteSession(agent: String, id: String) = withContext(Dispatchers.IO) { request(agentPath(agent) + "/sessions/" + enc(id), "DELETE"); Unit }
-
-    /** Days the hub keeps chat history for API-key agents (this user); 0 keeps nothing. */
-    suspend fun historyRetention(): Int = withContext(Dispatchers.IO) { request("/api/history/settings")["retentionDays"]?.jsonPrimitive?.intOrNull ?: 90 }
-    suspend fun setHistoryRetention(days: Int) = withContext(Dispatchers.IO) { request("/api/history/settings", "PUT", buildJsonObject { put("retentionDays", days) }.toString()); Unit }
 
     /** The hub sends normalised history (tool JSON, control tags and hidden rows already gone); anything odd is skipped. */
     internal fun historyMessage(el: kotlinx.serialization.json.JsonElement): UiMessage? {
@@ -661,7 +650,7 @@ class HubApi(private val store: SettingsStore) {
                 capabilities = if (caps != null && caps.containsKey("chat")) Capabilities(
                     chat = caps.bool("chat") ?: true, images = caps.bool("images") ?: false, files = caps.bool("files") ?: false,
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,
-                    sessions = caps.bool("sessions") ?: false, mailbox = caps.bool("mailbox") ?: false,
+                    sessions = caps.bool("sessions") ?: false,
                     nativeUi = caps.bool("nativeUi") ?: false,
                     reactions = caps.bool("reactions") ?: false, agentReactions = caps.bool("agentReactions") ?: false,
                     busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),

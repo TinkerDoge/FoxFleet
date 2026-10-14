@@ -8,8 +8,8 @@ import org.junit.Test
 class TelegramUxTest {
     @Test fun plainMessageHasNoModePicker() {
         assertEquals("auto", plainMode(true, listOf("queue", "steer", "interrupt"))) // native Hermes: its own busy setting decides, the ack is shown
-        assertEquals("interrupt", plainMode(false, listOf("queue", "interrupt")))     // HTTP agents: stop, then send
-        assertEquals("queue", plainMode(false, listOf("queue")))                      // inbox: queue only
+        assertEquals("interrupt", plainMode(false, listOf("queue", "interrupt")))     // Hermes over HTTP: stop, then send
+        assertEquals("queue", plainMode(false, listOf("queue")))                      // an agent that can only queue
     }
     @Test fun pickerCardBelongsToItsChatAndExpires() {
         val t0 = 1_000_000L; val c = PickerCard("s1", "model", openedAt = t0)

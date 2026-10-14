@@ -48,9 +48,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
@@ -81,7 +78,7 @@ internal fun TopBar(title: String, onBack: () -> Unit, trailing: @Composable () 
     }
 }
 
-fun kindName(kind: String) = when (kind) { "hermes" -> "Hermes agent"; "openai" -> "OpenAI-compatible"; "openrouter" -> "OpenRouter"; "zai" -> "Z.ai"; "opencode" -> "OpenCode"; "grok" -> "Grok"; "mcp-inbox" -> "MCP inbox"; else -> kind }
+fun kindName(kind: String) = when (kind) { "hermes" -> "Hermes agent"; else -> kind }
 
 /** Settings → Agents: the hub's registry, in display order. Endpoints are never shown, only that they're saved. */
 @Composable
@@ -112,7 +109,7 @@ fun AgentsScreen(
                 agents.isEmpty() -> SoftCard(Modifier.fillMaxWidth().padding(top = 8.dp), onClick = onAdd) {
                     Column(Modifier.padding(20.dp)) {
                         Text("No agents yet", style = MaterialTheme.typography.titleMedium, color = c.text)
-                        Text("Add a Hermes agent, any OpenAI-compatible API, or an MCP inbox.", style = MaterialTheme.typography.bodyMedium, color = c.textMuted)
+                        Text("Add a Hermes agent, or connect a machine to add all of its Hermes profiles.", style = MaterialTheme.typography.bodyMedium, color = c.textMuted)
                     }
                 }
                 else -> {
@@ -145,7 +142,7 @@ fun AgentsScreen(
 
 /**
  * Add or edit one agent. Add: pick a type, fill the friendly fields, test, save. Edit: saved endpoints and keys
- * show as "Saved" and stay unless replaced. Inbox agents get their MCP token once, after saving.
+ * show as "Saved" and stay unless replaced.
  */
 @Composable
 fun AgentEditorScreen(
@@ -158,8 +155,6 @@ fun AgentEditorScreen(
     onDone: () -> Unit,
     initialKind: String? = existing?.kind,
     initialTest: TestResult? = null,
-    initialToken: String? = null,
-    onNewToken: (suspend () -> String?)? = null,
     nativeControls: NativeControls? = null,
 ) {
     val c = LocalHubColors.current
@@ -176,10 +171,9 @@ fun AgentEditorScreen(
     var busy by remember { mutableStateOf(false) }
     var problem by remember { mutableStateOf<String?>(null) }
     var test by remember { mutableStateOf(initialTest) }
-    var token by remember { mutableStateOf(initialToken) }
     var confirmDelete by remember { mutableStateOf(false) }
     val editing = existing != null
-    val title = when { token != null -> "Agent added"; editing -> "Edit ${existing!!.label}"; kind == null -> "Add agent"; else -> "New ${kind.label}" }
+    val title = when { editing -> "Edit ${existing!!.label}"; kind == null -> "Add agent"; else -> "New ${kind.label}" }
 
     fun run(block: suspend () -> Unit) {
         if (busy) return
@@ -190,13 +184,8 @@ fun AgentEditorScreen(
     }
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().imePadding()) {
-        TopBar(title, onBack = { if (kind != null && !editing && token == null) kindId = null else onBack() })
+        TopBar(title, onBack = { if (kind != null && !editing) kindId = null else onBack() })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp).navigationBarsPadding()) {
-            val t = token
-            if (t != null) {
-                TokenCard(t, onDone)
-                return@Column
-            }
             if (kind == null) {
                 Text("What kind of agent?", style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(4.dp, 8.dp))
                 kinds.forEach { k -> KindTile(k) { if (!k.planned) kindId = k.kind } ; Spacer(Modifier.height(10.dp)) }
@@ -233,11 +222,8 @@ fun AgentEditorScreen(
                 PrimaryAction(if (editing) "Save" else "Add agent", Modifier.weight(1f), busy) {
                     val bad = Registry.validate(kind, form, editing, existing)
                     if (bad != null) { problem = bad; return@PrimaryAction }
-                    run { val r = onSave(kind, Registry.payload(kind, form, editing)); val shown = r.inboxToken; if (shown != null) token = shown else onDone() }
+                    run { onSave(kind, Registry.payload(kind, form, editing)); onDone() }
                 }
-            }
-            if (editing && onNewToken != null && existing?.kind == "mcp-inbox") {
-                SoftButton(onClick = { run { onNewToken()?.let { token = it } } }, modifier = Modifier.align(Alignment.CenterHorizontally)) { Text("Get a new token", color = c.accent) }
             }
             if (editing && nativeControls != null) ProfileBusyCard(nativeControls)
             if (editing) {
@@ -267,7 +253,7 @@ private fun KindTile(k: AgentKind, onClick: () -> Unit) {
     SoftCard(Modifier.fillMaxWidth(), onClick = if (k.planned) null else onClick) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(40.dp).clip(CircleShape).background(c.surfaceAlt), contentAlignment = Alignment.Center) {
-                Text(when (k.kind) { "hermes" -> "H"; "openai" -> "AI"; "openrouter" -> "OR"; "zai" -> "Z"; "opencode" -> "OC"; "grok" -> "G"; "mcp-inbox" -> "✉"; "a2a" -> "A2"; else -> "↗" }, style = MaterialTheme.typography.labelLarge, color = if (k.planned) c.textFaint else c.accent)
+                Text(when (k.kind) { "hermes" -> "H"; else -> "↗" }, style = MaterialTheme.typography.labelLarge, color = if (k.planned) c.textFaint else c.accent)
             }
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
@@ -282,7 +268,7 @@ private fun KindTile(k: AgentKind, onClick: () -> Unit) {
 }
 
 @Composable
-private fun enumLabel(o: String) = when (o) { "direct" -> "Direct (advanced)"; "general" -> "General"; "coding" -> "Coding Plan"; else -> o.replaceFirstChar { it.uppercase() } }
+private fun enumLabel(o: String) = when (o) { "direct" -> "Direct (advanced)"; else -> o.replaceFirstChar { it.uppercase() } }
 
 @Composable
 private fun FieldInput(f: KindField, value: String, editing: Boolean, existing: SavedAgent?, onChange: (String) -> Unit) {
@@ -340,25 +326,6 @@ private fun TestCard(t: TestResult) {
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun TokenCard(token: String, onDone: () -> Unit) {
-    val c = LocalHubColors.current
-    val clipboard = LocalClipboardManager.current
-    var copied by remember { mutableStateOf(false) }
-    Spacer(Modifier.height(8.dp))
-    Text("Give this token to the agent's MCP connector as a Bearer key. It's shown only once; you can issue a new one later.",
-        style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.padding(4.dp))
-    Spacer(Modifier.height(12.dp))
-    SoftCard(Modifier.fillMaxWidth()) {
-        Text(token, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace), color = c.text, modifier = Modifier.padding(16.dp))
-    }
-    Spacer(Modifier.height(16.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-        OutlinedAction(if (copied) "Copied" else "Copy token", Modifier.weight(1f)) { clipboard.setText(AnnotatedString(token)); copied = true }
-        PrimaryAction("Done", Modifier.weight(1f), false, onClick = onDone)
     }
 }
 

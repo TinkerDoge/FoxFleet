@@ -50,11 +50,11 @@ data class SavedAgent(
 data class TestResult(val ok: Boolean, val checks: List<Pair<String, CheckResult>>)
 data class CheckResult(val ok: Boolean, val message: String)
 
-/** Result of saving: an inbox agent gets its MCP token exactly once. */
-data class SaveResult(val agent: SavedAgent, val inboxToken: String? = null)
+/** Result of saving: the agent as the hub stored it. */
+data class SaveResult(val agent: SavedAgent)
 
 object Registry {
-    val checkLabels = mapOf("dashboard" to "Dashboard", "management" to "Management", "api" to "Chat API", "inbox" to "Mailbox", "connector" to "Connector", "media" to "Media")
+    val checkLabels = mapOf("dashboard" to "Dashboard", "management" to "Management", "api" to "Chat API", "connector" to "Connector", "media" to "Media")
 
     /**
      * Builds the JSON fields to send for a form. On edit, blank write-only fields are omitted so the hub keeps

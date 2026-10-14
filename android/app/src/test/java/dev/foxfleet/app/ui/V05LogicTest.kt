@@ -21,26 +21,23 @@ class V05LogicTest {
     // Shape of hub 0.5 GET /api/agents (see server/test/v05.test.js).
     private val agentsJson = """{"agents":[
       {"id":"Atlas","name":"Atlas","displayName":"Atlas","kind":"hermes","order":0,"description":"Studio lead","avatar":null,"status":"ready","online":true,"chatReady":true,"managementReady":true,
-       "capabilities":{"chat":true,"images":true,"files":true,"screen":true,"voice":true,"skills":true,"sessions":true,"mailbox":false},"activeSessions":2,"checks":{"api":{"ok":true,"message":"Chat API authenticated"}}},
-      {"id":"GLM","name":"GLM","displayName":"GLM 5.3","kind":"openai","order":1,"description":"","status":"ready","online":true,"chatReady":true,"managementReady":false,
-       "capabilities":{"chat":true,"images":true,"files":false,"screen":false,"voice":false,"skills":false,"sessions":false,"mailbox":false},"checks":{}},
-      {"id":"Scribe","name":"Scribe","displayName":"Scribe","kind":"mcp-inbox","order":2,"description":"","status":"ready","online":false,"chatReady":true,"managementReady":false,"lastSeen":null,
-       "capabilities":{"chat":true,"images":false,"files":false,"screen":false,"voice":false,"skills":false,"sessions":true,"mailbox":true},"checks":{}}]}"""
+       "capabilities":{"chat":true,"images":true,"files":true,"screen":true,"voice":true,"skills":true,"sessions":true},"activeSessions":2,"checks":{"api":{"ok":true,"message":"Chat API authenticated"}}},
+      {"id":"Desk","name":"Desk","displayName":"Desk PC","kind":"hermes","order":1,"description":"","status":"ready","online":true,"chatReady":true,"managementReady":false,
+       "capabilities":{"chat":true,"images":true,"files":false,"screen":false,"voice":false,"skills":false,"sessions":true},"checks":{}}]}"""
 
     @Test fun parsesPrivacySafeAgentList() {
         val agents = HubApi.parseAgents(agentsJson)
-        assertEquals(listOf("Atlas", "GLM", "Scribe"), agents.map { it.name })
-        assertEquals("GLM 5.3", agents[1].displayName); assertNull(agents[0].label)
+        assertEquals(listOf("Atlas", "Desk"), agents.map { it.name })
+        assertEquals("Desk PC", agents[1].displayName); assertNull(agents[0].label)
         assertTrue(agents[0].capabilities.screen && agents[0].capabilities.files)
         assertFalse(agents[1].capabilities.files || agents[1].capabilities.screen || agents[1].capabilities.skills)
-        assertTrue(agents[2].capabilities.mailbox)
         assertEquals("Studio lead · 2 active", fleetSubtitle(agents[0]))
         for (a in agents) assertFalse(a.toString(), containsAddress(a.toString()))
     }
 
     @Test fun oldHubsWithoutCapabilitiesFallBackByKind() {
-        val a = HubApi.parseAgent(Json.parseToJsonElement("""{"name":"Old","host":"192.0.2.10","profile":"x","online":true,"chatReady":true,"managementReady":true,"kind":"openai"}""").jsonObject)
-        assertEquals(Capabilities.forKind("openai"), a.capabilities)
+        val a = HubApi.parseAgent(Json.parseToJsonElement("""{"name":"Old","host":"192.0.2.10","profile":"x","online":true,"chatReady":true,"managementReady":true,"kind":"hermes"}""").jsonObject)
+        assertEquals(Capabilities.forKind("hermes"), a.capabilities)
         assertFalse("host must not be kept", a.toString().contains("10.77"))
     }
 

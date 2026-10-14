@@ -31,16 +31,14 @@ class V04LogicTest {
         assertTrue(FileMarker.split("see [Attached file: x (1 B)] here").second.isEmpty())
     }
 
-    @Test fun bridgedAgentsGetBadgesAndSubtitles() {
-        val muse = AgentStatus("Scribe", true, true, false, kind = "mcp-inbox", label = "Scribe")
-        val glm = AgentStatus("GLM", true, true, false, kind = "openai")
+    @Test fun agentsGetBadgesAndSubtitles() {
         val hermes = AgentStatus("Atlas", true, true, true, activeSessions = 2, description = "Studio lead\nsecond line")
-        assertEquals("Inbox", muse.badge); assertEquals("API", glm.badge); assertNull(hermes.badge)
-        assertTrue(muse.isInbox && !muse.isHermes); assertTrue(hermes.isHermes)
-        assertEquals("OpenAI-compatible", fleetSubtitle(glm))
+        val other = AgentStatus("Bot", true, true, false, kind = "bot") // a kind this app does not know yet
+        assertNull(hermes.badge); assertEquals("Bot", other.badge)
+        assertTrue(hermes.isHermes && !other.isHermes)
         assertEquals("Studio lead · 2 active", fleetSubtitle(hermes))
         assertEquals("Hermes agent", fleetSubtitle(AgentStatus("X", true, true, true)))
-        assertTrue(fleetSubtitle(muse).startsWith("Mailbox"))
+        assertEquals("bot", fleetSubtitle(other))
     }
 
     @Test fun screenLabelsAndCountdown() {
