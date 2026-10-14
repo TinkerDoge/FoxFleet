@@ -20,7 +20,6 @@
         "voice": true,
         "skills": true,
         "sessions": true,
-        "mailbox": false,
         "busy": [
           "queue",
           "interrupt"

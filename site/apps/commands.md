@@ -18,8 +18,6 @@ Type `/` or `#` as the **first word** of a message to open autocomplete. Use ↑
 | `/help` | List the agent's own commands. |
 | `/<skill>` | Run a skill by name. |
 
-Only **Hermes** agents get the full list; other kinds get just `/new`, `/sessions` and `/stop`.
-
 ## `#skill`
 
 `#` offers the agent's skills (names that start with, or contain, what you typed). Picking one inserts `#skill ` in the message. Skills come from `GET /api/agents/{name}/skills`; owners can enable or disable them (`POST …/skills/{id}/toggle`).

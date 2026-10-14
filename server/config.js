@@ -20,7 +20,7 @@ function endpoint(value) {
 // A saved agent of a kind this build does not know is left alone on disk and ignored (see configStore).
 export const KINDS = ['hermes'];
 // Endpoint and credential fields are write-only: only the hub ever reads them back. Clients get
-// booleans (hasHost, hasApiKey, …); a blank value on edit keeps the saved one.
+// booleans (hasHost, hasApiServerKey, …); a blank value on edit keeps the saved one.
 export const WRITE_ONLY = ['machineId', 'host', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'dashboardPass', 'apiServerKey', 'dashboardWsToken'];
 const hasKey = (key) => 'has' + key[0].toUpperCase() + key.slice(1);
 // Per-kind schema: drives validation here and the Add-agent forms in the apps (GET /api/agent-kinds).

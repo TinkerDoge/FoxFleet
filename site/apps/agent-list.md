@@ -36,8 +36,7 @@ The magnifier (Android) or the field above the list (web) filters by name and by
 
 ## Where the data comes from
 
-The hub records, per account, the last message you sent and the last reply it relayed, and adds them to `GET /api/agents` as `last_activity_at`, `last_session_title`, `last_message_preview` and `last_role` (see the [API reference](/reference/api)). For API-key agents it also reads older chats from the hub's own history, so they show up straight away. Hermes agents show activity from the moment they are used through FoxFleet; chats you had elsewhere appear after the next message. The hub never sends addresses or hosts in these fields.
-
+The hub records, per account, the last message you sent and the last reply it relayed, and adds them to `GET /api/agents` as `last_activity_at`, `last_session_title`, `last_message_preview` and `last_role` (see the [API reference](/reference/api)). Hermes agents show activity from the moment they are used through FoxFleet; chats you had elsewhere appear after the next message. The hub never sends addresses or hosts in these fields.
 
 ## When there is no time or preview
 

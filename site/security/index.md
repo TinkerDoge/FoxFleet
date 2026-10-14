@@ -9,7 +9,7 @@ Foxfleet holds API keys and can drive agents (and desktops) on your machines. It
 | Account passwords | scrypt hashes (N=2¹⁵, r=8, p=1), never logged or returned |
 | Session tokens | random, stored only as SHA-256, rotating, revocable per device |
 | Agent secrets (API keys, dashboard passwords, hosts, URLs) | write-only on the hub: no API ever returns them; `0600` files |
-| Connector and MCP tokens | per agent, stored hashed, shown once, rotatable |
+| Connector tokens | per machine, stored hashed, shown once, rotatable |
 | Other users' data | per-user context; no cross-user route exists |
 | Your IP and browsing | remote Markdown images fetched by the hub; strict CSP |
 | Your agent's desktop | single-use short tickets, lease, auto hand-back, `FLAG_SECURE` |

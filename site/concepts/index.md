@@ -17,7 +17,7 @@ phone / browser  ──►  HUB (one Node process)  ──►  agents
 
 ## The privacy contract
 
-Clients never receive hosts, ports, URLs, profile paths or credentials. They see an agent as a **name, kind, online/ready status and capabilities**. Anything sensitive is *write-only*: you can set it, the hub uses it, nobody can read it back; the API returns booleans like `hasApiKey` instead. A test (`server/test/v05.test.js`) scans responses for leaks.
+Clients never receive hosts, ports, URLs, profile paths or credentials. They see an agent as a **name, kind, online/ready status and capabilities**. Anything sensitive is *write-only*: you can set it, the hub uses it, nobody can read it back; the API returns booleans like `hasApiServerKey` instead. A test (`server/test/v05.test.js`) scans responses for leaks.
 
 ## Where to go next
 

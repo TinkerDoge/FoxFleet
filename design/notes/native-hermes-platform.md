@@ -1,6 +1,8 @@
 # FoxFleet as a native Hermes messaging platform
 
-Status: proposal (branch `feat/hermes-native`), 2026-10-14. Hermes surveyed: v0.22.0+119 (`0e427d78`).
+Status: design approved by Doge; Hermes-only cleanup implemented on `feat/hermes-native`, native bot transport not yet implemented. Hermes surveyed: v0.22.0+119 (`0e427d78`).
+
+Implementation constraints: bot transport is selected by configuration, never by connection availability. An offline bot durably queues inbound messages and never falls back to the connector. The removed `server/history.js` was provider-only; the bot path needs its own account-scoped chat/message store and explicit client endpoint integration. Replay must expose gaps, idempotency and acknowledgements must survive restart, and all message/media/card operations must enforce account + agent + chat ownership.
 
 ## TL;DR
 Stop driving Hermes from outside. Ship a **`foxfleet` Hermes platform plugin** (same slot as `plugins/platforms/telegram`,
@@ -51,7 +53,7 @@ Ships from this repo as `hermes-plugin/foxfleet/` and is installed into `~/.herm
 | streaming | `send` + `edit_message` (gateway stream consumer), later `send_draft` if we want animated drafts |
 | `send_typing` | `chat.action typing` |
 | `send_image_file / send_document / send_voice / send_video` | `POST /api/bot/media` (multipart) → `message.send {media:[id]}`. Kills `MEDIA:` path allowlists and the media proxy |
-| `send_clarify`, `_send_exec_approval_prompt`, `send_slash_confirm`, `send_choice_picker`, `send_model_picker` | `message.send {card:{buttons}}`; taps come back as `callback` frames with the shared ids `cl:<id>:<idx>`, `appr:<id>:<choice>`, `sc:<choice>:<id>` so core resolvers work unchanged |
+| `send_clarify`, `_send_exec_approval_prompt`, `send_slash_confirm`, `send_choice_picker`, `send_model_picker` | `message.send {card:{buttons}}`; taps come back as `callback` frames with the shared ids `cl:<id>:<idx>`, `ea:<choice>:<approval_id>`, `sc:<choice>:<confirm_id>`; the adapter must verify user, chat, active request and session before calling the core resolvers |
 | reactions | outbound `message.react`; inbound reaction frames → `set_reaction_handler` |
 | slash commands | arrive as plain `/cmd` text; the gateway's own command router handles them (same as Telegram). On connect the plugin pushes `commands.set` built from `COMMAND_REGISTRY` so autocomplete is live, not frozen JSON |
 | `platform_hint` | replaces `<foxfleet-note>` injection: proper system-prompt hint, no message mangling |

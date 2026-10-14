@@ -197,7 +197,7 @@ CI workflows for the hub tests, the web build, the Android assemble and a secret
 - Docker image/compose, the deploy script's real run and systemd units are untested on a live host.
 - Android: unit and screenshot tests only; no instrumented or on-device testing yet.
 - Web: screen-reader testing and automated axe checks are still to do ([docs/ACCESSIBILITY.md](docs/ACCESSIBILITY.md)); the contract scenario does not yet cover chat streaming, uploads and screen (they need a live agent).
-- Providers are written to the public API docs; there is no live-provider test suite. A2A and Webhook agents are planned, not built. No two-factor login yet.
+- The Hermes integration is written to Hermes' public docs and tested against fakes; there is no live-agent test suite. A2A and Webhook agents are planned, not built. No two-factor login yet.
 
 ## Roadmap
 

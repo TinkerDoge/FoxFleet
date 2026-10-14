@@ -14,7 +14,7 @@
   "overview": [
     "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
     "The latest public downloads are 0.3.10-alpha (Android notifications, per-chat backgrounds, a lighter dark theme, message actions, reactions, a Telegram-style agent list, agent awareness, reasoning and better screen, media and scroll handling, on top of resilient connections, resumable chats, Hermes commands and the foxfleet CLI), including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
-    "API-provider keys stay on the hub; paired Hermes dashboard passwords and chat API keys stay on the agent machine."
+    "Credentials of directly connected Hermes agents stay on the hub; paired Hermes dashboard passwords and chat API keys stay on the agent machine."
   ],
   "timeline": [
     {
@@ -125,7 +125,7 @@
       "area": "Android",
       "release": "0.2.1-alpha",
       "text": "Chat history for every agent",
-      "detail": "History sheet (web and Android) lists past sessions with title, time and preview; open, rename, delete, load more. API-key agents get hub-side history with a retention setting."
+      "detail": "History sheet (web and Android) lists past sessions with title, time and preview; open, rename, delete, load more."
     },
     {
       "id": "fx3",
@@ -255,7 +255,7 @@
       "col": "Later",
       "area": "Agents",
       "text": "Implement A2A and Webhook adapters",
-      "detail": "Both kinds are advertised as planned in the registry and are rejected when added. Their runtimes are not implemented.",
+      "detail": "Neither kind is in the hub's registry (FoxFleet is Hermes-only); other agents are meant to return as clients of a hub bot API. Their runtimes are not implemented.",
       "doneWhen": "Define authentication and lifecycle behavior, implement one adapter at a time, and ship a documented end-to-end example.",
       "href": "/agents/write-a-plugin"
     },
@@ -300,7 +300,7 @@
       "col": "Done",
       "area": "Agents",
       "text": "Provider registry and schema-driven forms",
-      "detail": "Hermes, MCP inbox, OpenAI-compatible, OpenRouter, Z.ai, OpenCode, and Grok use hub-defined fields and capabilities.",
+      "detail": "Hermes uses hub-defined fields and capabilities. The other kinds shipped in 0.1.0-alpha (MCP inbox, OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok) were removed later.",
       "href": "/concepts/agents",
       "release": "0.1.0-alpha"
     },
