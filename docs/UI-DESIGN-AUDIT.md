@@ -2,6 +2,8 @@
 
 Reviewed 9 October 2026 (Asia/Saigon), against repository version `0.2.1-alpha`.
 
+> Later note: FoxFleet is now Hermes-only; the recommendations below that mention mailbox (MCP inbox) agents no longer apply.
+
 FoxFleet has a coherent visual foundation and a capable chat implementation. Its largest design opportunity is helping people find and resume their work. The current interface makes an agent easy to select, but makes a particular conversation harder to recognize, retrieve, and monitor.
 
 Recommended product principle: **one calm place to continue work with your agents**. Keep the existing fox identity, restrained palette, readable answers, and capability-aware controls. Make conversation context, progress, and recovery as dependable as the composer.

@@ -13,8 +13,7 @@ Pick an agent in the sidebar (web) or the list (Android); see [the agent list](/
 ## Conversations
 
 - **New chat** starts a fresh conversation (`/new`).
-- **Sessions** (agents with the capability: Hermes, MCP inbox) lists earlier conversations; open one to continue it.
-- Provider agents (OpenAI-compatible, OpenRouter, …) have no server history: the client sends the running conversation each time. Older images in long chats are collapsed to `[image]`.
+- **Sessions** lists earlier conversations (Hermes keeps them); open one to continue it. Older images in long chats are collapsed to `[image]`.
 
 ## Layout
 
@@ -26,7 +25,7 @@ Next: [Attachments and voice](./attachments), [Commands](./commands).
 ## History, resuming and slash commands
 
 - **Closing the app or the browser does not stop a reply.** The hub keeps the agent running and buffers what it says. Reopen the app and the same chat is restored and keeps streaming. Only the **Stop** button stops it.
-- **History** (clock icon in the chat header): your past sessions for this agent with title, time and a preview. Open one, rename it, delete it, start a *New chat*, pull to refresh, load more. Hermes agents use Hermes' own sessions; API-key agents (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok Build) keep their history on the hub for 90 days by default (`FOXFLEET_HISTORY_DAYS`, `0` = keep nothing).
+- **History** (clock icon in the chat header): your past sessions for this agent with title, time and a preview. Open one, rename it, delete it, start a *New chat*, pull to refresh, load more. These are Hermes' own sessions.
 - **Old conversations** render like live ones: Markdown, code, tables, images, collapsed reasoning and tool steps, timestamps. Raw tool JSON and internal control tags are hidden.
 - **Slash commands.** Type `/` for the list. Hermes agents show the full Hermes catalog, grouped, with argument hints. Commands marked *app* run in Foxfleet (`/new`, `/history`, `/stop`, `/retry`, `/title`), *chat* commands are sent to the agent as text, and commands that need a terminal or a messaging platform are shown greyed out as not available remotely. Other agent kinds only show the app commands and their skills.
 

@@ -4,7 +4,7 @@ The word *session* means two different things in Foxfleet.
 
 ## Chat sessions (conversations)
 
-For agents with the `sessions` capability (Hermes, MCP inbox) the hub lists, searches and reads past conversations (`GET /api/agents/{name}/sessions`, `…/sessions/{id}/messages`). Provider agents (OpenAI-compatible, OpenRouter, …) keep no server-side history: the client sends the running conversation with each message. Older images in a long chat are collapsed to an `[image]` marker so bytes are not uploaded repeatedly.
+For agents with the `sessions` capability (Hermes) the hub lists, searches and reads past conversations from the agent (`GET /api/agents/{name}/sessions`, `…/sessions/{id}/messages`). Older images in a long chat are collapsed to an `[image]` marker so bytes are not uploaded repeatedly.
 
 ## Sign-in sessions and devices
 

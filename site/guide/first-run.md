@@ -23,7 +23,7 @@ If an account store is empty and `FOXFLEET_PASSWORD` is set, the hub creates the
 ## After setup
 
 1. **Registration** is `closed` by default. Open *Admin* to switch to `invite` (people join through links you create) or `open` (anyone who reaches the hub can register: only for private networks).
-2. Create a second, non-owner account only if you want to share the hub. Each user has their **own** agents, secrets, inbox and screen tickets.
+2. Create a second, non-owner account only if you want to share the hub. Each user has their **own** agents, secrets and screen tickets.
 3. Add agents under *Manage agents*.
 
 Next: [Accounts and roles](/concepts/accounts).

@@ -183,8 +183,8 @@
       "col": "Next",
       "area": "Agents",
       "text": "Smoke-test real agent integrations",
-      "detail": "Provider adapters and Hermes/MCP flows have automated doubles. Live endpoint behavior and real-machine networking need a recorded compatibility pass.",
-      "doneWhen": "Run chat through the implemented API providers, test a paired multi-profile Hermes machine with reconnect/upload/screen, and round-trip an MCP inbox reply.",
+      "detail": "Hermes flows have automated doubles. Live endpoint behavior and real-machine networking need a recorded compatibility pass.",
+      "doneWhen": "Test a paired multi-profile Hermes machine with reconnect/upload/screen, and chat through a direct Hermes connection.",
       "href": "/agents/real-machine"
     },
     {
@@ -488,49 +488,11 @@
       "status": "Implemented"
     },
     {
-      "kind": "mcp-inbox",
-      "name": "MCP inbox",
-      "auth": "Per-agent bearer token",
-      "status": "Implemented"
-    },
-    {
-      "kind": "openai",
-      "name": "OpenAI-compatible",
-      "auth": "API key when required",
-      "status": "Implemented"
-    },
-    {
-      "kind": "openrouter",
-      "name": "OpenRouter",
-      "auth": "API key",
-      "status": "Implemented"
-    },
-    {
-      "kind": "zai",
-      "name": "Z.ai (GLM)",
-      "auth": "API key; general endpoint by default",
-      "status": "Implemented"
-    },
-    {
-      "kind": "opencode",
-      "name": "OpenCode",
-      "auth": "API key",
-      "status": "Implemented"
-    },
-    {
-      "kind": "grok",
-      "name": "Grok (xAI)",
-      "auth": "API key",
-      "status": "Implemented"
-    },
-    {
-      "kind": "a2a",
       "name": "A2A agent",
       "auth": "Not implemented",
       "status": "Planned"
     },
     {
-      "kind": "webhook",
       "name": "Webhook",
       "auth": "Not implemented",
       "status": "Planned"
@@ -606,7 +568,7 @@
     },
     {
       "area": "Agent connections",
-      "text": "Implemented provider kinds, machine pairing and Hermes profile discovery, outbound tunneling, API-key chat, and an MCP mailbox.",
+      "text": "Hermes agents only: machine pairing and profile discovery, outbound tunneling, or a direct connection. Other agent kinds may return later as bot-API clients.",
       "href": "/agents/"
     },
     {

@@ -49,7 +49,7 @@ The container binds `0.0.0.0` internally (so it prints a setup code); compose pu
 
 ## Add your first agent
 
-Sidebar → **Manage agents → Add**. The simplest first agent is an API-key provider such as [OpenRouter](/agents/openrouter): pick the type, paste the key, **Test connection**, **Save**. Then open it from the sidebar and chat.
+FoxFleet talks to Hermes agents. The usual way to add them is to connect the computer that runs Hermes (next section): every profile on it appears at once. A single Hermes install you can reach directly can also be added under **Manage agents → Add** (advanced).
 
 ## Connect a computer that runs Hermes
 

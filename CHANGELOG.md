@@ -2,6 +2,15 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased
+
+### Removed: every non-Hermes agent kind (FoxFleet is Hermes-only)
+- *Kinds:* the API-key chat kinds `openai` (OpenAI-compatible), `openrouter`, `zai` (Z.ai / GLM), `opencode` and `grok`, and the `mcp-inbox` mailbox kind are gone. `GET /api/agent-kinds` lists only `hermes` (the planned A2A and Webhook rows went too). Agents keep their `kind` field, so other kinds can come back later as clients of a hub bot API (see `design/notes/native-hermes-platform.md`).
+- *Hub:* removed the shared OpenAI-style client, hub-side chat history and `GET/PUT /api/history/settings` (`FOXFLEET_HISTORY_DAYS`), the MCP endpoint `/mcp`, mailbox tokens and `POST /api/connections/{name}/token`. `capabilities.mailbox` is no longer sent and `capabilities.media.agent` is `native` or `http`.
+- *Saved configs:* agents of a kind the hub does not run are ignored with one warning at start, kept in `config.json` exactly as they were (every save writes them back) and keep their names reserved. Old `inbox.json` and `history.json` files are left alone and still included in `foxfleet backup`.
+- *Apps:* web and Android drop the mailbox token screens, the inbox chat polling and the history-retention client calls; the agent-type picker shows what the hub lists.
+- *Docs:* the per-provider pages and the MCP inbox page are removed from the site; the API contract no longer has the removed routes and fields. The hub test floor is 342.
+
 ## 0.3.10-alpha (2026-10-13, Android versionCode 20)
 
 ### Changed: Android permissions and tests

@@ -6,7 +6,7 @@ Back up the **data directory** ([layout](./data)). Nothing else is state.
 
 ```bash
 systemctl --user stop foxfleet                      # optional but gives a consistent copy
-tar czf foxfleet-backup-$(date +%F).tgz -C ~/.local/share/foxfleet config.json* accounts users inbox.json
+tar czf foxfleet-backup-$(date +%F).tgz -C ~/.local/share/foxfleet config.json* accounts users machines.json
 chmod 600 foxfleet-backup-*.tgz
 systemctl --user start foxfleet
 ```

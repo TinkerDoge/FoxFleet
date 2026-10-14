@@ -2,22 +2,20 @@
 
 ## Pieces
 
-- **Hub (`server/`)**: one Node process, no runtime dependencies. It owns accounts, per-user agent registries, secrets, sessions, and talks to agents. Every client request is authenticated (cookie for the web app, bearer token for Android) and runs inside a per-user context (`AsyncLocalStorage`), so each user sees only their own agents, files, inbox and screens.
+- **Hub (`server/`)**: one Node process, no runtime dependencies. It owns accounts, per-user agent registries, secrets, sessions, and talks to agents. Every client request is authenticated (cookie for the web app, bearer token for Android) and runs inside a per-user context (`AsyncLocalStorage`), so each user sees only their own agents, files and screens.
 - **Clients**: the Android app (Compose) and the web app (Preact). They only see *names, status and capabilities*; hosts, URLs and keys are write-only on the hub (privacy contract, tested).
 - **Connector (`connector/`)**: one tiny script per computer that pairs once with a short-lived code, discovers its Hermes profiles, and dials the hub over ONE WebSocket with a per-machine token (hash only on the hub); every frame names its agent. The hub opens loopback forwarders and tunnels HTTP and WebSocket traffic through that single outbound link, so agents need no open ports or public name.
 - **Design tokens (`design/tokens.json`)**: colours, radii, type and motion; a script generates the web CSS variables and the Android `Tokens.kt`.
 
-## Agent kinds (plugins)
+## Agent kinds
 
-Each kind is declared in `server/config.js` (`KIND_SPECS`): fields, auth methods, warnings, conditional fields, and a runtime. Clients render add/edit forms from `GET /api/agent-kinds`, so a new kind needs no client change.
+FoxFleet is Hermes-only. The kind is declared in `server/config.js` (`KINDS`, `KIND_SPECS`): fields, auth methods, warnings and conditional fields. Clients render add/edit forms from `GET /api/agent-kinds`, so a kind added later needs no client change. Every agent keeps its `kind` field for that reason (other kinds may return as bot-API clients, see `design/notes/native-hermes-platform.md`).
 
 | Kind | How the hub reaches it |
 | --- | --- |
 | `hermes` | Machine connector (default; credentials stay on the machine) or direct host/port (advanced): chat, sessions, files, skills, screen |
-| `mcp-inbox` | Mailbox for an outside agent that calls the hub's `/mcp` with a bearer token |
-| `openai`, `openrouter`, `zai`, `opencode`, `grok` | API-key chat providers; the hub calls the provider |
 
-Config is versioned (`config.json` v3). Older files migrate on start and a `.bak` is kept.
+Config is versioned (`config.json` v3). Older files migrate on start and a `.bak` is kept. Saved agents of a kind this hub does not run (the removed API-key chat kinds and MCP inbox) are ignored with one warning and written back to `config.json` unchanged on every save.
 
 ## Accounts and sessions
 
@@ -73,7 +71,7 @@ range requests. Each build stamps a content-derived version; a new worker waits 
 ```
 phone / browser ──► /chat /messages /queue /runs/*  (unchanged shapes)
                          │ capabilities.nativeUi ?
-                         ├── no  → coordinator + HTTP runs / chat completions (Grok, OpenAI-compatible, MCP inbox: as before)
+                         ├── no  → coordinator + HTTP runs / chat completions (Hermes without a native gateway)
                          └── yes → native-facade.js ──► hermes-ui.js (journal, ownership, foxfleet.native/1 events)
                                                            │ ui-call / ui-ev over the existing connector tunnel
                                                            ▼

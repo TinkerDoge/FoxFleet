@@ -9,7 +9,7 @@ Foxfleet is multi-user from the first line of code, so a single hub can be share
 | **owner** (the first account) | Everything a user can, plus the **Admin** area: registration mode, invites, pairing QR, listing and disabling people. Cannot be disabled or removed. |
 | **user** | Their own agents, chats, files, devices and password. |
 
-Every request runs inside a per-user context (`AsyncLocalStorage`). One user's agents, saved secrets, inbox, uploaded files, upstream caches and screen tickets are invisible to everyone else, including other clients of the same hub. The owner's data sits in the data directory itself; other users' data sits in `users/<id>/`. See [Data directory](/hosting/data).
+Every request runs inside a per-user context (`AsyncLocalStorage`). One user's agents, saved secrets, uploaded files, upstream caches and screen tickets are invisible to everyone else, including other clients of the same hub. The owner's data sits in the data directory itself; other users' data sits in `users/<id>/`. See [Data directory](/hosting/data).
 
 ## Registration modes
 

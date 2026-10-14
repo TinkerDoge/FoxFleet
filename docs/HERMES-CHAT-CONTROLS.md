@@ -1,6 +1,9 @@
 # Hermes slash commands and interruptible chat: research and FoxFleet build plan
 
 Researched 9 October 2026. Scope: research and a build plan; application code is unchanged.
+
+> Later note: FoxFleet is now Hermes-only. The Grok / OpenAI-compatible providers and the MCP inbox discussed below were removed;
+> those parts are kept as the record of this research.
 FoxFleet inspected at commit `f6be528b8dd2cce321e90ca31f46aeba0a0892d3`.
 Upstream sources below refer to the current Hermes documentation and `main`, which can change.
 This is source-level research, without a live Hermes, Telegram, or Discord integration test.

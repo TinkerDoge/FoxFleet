@@ -16,8 +16,8 @@
   <b><a href="https://tinkerdoge.github.io/FoxFleet/">Documentation</a></b> · <a href="https://github.com/TinkerDoge/FoxFleet/releases">Releases</a> · <a href="LICENSE">MIT</a> · <a href="docs/INSTALL.md">Install</a> · <a href="docs/CONNECT-AGENT.md">Connect an agent</a> · <a href="docs/ARCHITECTURE.md">Architecture</a> · <a href="docs/roadmap.html">Roadmap</a>
 </p>
 
-Foxfleet puts the agents you run on your own machines and the chat APIs you pay for in **one calm place**. You run a small hub
-on a box you control; you talk to every agent from a browser or from the Android app, with real accounts, and your API keys and
+Foxfleet puts the Hermes agents you run on your own machines in **one calm place**. You run a small hub
+on a box you control; you talk to every agent from a browser or from the Android app, with real accounts, and your credentials and
 machine addresses never leave the hub.
 
 > **Status: alpha (0.1.x).** Everything below exists in this repository and is covered by automated tests, but it has had very little
@@ -67,15 +67,9 @@ machine addresses never leave the hub.
 | Type | How it connects | Auth | Chat | Images | Files | Screen | Voice | Skills / sessions |
 | --- | --- | --- | :-: | :-: | :-: | :-: | :-: | :-: |
 | **Hermes agent** | One **machine connector** per computer (default, pair with one command), or direct host/port | machine token / dashboard credentials | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **OpenAI-compatible** (any `/chat/completions` API, local models) | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
-| **OpenRouter** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
-| **Z.ai (GLM)** | Hub calls the API | API key | ✅ | – | – | – | – | – |
-| **OpenCode** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
-| **Grok (xAI)** | Hub calls the API | API key | ✅ | ✅ | – | – | – | – |
-| **MCP inbox** | The outside agent reads and answers a mailbox over MCP (`/mcp`, bearer token) | per-agent token | ✅ | – | – | – | – | sessions |
-| A2A, Webhook | planned, not implemented | | | | | | | |
 
-Capabilities come from each plugin (`server/config.js`) and the apps show only what an agent supports. Provider behaviour was written against the documented APIs and exercised with test doubles; live calls to each provider are not part of the automated tests.
+FoxFleet is Hermes-only. Agents keep a `kind` field, so other kinds can come back later (as clients of a hub bot API, see
+[design/notes/native-hermes-platform.md](design/notes/native-hermes-platform.md)). Capabilities come from the hub (`server/config.js`) and the apps show only what an agent supports.
 
 ## Quick start
 
@@ -133,8 +127,8 @@ The hub speaks plain HTTP on loopback by design. To reach it from outside, run a
 ## Security overview
 
 - Passwords hashed with scrypt; sessions are rotating tokens with a per-user device list you can revoke; HttpOnly SameSite cookies for the web, bearer tokens for the app; CSRF/Origin checks on cookie sessions; per-username lockout and per-IP throttling.
-- **Secrets stay on the hub.** API keys, passwords, hosts and URLs are write-only: the API returns only `has…` flags, and the UI never shows an address.
-- Connector and mailbox tokens are stored **hashed** and shown once.
+- **Secrets stay on the hub.** Keys, passwords, hosts and URLs are write-only: the API returns only `has…` flags, and the UI never shows an address.
+- Machine (connector) tokens are stored **hashed** and shown once.
 - Strict CSP on the web app (same-origin scripts, no inline script, `img-src 'self' data: blob:`); Markdown is sanitised with DOMPurify; remote images go through a hub proxy that allows only public `https:443` addresses, raster types, 8 MB, and every redirect hop is re-checked.
 - Screen access uses single-use, agent-bound 30-second tickets, an explicit take-over lease, and automatic hand-back.
 - Service worker never touches the API; the web app is tested against a shared OpenAPI contract.
@@ -151,20 +145,17 @@ flowchart LR
   end
   subgraph Hub["Foxfleet hub (Node, no dependencies)"]
     API["HTTP API + SSE\naccounts · per-user agents"]
-    P["Provider plugins"]
     C["Connector tunnel"]
     S["Screen relay"]
     M["Media proxy"]
   end
   W -- https --> API
   A -- https --> API
-  API --> P
-  P -- API key --> LLM["OpenAI-compatible · OpenRouter\nZ.ai · OpenCode · Grok"]
+  API -- "direct (advanced)" --> D["Hermes install\n(dashboard + chat API)"]
   C <-- "one outbound WebSocket (machine token)" --> H["Computer with Hermes profiles\nfoxfleet-connector"]
   S <--> C
   API --> C
   API --> M -- "public https only" --> IMG["Remote images"]
-  MCP["MCP agents"] -- "bearer token" --> API
 ```
 
 More in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The API contract lives in [`contract/openapi.json`](contract/openapi.json) (OpenAPI 3.1) and is checked against both the real hub and the web mock by the same test scenario.
@@ -177,7 +168,7 @@ The full documentation (quick start, hosting guides, per-agent onboarding, secur
 
 | Path | What |
 | --- | --- |
-| `server/` | The hub: HTTP API, accounts, provider plugins, connector tunnel, screen relay, media proxy, MCP inbox. Node standard library only. |
+| `server/` | The hub: HTTP API, accounts, agent registry, connector tunnel, screen relay, media proxy. Node standard library only. |
 | `web/` | Web app: Preact + Vite + TypeScript, PWA, lazy-loaded noVNC. The hub serves `web/dist`. |
 | `android/` | Android app (Kotlin, Jetpack Compose), package `dev.foxfleet.app`. |
 | `connector/` | `foxfleet-connector.mjs`, runs on an agent machine and dials the hub. |

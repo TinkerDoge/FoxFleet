@@ -104,4 +104,4 @@ Everything is optional; pairing needs only the hub and the code. The connector's
 
 ## Not Hermes?
 
-Chat providers (OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok) need no machine at all: add them with an API key. Muse and other mailbox agents use the [MCP inbox](./mcp-inbox), unchanged. For other **local agents** the same machine connector is the intended carrier; see [Write your own plugin](./write-a-plugin#local-agents-through-a-machine) for the extension point.
+FoxFleet is Hermes-only today. For other **local agents** the same machine connector is the intended carrier; see [Write your own plugin](./write-a-plugin#local-agents-through-a-machine) for the extension point.

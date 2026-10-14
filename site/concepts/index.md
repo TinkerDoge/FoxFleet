@@ -3,13 +3,13 @@
 ```text
 phone / browser  ──►  HUB (one Node process)  ──►  agents
  Android app           accounts, secrets            Hermes machine ◄── connector (dials out)
- Web app (PWA)         per-user registries          API-key providers (the hub calls them)
-                       media proxy, screen relay    MCP-inbox agents (they call the hub)
+ Web app (PWA)         per-user registries          Hermes install (direct, advanced)
+                       media proxy, screen relay
 ```
 
 | Piece | What it is |
 | --- | --- |
-| **Hub** (`server/`) | One Node process with **no runtime dependencies**. Owns accounts, per-user agent registries, secrets, sessions, files and the screen relay. Serves the built web app, `/api/*`, the connector WebSocket (`/connector`), the MCP endpoint (`/mcp`) and the connector script (`/connector.mjs`). |
+| **Hub** (`server/`) | One Node process with **no runtime dependencies**. Owns accounts, per-user agent registries, secrets, sessions, files and the screen relay. Serves the built web app, `/api/*`, the connector WebSocket (`/connector`) and the connector script (`/connector.mjs`). |
 | **Web app** (`web/`) | Preact + TypeScript single-page app, served by the hub from `web/dist`. Installable as a PWA. |
 | **Android app** (`android/`) | Kotlin/Jetpack Compose. Knows nothing about your hub until you give it an address; supports several hubs. |
 | **Connector** (`connector/`) | One Node script per computer with Hermes. Pairs once with a short-lived code, discovers the Hermes profiles, dials out to the hub over one WebSocket and tunnels each profile's HTTP and WebSocket traffic back. |

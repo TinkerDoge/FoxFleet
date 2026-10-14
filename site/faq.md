@@ -32,9 +32,7 @@ Very long hub addresses exceed the QR encoder's capacity (about 105 bytes); the 
 
 **A Hermes agent stays offline.** See the [troubleshooting table](/agents/real-machine#troubleshooting). Check that the connector process is running on the machine, the machine was not revoked or re-paired, and `curl https://hub/connector.mjs` works from that machine.
 
-**`Test` says "Chat API unavailable or authentication failed" for a provider.** Wrong key, wrong base URL, or the provider has no `/models` route. The test only calls `GET {base}/models`.
-
-**Z.ai refuses my key / I'm worried about the coding endpoint.** Read the [Z.ai page](/agents/zai).
+**Where did the OpenAI-compatible, OpenRouter, Z.ai, OpenCode, Grok and MCP-inbox agents go?** FoxFleet is Hermes-only now. Saved agents of those kinds stay in your `config.json` untouched but the hub ignores them (one warning in the log). Point Hermes at the same provider instead: Hermes supports those model providers itself.
 
 **Images do not appear in a reply.** Remote images load through the hub's [media proxy](/security/media-proxy): it needs outbound https from the hub, blocks private addresses, SVG and files above 8 MB.
 

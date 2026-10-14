@@ -4,7 +4,7 @@
 
 ```text
 server/        the hub (Node 22, no dependencies): index.js, config.js (kinds), accounts.js, connector.js,
-               hermes.js, openai.js, mcp.js, inbox.js, screen.js, media-proxy.js, qr.js, ws.js  +  test/
+               hermes.js, hermes-ui.js, screen.js, media-proxy.js, qr.js, ws.js  +  test/
 connector/     foxfleet-connector.mjs (served by the hub at /connector.mjs)
 web/           Preact + Vite + TypeScript app (src/, tests/, public/, tools/mock-hub.mjs)
 android/       Kotlin + Jetpack Compose app (app/src/main/java/dev/foxfleet/app/…)
