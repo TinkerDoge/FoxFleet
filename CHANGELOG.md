@@ -4,6 +4,9 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased
 
+### Android test build
+- Incremented Android versionCode to 21 for the signed Hermes-only test build; versionName stays `0.3.10-alpha`. This is not a new published release or the native bot-channel cutover.
+
 ### Removed: every non-Hermes agent kind (FoxFleet is Hermes-only)
 - *Kinds:* the API-key chat kinds `openai` (OpenAI-compatible), `openrouter`, `zai` (Z.ai / GLM), `opencode` and `grok`, and the `mcp-inbox` mailbox kind are gone. `GET /api/agent-kinds` lists only `hermes` (the planned A2A and Webhook rows went too). Agents keep their `kind` field, so other kinds can come back later as clients of a hub bot API (see `design/notes/native-hermes-platform.md`).
 - *Hub:* removed the shared OpenAI-style client, hub-side chat history and `GET/PUT /api/history/settings` (`FOXFLEET_HISTORY_DAYS`), the MCP endpoint `/mcp`, mailbox tokens and `POST /api/connections/{name}/token`. `capabilities.mailbox` is no longer sent and `capabilities.media.agent` is `native` or `http`.
