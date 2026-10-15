@@ -517,7 +517,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 user_agent_header=f"hermes-foxfleet/{PLUGIN_VERSION}", compression=None,
                 open_timeout=self.OPEN_TIMEOUT, max_size=protocol.MAX_FRAME_BYTES, max_queue=64,
                 ping_interval=20, ping_timeout=20, close_timeout=5, logger=_ConnLogger(_WS_LOGGER, self._token),
-                subprotocols=list(protocol.OFFERED_SUBPROTOCOLS))
+                subprotocols=list(protocol.OFFERED_SUBPROTOCOLS), proxy=None)
         except _FatalConnect:
             raise
         except InvalidStatus as exc:
@@ -1548,7 +1548,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                         raise ValueError("FoxFleet media exceeds the hub byte limit")
                     yield chunk
 
-        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False, trust_env=False) as client:
             async with client.stream("POST", self._media_http_base() + "/api/bot/media",
                     headers={**protocol.auth_header(self._token), "Content-Type": "application/octet-stream",
                              "Content-Length": str(size), "X-Foxfleet-Chat": str(chat_id),
@@ -1649,7 +1649,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not conn.media_enabled:
             raise ValueError("FoxFleet media was not negotiated")
         paths = []
-        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False, trust_env=False) as client:
             for item in attachments:
                 if item["kind"] != "image" or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"]):
                     raise ValueError("Unsupported inbound media")
@@ -1890,6 +1890,75 @@ def build_command_catalog(limit: int = 100) -> list[dict]:
     return catalog
 
 
+async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None,
+                           force_document=False) -> dict:
+    """Text-only HTTP delivery, independent of the gateway's receive socket and locks."""
+    import httpx
+    from urllib.parse import urlsplit, urlunsplit
+
+    if not isinstance(chat_id, str) or re.fullmatch(r"fc_[A-Za-z0-9_-]{16}", chat_id) is None:
+        return {"error": "FoxFleet: invalid chat id"}
+    if thread_id is not None:
+        return {"error": "FoxFleet: threads are unsupported"}
+    if media_files or force_document:
+        return {"error": "FoxFleet: standalone media delivery is unsupported"}
+    if not isinstance(message, str) or "\0" in message:
+        return {"error": "FoxFleet: invalid text"}
+    text = _clean_text(message)
+    try:
+        if not text.strip() or len(text.encode("utf-8")) > 65536:
+            return {"error": "FoxFleet: text must contain 1 to 65536 UTF-8 bytes"}
+        ws = urlsplit(protocol.bot_ws_url(_hub_url(getattr(pconfig, "extra", None))))
+        prefix = ws.path.removesuffix(protocol.BOT_WS_PATH)
+        url = urlunsplit(("https" if ws.scheme == "wss" else "http", ws.netloc,
+                          prefix + "/api/bot/rpc", "", ""))
+        token = protocol.check_bot_token(_bot_token(pconfig))
+        key = secrets.token_hex(16)
+        frame = protocol.build_request("message.send", key, chat_id=chat_id, text=text,
+                                       format="markdown", final=True, idempotency_key=key)
+        body = protocol.encode_frame(frame).encode("utf-8")
+    except (ValueError, TypeError, protocol.ProtocolError):
+        return {"error": "FoxFleet: invalid hub URL, token or text configuration"}
+    try:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=False, trust_env=False) as client:
+            for attempt in range(2):
+                try:
+                    response = await client.post(url, content=body, headers={
+                        **protocol.auth_header(token), "Content-Type": "application/json"})
+                except httpx.TransportError:
+                    if attempt == 0:
+                        continue
+                    return {"error": "FoxFleet: delivery outcome unknown after one retry"}
+                if response.status_code != 200:
+                    return {"error": "FoxFleet: HTTP delivery refused"}
+                try:
+                    envelope = response.json()
+                    if not isinstance(envelope, dict) or envelope.get("t") != "res":
+                        return {"error": "FoxFleet: invalid delivery response"}
+                    # The hub rate limiter runs before reading the request id.
+                    if envelope.get("id") is None and envelope.get("ok") is False:
+                        envelope = {**envelope, "id": key}
+                    result = protocol.parse_res(envelope)
+                except (ValueError, TypeError, protocol.ProtocolError):
+                    return {"error": "FoxFleet: invalid delivery response"}
+                if result.id not in (key, None) or (result.ok and result.id != key):
+                    return {"error": "FoxFleet: invalid delivery response"}
+                if not result.ok:
+                    kind = protocol.error_kind_for(result.error_code)
+                    if kind == "rate_limited":
+                        retry = envelope.get("error", {}).get("retry_after_ms")
+                        if isinstance(retry, int) and not isinstance(retry, bool) and retry > 0:
+                            await asyncio.sleep(min(retry, 5000) / 1000)
+                    return {"error": "FoxFleet: delivery failed (" + kind + ")"}
+                mid = result.result.get("message_id")
+                if not isinstance(mid, str) or re.fullmatch(r"fm_[A-Za-z0-9_-]{16}", mid) is None:
+                    return {"error": "FoxFleet: delivery response has no valid message id"}
+                return {"success": True, "message_id": mid}
+    except Exception:
+        # Never surface exception strings: HTTP errors may contain URLs or credentials.
+        return {"error": "FoxFleet: HTTP delivery failed"}
+
+
 def register(ctx) -> None:
     """Plugin entry point (``ctx.register_platform``); zero Hermes core edits."""
     ctx.register_platform(
@@ -1897,7 +1966,7 @@ def register(ctx) -> None:
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
         required_env=[TOKEN_ENV], install_hint="websockets ships with Hermes; reinstall Hermes if missing",
         env_enablement_fn=_env_enablement, apply_yaml_config_fn=_apply_yaml_config,
-        cron_deliver_env_var=HOME_ENV,
+        cron_deliver_env_var=HOME_ENV, standalone_sender_fn=_standalone_send,
         allowed_users_env=ALLOWED_USERS_ENV, allow_all_env=ALLOW_ALL_ENV,
         emoji="🦊", platform_hint=PLATFORM_HINT,
     )

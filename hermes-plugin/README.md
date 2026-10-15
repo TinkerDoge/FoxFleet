@@ -20,18 +20,21 @@ and needs no Hermes core edits.
   `message.delete` / `chat.action`, with `SendResult` carrying hub message ids. Streaming uses the
   gateway stream consumer through its supported cumulative-frame extension. The adapter maps
   snapshots to per-turn `send` / `edit_message` calls and splits UTF-8 messages losslessly.
-- `platform_hint`, and `FOXFLEET_HOME_CHANNEL` for cron `deliver=foxfleet` **through a running
-  gateway** (see [Deferred](#deferred)).
+- `platform_hint`, and `FOXFLEET_HOME_CHANNEL` for cron `deliver=foxfleet`.
+- Text cron delivery and `send_message` without a running gateway use the registered
+  `standalone_sender_fn` via `POST /api/bot/rpc`; this does not open a socket. Text must be
+  non-empty and at most 65536 UTF-8 bytes. Unknown transport outcomes retry once with the
+  same idempotency key. Media and threads are refused by this sender.
 
 ## Deferred (not supported, refused explicitly)
 
-- **Out-of-process / standalone send** (cron or `send_message` with no running gateway). The hub keeps
-  ONE socket per bot and closes the older one with 4009, so any extra socket would evict a live
-  gateway on another host, which local locks cannot see; the evicted gateway then stops for good.
-  There is no `standalone_sender_fn` until the hub offers a non-displacing transport.
-- Media in either direction (base-adapter text fallbacks apply), group chats and threads (events are
-  acknowledged with a WARNING and never reach the agent; outbound `thread_id` is refused), buttons,
-  cards and reactions.
+- A second bot WebSocket is still refused; standalone HTTP delivery does not acquire the
+  gateway's receive socket or its ownership lock.
+- The standalone sender is text only. Media, threads, and `force_document` are refused and never
+  posted. A 1.1 socket still sends and receives media, and still sends approval and clarify cards.
+  A 1.0 socket and HTTP RPC still refuse both.
+- Group chats and threads (events are acknowledged with a WARNING and never reach the agent;
+  outbound `thread_id` is refused), buttons and reactions.
 - `replay.gap` resync: `foxfleet.bot/1` never sends it, so receiving one is a fail-closed fault.
 
 ## Install
