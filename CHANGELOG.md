@@ -6,6 +6,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 - Hub: the bot WebSocket (`/api/bot/ws`) no longer spends the per-IP login budget on authenticated upgrades; only failed credentials do. Valid reconnects use a per-bot connect bucket (429 when exceeded).
 - Hermes plugin: a message held behind a gateway drain and then processed no longer risks a false "not processed, please resend" notice after a crash: a failed save of the held-record removal is retried immediately and then in the background, not only on the next reconnect.
+- Android: fix the two release-lint errors (NotifyNotifier MissingPermission on the group summary; AvatarStore NewApi WEBP_LOSSY on API 29). Not compiled on the build box (no JDK).
 
 ## 0.3.11-alpha (not tagged; signed candidate 2026-10-15, Android versionCode 24)
 

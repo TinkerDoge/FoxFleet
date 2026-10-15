@@ -82,6 +82,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
     private fun summary() {
         val chats = activeChats()
         if (chats.isEmpty()) { nm.cancel(SUMMARY_TAG, SUMMARY_ID); return }
+        if (!nm.areNotificationsEnabled()) return // lint MissingPermission: same guard as post()/postTest()
         val inbox = NotificationCompat.InboxStyle().setBigContentTitle("FoxFleet")
         chats.take(6).forEach { inbox.addLine(it.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString()) }
         val s = base(NotifyChannel.Replies).setContentTitle("FoxFleet").setContentText(if (chats.size == 1) "1 chat with news" else "${chats.size} chats with news")

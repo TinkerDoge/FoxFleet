@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import java.io.File
@@ -58,7 +59,7 @@ class AvatarStore(private val dir: File) {
         dir.mkdirs()
         val out = Bitmap.createScaledBitmap(square, 512, 512, true)
         val f = File(dir, key(agent) + ".webp")
-        f.outputStream().use { out.compress(Bitmap.CompressFormat.WEBP_LOSSY, 90, it) }
+        f.outputStream().use { out.compress(webpLossy(), 90, it) }
         versions[key(agent)] = System.currentTimeMillis()
     }
 
@@ -68,6 +69,11 @@ class AvatarStore(private val dir: File) {
     }
 
     companion object {
+        /** WEBP_LOSSY is API 30+; minSdk is 29, where the deprecated WEBP is lossy for quality < 100 (lint NewApi). */
+        @Suppress("DEPRECATION")
+        fun webpLossy(): Bitmap.CompressFormat =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) Bitmap.CompressFormat.WEBP_LOSSY else Bitmap.CompressFormat.WEBP
+
         fun loadForCrop(context: Context, uri: Uri, maxEdge: Int = 1600): Bitmap {
             val cr = context.contentResolver
             val b = BitmapFactory.Options().apply { inJustDecodeBounds = true }
