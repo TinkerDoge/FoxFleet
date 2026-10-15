@@ -1,15 +1,22 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type { Client } from '../api/client';
 import type { SavedAgent } from '../lib/registry';
-import { AuthRequiredError } from '../api/errors';
+import { ApiError, AuthRequiredError } from '../api/errors';
 import { ErrorLine, Field, PrimaryButton } from '../components/ui';
 
 type Registration = { kind: 'hermes'; connection: 'bot'; name: string; label: string; description: string };
-type Attempt = { registration: Registration; inFlight: boolean };
+type Attempt = { registration: Registration; inFlight: boolean; conflict?: boolean };
 // Non-secret, client-lifetime recovery only; navigation must not forget a possibly persisted write.
 const registrations = new WeakMap<Client, Attempt>();
 // Only non-secret coordination survives a panel: never retain the minted token or its promise here.
 const tokenMutations = new WeakMap<Client, Map<string, { generation: number; inFlight: boolean }>>();
+
+const TAKEN = 'That Bot ID is already in use by another agent. Choose a different Bot ID.';
+const EXISTS = 'A native bot with this ID already exists. Manage its token from the agent list, or choose a different Bot ID.';
+/** A 4xx answer means the hub refused before writing (timeouts excepted); 5xx and transport failures stay unknown. */
+const definiteRefusal = (e: unknown): e is ApiError => e instanceof ApiError && e.status >= 400 && e.status < 500 && e.status !== 408;
+/** Fixed wording only: never reflect hub error text into the page. */
+const refusalText = (e: ApiError) => e.status === 429 ? 'Too many attempts. Wait a minute, then try again.' : 'The hub refused these details. Check the Bot ID and try again.';
 
 /** Native channel registration never requests Hermes dashboard/API secrets or machine pairing. */
 export function NativeBot({ client, saved, onSaved, onClose, onAuthLost }: { client: Client; saved?: SavedAgent; onSaved: () => Promise<void> | void; onClose: () => void; onAuthLost: () => void }) {
@@ -21,14 +28,18 @@ export function NativeBot({ client, saved, onSaved, onClose, onAuthLost }: { cli
   const valid = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(name.trim());
   const save = async () => {
     if (locked.current || pending || !valid) return;
+    // Another mounted panel may have a registration in flight or unconfirmed: adopt it instead of racing it.
+    const shared = saved ? undefined : registrations.get(client);
+    if (shared) { setPending(shared); setError('Another registration is pending. Refresh status before trying again.'); return; }
     locked.current = true; setBusy(true); setError(null);
+    let attempt: Attempt | null = null;
     try {
       if (saved) {
         await client.editAgent(saved.name, { label: label.trim(), description: description.trim() });
         await onSaved(); onClose();
       } else {
         const registration: Registration = { kind: 'hermes', connection: 'bot', name: name.trim(), label: label.trim(), description: description.trim() };
-        const attempt: Attempt = { registration, inFlight: true };
+        attempt = { registration, inFlight: true };
         registrations.set(client, attempt); setPending(attempt);
         try { await client.addAgent(registration); }
         finally { attempt.inFlight = false; }
@@ -37,29 +48,48 @@ export function NativeBot({ client, saved, onSaved, onClose, onAuthLost }: { cli
       }
     } catch (e) {
       if (e instanceof AuthRequiredError) onAuthLost();
+      else if (attempt && e instanceof ApiError && e.status === 409) {
+        // 409 can be our OWN earlier write (lost response, reload, late commit): classify it by readback.
+        attempt.conflict = true; // remembered so a later Refresh classifies with the same 409 knowledge
+        try { await readback(attempt, true); }
+        catch (r) { if (r instanceof AuthRequiredError) onAuthLost(); else setError('A connection with this Bot ID already exists. Refresh status to check whether it is this bot.'); }
+      }
+      else if (attempt && definiteRefusal(e)) {
+        // The hub answered and refused before writing anything: nothing to reconcile.
+        if (registrations.get(client) === attempt) registrations.delete(client);
+        setPending(null); setError(refusalText(e));
+      }
       else setError(saved ? 'Could not save the bot. Check the hub connection, then try again.' : 'The bot registration could not be confirmed. It may have succeeded: refresh status before trying again.');
     } finally { locked.current = false; setBusy(false); }
+  };
+  /** Classifies a settled attempt from the hub's list. Throws if the list cannot be read (the attempt stays pending). */
+  const readback = async (attempt: Attempt, conflict: boolean) => {
+    const want = attempt.registration;
+    const registered = (await client.savedAgents()).find((a) => a.name === want.name);
+    // Exact-entry fencing: only ever drop our own attempt, never a newer one another panel started.
+    const current = registrations.get(client);
+    if (current && current !== attempt) { setPending(current); setError('Another registration is pending. Refresh status before trying again.'); return; }
+    const settle = () => { if (registrations.get(client) === attempt) registrations.delete(client); };
+    if (!registered) {
+      // After a 409 the name is held by something the list does not show: it is not ours to manage.
+      settle(); setPending(null); setError(conflict ? TAKEN : 'The bot is not registered. You can retry Create bot.');
+    } else if (registered.kind !== want.kind || registered.values.connection !== want.connection) {
+      // Names are unique: a different agent owns this ID, so our write cannot have landed. Nothing left to reconcile.
+      settle(); setPending(null); setError(TAKEN);
+    } else if ((registered.values.label ?? '') !== want.label || (registered.values.description ?? '') !== want.description) {
+      // A native bot with this ID exists but is not provably ours: never open its token panel from here.
+      settle(); setPending(null); setError(EXISTS);
+    } else {
+      settle(); setError(null); setCreated(want.name); setPending(null); await onSaved();
+    }
   };
   const reconcile = async () => {
     const attempt = pending;
     if (locked.current || !attempt) return;
     if (attempt.inFlight) { setError('The registration request is still in progress. Refresh status when it finishes.'); return; }
-    const want = attempt.registration;
     locked.current = true; setBusy(true); setError(null);
-    try {
-      const registered = (await client.savedAgents()).find((a) => a.name === want.name);
-      // Exact-entry fencing: only ever drop our own attempt, never a newer one another panel started.
-      const current = registrations.get(client);
-      if (current && current !== attempt) { setPending(current); setError('Another registration is pending. Refresh status before trying again.'); return; }
-      const settle = () => { if (registrations.get(client) === attempt) registrations.delete(client); };
-      if (!registered) {
-        settle(); setPending(null); setError('The bot is not registered. You can retry Create bot.');
-      } else if (registered.kind !== want.kind || registered.values.connection !== want.connection || (registered.values.label ?? '') !== want.label || (registered.values.description ?? '') !== want.description) {
-        setError('That Bot ID now belongs to a different connection. Registration and token changes are blocked.');
-      } else {
-        settle(); setCreated(want.name); setPending(null); await onSaved();
-      }
-    } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError('Could not refresh registration status. No new registration will be sent until the outcome is confirmed.'); }
+    try { await readback(attempt, Boolean(attempt.conflict)); }
+    catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError('Could not refresh registration status. No new registration will be sent until the outcome is confirmed.'); }
     finally { locked.current = false; setBusy(false); }
   };
   if (created) return <BotTokens client={client} name={created} hasToken={false} onChanged={onSaved} onClose={onClose} onAuthLost={onAuthLost} />;

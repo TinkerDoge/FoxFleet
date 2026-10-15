@@ -6,6 +6,7 @@ import { Manage } from '../src/agents/Manage';
 import { Shell } from '../src/screens/Shell';
 import { navigate } from '../src/router';
 import type { SavedAgent } from '../src/lib/registry';
+import { ApiError } from '../src/api/errors';
 
 const token = 'ffb_' + 'X'.repeat(43); // Synthetic fixture, never a live bot credential.
 const bot: SavedAgent = { name: 'native', kind: 'hermes', values: { connection: 'bot' }, saved: [] };
@@ -127,6 +128,82 @@ describe('native bot onboarding', () => {
     await go('account'); await go('manage'); await click(el, 'Add native Hermes bot');
     expect(el.textContent).not.toContain('Refresh registration status'); // settled: nothing left pending
   });
+  it('a definite hub rejection is not an unknown outcome: 409 explains the ID is taken and leaves the form usable', async () => {
+    const addAgent = vi.fn(async () => ({ agent: bot })).mockRejectedValueOnce(new ApiError(409, 'Connection already exists ' + token));
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [{ name: 'helper', kind: 'hermes', values: { connection: 'direct' }, saved: [] }]);
+    const { el, client } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const setName = async (v: string) => { const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); }); };
+    await setName('helper'); await click(el, 'Create bot');
+    expect(el.textContent).toContain('already in use'); expect(el.textContent).not.toContain('Refresh registration status'); expect(el.textContent).not.toContain(token);
+    expect([...el.querySelectorAll('button')].find((b) => b.textContent === 'Back')?.disabled).toBe(false);
+    await setName('fresh-name'); await click(el, 'Create bot');
+    expect(addAgent).toHaveBeenCalledTimes(2); expect(addAgent).toHaveBeenLastCalledWith(expect.objectContaining({ name: 'fresh-name' }));
+    expect(el.textContent).toContain('fresh-name: bot token'); expect(client.mintBotToken).not.toHaveBeenCalled();
+  });
+  it('a 409 from the user\'s own earlier write (after a reload) reconciles to the token panel instead of creating a second bot', async () => {
+    const addAgent = vi.fn(async () => { throw new ApiError(409, 'Connection already exists'); });
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [bot]);
+    const { el, client } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = 'native'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(el, 'Create bot');
+    expect(el.textContent).toContain('native: bot token'); expect(el.textContent).not.toContain('another agent');
+    expect(addAgent).toHaveBeenCalledTimes(1); expect(client.mintBotToken).not.toHaveBeenCalled();
+  });
+  it('a 409 after a late commit following an absent readback still reconciles to the user\'s own bot', async () => {
+    const addAgent = vi.fn(async () => ({ agent: bot })).mockRejectedValueOnce(new Error('network')).mockRejectedValueOnce(new ApiError(409, 'Connection already exists'));
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => []);
+    const { el } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = 'native'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(el, 'Create bot'); await click(el, 'Refresh registration status');
+    expect(el.textContent).toContain('not registered');
+    savedAgents.mockResolvedValue([bot]); // the first write commits late
+    await click(el, 'Create bot');
+    expect(el.textContent).toContain('native: bot token'); expect(addAgent).toHaveBeenCalledTimes(2);
+  });
+  it('a 409 whose readback fails stays pending with neutral wording and a refresh', async () => {
+    const addAgent = vi.fn(async () => { throw new ApiError(409, 'Connection already exists'); });
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [bot]);
+    const { el } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = 'native'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    savedAgents.mockRejectedValueOnce(new Error('offline'));
+    await click(el, 'Create bot');
+    expect(el.textContent).toContain('already exists'); expect(el.textContent).not.toContain('another agent'); expect(el.textContent).toContain('Refresh registration status');
+    await click(el, 'Refresh registration status'); expect(el.textContent).toContain('native: bot token'); expect(addAgent).toHaveBeenCalledTimes(1);
+  });
+  it('a refresh after a 409 with a failed readback keeps the conflict: absent means taken, not retryable', async () => {
+    const addAgent = vi.fn(async () => { throw new ApiError(409, 'Connection already exists'); });
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => []);
+    const { el } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = 'native'; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    savedAgents.mockRejectedValueOnce(new Error('offline'));
+    await click(el, 'Create bot'); await click(el, 'Refresh registration status');
+    expect(el.textContent).toContain('already in use'); expect(el.textContent).not.toContain('not registered');
+  });
+  it('an unknown outcome whose readback shows another kind of agent settles with an ID-taken message instead of locking', async () => {
+    const addAgent = vi.fn(async () => ({ agent: bot })).mockRejectedValueOnce(new Error('response lost'));
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [{ name: 'helper', kind: 'hermes', values: { connection: 'direct' }, saved: [] }]);
+    const { el } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const setName = async (v: string) => { const i = el.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); }); };
+    await setName('helper'); await click(el, 'Create bot');
+    await click(el, 'Refresh registration status');
+    expect(el.textContent).toContain('already in use'); expect(el.textContent).not.toContain('Refresh registration status');
+    expect([...el.querySelectorAll('button')].find((b) => b.textContent === 'Back')?.disabled).toBe(false);
+    await setName('fresh-name'); await click(el, 'Create bot'); expect(addAgent).toHaveBeenCalledTimes(2);
+  });
+  it('a second mounted panel cannot start a parallel registration while another is pending', async () => {
+    const addAgent = vi.fn(() => new Promise<{ agent: SavedAgent }>(() => {}));
+    const { el, client } = await mount({ addAgent }); await click(el, 'Add native Hermes bot');
+    const other = document.createElement('div'); document.body.append(other);
+    await act(async () => render(<Manage client={client} onChanged={vi.fn()} onAuthLost={vi.fn()} />, other)); await flush();
+    await click(other, 'Add native Hermes bot');
+    for (const [root, v] of [[el, 'x1'], [other, 'y1']] as const) {
+      const i = root.querySelector<HTMLInputElement>('input[name="name"]')!; await act(async () => { i.value = v; i.dispatchEvent(new Event('input', { bubbles: true })); });
+    }
+    await click(el, 'Create bot');
+    await act(async () => { other.querySelector('form')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true })); }); await flush();
+    expect(addAgent).toHaveBeenCalledTimes(1);
+    expect(other.textContent).toContain('Refresh registration status');
+  });
   it.each(['absence', 'matching registration'] as const)('ignores stale registration %s readback after a newer attempt starts', async (status) => {
     let rejectB!: (error: Error) => void;
     const addAgent = vi.fn(async () => ({ agent: bot }))
@@ -172,7 +249,7 @@ describe('native bot onboarding', () => {
     await click(el, 'Create bot'); expect(addAgent).toHaveBeenCalledTimes(2);
     expect(client.mintBotToken).not.toHaveBeenCalled(); expect(el.textContent).toContain('native: bot token');
   });
-  it.each(['unreachable', 'wrong name', 'wrong transport', 'wrong kind', 'wrong metadata'] as const)('keeps unknown registration blocked on %s readback', async (status) => {
+  it('keeps unknown registration blocked on unreachable readback', async () => {
     const addAgent = vi.fn(async () => { throw new Error('lost response ' + token); });
     const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [bot]);
     const { el, client } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
@@ -180,16 +257,38 @@ describe('native bot onboarding', () => {
     await act(async () => { name.value = 'native'; name.dispatchEvent(new Event('input', { bubbles: true })); });
     await click(el, 'Create bot');
     expect([...el.querySelectorAll('button')].find((b) => b.textContent === 'Create bot')?.disabled).toBe(true);
-    if (status === 'unreachable') savedAgents.mockRejectedValueOnce(new Error('offline ' + token));
-    else if (status === 'wrong name') savedAgents.mockResolvedValueOnce([{ ...bot, name: 'other' }, { ...bot, kind: 'other' }]);
-    else savedAgents.mockResolvedValueOnce([{ ...bot, ...(status === 'wrong kind' ? { kind: 'other' } : { values: { connection: status === 'wrong transport' ? 'direct' : 'bot', label: status === 'wrong metadata' ? 'Someone else' : '' } }) }]);
+    savedAgents.mockRejectedValueOnce(new Error('offline ' + token));
     await click(el, 'Refresh registration status');
     expect([...el.querySelectorAll('button')].find((b) => b.textContent === 'Create bot')?.disabled).toBe(true);
-    expect(el.textContent).toContain(status === 'unreachable' ? 'Could not refresh registration status' : 'different connection');
+    expect(el.textContent).toContain('Could not refresh registration status');
     await click(el, 'Create bot'); expect(addAgent).toHaveBeenCalledTimes(1); expect(client.mintBotToken).not.toHaveBeenCalled();
     expect(el.textContent).not.toContain(token);
     await click(el, 'Refresh registration status');
     expect(el.textContent).toContain('native: bot token'); expect(addAgent).toHaveBeenCalledTimes(1);
+  });
+  it.each([['wrong transport', 'already in use'], ['wrong kind', 'already in use'], ['wrong metadata', 'already exists']] as const)('settles an unknown registration on %s readback without opening a token panel or re-sending', async (status, message) => {
+    const addAgent = vi.fn(async () => { throw new Error('lost response ' + token); });
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [bot]);
+    const { el, client } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const name = el.querySelector<HTMLInputElement>('input[name="name"]')!;
+    await act(async () => { name.value = 'native'; name.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(el, 'Create bot');
+    savedAgents.mockResolvedValueOnce([{ ...bot, ...(status === 'wrong kind' ? { kind: 'other' } : { values: { connection: status === 'wrong transport' ? 'direct' : 'bot', label: status === 'wrong metadata' ? 'Someone else' : '' } }) }]);
+    await click(el, 'Refresh registration status');
+    expect(el.textContent).toContain(message); expect(el.textContent).not.toContain('Refresh registration status');
+    expect(el.textContent).not.toContain('native: bot token'); expect(el.textContent).not.toContain(token);
+    expect(addAgent).toHaveBeenCalledTimes(1); expect(client.mintBotToken).not.toHaveBeenCalled(); expect(client.revokeBotToken).not.toHaveBeenCalled();
+    expect([...el.querySelectorAll('button')].find((b) => b.textContent === 'Back')?.disabled).toBe(false);
+  });
+  it('treats a readback without the Bot ID as absent and allows an explicit retry', async () => {
+    const addAgent = vi.fn(async () => ({ agent: bot })).mockRejectedValueOnce(new Error('lost response'));
+    const savedAgents = vi.fn(async (): Promise<SavedAgent[]> => [{ ...bot, name: 'other' }]);
+    const { el } = await mount({ addAgent, savedAgents }); await click(el, 'Add native Hermes bot');
+    const name = el.querySelector<HTMLInputElement>('input[name="name"]')!;
+    await act(async () => { name.value = 'native'; name.dispatchEvent(new Event('input', { bubbles: true })); });
+    await click(el, 'Create bot'); await click(el, 'Refresh registration status');
+    expect(el.textContent).toContain('not registered'); expect(addAgent).toHaveBeenCalledTimes(1);
+    await click(el, 'Create bot'); expect(addAgent).toHaveBeenCalledTimes(2);
   });
   it('shows a token only after explicit mint and forgets it on leaving', async () => {
     const { el, client } = await mount(); await click(el, 'Bot token');
