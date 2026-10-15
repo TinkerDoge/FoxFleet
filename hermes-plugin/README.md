@@ -139,10 +139,25 @@ Delivery is **at-least-once, not exactly-once.**
   continues servicing RPCs. This is ordered backpressure: later events, including commands
   behind held text, wait too. Already accepted tasks also wait before calling the runner.
 - If drain races an awaiting busy callback and it returns `True` without an actual acceptance
-  flag, the adapter cannot distinguish rejection from an already-applied steer. It stops
-  explicitly with non-retryable `foxfleet_admission_uncertain`, keeps the event unacked, and
-  requires reconciliation before reconnect. It never guesses a receipt or auto-replays
-  ambiguous side effects. Drain notices observed during RPCs remain recorded if drain clears.
+  flag, the adapter cannot distinguish rejection from an already-applied steer. Replaying could
+  duplicate those effects, so the event is resolved at most once (persisted floor + ack + dedup),
+  the user gets exactly one explicit "could not confirm this message was processed" notice
+  replying to it, and the channel continues instead of stopping. It never guesses a receipt or
+  auto-replays ambiguous side effects. Drain notices observed during RPCs remain recorded if
+  drain clears.
+- A message the gateway accepted (and FoxFleet acked) whose handler was still held behind a
+  drain when the gateway stopped is persisted to the state file. After a restart, the next
+  connect sends exactly one "was not processed, please send it again" notice for it (bounded at
+  64 entries); it is never replayed, because the hub will not redeliver an acked event.
+- Outbound streaming is resilient to transient frame failures. Interim cumulative snapshots that
+  fail are recovered by the next snapshot (a `True` is returned so Hermes stays in native mode);
+  a failed turn final is recorded as owed, and Hermes' own fallback (best-effort close plus the
+  re-sent final through `send`/`edit_message`) completes the SAME turn's messages rather than
+  opening a second hub run — no duplicated or truncated reply, one run until true completion.
+  A chunk whose send outcome is unknown is replayed verbatim under the same idempotency key
+  before anything else, so it can never become an orphan. A rate-limited final waits out the
+  hub's retry hint (bounded); a final that truly cannot be delivered fails visibly (retryable
+  `SendResult`), never silently reported as success.
 - The admitted floor is persisted (mode 0600, `$HERMES_HOME/platforms/foxfleet/state-<hash>.json`)
   **before** the ack. If the write fails (for example ENOSPC) there is no ack, the floor is rolled
   back, a WARNING is logged and the socket resyncs; the replay is deduplicated and acked once the disk

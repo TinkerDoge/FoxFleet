@@ -12,7 +12,7 @@ import json
 import re
 import urllib.parse
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Optional
 
 PROTOCOL = "foxfleet.bot/1"
 SUBPROTOCOL = "foxfleet.bot.v1"
@@ -208,6 +208,7 @@ class RpcResponse:
     ok: bool
     result: dict
     error_code: str = ""
+    retry_after_ms: Optional[int] = None  # hub hint on rate_limited
 
 
 def parse_res(frame: dict) -> RpcResponse:
@@ -224,7 +225,10 @@ def parse_res(frame: dict) -> RpcResponse:
     error = frame.get("error")
     if not isinstance(error, dict) or not isinstance(error.get("code"), str) or not error["code"]:
         raise ProtocolError("bad_res", "failed res needs error.code")
-    return RpcResponse(id=rid, ok=False, result={}, error_code=known_error_code(error["code"]))
+    retry = error.get("retry_after_ms")
+    retry = retry if isinstance(retry, int) and not isinstance(retry, bool) and 0 < retry <= 3_600_000 else None
+    return RpcResponse(id=rid, ok=False, result={}, error_code=known_error_code(error["code"]),
+                       retry_after_ms=retry)
 
 
 # Hub error code -> Hermes ``SendResult.error_kind`` (SEND_ERROR_KINDS). Unknown codes stay "unknown".

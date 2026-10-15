@@ -330,7 +330,10 @@ async def test_native_snapshot_correction_keeps_ids_scoped_and_unicode_lossless(
 
 
 @pytest.mark.parametrize("clear_after_notice", [False, True])
-async def test_drain_race_inside_busy_callback_fails_closed_without_replaying_side_effects(real, make_adapter, clear_after_notice):
+async def test_drain_race_inside_busy_callback_self_heals_with_one_notice_and_no_replay(real, make_adapter, clear_after_notice):
+    """An unproven busy True during drain is never replayed (at most once) and never kills the
+    channel: the event is resolved with ONE explicit user-visible notice and the channel continues."""
+    from foxfleet.adapter import ADMISSION_UNCERTAIN_NOTICE
     adapter = make_adapter()
     runner = DrainRunner(adapter)
     adapter.gateway_runner = runner
@@ -339,8 +342,9 @@ async def test_drain_race_inside_busy_callback_fails_closed_without_replaying_si
 
     async def handler(event):
         seen.append(event.text)
-        await release.wait()
-        return None
+        if event.text == "long task":
+            await release.wait()
+        return "deterministic answer: " + event.text
 
     async def delayed_busy(event, key):
         entered.set()
@@ -364,12 +368,74 @@ async def test_drain_race_inside_busy_callback_fails_closed_without_replaying_si
     runner._draining = True
     scoped.set()
     try:
+        # Resolved, not retried: acked once so the hub never redelivers a possibly-applied steer.
+        await wait_for(lambda: real.store()["acked"] == 2)
+        assert adapter._admitted == 2
+        notices = await _poll(lambda: real.transcript(chat),
+                              lambda rows: [r for r in rows if r["content"] == ADMISSION_UNCERTAIN_NOTICE])
+        assert len([r for r in notices if r["content"] == ADMISSION_UNCERTAIN_NOTICE]) == 1
         await asyncio.sleep(0.3)
-        assert real.store()["acked"] == adapter._admitted == 1, "an unproven busy True during drain is not admission"
-        await wait_for(lambda: fatal)
-        assert fatal == ["foxfleet_admission_uncertain"]
-        assert runner.calls == ["scope raced drain"]
-        assert adapter._generation == generation  # ambiguous effects are never replayed automatically
+        assert fatal == [] and adapter.is_connected and adapter._generation == generation
+        assert runner.calls == ["scope raced drain"] and "scope raced drain" not in seen
+        # The channel keeps serving once the drain clears.
+        runner._draining = False
+        other = (await real.post_message("after the drain"))["session_id"]
+        await wait_for(lambda: "after the drain" in seen)
+        await wait_for(lambda: real.store()["acked"] == 3)
+        # A forced resync never replays the resolved event.
+        await adapter._conn.ws.close()
+        await wait_for(lambda: adapter._conn is not None and adapter._generation > generation, timeout=5)
+        await asyncio.sleep(0.3)
+        assert runner.calls == ["scope raced drain"] and seen.count("after the drain") == 1
+        rows = await real.transcript(chat)
+        assert [r["content"] for r in rows].count(ADMISSION_UNCERTAIN_NOTICE) == 1
+        await _poll(lambda: real.transcript(other),
+                    lambda rows: rows[-1]["content"] == "deterministic answer: after the drain")
     finally:
         release.set()
         runner._draining = False
+
+
+async def test_drain_after_ack_before_handler_start_is_never_lost_silently(real, make_adapter):
+    """Audit hypothesis: base accepted (and the adapter ACKed) an event, then a drain began before its
+    handler ran; the drained gateway cancels the held task. The ACKed message must not vanish
+    silently: the next connect sends ONE resend notice for it (it is never replayed: it was ACKed)."""
+    from foxfleet.adapter import UNPROCESSED_NOTICE
+    adapter = make_adapter()
+    runner = DrainRunner(adapter)
+    adapter.gateway_runner = runner
+    seen = []
+
+    async def handler(event):
+        seen.append(event.text)
+        return "deterministic answer: " + event.text
+
+    original_start = adapter.on_processing_start
+
+    async def drain_begins(event):  # DETERMINISTIC: drain starts after acceptance, before the handler
+        runner._draining = True
+        await original_start(event)
+
+    adapter.on_processing_start = drain_begins
+    adapter.set_message_handler(handler)
+    assert await adapter.connect()
+    chat = (await real.post_message("accepted, then drained"))["session_id"]
+    await wait_for(lambda: real.store()["acked"] == 1)
+    await asyncio.sleep(0.3)
+    assert seen == []
+    await adapter.cancel_background_tasks()  # the runner's drain-timeout shutdown order
+    await adapter.disconnect()
+    restarted = make_adapter()
+    restarted.set_message_handler(handler)
+    assert await restarted.connect()
+    await _poll(lambda: real.transcript(chat),
+                lambda rows: [r for r in rows if r["content"] == UNPROCESSED_NOTICE])
+    await asyncio.sleep(0.3)
+    rows = await real.transcript(chat)
+    assert [r["content"] for r in rows].count(UNPROCESSED_NOTICE) == 1 and seen == []
+    await restarted.disconnect()
+    again = make_adapter()
+    again.set_message_handler(handler)
+    assert await again.connect()
+    await asyncio.sleep(0.3)
+    assert [r["content"] for r in await real.transcript(chat)].count(UNPROCESSED_NOTICE) == 1

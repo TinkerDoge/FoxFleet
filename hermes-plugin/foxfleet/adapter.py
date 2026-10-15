@@ -79,6 +79,14 @@ except ImportError:  # pragma: no cover - websockets ships with Hermes
 
 
 _WS_WITHHELD = "foxfleet: websocket log record withheld (contained the bot credential)"
+# Sent (once, replying to that message) when Hermes' busy path returned True during a drain without an
+# acceptance receipt: the message may or may not have been applied, so it is never replayed.
+ADMISSION_UNCERTAIN_NOTICE = ("⚠️ FoxFleet could not confirm that this message was processed (the gateway "
+                              "was restarting). If you do not get an answer to it, please send it again.")
+# Sent once after a restart for a message the gateway had accepted (and FoxFleet acknowledged) but
+# whose handler was still held behind a drain when that gateway stopped.
+UNPROCESSED_NOTICE = ("⚠️ This message was not processed because the gateway restarted before it ran. "
+                      "Please send it again.")
 _UNICODE_ESCAPE = re.compile(r"\\+u([0-9a-fA-F]{4})")
 
 
@@ -269,6 +277,22 @@ class _Stream:
     chunks: list[tuple[str, str]] = field(default_factory=list)  # only this turn's (id, text)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     finalized: bool = False
+    # (text, reply_to, final) of a chunk send whose outcome is unknown: it may exist at the hub.
+    # Replayed verbatim (same idempotency key) before anything else, so it never becomes an orphan.
+    unconfirmed: Optional[tuple[str, Optional[str], bool, str]] = None
+    reply_to: Optional[str] = None
+    # The authoritative final this turn still owes after its final frame failed (Hermes then
+    # leaves native mode and re-sends exactly this text via send()/edit_message()).
+    owed: Optional[str] = None
+    owed_at: float = 0.0
+    handed_off: bool = False
+    touched: float = field(default_factory=time.monotonic)
+
+    def text(self) -> str:
+        return "".join(t for _, t in self.chunks)
+
+    def ids(self) -> list[str]:
+        return [mid for mid, _ in self.chunks]
 
 
 class FoxFleetAdapter(BasePlatformAdapter):
@@ -282,6 +306,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
     # edit-transport finalize=True also seals overflow heads and is NOT turn completion.
     SUPPORTS_NATIVE_STREAMING = True
     MAX_STREAMS = 256
+    HANDOFF_TTL = 3600.0  # how long a failed turn final may still be completed in place
+    # A cancelled native turn never sends its final frame. When the cache is full, a turn idle this
+    # long is treated as abandoned (evicted) instead of refusing native streaming to new turns.
+    STREAM_IDLE_EVICT = 1800.0
+    FINAL_RATE_LIMIT_RETRIES = 5  # a rate-limited turn final waits for the hub's bucket
+    RATE_LIMIT_BACKOFF = 0.5
+    MAX_RATE_LIMIT_WAIT = 10.0
 
     # Tunables (class attributes so tests can shrink them).
     DISPATCH_QUEUE_SIZE = 256
@@ -300,6 +331,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
     MAX_RECENT_SENT = 2048
     MAX_CHAT_CACHE = 1024
     MAX_COMMANDS = 100
+    MAX_UNPROCESSED = 64
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform(PLATFORM_NAME))
@@ -326,6 +358,12 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._chat_names: OrderedDict[str, str] = OrderedDict()
         self._unknown_outcomes: OrderedDict[str, tuple[str, float]] = OrderedDict()
         self._streams: OrderedDict[tuple[str, str], _Stream] = OrderedDict()
+        # Accepted+acked messages whose handler is held behind a drain, persisted so a gateway that
+        # stops before running them leaves a record; the next connect sends UNPROCESSED_NOTICE.
+        self._unprocessed: OrderedDict[str, tuple[str, str]] = OrderedDict()
+        self._held_live: set[str] = set()
+        self._released_pending_save: set[str] = set()
+        self._flush_lock = asyncio.Lock()
         self._notice_send: ContextVar[bool] = ContextVar("foxfleet_notice_send", default=False)
         self._busy_drain_seen: ContextVar[Optional[list[bool]]] = ContextVar("foxfleet_busy_drain", default=None)
 
@@ -390,6 +428,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._mark_connected()
         self._wire_plugin_handlers(None)
         self._spawn(self._sync_commands())
+        self._spawn(self._flush_unprocessed())
         logger.info("FoxFleet: connected as bot %s (resume from event %d)", conn.hello.bot,
                     conn.hello.resume_from)
         return True
@@ -546,6 +585,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 self._install(conn)
                 self._mark_connected()
                 self._spawn(self._sync_commands())
+                self._spawn(self._flush_unprocessed())
                 logger.info("FoxFleet: reconnected (resume from event %d)", conn.hello.resume_from)
                 break
 
@@ -699,23 +739,40 @@ class FoxFleetAdapter(BasePlatformAdapter):
         """
         if event.is_command():
             return
-        runner = self.gateway_runner
         warned = False
-        while runner is not None and (getattr(runner, "_draining", False)
-                                      or getattr(runner, "_external_drain_active", False)):
+        while self._runner_draining():
             if not warned:
                 logger.info("FoxFleet: gateway draining; retaining inbound work without acknowledging")
                 warned = True
             await asyncio.sleep(0.1)
 
+    def _runner_draining(self) -> bool:
+        runner = self.gateway_runner
+        return runner is not None and (getattr(runner, "_draining", False)
+                                       or getattr(runner, "_external_drain_active", False))
+
     def set_message_handler(self, handler) -> None:
         # A drain may start after BasePlatformAdapter spawned/accepted the task, before
         # its handler runs. Keep that already accepted task, rather than consume a notice.
+        # The hub event is already ACKed, so a held task is recorded on disk until it runs.
         if handler is not None:
             inner = handler
 
             async def retained(event: MessageEvent):
-                await self._wait_for_gateway_admission(event)
+                held = None
+                if not event.is_command() and self._runner_draining():
+                    held = self._hold_unprocessed(event)
+                try:
+                    await self._wait_for_gateway_admission(event)
+                except asyncio.CancelledError:
+                    # The gateway cancelled this held task (drain-timeout shutdown): it will never
+                    # run here. Drop ONLY the live marker so a flush can notice it; keep the record.
+                    if held is not None:
+                        self._held_live.discard(held)
+                        self._spawn(self._flush_unprocessed())
+                    raise
+                if held is not None:
+                    self._release_unprocessed(held)
                 return await inner(event)
 
             handler = retained
@@ -750,12 +807,19 @@ class FoxFleetAdapter(BasePlatformAdapter):
             logger.exception("FoxFleet: gateway raised while admitting event %d", msg.event_id)
         if not admitted:
             if getattr(event, "_foxfleet_admission_uncertain", False):
-                # A callback may have steered/answered before drain changed, or may only
-                # have emitted a rejection notice. Without a real receipt retrying can
-                # duplicate effects. Retain the hub event and stop explicitly for review.
-                conn.close_reason = ("foxfleet_admission_uncertain",
-                                     "gateway drain changed during an unproven busy disposition; "
-                                     "event retained at hub; reconcile before reconnecting")
+                # Busy True during a drain without a receipt: the callback may have steered or
+                # answered before drain flipped, or only emitted a rejection notice. Replaying could
+                # duplicate those effects, so the event is resolved at most once (persisted floor +
+                # ack + dedup), the user gets ONE explicit notice for it, and the channel continues.
+                logger.warning("FoxFleet: event %d raced a gateway drain without an acceptance receipt; "
+                               "resolving it once with a resend notice (never replayed)", msg.event_id)
+                await self._advance(conn, msg.event_id)
+                if msg.event_id <= self._admitted:
+                    # Mark only after the floor persisted: a failed persist must let the hub's
+                    # replay reach this branch again, or the notice would never be sent.
+                    self._dedup.is_duplicate(key)
+                    self._spawn(self._notify_admission_uncertain(msg))
+                return
             logger.warning("FoxFleet: event %d was not admitted by the gateway; not acknowledging it "
                            "(the hub will redeliver after reconnect)", msg.event_id)
             conn.abandoned = True
@@ -763,6 +827,77 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return
         self._dedup.is_duplicate(key)  # mark only after admission
         await self._advance(conn, msg.event_id)
+
+    async def _notify_admission_uncertain(self, msg: protocol.InboundMessage) -> None:
+        key = self._notice_key("uncertain", msg.chat_id, msg.message_id)
+        result = await self._send_notice(chat_id=msg.chat_id, text=ADMISSION_UNCERTAIN_NOTICE,
+                                         reply_to=msg.message_id, key=key)
+        if not result.success and result.retryable:
+            await asyncio.sleep(0.5)
+            result = await self._send_notice(chat_id=msg.chat_id, text=ADMISSION_UNCERTAIN_NOTICE,
+                                             reply_to=msg.message_id, key=key)
+        if not result.success:
+            logger.error("FoxFleet: could not deliver the resend notice for message %s in chat %s: %s",
+                         msg.message_id, msg.chat_id, result.error)
+
+    def _hold_unprocessed(self, event: MessageEvent) -> Optional[str]:
+        chat_id, message_id = str(event.source.chat_id or ""), str(event.message_id or "")
+        if not (protocol.CHAT_ID.match(chat_id) and protocol.MESSAGE_ID.match(message_id)):
+            return None
+        key = f"{chat_id}\x1f{message_id}"
+        self._held_live.add(key)
+        self._remember(self._unprocessed, key, (chat_id, message_id), self.MAX_UNPROCESSED)
+        if not self._save_state():
+            time.sleep(0.05)  # one synchronous retry: a lost record means a silently lost message
+            if not self._save_state():
+                logger.error("FoxFleet: could not persist the held-message record for %s in %s; "
+                             "a crash now loses its not-processed notice", message_id, chat_id)
+        return key
+
+    def _release_unprocessed(self, key: str) -> None:
+        self._held_live.discard(key)
+        if self._unprocessed.pop(key, None) is not None and not self._save_state():
+            # The message WAS processed but the disk still lists it. Park the key: never send a
+            # false "not processed" notice in this process; each flush retries the save.
+            self._released_pending_save.add(key)
+            logger.error("FoxFleet: processed %s but could not persist the removal; retrying on the next flush", key)
+
+    async def _send_notice(self, *, chat_id: str, text: str, reply_to: Optional[str], key: str) -> SendResult:
+        """A short notice with a DETERMINISTIC idempotency key: the hub collapses any repeat
+        (overlapping flushes, a restart after a failed state save) into the one delivered message."""
+        token = self._notice_send.set(True)  # a notice: never ends another live answer
+        try:
+            return await self._send_chunk(chat_id, text, reply_to, final=False, key=key)
+        finally:
+            self._notice_send.reset(token)
+
+    def _notice_key(self, kind: str, chat_id: str, message_id: str) -> str:
+        """Hub idempotency keys reject '_'; chat and message ids contain it."""
+        safe = f"{chat_id}-{message_id}".replace("_", "-")
+        return f"notice-{kind}-{safe}"
+
+    async def _flush_unprocessed(self) -> None:
+        """Previous gateway stopped while these accepted+ACKed messages waited behind a drain.
+        Single-flight: a flush started during another waits, then drains anything still listed."""
+        async with self._flush_lock:
+            if self._released_pending_save:
+                if self._save_state():
+                    self._released_pending_save.clear()
+            for key, (chat_id, message_id) in list(self._unprocessed.items()):
+                if key in self._held_live or key in self._released_pending_save:
+                    continue  # still waiting in this process, or already processed
+                result = await self._send_notice(chat_id=chat_id, text=UNPROCESSED_NOTICE,
+                                                 reply_to=message_id,
+                                                 key=self._notice_key("unprocessed", chat_id, message_id))
+                if result.success or result.error_kind == "not_found":
+                    self._unprocessed.pop(key, None)
+                    if not self._save_state():
+                        # Kept in memory with the same deterministic key: a later resend replays
+                        # harmlessly at the hub instead of duplicating the notice.
+                        logger.error("FoxFleet: notice for %s delivered but not persisted; will re-confirm", key)
+                else:
+                    logger.error("FoxFleet: could not deliver the not-processed notice for message %s in "
+                                 "chat %s: %s", message_id, chat_id, result.error)
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
         from hermes_cli.commands import is_interrupt_then_dispatch
@@ -856,14 +991,22 @@ class FoxFleetAdapter(BasePlatformAdapter):
                                "events in between were acknowledged elsewhere", hello.resume_from, local)
             local = hello.resume_from
         self._admitted = max(self._admitted, local) if self._admitted <= hello.latest_event_id else local
+        entries = stored.get("unprocessed") if stored.get("bot") == hello.bot else None
+        for entry in entries if isinstance(entries, list) else []:
+            if (isinstance(entry, list) and len(entry) == 2 and all(isinstance(v, str) for v in entry)
+                    and protocol.CHAT_ID.match(entry[0]) and protocol.MESSAGE_ID.match(entry[1])):
+                self._remember(self._unprocessed, f"{entry[0]}\x1f{entry[1]}", (entry[0], entry[1]),
+                               self.MAX_UNPROCESSED)
 
     def _save_state(self) -> bool:
         if self._state_path is None:
             return True
         try:
             self._state_path.parent.mkdir(parents=True, exist_ok=True)
-            atomic_json_write(self._state_path, {"version": 1, "bot": self._bot_id,
-                                                 "admitted": self._admitted}, mode=0o600)
+            state: dict[str, Any] = {"version": 1, "bot": self._bot_id, "admitted": self._admitted}
+            if self._unprocessed:
+                state["unprocessed"] = [list(v) for v in self._unprocessed.values()]
+            atomic_json_write(self._state_path, state, mode=0o600)
         except OSError as exc:
             logger.warning("FoxFleet: could not persist the admitted floor (%s); not acknowledging, "
                            "will resync", exc)
@@ -967,42 +1110,138 @@ class FoxFleetAdapter(BasePlatformAdapter):
         state = self._streams.get(key)
         if state is None:
             if len(self._streams) >= self.MAX_STREAMS:
-                completed = next((k for k, s in self._streams.items() if s.finalized), None)
-                if completed is None:
-                    return False  # never evict an active turn's edit targets
-                del self._streams[completed]
-            state = self._streams[key] = _Stream()
+                victim = self._evictable_stream()
+                if victim is None:
+                    logger.warning("FoxFleet: %d active streams; turn uses send/edit", len(self._streams))
+                    return False  # never evict a live turn's edit targets
+                del self._streams[victim]
+            state = self._streams[key] = _Stream(reply_to=reply_to)
+        state.touched = time.monotonic()
         async with state.lock:
             text = _clean_text(content)
             if state.finalized:
-                return finalize and text == "".join(t for _, t in state.chunks)
+                return finalize and text == state.text()
             if not text.strip():
                 return True  # seed/typing is not a persisted message
-            chunks = protocol.split_text(text)
-            # A corrected authoritative final may be shorter than the live preview.
-            while len(state.chunks) > len(chunks):
-                if not await self.delete_message(chat_id, state.chunks[-1][0]):
-                    return False
-                state.chunks.pop()
-            for index, chunk in enumerate(chunks):
-                final = finalize and index == len(chunks) - 1
-                if index < len(state.chunks):
-                    mid, previous = state.chunks[index]
-                    if previous == chunk and not final:
-                        continue
-                    result = await self.edit_message(chat_id, mid, chunk, finalize=final)
-                else:
-                    result = await self._send_chunk(chat_id, chunk,
-                                                    reply_to if index == 0 else None, final=final)
-                if not result.success or not result.message_id:
-                    return False
-                item = (result.message_id, chunk)
-                if index < len(state.chunks):
-                    state.chunks[index] = item
-                else:
-                    state.chunks.append(item)
-            state.finalized = bool(finalize)
-            return True
+            pushed = (await self._push_final(state, str(chat_id), text, reply_to) if finalize
+                      else await self._push_snapshot(state, str(chat_id), text, reply_to, False) is None)
+            if pushed:
+                state.finalized = bool(finalize)
+                return True
+            if not finalize:
+                # A False here makes Hermes leave native mode, "close" the stream with a
+                # finalize frame and continue on send/edit: the hub run would end mid-turn and
+                # the edit transport would open a second message/run. Interim frames are
+                # cumulative snapshots, so the next frame (or the final) re-syncs from the
+                # confirmed chunks instead.
+                logger.warning("FoxFleet: interim stream frame for chat %s not delivered; the next "
+                               "snapshot re-syncs the same messages", chat_id)
+                return True
+            # The true final failed. Hermes now rolls back its delivery flags, sends a best-effort
+            # finalize frame (this method again) and re-sends the same text through send(); both
+            # complete THIS turn's messages (see _owed_stream) instead of opening a second reply.
+            state.owed, state.owed_at, state.handed_off = text, time.monotonic(), True
+            logger.error("FoxFleet: final stream frame for chat %s not confirmed by the hub; the "
+                         "fallback completes the same messages", chat_id)
+            return False
+
+    def _evictable_stream(self) -> Optional[tuple[str, str]]:
+        completed = next((k for k, s in self._streams.items() if s.finalized and s.owed is None), None)
+        if completed is not None:
+            return completed
+        now = time.monotonic()
+        idle = [(s.touched, k) for k, s in self._streams.items() if not s.lock.locked()
+                and now - s.touched >= self.STREAM_IDLE_EVICT
+                and (s.owed is None or now - s.owed_at > self.HANDOFF_TTL)]
+        return min(idle)[1] if idle else None
+
+    def _owed_stream(self, chat_id: str, text: str) -> Optional[_Stream]:
+        """The handed-off turn in ``chat_id`` that still owes exactly ``text`` as its final."""
+        now = time.monotonic()
+        for (chat, _turn), state in reversed(self._streams.items()):
+            if (chat == chat_id and state.owed is not None and state.owed == text
+                    and now - state.owed_at <= self.HANDOFF_TTL):
+                return state
+        return None
+
+    async def _complete_owed(self, state: _Stream, chat_id: str, text: str) -> SendResult:
+        async with state.lock:
+            if not state.finalized:
+                if not await self._push_final(state, chat_id, text, state.reply_to):
+                    logger.error("FoxFleet: final answer for chat %s still not delivered; the chat "
+                                 "keeps the last confirmed snapshot", chat_id)
+                    return SendResult(success=False, error="FoxFleet: final answer not confirmed by the hub",
+                                      error_kind="transient", retryable=True)
+                state.finalized = True
+            state.owed = None
+            ids = state.ids()
+        logger.info("FoxFleet: completed the failed stream final for chat %s in place", chat_id)
+        return SendResult(success=True, message_id=ids[-1], continuation_message_ids=tuple(ids[:-1]),
+                          raw_response={"message_ids": ids} if len(ids) > 1 else None)
+
+    async def _push_final(self, state: _Stream, chat_id: str, text: str, reply_to: Optional[str]) -> bool:
+        """The turn final, waiting out a rate limit (the hub changes nothing on rate_limited)."""
+        failure = await self._push_snapshot(state, chat_id, text, reply_to, True)
+        for attempt in range(self.FINAL_RATE_LIMIT_RETRIES):
+            if failure is None or failure.error_kind != "rate_limited":
+                break
+            delay = failure.retry_after or self.RATE_LIMIT_BACKOFF * 2 ** attempt
+            await asyncio.sleep(min(max(delay, 0.05), self.MAX_RATE_LIMIT_WAIT))
+            failure = await self._push_snapshot(state, chat_id, text, reply_to, True)
+        return failure is None
+
+    async def _push_snapshot(self, state: _Stream, chat_id: str, text: str, reply_to: Optional[str],
+                             finalize: bool) -> Optional[SendResult]:
+        """Make this turn's hub messages show ``text``; only confirmed (id, text) pairs are kept.
+        Returns None on success, else the failing result."""
+        if state.unconfirmed is not None:
+            sent, sent_reply_to, sent_final, sent_key = state.unconfirmed
+            result = await self._send_chunk(chat_id, sent, sent_reply_to, final=sent_final, key=sent_key)
+            if not result.success or not result.message_id:
+                return result
+            state.chunks.append((result.message_id, sent))
+            state.unconfirmed = None
+        chunks = protocol.split_text(text)
+        # A corrected authoritative final may be shorter than the live preview.
+        while len(state.chunks) > len(chunks):
+            result = await self._delete_chunk(chat_id, state.chunks[-1][0])
+            if not result.success:
+                return result
+            state.chunks.pop()
+        for index, chunk in enumerate(chunks):
+            final = finalize and index == len(chunks) - 1
+            if index < len(state.chunks):
+                mid, previous = state.chunks[index]
+                if previous == chunk and not final:
+                    continue
+                result = await self._edit(chat_id, mid, chunk, finalize=final)
+            else:
+                chunk_reply_to = reply_to if index == 0 else None
+                result = await self._send_chunk(chat_id, chunk, chunk_reply_to, final=final)
+                unknown = self._unknown_outcomes.get(self._fingerprint(chat_id, chunk, chunk_reply_to, final))
+                if not result.success and unknown is not None:
+                    state.unconfirmed = (chunk, chunk_reply_to, final, unknown[0])
+            if not result.success or not result.message_id:
+                return result
+            item = (result.message_id, chunk)
+            if index < len(state.chunks):
+                state.chunks[index] = item
+            else:
+                state.chunks.append(item)
+        return None
+
+    async def _delete_chunk(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a stream chunk; ``not_found`` means a lost-response delete already landed."""
+        try:
+            res = await self._request("message.delete", retry_unknown=True, chat_id=chat_id,
+                                      message_id=message_id)
+        except (_OutcomeUnknown, _NotSent) as exc:
+            return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="transient", retryable=True)
+        except _BadResponse as exc:
+            return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="unknown")
+        if res.ok or res.error_code == "not_found":
+            return SendResult(success=True, message_id=message_id)
+        return self._error_result(res)
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
@@ -1018,6 +1257,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not text.strip():
             return _blank_result()
         meta = metadata or {}
+        owed = None if (self._notice_send.get() or meta.get("_interim_send")) else self._owed_stream(str(chat_id), text)
+        if owed is not None:
+            return await self._complete_owed(owed, str(chat_id), text)
         notified = (meta.get("notify") is True and not meta.get("_interim_send")
                     and not meta.get("expect_edits") and not self._notice_send.get())
         ids: list[str] = []
@@ -1036,9 +1278,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
                           raw_response={"message_ids": list(ids)} if len(ids) > 1 else None)
 
     async def _send_chunk(self, chat_id: str, text: str, reply_to: Optional[str], *,
-                          final: bool = False) -> SendResult:
-        fingerprint = hashlib.sha256(json.dumps([chat_id, text, reply_to, final]).encode()).hexdigest()
-        key = self._take_unknown_outcome(fingerprint) or secrets.token_hex(16)
+                          final: bool = False, key: Optional[str] = None) -> SendResult:
+        fingerprint = self._fingerprint(chat_id, text, reply_to, final)
+        reused = self._take_unknown_outcome(fingerprint) or key
+        key = reused or secrets.token_hex(16)
         try:
             res = await self._request("message.send", retry_unknown=True, chat_id=chat_id, text=text,
                                       format="markdown", reply_to=reply_to, final=final,
@@ -1049,12 +1292,14 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=f"FoxFleet hub did not confirm delivery: {exc}",
                               error_kind="transient", retryable=True)
         except _NotSent as exc:
+            if reused:  # this replay never left, but the earlier attempt's outcome is still unknown
+                self._remember_unknown(fingerprint, key)
             return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="transient", retryable=True)
         except _BadResponse as exc:
             self._remember_unknown(fingerprint, key)
             return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="unknown")
         if not res.ok:
-            if res.error_code == "internal":
+            if res.error_code == "internal" or reused:
                 self._remember_unknown(fingerprint, key)
             return self._error_result(res)
         message_id = res.result.get("message_id")
@@ -1064,6 +1309,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
                               error_kind="unknown")
         self._remember(self._recent_sent, message_id, None, self.MAX_RECENT_SENT)
         return SendResult(success=True, message_id=message_id)
+
+    @staticmethod
+    def _fingerprint(chat_id: str, text: str, reply_to: Optional[str], final: bool) -> str:
+        return hashlib.sha256(json.dumps([chat_id, text, reply_to, final]).encode()).hexdigest()
 
     def _remember_unknown(self, fingerprint: str, key: str) -> None:
         self._remember(self._unknown_outcomes, fingerprint, (key, time.monotonic()), self.MAX_UNKNOWN_OUTCOMES)
@@ -1085,13 +1334,27 @@ class FoxFleetAdapter(BasePlatformAdapter):
     def _error_result(res: protocol.RpcResponse) -> SendResult:
         return SendResult(success=False, error=f"FoxFleet hub error {res.error_code}",
                           error_kind=protocol.error_kind_for(res.error_code),
-                          retryable=res.error_code in _TRANSIENT_RPC_CODES)
+                          retryable=res.error_code in _TRANSIENT_RPC_CODES,
+                          retry_after=res.retry_after_ms / 1000 if res.retry_after_ms else None)
 
     async def edit_message(self, chat_id: str, message_id: str, content: str, *,
                            finalize: bool = False) -> SendResult:
         content = _clean_text(content)
         if not content.strip():
             return _blank_result()
+        chat_id, message_id = str(chat_id), str(message_id)
+        for (chat, _turn), state in reversed(self._streams.items()):
+            # Hermes' edit-transport finalize after a handed-off final targets the id send()
+            # returned with the whole text: it is that turn's (possibly multi-message) reply.
+            if chat == chat_id and state.handed_off and message_id in state.ids():
+                if state.finalized and content == state.text():
+                    return SendResult(success=True, message_id=message_id)
+                if state.owed is not None and content == state.owed:
+                    return await self._complete_owed(state, chat_id, content)
+                break
+        return await self._edit(chat_id, message_id, content, finalize=finalize)
+
+    async def _edit(self, chat_id: str, message_id: str, content: str, *, finalize: bool) -> SendResult:
         if protocol.utf8_len(content) > protocol.MAX_TEXT_BYTES:
             return SendResult(success=False, error="edit exceeds the 64 KiB FoxFleet message cap",
                               error_kind="too_long")
