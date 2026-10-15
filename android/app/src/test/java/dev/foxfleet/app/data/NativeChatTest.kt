@@ -51,6 +51,55 @@ class NativeChatTest {
     private fun sse(vararg frames: String) = frames.joinToString("") + "data: [DONE]\n\n"
     private fun fr(event: String, data: String) = "event: $event\ndata: $data\n\n"
 
+    @Test fun botCardsDoNotEnableNativeControls() {
+        val bot = HubApi.parseAgent(obj("""{"id":"bot","kind":"hermes","capabilities":{"chat":true,"bot":true,"nativeUi":false}}"""))
+        assertTrue(bot.capabilities.bot)
+        assertTrue(bot.capabilities.canAnswerRequests)
+        assertFalse(bot.capabilities.nativeUi)
+        val plain = HubApi.parseAgent(obj("""{"id":"plain","capabilities":{"chat":true,"bot":false,"nativeUi":false}}"""))
+        assertFalse(plain.capabilities.canAnswerRequests)
+        assertTrue(Capabilities(nativeUi = true).canAnswerRequests)
+        assertFalse(Capabilities.forKind("hermes").canAnswerRequests)
+        assertTrue(HubApi.parseAgent(obj("""{"id":"bot","capabilities":{"bot":true}}""")).capabilities.canAnswerRequests)
+    }
+
+    @Test fun replacementReplacesAccumulatedTextAndLaterDeltasAppend() = runBlocking {
+        for (tail in listOf("", " after")) {
+            val body = sse(fr("message", """{"choices":[{"delta":{"content":"old"}}]}"""),
+                fr("foxfleet.replace", """{"text":"new"}"""),
+                fr("message", """{"choices":[{"delta":{"content":"$tail"}}]}"""))
+            Fake(mapOf("POST /chat" to Triple(200, "text/event-stream", body), "GET /events" to Triple(200, "text/event-stream", body)), mutableListOf()).use { f ->
+                var displayed = ""
+                val replacements = mutableListOf<String>()
+                val a = api(f)
+                val text = a.chat("a", emptyList(), null, { displayed += it }, {}, {}, {}, onReplace = { displayed = it; replacements += it })
+                assertEquals("new$tail", text)
+                assertEquals(text, displayed)
+                assertEquals(listOf("new"), replacements)
+                replacements.clear()
+                displayed = ""
+                assertEquals(text, a.follow("a", "run1", 0, HubApi.StreamCallbacks({ displayed += it }, {}, {}, {}, onReplace = { displayed = it; replacements += it })))
+                assertEquals(text, displayed)
+                assertEquals(listOf("new"), replacements)
+                val state = ChatState()
+                state.send(a, "a", "hello")
+                assertEquals(text, state.messages.last().content)
+            }
+        }
+    }
+
+    @Test fun invalidReplacementDoesNotClearReplyAndEmptyStringDoes() = runBlocking {
+        for (payload in listOf("{}", """{"text":null}""", """{"text":123}""", """{"text":false}""", """{"text":{}}""", """{"text":[]}""", """{"text":""}""")) {
+            val body = sse(fr("message", """{"choices":[{"delta":{"content":"old"}}]}"""), fr("foxfleet.replace", payload))
+            Fake(mapOf("POST /chat" to Triple(200, "text/event-stream", body)), mutableListOf()).use { f ->
+                val replacements = mutableListOf<String>()
+                val expected = if (payload == """{"text":""}""") "" else "old"
+                assertEquals(expected, api(f).chat("a", emptyList(), null, {}, {}, {}, {}, onReplace = { replacements += it }))
+                assertEquals(if (expected.isEmpty()) listOf("") else emptyList<String>(), replacements)
+            }
+        }
+    }
+
     @Test fun onlyClarifyAndApprovalBecomeCardsAndOthersAreDropped() {
         assertEquals("clarify", HubApi.parseRequest(obj(clarify))?.kind); assertEquals(listOf("staging", "production"), HubApi.parseRequest(obj(clarify))?.questions?.single()?.choices)
         assertEquals("rm -rf build", HubApi.parseRequest(obj(approval))?.command)

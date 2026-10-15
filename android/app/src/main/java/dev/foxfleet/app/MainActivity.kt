@@ -174,7 +174,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onSyncReactions = { vm.syncReactions(agent.name) }, onReact = { id, emoji, present -> vm.react(agent.name, id, emoji, present) },
                 onHide = if (agent.capabilities.reactions) ({ id, present -> vm.hide(agent.name, id, present) }) else null,
                 onEditLast = if (agent.isHermes) ({ target, done -> vm.editLast(agent.name, target, done) }) else null,
-                onAnswerRequest = if (agent.capabilities.nativeUi) { id, result -> vm.answerRequest(agent.name, id, result) } else null,
+                onAnswerRequest = if (agent.capabilities.canAnswerRequests) { id, result -> vm.answerRequest(agent.name, id, result) } else null,
                 nativeControls = if (agent.capabilities.nativeUi) vm.nativeControls(agent.name) else null,
                 onBack = { vm.back() }, onNewChat = { vm.newChat(agent.name) },
                 onSwitchAgent = { vm.navigate(Route.Chat(it.name)) },

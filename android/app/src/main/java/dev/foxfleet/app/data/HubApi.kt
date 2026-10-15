@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -381,6 +382,7 @@ class HubApi(private val store: SettingsStore) {
         val onReconnecting: () -> Unit = {},
         /** Per-call tool lifecycle (start/progress/end with turn and call ids) from hubs that send it; [onTool] stays for older ones. */
         val onToolEvent: (ToolEvent) -> Unit = {},
+        val onReplace: (String) -> Unit = {},
     )
 
     /**
@@ -402,6 +404,7 @@ class HubApi(private val store: SettingsStore) {
         onAck: (String, String) -> Unit = { _, _ -> },
         onReconnecting: () -> Unit = {},
         onToolEvent: (ToolEvent) -> Unit = {},
+        onReplace: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -411,7 +414,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -551,6 +554,11 @@ class HubApi(private val store: SettingsStore) {
                     e.id?.toIntOrNull()?.let { n -> if (n > last) { last = n; progressed = true } }
                     when {
                         e.data == "[DONE]" -> { finished = true; false }
+                        e.event == "foxfleet.replace" -> {
+                            val text = runCatching { json.parseToJsonElement(e.data).jsonObject["text"] as? JsonPrimitive }.getOrNull()?.takeIf { it.isString }?.content
+                            if (text != null) { builder.setLength(0); builder.append(text); cb.onReplace(text) }
+                            true
+                        }
                         e.event == "foxfleet.gap" -> { builder.setLength(0); cb.onGap(); true }
                         e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
                         e.event == "foxfleet.request" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::parseRequest)?.let(cb.onRequest); true }
@@ -652,9 +660,10 @@ class HubApi(private val store: SettingsStore) {
                     screen = caps.bool("screen") ?: false, voice = caps.bool("voice") ?: false, skills = caps.bool("skills") ?: false,
                     sessions = caps.bool("sessions") ?: false,
                     nativeUi = caps.bool("nativeUi") ?: false,
+                    bot = caps.bool("bot") ?: false,
                     reactions = caps.bool("reactions") ?: false, agentReactions = caps.bool("agentReactions") ?: false,
                     busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),
-                ) else Capabilities.forKind(kind),
+                ) else Capabilities.forKind(kind).copy(bot = caps?.bool("bot") ?: false),
             )
         }
 
