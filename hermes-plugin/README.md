@@ -101,7 +101,10 @@ the user is on `FOXFLEET_ALLOWED_USERS` (or `GATEWAY_ALLOWED_USERS`), has an app
   `Authorization: Bot ffb_...`. If the hub does not echo one of those subprotocols the connection is closed and
   the adapter stops (`foxfleet_protocol`, non-retryable). The first frame must be `hello` whose `protocol`
   matches the echo (`foxfleet.bot/1` or `foxfleet.bot/1.1`) and a 24-hex bot id. A 1.1 hello that lists `stop`
-  in `features` is the only socket that honours `chat.stop`.
+  in `features` is the only socket that honours `chat.stop`. A 1.1 hello that lists `cards` is the only socket
+  that sends approval, confirm and clarify cards; otherwise those prompts fall back to text. An approval
+  card is sent only when it binds to exactly one pending Hermes approval. A tap resolves that approval
+  by id. It never takes the oldest one in the session.
 - Close codes are fatal and are **not** retried:
 
   | Code | Meaning | Fatal error code |

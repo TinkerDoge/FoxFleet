@@ -4,7 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } from './bot-store.js';
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
-import { PROTOCOL_V11, LIMITS, CHAT_ID, parseBotFrame, validateRequest, validateHttpRequest, validateStopAnswer, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
+import { PROTOCOL_V11, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateHttpRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { flattenContent } from './transcript.js';
 
 export const BOT_DISABLED = 'The bot API is disabled on this hub';
@@ -115,6 +115,16 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         return { result: { acked: n } };
       }
       case 'commands.set': return { result: await store.setCommands(v.req.commands, guard(session)) };
+      case 'card.send': {
+        const out = await store.openCard(v.req, guard(session));
+        if (!out.replayed) await showCard(session, v.req.chat_id, cardView({ id: out.result.request_id, ...v.req }));
+        return out;
+      }
+      case 'card.close': {
+        const out = await store.closeCards(v.req, guard(session));
+        for (const row of out.ids) noteClosed(session.botId, row.chat_id, row.id, v.req.reason || 'closed');
+        return { result: { closed: out.closed } };
+      }
       default: throw new BotError('unsupported', `${v.t} is not supported yet`);
     }
   }
@@ -122,8 +132,12 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   async function handle(session, text) {
     const { conn } = session, parsed = parseBotFrame(text);
     if (!parsed.ok) { conn.send({ t: 'error', code: 'bad_frame', message: 'Frames are JSON objects with a string "t"' }); return conn.close(1008, 'bad frame'); }
-    if (session.protocol === PROTOCOL_V11 && parsed.frame.t === 'callback.answer') return answerStop(session, parsed.frame);
-    const v = validateRequest(parsed.frame);
+    if (session.protocol === PROTOCOL_V11 && parsed.frame.t === 'callback.answer') {
+      const cid = parsed.frame.callback_id;
+      if (typeof cid === 'string' && cid.startsWith('fcb_')) return answerCardCallback(session, parsed.frame);
+      return answerStop(session, parsed.frame);
+    }
+    const v = session.protocol === PROTOCOL_V11 && (parsed.frame.t === 'card.send' || parsed.frame.t === 'card.close') ? validateCardRequest(parsed.frame) : validateRequest(parsed.frame);
     if (!v.ok) {
       // Invalid frames cost a token like valid ones, so a socket cannot flood the hub with rejected work for free.
       try { takeToken(session.botId); } catch (e) { if (!(e instanceof BotError)) throw e; return conn.send(v.id ? { t: 'res', id: v.id, ok: false, error: { code: e.botCode, message: e.message, retry_after_ms: e.retry_after_ms } } : { t: 'error', code: e.botCode, message: e.message }); }
@@ -204,6 +218,21 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     settle(entry, v.req.outcome);
     return answer({ ok: true, result: {} });
   }
+  function answerCardCallback(session, frame) {
+    const v = validateCardCallback(frame);
+    const answer = (res) => { if (v.id) session.conn.send({ t: 'res', id: v.id, ...res }); else if (!res.ok) session.conn.send({ t: 'error', code: res.error.code, message: res.error.message }); };
+    try { takeToken(session.botId); }
+    catch (e) {
+      if (!(e instanceof BotError)) throw e;
+      return answer({ ok: false, error: { code: e.botCode, message: e.message, ...(e.retry_after_ms ? { retry_after_ms: e.retry_after_ms } : {}) } });
+    }
+    if (!v.ok) return answer({ ok: false, error: { code: v.code, message: v.message } });
+    if (!current(session)) return answer({ ok: false, error: { code: 'forbidden', message: 'This connection is no longer authorised' } });
+    session.store.ackCallback(v.req.callback_id, guard(session)).then(() => answer({ ok: true, result: {} })).catch((e) => {
+      if (e instanceof BotError) return answer({ ok: false, error: { code: e.botCode, message: e.message } });
+      answer({ ok: false, error: { code: 'internal', message: 'Internal error' } });
+    });
+  }
 
   // ---- the reply run: a view of what the bot writes into one chat, in the shape the apps already follow (see runs.js) ----
   const enc = new TextEncoder(), live = new Map(), starting = new Map();
@@ -211,7 +240,12 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   const delta = (text) => sse({ choices: [{ delta: { content: text } }] });
   const composed = (st) => st.parts.map((p) => p.text).join('\n\n');
   const emit = (st, chunk) => { if (!st.ended) { try { st.ctl.enqueue(chunk); } catch { /* the run is already closed */ } } };
-  function arm(st) { clearTimeout(st.timer); st.timer = setTimeout(() => end(st, 'done'), st.wrote ? opt.replyIdleMs : opt.replyWaitMs); st.timer.unref?.(); }
+  function arm(st) {
+    clearTimeout(st.timer);
+    const store = stores.get(st.botId)?.store;
+    if (store?.loaded !== false && store?.openCardCount?.(st.chatId) > 0) return;
+    st.timer = setTimeout(() => end(st, 'done'), st.wrote ? opt.replyIdleMs : opt.replyWaitMs); st.timer.unref?.();
+  }
   function end(st, state) {
     if (st.ended) return; st.ended = true; clearTimeout(st.timer);
     if (state !== 'done') st.link.terminal = state;
@@ -247,6 +281,22 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   }
   const announce = (botId, online) => { for (const st of live.values()) if (st.botId === botId) emit(st, sse({ bot: online ? 'online' : 'offline' }, 'foxfleet.bot')); };
   const endRunsOf = (botId, state) => { for (const st of [...live.values()]) if (st.botId === botId) end(st, state); };
+  function noteClosed(botId, chatId, requestId, reason) {
+    const st = liveRun(botId, chatId);
+    if (st) emit(st, sse({ request_id: requestId, reason }, 'foxfleet.request_closed'));
+    if (st) arm(st);
+  }
+  function pushCallbacks(session) {
+    if (!session.conn) return;
+    for (const frame of session.store.pendingCallbacks()) { try { session.conn.send(frame); } catch { break; } }
+  }
+  async function showCard(session, chatId, view) {
+    const m = agentOf(session.reg, session.botId); if (!m) return;
+    let st = liveRun(session.botId, chatId);
+    if (!st) { try { st = await startRun(session.scope, m, chatId); } catch { return; } }
+    emit(st, sse(view, 'foxfleet.request'));
+    arm(st);
+  }
 
   const eventFrame = (e) => ({ t: 'message.new', event_id: e.id, chat_id: e.chat_id, chat_type: 'dm', message_id: e.message_id, user: e.user, text: e.text, date: e.date, ...(e.reply_to ? { reply_to: e.reply_to } : {}) });
   /** Hands the connected bot the next stored events that fit its window. Events are always persisted first. */
@@ -408,9 +458,9 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         onOpen: (conn) => {
           session.conn = conn; const old = sessions.get(id.botId); sessions.set(id.botId, session); if (old) fence(old, 4009, 'replaced by a newer connection');
           const hello = { t: 'hello', protocol: session.protocol, bot: id.botId, resume_from: store.acked(), latest_event_id: store.latestEventId(), heartbeat_ms: opt.heartbeatMs, limits: { ...LIMITS, max_unacked: limits.maxUnacked } };
-          if (session.protocol === PROTOCOL_V11) hello.features = ['stop'];
+          if (session.protocol === PROTOCOL_V11) hello.features = ['stop', 'cards'];
           conn.send(hello);
-          pushEvents(session); announce(id.botId, true);
+          pushEvents(session); pushCallbacks(session); announce(id.botId, true);
           log('bot.connected', { bot: id.botId });
         },
         onMessage: (text) => handle(session, text),
@@ -472,7 +522,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       if (parts[3] === 'messages' && parts.length === 4 && req.method === 'POST') return await postMessages(c);
       if (parts[3] === 'queue' && parts.length === 4 && req.method === 'GET') {
         const session = c.url.searchParams.get('session_id') || '';
-        return c.sendJson(res, 200, { items: [], recent: [], halted: false, active_run: liveRun(m.botId, session)?.run.id ?? null, modes: ['queue'], open_requests: [], can_cancel: false });
+        const store = await readyStore(c);
+        const expired = await store.expireCards();
+        for (const row of expired) noteClosed(m.botId, row.chat_id, row.id, 'expired');
+        return c.sendJson(res, 200, { items: [], recent: [], halted: false, active_run: liveRun(m.botId, session)?.run.id ?? null, modes: ['queue'], open_requests: CHAT_ID.test(session) ? store.openRequests(session) : [], can_cancel: false });
       }
       if (parts[3] === 'commands' && parts.length === 4 && req.method === 'GET') {
         const store = await readyStore(c), mine = store.commands().map((x) => ({ name: x.name, aliases: [], description: x.description, category: 'Bot', args: '', subcommands: [], availability: 'chat', handler: 'chat', busy: 'queue', executable: true, verified: false }));
@@ -480,6 +533,23 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       }
       if (parts[3] === 'chat' && parts.length === 4 && req.method === 'POST') return await postChat(c);
       if (parts[3] === 'runs') return await runRoutes(c);
+      if (parts[3] === 'native' && parts.length === 8 && parts[4] === 'sessions' && parts[6] === 'requests' && req.method === 'POST') {
+        const body = await c.readJson(req);
+        const chatId = parts[5], requestId = parts[7];
+        if (!CHAT_ID.test(chatId) || !CARD_ID.test(requestId)) throw fault(404, 'That question is no longer open');
+        const store = await readyStore(c);
+        const user = { id: String(c.user?.id ?? ''), name: String(c.user?.username ?? '').replaceAll('\0', '').slice(0, 256) };
+        try {
+          const out = await store.answerCard({ requestId, chatId, user, result: body?.result });
+          const live = sessions.get(m.botId);
+          if (live?.conn) { try { live.conn.send(out.callback); } catch { /* replayed on the next hello */ } }
+          noteClosed(m.botId, chatId, requestId, 'answered');
+          return c.sendJson(res, 200, { ok: true });
+        } catch (e) {
+          if (e instanceof BotError && e.closed) for (const row of e.closed) noteClosed(m.botId, row.chat_id, row.id, 'expired');
+          throw httpFault(e);
+        }
+      }
       if (parts[3] === 'sessions') return await sessionRoutes(c);
       throw fault(404, 'Not found');
     },
