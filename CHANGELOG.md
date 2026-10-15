@@ -2,7 +2,9 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.3.11-alpha)
+## Unreleased (0.3.12-alpha)
+
+- Hub: the bot WebSocket (`/api/bot/ws`) no longer spends the per-IP login budget on authenticated upgrades; only failed credentials do. Valid reconnects use a per-bot connect bucket (429 when exceeded).
 
 ## 0.3.11-alpha (not tagged; signed candidate 2026-10-15, Android versionCode 24)
 

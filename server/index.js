@@ -742,7 +742,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const url = new URL(req.url, 'http://hub'), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       if (req.headers.upgrade?.toLowerCase() !== 'websocket') return deny(404, 'Not Found');
       boundary(req, server);
-      if (url.pathname === '/api/bot/ws') return void (bot ? await bot.upgrade(req, socket, head, { deny, throttle: () => authThrottle(req) }) : deny(404, 'Not Found'));
+      if (url.pathname === '/api/bot/ws') return void (bot ? await bot.upgrade(req, socket, head, { deny, throttle: { check: () => authLocked(req), fail: () => authThrottle(req) } }) : deny(404, 'Not Found'));
       if (url.pathname === '/connector') { // a machine dials out: credential is its machine token in the subprotocol list
         authThrottle(req);
         const token = String(req.headers['sec-websocket-protocol'] || '').split(',').map((v) => v.trim()).find((v) => /^[0-9a-f]{32}\.[\w-]{20,100}$/.test(v));

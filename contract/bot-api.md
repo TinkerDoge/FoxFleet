@@ -99,8 +99,9 @@ Admission, in this order (failures answer a plain HTTP status and close; no WebS
 | hub host boundary (same rules as every request) and no foreign `Origin` header (only a trusted hub origin may appear) | 403 |
 | transport security: the socket peer is loopback **and** either the `Host` is loopback or `X-Forwarded-Proto: https`; or `X-Forwarded-Proto: https` with a `Host` listed in the hub's trusted HTTPS origins. Plain HTTP from the network is refused so a token never crosses it in clear | 403 |
 | valid WebSocket handshake, and `foxfleet.bot.v1` offered in `Sec-WebSocket-Protocol` (the hub echoes it) | 400 |
-| per-IP auth throttle (shared with logins) | 429 |
+| per-IP auth throttle (shared with logins): an IP already over the limit is refused; only a **failed** credential spends it (0.3.12) | 429 |
 | `Authorization: Bot <token>` well formed, hash known, owning account exists and is enabled, agent still exists with that `botId` and `connection: "bot"` | 401 (same answer for every reason) |
+| per-bot connect bucket for authenticated upgrades (default burst 20, refill 20/min; `botOptions.connectBurst` / `connectPerMin`), so a reconnect loop is slowed without touching the login budget (0.3.12) | 429 |
 | the bot's store is readable | 503 |
 
 Identity comes **only** from the token: it binds (account, botId). Ids inside frames are never authority; every chat or

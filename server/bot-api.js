@@ -504,6 +504,16 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     } finally { requests.delete(session); }
   }
 
+  // Per-bot WebSocket connect bucket (authenticated upgrades only): a capped token bucket so a
+  // bot in a tight reconnect loop is slowed without touching the per-IP login budget.
+  const connects = new Map(), CONNECT_BURST = options.connectBurst ?? 20, CONNECT_PER_MIN = options.connectPerMin ?? 20;
+  function connectBucket(botId, now = Date.now()) {
+    const b = connects.get(botId) ?? { tokens: CONNECT_BURST, at: now };
+    b.tokens = Math.min(CONNECT_BURST, b.tokens + ((now - b.at) / 60000) * CONNECT_PER_MIN); b.at = now;
+    if (b.tokens < 1) { connects.set(botId, b); return false; }
+    b.tokens -= 1; connects.set(botId, b); if (connects.size > 5000) connects.clear(); return true;
+  }
+
   async function upgrade(req, socket, head, { deny, throttle }) {
     const refuse = (status) => deny(status, STATUS_TEXT[status] ?? 'Error');
     try {
@@ -513,11 +523,16 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       if (origin !== undefined && !(trusted.has(origin) || origin === `http://${req.headers.host}`)) return refuse(403);
       if (!secureBotRequest({ remoteAddress: req.socket.remoteAddress, host: req.headers.host, xfp: req.headers['x-forwarded-proto'], trusted })) return refuse(403);
       if (checkHandshake(req)) return refuse(400);
-      throttle();
+      // Auth budget: an IP already locked out is refused without spending; only a FAILED
+      // credential spends the shared per-IP login budget. A valid token's reconnects use the
+      // per-bot connect bucket instead, so a reconnecting bot cannot lock humans out of login.
+      throttle.check();
+      const bad = () => { try { throttle.fail(); } catch { return refuse(429); } return refuse(401); };
       const token = /^Bot (ffb_[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization ?? '')?.[1];
-      if (!token) return refuse(401);
+      if (!token) return bad();
       await tokens.ready();
-      const id = tokens.verify(token); if (!id) return refuse(401);
+      const id = tokens.verify(token); if (!id) return bad();
+      if (!connectBucket(id.botId)) return refuse(429);
       const admit = async () => { const owner = ownerOf(id.scope); if (!owner || owner.disabled) return null; const reg = await scopeReg(id.scope), agent = agentOf(reg, id.botId); return agent ? { reg, agent } : null; };
       const found = await admit(); if (!found || gone.has(id.botId)) return refuse(401);
       const store = storeFor(id.scope, found.reg, id.botId); await store.load();
