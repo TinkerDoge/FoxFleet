@@ -1,0 +1,37 @@
+name: foxfleet
+label: FoxFleet
+kind: platform
+version: 0.1.0
+description: >
+  FoxFleet hub as a native Hermes messaging platform (protocol foxfleet.bot/1). The gateway dials
+  out to the hub's bot WebSocket with a per-agent bot token; hub users chat with the agent like
+  any other DM platform. Text-only milestone: DMs, typing, send/edit/delete (streaming), slash
+  commands passed through to the gateway router, live commands.set autocomplete. No media,
+  buttons, groups or threads yet.
+author: FoxFleet
+requires_env:
+  - name: FOXFLEET_BOT_TOKEN
+    description: "Bot token minted by the hub (POST /api/agents/<name>/bot-token); shown once"
+    prompt: "FoxFleet bot token"
+    password: true
+optional_env:
+  - name: FOXFLEET_HUB_URL
+    description: "Hub base URL, e.g. https://fleet.example (https required except loopback). Prefer platforms.foxfleet.extra.hub_url in config.yaml"
+    prompt: "FoxFleet hub URL"
+    password: false
+  - name: FOXFLEET_ALLOWED_USERS
+    description: "Comma-separated hub user ids allowed to talk to this agent (default: deny everyone)"
+    prompt: "Allowed hub user ids (comma-separated)"
+    password: false
+  - name: FOXFLEET_ALLOW_ALL_USERS
+    description: "Allow every hub user that can reach this bot (true/false; default false)"
+    prompt: "Allow all hub users? (true/false)"
+    password: false
+  - name: FOXFLEET_HOME_CHANNEL
+    description: "Hub chat id for cron / send_message delivery"
+    prompt: "Home chat id (or empty)"
+    password: false
+  - name: FOXFLEET_HOME_CHANNEL_NAME
+    description: "Display name for the home chat"
+    prompt: "Home chat name (or empty)"
+    password: false
