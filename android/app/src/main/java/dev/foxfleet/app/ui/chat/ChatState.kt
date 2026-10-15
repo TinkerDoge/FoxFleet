@@ -180,6 +180,7 @@ class ChatState {
         onSession = { if (g == gen) { adopt(it); persist(SavedChat(sessionId, runId, pendingUser)) } },
         onRun = { if (g == gen) { runId = it; persist(SavedChat(sessionId, it, pendingUser)) } },
         onGap = { if (g == gen) streamText = "" },
+        onReplace = { if (g == gen) streamText = it },
     )
     private var pendingUser: String? = null
 
@@ -188,7 +189,7 @@ class ChatState {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
         val sentAt = System.currentTimeMillis(); val before = messages
-        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent) } }
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace) } }
         catch (e: dev.foxfleet.app.data.HubApiException) {
             if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
         }

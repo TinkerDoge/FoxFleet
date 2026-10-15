@@ -1,86 +1,72 @@
-# FoxFleet native Hermes channel — session handoff
+# FoxFleet native Hermes channel — current handoff
 
-Written 2026-10-15 for the next session. This is a status handoff, not a claim that the channel is done.
-`design/notes/native-release-gates.md` is **stale**: it still lists the streaming, login-throttle and onboarding bugs as open. Those three are merged. Trust this file and `git log` over that checklist.
+## Release state
 
-## Goal
+Release **0.3.11-alpha**, Android **versionCode 24**, includes bot cards/reply replacement and fail-closed callback auth. Auth merged as `02d2770` (`f62ae61`); Android/version changes land in the release merge (see `git log`). The independent read-only review `deleg_695da8fc` passed with no security or logic findings.
 
-Make FoxFleet a native Hermes messaging platform, the way Telegram and Discord are: a `foxfleet` platform plugin inside the normal Hermes gateway, talking to a hub bot API. No connector, no dashboard password, no per-agent inbound port. Hermes-only. Other agent kinds (GLM, OpenCode, Grok, MCP-inbox) stay removed.
+Doge approved an isolated canary, then merge/push, branch cleanup and signed rebuild. He asked SUMI to do the implementation/release work herself. A separate reviewer is read-only, not an implementation worker.
 
-Live hub `fleet.indc.io.vn` and the six agents (`sumi`, `default`, `rose`, `renny`, `arzy`, `sam`) must stay untouched until an explicit, reviewed canary. Do not deploy. Do not set `FOXFLEET_BOT_API=1` on the live hub. Do not install the plugin into a live profile.
+## Existing integrated features
 
-## Where the code is
+- Stop: `9e57fd5` (`b5f3aba`). 1.0 refuses interruption; 1.1 uses a transient, non-replayed `chat.stop`. Only `stopped`/`idle` end the run view.
+- Scoped approval/clarify/confirmation cards: `69c44a8` (`67c0ca0`). Hub-minted request IDs, single-shot answers, exact pending-approval binding.
+- Media: `2725927` (`6210935`). Hub-owned bytes outside the JSON store, sniffed MIME, 25 MiB/file and 1 GiB/bot limits. No bot-supplied URL fetch. Plugin uploads only Hermes-accepted delivery paths. Plain text, SVG, HTML and executable uploads are intentionally refused; supported archives work.
+- Standalone HTTP sender: `88ff447` (`c77e5c3`). Text-only `/api/bot/rpc`, no second socket, same-key retry, exact HTTP 200 plus `fm_` ID required, hub path prefixes retained. Environment proxies disabled on socket/RPC/media transports.
+- Auth hardening in this release: Stop and card side effects require `_is_sender_authorized(...) is True`; absent, throwing, non-boolean and negative checks all refuse. Denied card callbacks do not pop their pending approval.
+- Android in this release: `capabilities.bot` enables only card answers, not `nativeUi` or the model picker. `foxfleet.replace` resets both the stream display and the accumulated/committed reply; non-string payloads are ignored.
 
-- Repo: `TinkerDoge/FoxFleet`, local `/home/doge/projects/FoxFleet`
-- Main: `f0aa25c` (`build(android): bump signed test build to versionCode 23`), pushed, clean, tracking `origin/main`
-- Protocol: `foxfleet.bot/1`. Contract: `contract/bot-api.md`. Plugin: `hermes-plugin/`. Hub: `server/bot-*.js`. Web onboarding: `web/src/agents/NativeBot.tsx`
-- Bot API is off unless `FOXFLEET_BOT_API=1` (`server/index.js` `createHub`)
-- Merged fix branches still exist as worktrees. They are merged. Safe to remove after `git status` is clean in each:
-  - `/home/doge/projects/FoxFleet-fix-hub` `fix/hub-rpc-throttle` `e12d6e5`
-  - `/home/doge/projects/FoxFleet-fix-plugin` `fix/plugin-stream-fallback` `517ff73`
-  - `/home/doge/projects/FoxFleet-fix-web` `fix/web-onboarding-409` `2fe48c8`
+## Verified execution
 
-## What is done
+Parent-run evidence, not worker self-reports:
 
-Text DMs both ways, through a plugin that runs inside the normal Hermes gateway.
+- Full plugin suite: **185 passed**, zero failures/skips, against the real local hub module. `FOXFLEET_TEST_HUB_SERVER` must be the `server/` directory, NOT `server/index.js`.
+- Hub bot suite: **148 passed**, zero failures/skips, with `node --test --test-concurrency=1 server/test/bot-*.test.js`.
+- Fresh focused Android suite: **10 passed**, zero failures/errors/skips; `--rerun-tasks --no-build-cache --offline`, 31 tasks executed. Initial cached Gradle success was not counted.
+- Auth TDD: before the guard changes, eight tests reproduced the unknown-auth bypass. Afterwards the whole plugin suite passed.
+- Logs: `/home/doge/outputs/foxfleet/auth-plugin-tests.log`, `auth-hub-tests.log`.
 
-- Hub: bot tokens (`ffb_` + 43), durable store, contiguous ACKs, one WebSocket per bot, non-displacing `POST /api/bot/rpc` for `message.send/edit/delete` and `chat.action`.
-- Rate limit: failed bot auth spends the shared per-IP login throttle. An already-locked IP is refused even with a valid token. Every authenticated HTTP request takes one per-bot token **before** the body is read, so bad or huge bodies are bounded. Invalid WebSocket frames cost a token. `ack`/`ping`/`pong` stay free on the socket only. Review of `fix/hub-rpc-throttle` passed.
-- Web: Add native Hermes bot, one-time token, rotate/revoke, unknown-outcome lock with hub readback, navigation-safe exact-entry fencing. A 409 is classified by readback (it can be the user's own earlier write). Review passed. Suite 466/466, tsc and build passed on merged main.
-- Plugin: stream-frame failure no longer splits the hub run or duplicates text. A drain no longer raises a fatal that kills the channel. Drain notices use a deterministic idempotency key (`notice-<kind>-` with `_` replaced, because hub keys are `/^[A-Za-z0-9._:-]{1,128}$/` and chat ids contain `_`). Suite 125 passed (baseline was 109). Isolated full-gateway harness on the fix branches: 19/19, local scripted provider, not a live model. Run dir: `/home/doge/.hermes/cache/scratch/foxfleet/gateway-e2e/run-20261015-123514-3fc1f176`
-- Server suite on merged main before the plugin merge: 473 ran, 462 passed, 7 skipped, 4 failed. Those 4 match the pre-change baseline (connector doctor/discovery tests that depend on this machine). Do not treat a full server run as green.
-- Signed APK vc23, same cert as vc21/vc22 (`DF:97:DD:3D:…:52:DF`), so it installs as an update. Package `dev.foxfleet.app`, versionName `0.3.10-alpha`, versionCode 23. Size 70823521. SHA256 `afb2078828721b6bf60d5890f2bdd4945438ce58c59df186c2012b9aaf28df5c`. MD5 `bd81efcf5fb3a4ff85743f74d5fa7c29`. Drive file `1Oemy5UGMMkdLP4xO9_ICXEcpgwQPoFm5`. Notes file `1vFWmGNKXCvd8mKw8JmGYFv8ff_aCCrME` in folder `1mz0x6icvdbDz8LWAdpZy6ZqQa1L04y3a`. Android app code did not change except versionCode. Native bot UI is web-only.
+## Isolated real-model canary — PASSED
 
-## Not done — this is the job
+The production owner account has not been used for tests. The canary ran a second hub on **DogeMint**, bound only to `127.0.0.1:3081`, same server code as production (`88ff447`), with its own data root `/home/dogetinker/.local/share/foxfleet-canary`.
 
-Order agreed with Doge: Stop, then cards, then media, then the plugin HTTP sender, then one canary. Do not retire the connector until the canary passes.
+One newly created Hermes profile, `foxfleet-canary`, on M700 loaded the tested plugin through normal plugin discovery and ran the normal Hermes gateway with **`gpt-6.1-sol` / `openai-codex`**. It was explicitly standalone (`gateway.standalone: true`), so it did not take over existing agents. An SSH loopback tunnel linked the hosts.
 
-1. **Stop.** Merged on main as `9e57fd5` (`b5f3aba`). Not deployed. A `foxfleet.bot/1` Stop returns `confirmed: false` and the run stays. A 1.1 socket gets one transient `chat.stop`. The view ends only when the bot answers `stopped` or `idle`. Live hub was not touched.
-2. **Approval / clarify / slash-confirm cards.** Merged on main as `69c44a8` (`67c0ca0`). Not deployed. A 1.1 hello advertises `features: ["stop", "cards", "media"]`. A tap is accepted only for that open request, chat, bot and account. An approval card is sent only when it binds to exactly one pending Hermes approval. Live hub was not touched. Android still hides cards until the `nativeUi` gate is dropped.
-3. **Media both ways.** Merged on main as `2725927` (`6210935`). Not deployed. Bytes live beside the JSON store. The hub sniffs the type, caps the file at 25 MiB and the bot at 1 GiB, and refuses SVG, HTML and executables. The plugin uploads only a path Hermes already accepted. The hub never fetches a bot-supplied URL. Live hub was not touched.
-4. **Plugin standalone sender.** Merged with this change. Not deployed. Text cron and `send_message` delivery without a running gateway use `POST /api/bot/rpc` and do not open a socket. The Bot token is not sent to an environment proxy. Media, threads, and a second socket remain refused. The canary has not run. Live hub was not touched.
-5. **Android.** Research (re-verify before editing) says cards render only when `nativeUi` is set (`MainActivity.kt` around line 177). Do not flip `nativeUi` on for bots: both apps would send `/model` to a picker bots cannot serve. Drop that gate instead, then sign a new APK. Android also ignores `foxfleet.replace`, so a rewritten bot reply stays stale until reload.
-6. **Canary.** One profile, plugin installed, `FOXFLEET_BOT_API=1` on a hub that can be rolled back. Real conversation. Then the other agents. Never delete the connector to make the branch look clean.
-7. **Gates note.** Update `design/notes/native-release-gates.md` so the three merged bugs are checked off. Do not check Stop, cards, media, standalone sender, or canary.
+Actual probes passed:
 
-Groups, threads, reactions and buttons are explicitly out of v1. Not required to retire the connector for normal DMs.
+1. Live-model text round trip: `CANARY_NATIVE_OK` in hub transcript.
+2. A real `clarify` tool card was answered Beta; model returned `CANARY_CHOICE_Beta`. Repeated submission was refused.
+3. Hub Stop returned `confirmed: true`; a subsequent turn returned `CANARY_AFTER_STOP_OK`.
+4. Gateway delivered a ZIP via the hub media store. Authenticated download matched source bytes and SHA-256. The initial `.txt` attempt was rejected by the designed media type allowlist, not counted as delivery.
+5. `hermes --profile foxfleet-canary send` delivered `CANARY_STANDALONE_OK` exactly once while the receiving socket remained online.
 
-## Phase 2 design (proposal, not implemented)
+Full readback evidence: `/home/doge/outputs/foxfleet/canary-results.json`; gateway log: `canary-gateway.log`. Test-only credentials are private in the canary profile, never in git or chat.
 
-Copied into this repo as `design/notes/native-phase2-research.md` (from scratch; scratch can be pruned). Facts in that file are cited. The contract delta is a proposal. Re-read the live app code before coding from it. Short version:
+This is **not** a fleet migration or a physical-device acceptance test. Public-hub rollout and retirement of the connector remain separate gates.
 
-- Web needs no change if the hub serves the routes the apps already call (`open_requests`, request answer route, `/api/media`).
-- Stop: hub sends a one-off `chat.stop` that is never replayed. Plugin feeds a synthetic `/stop` through Hermes' normal message path. Hub reports confirmed only when the bot answers.
-- Cards: bot `card.send`, hub mints a request id bound to bot+chat+user, apps see the shapes they already render, answer is one-shot, `card.close` on timeout or old-process reconnect.
-- Media: `POST`/`GET /api/bot/media`. Outbound replies use `MEDIA:` refs the apps already resolve. Do not put media files inside the bot JSON store. Do not let media uploads spend the login throttle.
-- Idle timeout must not kill a run while a card is open, or Stop disappears during a long approval.
-- Hermes relay adapter (`gateway/relay/adapter.py`) is the reference for remote prompts. Slash-confirm resolves through `tools.slash_confirm.resolve`, not the name in the base docstring. Approvals have a `request_id` before the prompt is sent.
+## Production and rollback facts
 
-## Rules for the next session
+- Live hub: `fleet.indc.io.vn` -> DogeMint `10.77.77.2:3080`, user service `foxfleet.service`, repo `/home/dogetinker/foxfleet`.
+- Its auto-updater had already deployed main `88ff447` at 20:13:17 +07 before the canary. Earlier statements saying the merged code was not deployed were incomplete: the **bot API remained disabled**, but the source had auto-deployed.
+- Production `FOXFLEET_BOT_API` remains unset; `/api/auth` does not advertise `botApi`.
+- Existing six agents (`sumi`, `default`, `rose`, `renny`, `arzy`, `sam`) and connector configuration are not migrated/deleted.
+- The one-minute auto-update cron was paused before tests. It resets to `origin/main`, builds web and restarts BOTH hub and connector; do not restore it blindly during a release. Check and record final cron state.
+- Backup: `/home/dogetinker/.local/share/foxfleet-canary-backup-20261015-212004/` (0700), containing data archive, env, original crontab, hashes and rollback manifest.
+- Service sandbox `ReadWritePaths` includes the entire production data root; bot media is beneath it. The isolated canary used separate data, not production snapshots.
 
-- Node 22: `/home/doge/.hermes/node/bin` on `PATH`. Node 26 breaks web `localStorage` tests.
-- `TMPDIR` under `/home/doge/.hermes/cache/scratch/foxfleet/tmp`.
-- Plugin tests: `/home/doge/.hermes/cache/scratch/foxfleet/run-plugin-tests-main.sh` (WT is main). The `run-plugin-tests-fix.sh` copy points at the plugin worktree.
-- Hub tests: `cd /home/doge/projects/FoxFleet && PATH=/home/doge/.hermes/node/bin:$PATH npm test`. Expect 4 baseline failures unless they have been fixed since this handoff.
-- Web: `cd web && npm test` then `npx tsc --noEmit` and `npm run build`.
-- Signing material is `~/.config/foxfleet-signing/` (0700). Never print passwords, never put them in worker prompts, commits, or chat. Gradle reads `FOXFLEET_KEYSTORE`, `FOXFLEET_KEYSTORE_PASSWORD`, `FOXFLEET_KEY_ALIAS`, `FOXFLEET_KEY_PASSWORD`. JDK 17: `/home/doge/.local/opt/jdk-17`. After a rebuild, `apksigner verify --print-certs` must show cert SHA-256 `df97dd3d75119537bce17a868bba08c8b5675c54c01a16a2f6b0fe5d528252df`, and versionCode must be higher than 23.
-- Workers do not commit, push, deploy, or touch the git index. Parent reviews, tests, commits, pushes.
-- Fail-closed review before merge when the change is lifecycle or auth. Doge explicitly approved GLM-5.3 reviewers on 2026-10-15 after asking. His standing rule is still: never auto-use GLM unless he asks. Ask again next session.
-- Quota: Codex/ChatGPT subscription and Anthropic both 429'd during this work. Devin Fusion and Agy Opus were already exhausted earlier. Do not assume a coding-agent CLI is available. Hermes `delegate_task` works. If a worker dies on quota, the tree may still be green and half-finished: run the suite yourself, then review against the brief.
-- Commit and push shared repo changes. Do not deploy indc or the live hub without an explicit yes.
+## Signing and commands
 
-## Known residuals (not blockers for the text milestone, do not ignore)
+- Signing material: `~/.config/foxfleet-signing/` (0700). Existing alias `foxfleet`, cert SHA-256 `df97dd3d75119537bce17a868bba08c8b5675c54c01a16a2f6b0fe5d528252df`. Never generate another key or print passwords.
+- Build env: `JAVA_HOME=/home/doge/.local/opt/jdk-17`, `ANDROID_HOME=/home/doge/Android/Sdk`. Gradle reads `FOXFLEET_KEYSTORE`, `FOXFLEET_KEYSTORE_PASSWORD`, `FOXFLEET_KEY_ALIAS`, `FOXFLEET_KEY_PASSWORD`.
+- Verify APK signature, application ID/version, packaged assets, SHA256 and MD5 before delivery. Preserve vc23 for rollback.
+- Plugin test Python: installed Hermes workspace on `PYTHONPATH`, plus `/tmp/foxfleet-sender-test-deps`; full runtime has pytest there, not in bare python3.
+- Node 22: `/home/doge/.hermes/node/bin/node`. Node 26 changes web localStorage behaviour.
 
-- Drain-notice re-review `deleg_2728ba97` returned `passed: false` with one high finding, after the merge. Three of the four earlier holes are closed. The remaining one: if saving state fails while releasing a message that WAS processed, a later reload reads the old disk row and sends a false "please resend" notice. The in-memory park set does not survive that reload. Fix on top of main. Do not rewind. Also: hub idempotency keys already allow `_` (`server/bot-protocol.js` KEY class includes it). The `_`→`-` rewrite is unnecessary and not injective. `time.sleep` in `_hold_unprocessed` blocks the event loop.
-- A crash after a processed message, before the "remove from unprocessed" save succeeds, can still produce one false "please resend" after restart. Repeats of a real notice collapse on the deterministic key.
-- WS upgrade still spends the per-IP login budget on every attempt, valid or not. Same as before the HTTP fix. A bot reconnecting its socket more than 60 times a minute from one IP can lock owner login. Follow-up, not done.
-- Full server suite is not green. Four connector doctor/discovery failures are the baseline on this machine.
+## Known residuals — do not hide
 
-## Do not
-
-- Deploy or restart the live hub, connector, or the six agents.
-- Generate a new Android signing key.
-- Reintroduce non-Hermes agent kinds.
-- Open a second bot WebSocket for cron or `send_message`.
-- Treat an admission ACK as proof the agent finished the turn.
-- Treat the gates file's open checkboxes for streaming, throttle and onboarding as still true.
+- Drain persistence race: a crash after processing but before the unprocessed-row removal is saved can produce a false resend notice after restart. Existing post-merge audit; not repaired by the auth/Android slice.
+- WS upgrade still spends the per-IP login budget on every attempt. Follow-up, not repaired here.
+- Historical full server suite has four connector doctor/discovery baseline failures. The 148-test bot subset is green; do not call the whole repository suite green.
+- No physical Android device QA in this session. Do not check the full web-and-Android user-facing gate based only on JVM tests.
+- Release lint reproduces the same **2 errors, 55 warnings, 5 hints** on unchanged main and this candidate: NotifyNotifier.kt:90 MissingPermission and AvatarStore.kt:61 NewApi (WEBP_LOSSY on API 29). Not new regressions; not claimed green. Signed assembly, certificate, version and APK asset verification succeeded.
+- Canary gateway and sidecar were stopped after verification; production hub/connector remained active and bot-flag-off. Auto-update remains intentionally paused pending a separate production deployment decision.
+- Groups, threads, reactions and arbitrary buttons are out of this bot protocol slice.

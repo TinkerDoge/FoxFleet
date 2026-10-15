@@ -2,7 +2,16 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased
+## Unreleased (0.3.11-alpha)
+
+## 0.3.11-alpha (not tagged; signed candidate 2026-10-15, Android versionCode 24)
+
+- Android renders bot approval/clarify cards without enabling Hermes-native model controls.
+- Android applies `foxfleet.replace` to both the displayed stream and the stored assistant reply, including reconnects.
+- Bot Stop and card callbacks require an explicit successful Hermes authorisation verdict; unknown checks fail closed.
+- Native bot 1.1 includes Stop, scoped cards, hub-owned media and non-displacing standalone HTTP text delivery.
+- Isolated DogeMint canary with a real Hermes gateway and `gpt-6.1-sol` passed text, clarify/replay rejection, Stop/recovery, byte-verified ZIP media and standalone delivery. The production bot feature flag remains off and existing agents/connector remain in service.
+
 
 ### Android test build
 - Incremented Android versionCode to 21 for the signed Hermes-only test build; versionName stays `0.3.10-alpha`. This is not a new published release or the native bot-channel cutover.

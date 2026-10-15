@@ -18,7 +18,7 @@ import crypto from 'node:crypto';
 import { spawnSync, spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.10-alpha';
+export const VERSION = '0.3.11-alpha';
 /** What this connector can do for the hub (reported in the profiles frame; the hub shows it as the Media row of an agent). */
 export const FEATURES = ['media', 'mediaRoots', 'mediaCheck', 'agentNote'];
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);

@@ -13,7 +13,7 @@ This is the acceptance checklist for replacing FoxFleet's connector-driven Herme
 
 ### Transport and security
 - [ ] Reviewed hub and plugin changes integrated on one branch with machine-readable contract tests.
-- [ ] Safe standalone delivery for cron and `send_message`, without evicting any gateway socket.
+- [x] Safe standalone delivery for cron and `send_message`, without evicting any gateway socket (real-gateway isolated canary and HTTP regression suite).
 - [ ] Restart-safe replay/idempotency; contiguous ACKs and fail-closed persistence/admission errors.
 - [ ] Account/bot/chat/media ownership, deny-by-default Hermes user authorisation, lifecycle fencing and secret-redaction regression tests.
 - [ ] Busy notifications, gateway drain and >64 KiB multi-chunk streaming cannot lose work or prematurely finish the app's reply view.
@@ -22,16 +22,16 @@ This is the acceptance checklist for replacing FoxFleet's connector-driven Herme
 
 ### User-facing channel
 - [ ] Native slash commands dispatch in Hermes, not in a copied allowlist or prompt shim.
-- [ ] The app's Stop action actually interrupts Hermes work, rather than merely closing the hub's stream view.
+- [x] The app's Stop action actually interrupts Hermes work, rather than merely closing the hub's stream view (isolated real-model canary returned confirmed and the next turn succeeded).
 - [ ] Native bot creation, one-time token display, rotation/revocation and profile setup are accessible on phone and desktop. Unknown write outcomes require status readback before a second mutation.
 - [ ] Native chats/history, media and interaction cards work in both web and Android.
 - [ ] Capabilities reflect actual support; unavailable features fail explicitly rather than appearing to succeed.
 
 ### Verification and rollout
 - [ ] Pure/fault-injection tests, isolated real hub/adapter tests and full-gateway tests are all independently rerun on the integrated source.
-- [ ] Full-gateway smoke exercises the normal Hermes process, plugin discovery, real AIAgent/tool dispatch and persistent sessions. A local scripted provider fixture must be labelled as such, not reported as live-model validation.
+- [x] Full-gateway smoke exercises the normal Hermes process, plugin discovery, real AIAgent/tool dispatch and persistent sessions. Isolated DogeMint canary used `gpt-6.1-sol` through `openai-codex`, not a scripted provider.
 - [ ] Full test results include failures/skips/cancellations, with independently reproduced unchanged-baseline failures identified.
-- [ ] Signed Android build uses Doge's existing signing identity, with the version incremented and signature verified.
+- [x] Signed Android build uses Doge's existing signing identity, with the version incremented and signature verified (0.3.11-alpha / vc24; existing df97dd…5252df certificate; 56 required screen assets verified).
 - [ ] Live canary and rollback are explicitly reviewed; only then migrate the remaining agents.
 - [ ] Retire connector/TUI/dashboard dependencies only after the native replacements pass the corresponding gate. Never destroy an existing working deployment merely to make the branch look cleaner.
 
@@ -43,8 +43,7 @@ The public bot API is feature-gated, default off. Development uses isolated work
 
 The streaming, login-throttle and onboarding bugs below were open when this note was first written. They are
 merged on main. Do not treat these three checkboxes as still open. Stop, cards, media, the standalone sender
-and the canary are not done: the Stop path exists on `foxfleet.bot/1.1` and is tested off the live hub, but
-this gate stays open until a reviewed canary.
+are integrated. The isolated real-model canary passed text, clarify/replay rejection, Stop/recovery, ZIP media and standalone delivery; public fleet cutover and physical Android acceptance remain open.
 
 - [x] **Plugin, high:** stream-frame failure no longer splits the hub run or duplicates text. Merged in
       `fix/plugin-stream-fallback`.

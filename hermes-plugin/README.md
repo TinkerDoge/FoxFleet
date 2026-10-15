@@ -6,11 +6,12 @@ a profile's own Hermes gateway (the process that already serves Telegram, Discor
 way they would on any other DM platform. It is registered with `ctx.register_platform(name="foxfleet")`
 and needs no Hermes core edits.
 
-> **Status: text-only milestone. This is not a production-readiness claim.** It is tested against
-> the real Hermes `BasePlatformAdapter`, plugin manager, config loader and stream consumer, with a
-> strict fake hub and with the real hub module (see [Tests](#tests)). It has not been run in a
-> production gateway or against a live channel, and the hub contract (`contract/bot-api.md`) is
-> still moving.
+> **Status: native bot 1.1, isolated real-model canary verified. Not a fleet-cutover claim.**
+> Stop, scoped cards, hub-owned media and HTTP standalone text delivery are implemented. Tests use
+> the real Hermes adapter and hub; an isolated normal Hermes gateway with `gpt-6.1-sol` also passed
+> text, clarify/replay rejection, Stop/recovery, byte-verified ZIP delivery and standalone sending.
+> Production remains bot-flag-off; existing agents/connector have not been migrated. See
+> `design/notes/native-channel-handoff.md` for evidence and remaining release gates.
 
 ## What works
 
@@ -92,6 +93,8 @@ and needs no Hermes core edits.
 | `FOXFLEET_ALLOW_ALL_USERS` | env | `true` lets every hub user that can reach this bot talk to it. Off by default. |
 
 ### Authorization
+
+Stop and card callbacks require an explicit successful Hermes authorization verdict: a missing, throwing or non-boolean check refuses without dispatching or consuming a pending approval.
 
 The hub authenticates the humans; Hermes still authorizes them. Access is denied by default unless
 the user is on `FOXFLEET_ALLOWED_USERS` (or `GATEWAY_ALLOWED_USERS`), has an approved pairing, or

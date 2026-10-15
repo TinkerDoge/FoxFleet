@@ -17,7 +17,11 @@ data class Capabilities(
     val reactions: Boolean = false,
     /** The agent itself can react (it has an authenticated reaction action). */
     val agentReactions: Boolean = false,
+    /** Bot API transport; cards are available without the native Hermes controls. */
+    val bot: Boolean = false,
 ) {
+    val canAnswerRequests get() = nativeUi || bot
+
     companion object {
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
         fun forKind(kind: String) = when (kind) {
