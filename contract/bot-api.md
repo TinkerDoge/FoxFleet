@@ -355,8 +355,7 @@ the shared hub-side handler.
 
 A bot that offers `Sec-WebSocket-Protocol: foxfleet.bot.v1.1, foxfleet.bot.v1` is answered with the highest version
 this hub speaks. `foxfleet.bot.v1` alone still gets today's `hello` (`protocol: "foxfleet.bot/1"`, no `features`).
-A 1.1 hello is `protocol: "foxfleet.bot/1.1"` plus `features: ["stop"]`. Cards and media are not in that list until
-they exist.
+A 1.1 hello is `protocol: "foxfleet.bot/1.1"` plus `features: ["stop", "cards"]`. Media is not in that list until it exists.
 
 `POST /runs/:id/stop` on a live run whose bot is connected at 1.1 sends one transient frame and waits:
 
@@ -378,6 +377,27 @@ bot → hub   {"t":"callback.answer","id":"…","callback_id":"fs_…","outcome"
 - The user on the frame is the account user who tapped Stop. The bot applies the same allowlist as a normal message
   and refuses anyone else. It feeds `/stop` through Hermes' own command path. An already-expired frame is answered
   `expired` and is not dispatched.
+
+### Cards (`foxfleet.bot/1.1`, feature `cards`)
+
+`card.send` and `card.close` are still reserved on a 1.0 socket and over `POST /api/bot/rpc` (`unsupported`). On 1.1 the hub mints the ids. A client-supplied id authorises nothing.
+
+```
+bot → hub   {"t":"card.send","id":"…","chat_id":"fc_…","kind":"approval"|"confirm"|"clarify","instance":"…"}
+            → {"t":"res","id":"…","ok":true,"result":{"request_id":"frq_<16>","expires_at":ms}}
+bot → hub   {"t":"card.close","id":"…","request_id":"frq_…"}   or   {"all_except_instance":"…"}
+            → {"t":"res","ok":true,"result":{"closed":n}}
+user → hub  POST /api/agents/:name/native/sessions/:chat_id/requests/:request_id
+hub → bot   {"t":"callback","callback_id":"fcb_<16>","request_id":"frq_…","chat_id":"fc_…","user":{"id","name"},"kind":"…","value":{…}}
+bot → hub   {"t":"callback.answer","id":"…","callback_id":"fcb_…","outcome":"resolved"|"expired"|"refused"}
+```
+
+- The web already renders these. Confirm is sent to the web as `kind: "approval"` (that UI has Once and Deny). The bot still receives `kind: "confirm"`. Deny on a confirm card means cancel.
+- A tap is accepted only when the request is open, unexpired, in that chat, on that bot, and the result is `{choice: once|deny}` or `{answers: {question id: text}}`. The account user who tapped is the user on the callback. A user id in the body is ignored.
+- A second tap, a wrong chat, a wrong bot, a forged choice, or an expired card is refused. The first accepted tap does not send a second callback.
+- `callback` has no `event_id` and is not a transcript event. It is stored until `callback.answer`, and replayed on the next hello if that answer never arrived. A stop id and a card id cannot answer each other.
+- While any card in the chat is open, that chat's reply run does not idle out.
+- `all_except_instance` closes this bot's open cards from any other instance. Closing an unknown id closes nothing and is not an error.
 
 ### Retention (per bot)
 

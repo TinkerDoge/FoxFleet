@@ -239,6 +239,50 @@ def parse_chat_stop(frame: dict) -> ChatStop:
                     date=_event_id(frame, "date"), expires_at=_event_id(frame, "expires_at"))
 
 
+CARD_CALLBACK_ID = re.compile(r"^fcb_[A-Za-z0-9_-]{16}$")
+CARD_REQUEST_ID = re.compile(r"^frq_[A-Za-z0-9_-]{16}$")
+CARD_KINDS = frozenset({"approval", "confirm", "clarify"})
+
+
+@dataclass(frozen=True)
+class CardCallback:
+    callback_id: str
+    request_id: str
+    chat_id: str
+    user_id: str
+    user_name: Optional[str]
+    kind: str
+    value: dict
+
+
+def parse_callback(frame: dict) -> CardCallback:
+    """A card answer. Not a transcript event: it has no ``event_id`` and must not be acknowledged."""
+    if frame.get("t") != "callback":
+        raise ProtocolError("bad_frame", "not a callback")
+    if "event_id" in frame:
+        raise ProtocolError("bad_frame", "callback is not a message event")
+    extra = set(frame) - {"t", "callback_id", "request_id", "chat_id", "user", "kind", "value"}
+    if extra:
+        raise ProtocolError("bad_frame", "unexpected callback field")
+    kind = frame.get("kind")
+    if kind not in CARD_KINDS:
+        raise ProtocolError("bad_frame", "unknown card kind")
+    value = frame.get("value")
+    if not isinstance(value, dict) or len(value) > 8:
+        raise ProtocolError("bad_frame", "callback value must be a small object")
+    user = frame.get("user")
+    if not isinstance(user, dict):
+        raise ProtocolError("bad_user", "user must be an object")
+    name = user.get("name")
+    if name is not None and (not isinstance(name, str) or len(name) > MAX_ID_CHARS or "\0" in name):
+        raise ProtocolError("bad_user", "user.name must be a bounded string")
+    return CardCallback(callback_id=_match(frame, "callback_id", CARD_CALLBACK_ID),
+                        request_id=_match(frame, "request_id", CARD_REQUEST_ID),
+                        chat_id=_match(frame, "chat_id", CHAT_ID),
+                        user_id=_ident(user, "id", where="user."), user_name=(name or "").strip() or None,
+                        kind=kind, value=value)
+
+
 # Contract error codes plus the defensive codes the adapter treats as fatal; hub-supplied codes outside
 # this set are reported as "unrecognized" so hub-controlled text never reaches logs or results.
 KNOWN_ERROR_CODES = frozenset({
@@ -304,6 +348,8 @@ _REQUEST_FIELDS = {
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
     "callback.answer": {"callback_id", "outcome"},
+    "card.send": {"chat_id", "kind", "instance", "card_key", "ttl_ms", "idempotency_key", "command", "description", "questions"},
+    "card.close": {"request_id", "all_except_instance", "reason"},
 }
 
 

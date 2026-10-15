@@ -3,6 +3,7 @@ import { readFile, writeFile, rename, mkdir, rm, open } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { fault } from './config.js';
+import { cardView, validateCardAnswer } from './bot-protocol.js';
 
 const sha256 = (v) => createHash('sha256').update(v).digest('hex');
 const HASH_RE = /^[0-9a-f]{64}$/;
@@ -249,6 +250,83 @@ export function botStore(file, options = {}) {
       const d = st(); if (!d.chats[chatId]) throw fault(404, 'Unknown session');
       const list = d.messages[chatId], end = Math.max(0, list.length - offset), start = Math.max(0, end - limit);
       return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: m.text, ts: m.ts, ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
+    },
+
+    /** Open cards for one chat, in the shape the web already renders. Expired rows are not listed. */
+    openRequests(chatId, now = Date.now()) {
+      return Object.values(st().requests ?? {}).filter((r) => r.chat_id === chatId && r.state === 'open' && r.expires_at > now).map(cardView);
+    },
+    openCardCount(chatId, now = Date.now()) {
+      return Object.values(st().requests ?? {}).filter((r) => r.chat_id === chatId && r.state === 'open' && r.expires_at > now).length;
+    },
+    pendingCallbacks() {
+      return (st().callbacks ?? []).filter((c) => !c.delivered).map((c) => ({ t: 'callback', callback_id: c.callback_id, request_id: c.request_id, chat_id: c.chat_id, user: c.user, kind: c.kind, value: c.value }));
+    },
+
+    openCard(req, guard) {
+      return run((d) => {
+        guard?.(); const now = Date.now(); prune(d, now, limits); d.requests ??= {};
+        return once(d, 'card.send', req, now, () => {
+          chatOf(d, req.chat_id);
+          const open = Object.values(d.requests).filter((r) => r.chat_id === req.chat_id && r.state === 'open' && r.expires_at > now);
+          if (open.length >= 8) throw new BotError('invalid_request', 'Too many open cards in this chat');
+          const request_id = id('frq_');
+          d.requests[request_id] = { id: request_id, chat_id: req.chat_id, kind: req.kind, instance: req.instance, ...(req.card_key ? { card_key: req.card_key } : {}), ...(req.command ? { command: req.command } : {}), ...(req.description ? { description: req.description } : {}), ...(req.questions ? { questions: req.questions } : {}), created: now, expires_at: now + req.ttl_ms, state: 'open' };
+          return { request_id, expires_at: now + req.ttl_ms };
+        });
+      });
+    },
+    closeCards(req, guard) {
+      return run((d) => {
+        guard?.(); const now = Date.now(); d.requests ??= {};
+        const rows = Object.values(d.requests).filter((r) => r.state === 'open' && (req.request_id ? r.id === req.request_id : r.instance !== req.all_except_instance));
+        for (const r of rows) { r.state = 'closed'; r.reason = req.reason || 'closed'; r.closed_at = now; }
+        return { closed: rows.length, ids: rows.map((r) => ({ id: r.id, chat_id: r.chat_id })) };
+      });
+    },
+    /** Close cards whose ttl has passed. Returns the ids so the hub can drop them from the live view. A chat with nothing due does not rewrite the store. */
+    expireCards(now = Date.now()) {
+      const due = Object.values(st().requests ?? {}).some((r) => r.state === 'open' && r.expires_at <= now);
+      if (!due) return Promise.resolve([]);
+      return run((d) => {
+        d.requests ??= {};
+        const rows = Object.values(d.requests).filter((r) => r.state === 'open' && r.expires_at <= now);
+        for (const r of rows) { r.state = 'closed'; r.reason = 'expired'; r.closed_at = now; }
+        return rows.map((r) => ({ id: r.id, chat_id: r.chat_id }));
+      });
+    },
+    /**
+     * One answer, bound to this chat. A wrong chat, a second tap, an expired card, or a shape the web
+     * cannot send is refused. The account user is recorded here; a user id in the body is ignored by the caller.
+     */
+    answerCard({ requestId, chatId, user, result, now = Date.now() }) {
+      return run((d) => {
+        d.requests ??= {}; d.callbacks ??= [];
+        const r = d.requests[requestId];
+        if (!r || r.chat_id !== chatId) throw new BotError('not_found', 'That question is no longer open');
+        if (r.state !== 'open' || r.expires_at <= now) {
+          const expired = r.state === 'open';
+          if (expired) { r.state = 'closed'; r.reason = 'expired'; r.closed_at = now; }
+          const err = new BotError('not_found', 'That question is no longer open'); if (expired) err.closed = [{ id: r.id, chat_id: r.chat_id }]; throw err;
+        }
+        const verdict = validateCardAnswer(r, result);
+        if (!verdict.ok) throw new BotError(verdict.code, verdict.message);
+        const callback_id = id('fcb_');
+        r.state = 'answered'; r.answered_at = now; r.value = verdict.value; r.callback_id = callback_id; r.user = { id: user.id, name: user.name };
+        const callback = { callback_id, request_id: r.id, chat_id: r.chat_id, user: r.user, kind: r.kind, value: verdict.value, delivered: false };
+        d.callbacks.push(callback);
+        if (d.callbacks.length > 100) d.callbacks.splice(0, d.callbacks.length - 100);
+        return { request_id: r.id, chat_id: r.chat_id, callback: { t: 'callback', callback_id, request_id: r.id, chat_id: r.chat_id, user: r.user, kind: r.kind, value: verdict.value } };
+      });
+    },
+    ackCallback(callbackId, guard) {
+      return store.mutate((d) => {
+        guard?.();
+        const c = (d.callbacks ?? []).find((x) => x.callback_id === callbackId);
+        if (!c) throw new BotError('not_found', 'Unknown callback');
+        c.delivered = true;
+        return { delivered: true };
+      });
     },
   };
 }

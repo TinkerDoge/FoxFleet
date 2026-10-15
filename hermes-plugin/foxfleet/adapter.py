@@ -236,6 +236,7 @@ class _Conn:
         self.abandoned = False  # an admission failed: stop dispatching this socket's events
         self.close_reason: Optional[tuple[str, str]] = None  # (code, message) for fatal closes
         self.stop_enabled = False  # set from the negotiated hello; a 1.0 socket never interrupts
+        self.cards_enabled = False
 
 
 class _NoRedirectConnect(_ws_connect):  # type: ignore[misc,valid-type]
@@ -345,6 +346,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._connected = asyncio.Event()
         self._closing = False
         self._pending: dict[str, tuple[asyncio.Future, _Conn]] = {}
+        self._cards: dict[str, dict] = {}
+        self._cards_by_clarify: dict[str, str] = {}
+        self._answered_callbacks: OrderedDict[str, str] = OrderedDict()
+        self._card_instance = secrets.token_hex(8)
         self._rpc_counter = itertools.count(1)
         self._queue: Optional[asyncio.Queue] = None
         self._supervisor_task: Optional[asyncio.Task] = None
@@ -553,6 +558,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._generation += 1
         conn = _Conn(ws, hello, self._generation)
         conn.stop_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "stop" in hello.features
+        conn.cards_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "cards" in hello.features
         self._bot_id = hello.bot
         self._load_state(hello)
         return conn
@@ -669,6 +675,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
         elif kind == "chat.stop":
             # Off the reader: the answer's res, and any /stop reply, must be readable while we wait.
             self._spawn(self._on_chat_stop(conn, frame))
+        elif kind == "callback":
+            self._spawn(self._on_card_callback(conn, frame))
         elif kind == "error":
             code = str(frame.get("code") or "")
             logger.warning("FoxFleet: hub error %s", protocol.known_error_code(code))
@@ -745,6 +753,173 @@ class FoxFleetAdapter(BasePlatformAdapter):
             await self._request("callback.answer", retry_unknown=False, callback_id=stop_id, outcome=outcome)
         except Exception as exc:
             logger.warning("FoxFleet: stop answer %s was not confirmed (%s)", outcome, type(exc).__name__)
+
+    def _cards_on(self) -> bool:
+        conn = self._conn
+        return bool(conn is not None and getattr(conn, "cards_enabled", False))
+
+    @staticmethod
+    def _clip(text: Any, n: int = 2000) -> str:
+        cleaned = "".join(ch for ch in str(text or "") if ch in "\n\t" or (32 <= ord(ch) != 127))
+        return cleaned[:n]
+
+    async def _send_card(self, *, chat_id: str, kind: str, **fields: Any) -> Optional[str]:
+        """Mint one card. None means the hub did not accept it; the caller falls back to text."""
+        if not self._cards_on() or not protocol.CHAT_ID.match(str(chat_id or "")):
+            return None
+        key = f"card.{kind}.{secrets.token_hex(8)}"
+        try:
+            res = await self._request("card.send", retry_unknown=True, chat_id=str(chat_id), kind=kind,
+                                      instance=self._card_instance, idempotency_key=key, **fields)
+        except Exception as exc:
+            logger.warning("FoxFleet: card.send failed (%s)", type(exc).__name__)
+            return None
+        if not res.ok:
+            return None
+        request_id = res.result.get("request_id")
+        if not isinstance(request_id, str) or protocol.CARD_REQUEST_ID.match(request_id) is None:
+            return None
+        return request_id
+
+    async def _send_exec_approval_prompt(self, prompt) -> SendResult:
+        description = self._clip(getattr(prompt, "description", "")) or "Approval required"
+        command = self._clip(getattr(prompt, "command", "")) or None
+        session_key = str(getattr(prompt, "session_key", ""))
+        approval_id = self._approval_id_for(session_key, str(getattr(prompt, "command", "")))
+        if not approval_id:
+            return SendResult(success=False, error="approval not uniquely bound")
+        request_id = await self._send_card(chat_id=str(getattr(prompt, "chat_id", "")), kind="approval",
+                                           command=command, description=description)
+        if not request_id:
+            return SendResult(success=False, error="cards not available")
+        self._cards[request_id] = {"kind": "approval", "session_key": session_key, "approval_id": approval_id,
+                                   "chat_id": str(getattr(prompt, "chat_id", ""))}
+        return SendResult(success=True, message_id=request_id)
+
+    def _approval_id_for(self, session_key: str, shown_command: str) -> Optional[str]:
+        """The Hermes approval this card is for. None unless exactly one unbound pending approval matches."""
+        if not session_key or not shown_command:
+            return None
+        try:
+            from gateway.run import _redact_approval_command
+            from tools.approval import list_gateway_approvals
+            from .cards import bind_approval
+        except Exception:
+            logger.warning("FoxFleet: cannot bind an approval card", exc_info=True)
+            return None
+        bound = {str(c.get("approval_id")) for c in self._cards.values() if c.get("approval_id")}
+        rows = [{"request_id": row.get("request_id"), "shown": _redact_approval_command(row.get("command"))}
+                for row in list_gateway_approvals(session_key)]
+        return bind_approval(rows, shown_command, bound)
+
+    async def send_slash_confirm(self, chat_id: str, title: str, message: str, session_key: str, confirm_id: str,
+                                 metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        description = self._clip(f"{title}\n\n{message}".strip()) or "Confirm"
+        request_id = await self._send_card(chat_id=chat_id, kind="confirm", description=description)
+        if not request_id:
+            return SendResult(success=False, error="cards not available")
+        self._cards[request_id] = {"kind": "confirm", "session_key": str(session_key), "confirm_id": str(confirm_id),
+                                   "chat_id": str(chat_id)}
+        return SendResult(success=True, message_id=request_id)
+
+    async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+                           session_key: str, metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        if not choices or not self._cards_on():
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata=metadata)
+        multi = False
+        try:
+            from tools import clarify_gateway as _cg
+            with _cg._lock:
+                multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+        except Exception:
+            multi = False
+        clean = [self._clip(c, 200) for c in choices if self._clip(c, 200)][:50]
+        if not clean:
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata=metadata)
+        request_id = await self._send_card(
+            chat_id=chat_id, kind="clarify",
+            questions=[{"id": "q0", "question": self._clip(question) or "Choose", "choices": clean, "multi_select": multi}])
+        if not request_id:
+            return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata=metadata)
+        self._cards[request_id] = {"kind": "clarify", "clarify_id": str(clarify_id), "session_key": str(session_key),
+                                   "chat_id": str(chat_id)}
+        self._cards_by_clarify[str(clarify_id)] = request_id
+        return SendResult(success=True, message_id=request_id)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str = "") -> None:
+        request_id = self._cards_by_clarify.pop(str(clarify_id), None)
+        if request_id:
+            self._cards.pop(request_id, None)
+        if not request_id or not self._cards_on() or protocol.CARD_REQUEST_ID.match(request_id) is None:
+            return
+        try:
+            await self._request("card.close", retry_unknown=True, request_id=request_id, reason="closed")
+        except Exception:
+            logger.debug("FoxFleet: card.close failed", exc_info=True)
+
+    async def _on_card_callback(self, conn: _Conn, frame: dict) -> None:
+        if not getattr(conn, "cards_enabled", False) or self._conn is not conn:
+            return
+        try:
+            cb = protocol.parse_callback(frame)
+        except protocol.ProtocolError as exc:
+            logger.warning("FoxFleet: ignoring malformed callback (%s)", exc.code)
+            return
+        prior = self._answered_callbacks.get(cb.callback_id)
+        if prior:
+            await self._answer_card(conn, cb.callback_id, prior)
+            return
+        if self._is_sender_authorized(cb.user_id, "dm", cb.chat_id) is False:
+            await self._finish_card(conn, cb.callback_id, "refused")
+            return
+        pending = self._cards.pop(cb.request_id, None)
+        if pending is None:
+            await self._finish_card(conn, cb.callback_id, "expired")
+            return
+        self._cards_by_clarify.pop(str(pending.get("clarify_id") or ""), None)
+        await self._finish_card(conn, cb.callback_id, await self._resolve_card(pending, cb))
+
+    async def _resolve_card(self, pending: dict, cb: protocol.CardCallback) -> str:
+        try:
+            if cb.kind == "approval" and pending.get("kind") == "approval":
+                choice = cb.value.get("choice")
+                approval_id = pending.get("approval_id")
+                if choice not in ("once", "deny") or not isinstance(approval_id, str) or not approval_id:
+                    return "refused"
+                from tools.approval import resolve_gateway_approval
+                # request_id is the only authority. Omitting it pops the oldest approval in the session.
+                return "resolved" if resolve_gateway_approval(str(pending.get("session_key") or ""), choice, request_id=approval_id) else "expired"
+            if cb.kind == "confirm" and pending.get("kind") == "confirm":
+                raw = cb.value.get("choice")
+                choice = "once" if raw == "once" else "cancel" if raw == "deny" else None
+                if choice is None:
+                    return "refused"
+                from tools import slash_confirm
+                await slash_confirm.resolve(str(pending.get("session_key") or ""), str(pending.get("confirm_id") or ""), choice)
+                return "resolved"
+            if cb.kind == "clarify" and pending.get("kind") == "clarify":
+                answers = cb.value.get("answers")
+                text = str(next(iter(answers.values()), ""))[:2000] if isinstance(answers, dict) else ""
+                from tools.clarify_gateway import resolve_gateway_clarify
+                return "resolved" if resolve_gateway_clarify(str(pending.get("clarify_id") or ""), text) else "expired"
+        except Exception:
+            logger.warning("FoxFleet: card resolve failed", exc_info=True)
+            return "refused"
+        return "refused"
+
+    async def _finish_card(self, conn: _Conn, callback_id: str, outcome: str) -> None:
+        self._answered_callbacks[callback_id] = outcome
+        while len(self._answered_callbacks) > 256:
+            self._answered_callbacks.popitem(last=False)
+        await self._answer_card(conn, callback_id, outcome)
+
+    async def _answer_card(self, conn: _Conn, callback_id: str, outcome: str) -> None:
+        if self._conn is not conn or outcome not in ("resolved", "expired", "refused"):
+            return
+        try:
+            await self._request("callback.answer", retry_unknown=False, callback_id=callback_id, outcome=outcome)
+        except Exception as exc:
+            logger.warning("FoxFleet: card answer %s was not confirmed (%s)", outcome, type(exc).__name__)
 
     def _enqueue_message(self, conn: _Conn, frame: dict) -> None:
         try:

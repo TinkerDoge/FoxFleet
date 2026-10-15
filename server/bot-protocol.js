@@ -6,6 +6,14 @@ export const SUBPROTOCOL_V11 = 'foxfleet.bot.v1.1';
 /** Stop answers. `stopped` and `idle` are the only outcomes that end the viewer's run. */
 export const STOP_OUTCOMES = ['stopped', 'idle', 'refused', 'expired'];
 export const STOP_ID = /^fs_[A-Za-z0-9_-]{16}$/;
+/** Cards. The hub mints both ids. A client-supplied id is never an authority. */
+export const CARD_KINDS = ['approval', 'confirm', 'clarify'];
+export const CARD_ID = /^frq_[A-Za-z0-9_-]{16}$/;
+export const CARD_CALLBACK_ID = /^fcb_[A-Za-z0-9_-]{16}$/;
+export const CARD_OUTCOMES = ['resolved', 'expired', 'refused'];
+export const CARD_TTL_DEFAULT = 600_000;
+export const CARD_TTL_MIN = 5_000;
+export const CARD_TTL_MAX = 1_800_000;
 
 /** Highest mutually supported subprotocol, or null. A client that only offers v1 still connects. */
 export function selectSubprotocol(header) {
@@ -138,6 +146,111 @@ export function validateStopAnswer(frame) {
   if (extra !== undefined) return { ok: false, code: 'invalid_request', message: `Unknown field ${extra}`, id };
   if (typeof frame.callback_id !== 'string' || !STOP_ID.test(frame.callback_id)) return { ok: false, code: 'invalid_request', message: 'Invalid callback_id', id };
   if (!STOP_OUTCOMES.includes(frame.outcome)) return { ok: false, code: 'invalid_request', message: 'Invalid outcome', id };
+  return { ok: true, t: 'callback.answer', id, req: { callback_id: frame.callback_id, outcome: frame.outcome } };
+}
+
+const INSTANCE = /^[A-Za-z0-9._:-]{1,128}$/;
+const QID = /^[A-Za-z0-9._:-]{1,64}$/;
+const plain = (v, name, max = 2000) => {
+  if (typeof v !== 'string' || v.length === 0 || v.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(v)) return fail('invalid_request', `${name} must be 1 to ${max} characters without control characters`);
+  return null;
+};
+
+/**
+ * `card.send` / `card.close` on a 1.1 socket. v1 `validateRequest` still refuses both names.
+ * The hub mints `request_id`. Nothing in the frame authorises a user, a chat, or a later tap.
+ */
+export function validateCardRequest(frame) {
+  const id = validId(frame.id) ? frame.id : undefined;
+  if (frame.t !== 'card.send' && frame.t !== 'card.close') return { ok: false, code: 'unknown_type', message: 'Unknown frame type', id };
+  if (frame.id !== undefined && id === undefined) return { ok: false, code: 'invalid_request', message: 'Invalid request id', id };
+  if (id === undefined) return { ok: false, code: 'invalid_request', message: 'Requests carry an id', id };
+  if (RESERVED_FIELDS.some((k) => k in frame)) return { ok: false, code: 'unsupported', message: `${RESERVED_FIELDS.find((k) => k in frame)} is not supported in protocol ${PROTOCOL_V11}`, id };
+  if (frame.t === 'card.close') {
+    const allowed = ['request_id', 'all_except_instance', 'reason'];
+    const extra = Object.keys(frame).find((k) => k !== 't' && k !== 'id' && !allowed.includes(k));
+    if (extra !== undefined) return { ok: false, code: 'invalid_request', message: `Unknown field ${extra}`, id };
+    const hasId = frame.request_id !== undefined, hasAll = frame.all_except_instance !== undefined;
+    if (hasId === hasAll) return { ok: false, code: 'invalid_request', message: 'card.close takes request_id or all_except_instance, not both', id };
+    const out = {};
+    if (hasId) { if (typeof frame.request_id !== 'string' || !CARD_ID.test(frame.request_id)) return { ok: false, code: 'not_found', message: 'Unknown request_id', id }; out.request_id = frame.request_id; }
+    else { if (typeof frame.all_except_instance !== 'string' || !INSTANCE.test(frame.all_except_instance)) return { ok: false, code: 'invalid_request', message: 'Invalid all_except_instance', id }; out.all_except_instance = frame.all_except_instance; }
+    if (frame.reason !== undefined) { const e = plain(frame.reason, 'reason', 64); if (e) return { ok: false, ...e, id }; out.reason = frame.reason; }
+    return { ok: true, t: 'card.close', id, req: out };
+  }
+  const allowed = ['chat_id', 'kind', 'instance', 'card_key', 'ttl_ms', 'idempotency_key', 'command', 'description', 'questions'];
+  const extra = Object.keys(frame).find((k) => k !== 't' && k !== 'id' && !allowed.includes(k));
+  if (extra !== undefined) return { ok: false, code: 'invalid_request', message: `Unknown field ${extra}`, id };
+  if (typeof frame.chat_id !== 'string' || !CHAT_ID.test(frame.chat_id)) return { ok: false, code: 'not_found', message: 'Unknown chat_id', id };
+  if (!CARD_KINDS.includes(frame.kind)) return { ok: false, code: 'invalid_request', message: 'kind is approval, confirm or clarify', id };
+  if (typeof frame.instance !== 'string' || !INSTANCE.test(frame.instance)) return { ok: false, code: 'invalid_request', message: 'Invalid instance', id };
+  const out = { chat_id: frame.chat_id, kind: frame.kind, instance: frame.instance, ttl_ms: CARD_TTL_DEFAULT };
+  if (frame.card_key !== undefined) { if (typeof frame.card_key !== 'string' || !INSTANCE.test(frame.card_key)) return { ok: false, code: 'invalid_request', message: 'Invalid card_key', id }; out.card_key = frame.card_key; }
+  if (frame.ttl_ms !== undefined) { if (!Number.isSafeInteger(frame.ttl_ms) || frame.ttl_ms < CARD_TTL_MIN || frame.ttl_ms > CARD_TTL_MAX) return { ok: false, code: 'invalid_request', message: 'Invalid ttl_ms', id }; out.ttl_ms = frame.ttl_ms; }
+  if (frame.idempotency_key !== undefined) { if (typeof frame.idempotency_key !== 'string' || !KEY.test(frame.idempotency_key)) return { ok: false, code: 'invalid_request', message: 'Invalid idempotency_key', id }; out.idempotency_key = frame.idempotency_key; }
+  if (frame.kind === 'clarify') {
+    if (frame.command !== undefined || frame.description !== undefined) return { ok: false, code: 'invalid_request', message: 'A clarify card has questions, not a command', id };
+    if (!Array.isArray(frame.questions) || frame.questions.length < 1 || frame.questions.length > 6) return { ok: false, code: 'invalid_request', message: 'questions is 1 to 6 entries', id };
+    const seen = new Set(); out.questions = [];
+    for (const q of frame.questions) {
+      if (!isObject(q) || Object.keys(q).some((k) => !['id', 'question', 'choices', 'multi_select'].includes(k))) return { ok: false, code: 'invalid_request', message: 'Invalid question', id };
+      if (typeof q.id !== 'string' || !QID.test(q.id) || seen.has(q.id)) return { ok: false, code: 'invalid_request', message: 'Invalid question id', id };
+      const badQ = plain(q.question, 'question'); if (badQ) return { ok: false, ...badQ, id };
+      let choices = [];
+      if (q.choices !== undefined) {
+        if (!Array.isArray(q.choices) || q.choices.length > 50 || q.choices.some((c) => typeof c !== 'string' || c.length < 1 || c.length > 200 || c.includes('\0'))) return { ok: false, code: 'invalid_request', message: 'Invalid choices', id };
+        choices = q.choices.map(String);
+      }
+      if (q.multi_select !== undefined && typeof q.multi_select !== 'boolean') return { ok: false, code: 'invalid_request', message: 'multi_select must be a boolean', id };
+      seen.add(q.id); out.questions.push({ id: q.id, question: q.question, choices, multi_select: q.multi_select === true });
+    }
+  } else {
+    if (frame.questions !== undefined) return { ok: false, code: 'invalid_request', message: 'An approval card has no questions', id };
+    if (frame.command === undefined && frame.description === undefined) return { ok: false, code: 'invalid_request', message: 'An approval card needs a command or a description', id };
+    if (frame.command !== undefined) { const e = plain(frame.command, 'command'); if (e) return { ok: false, ...e, id }; out.command = frame.command; }
+    if (frame.description !== undefined) { const e = plain(frame.description, 'description'); if (e) return { ok: false, ...e, id }; out.description = frame.description; }
+  }
+  return { ok: true, t: 'card.send', id, req: out };
+}
+
+/** The only answers the web card can send. Anything else, including a body user id, is refused. */
+export function validateCardAnswer(card, result) {
+  if (!isObject(result) || Object.keys(result).length !== 1) return fail('invalid_request', 'Invalid answer');
+  if (card.kind === 'clarify') {
+    const answers = result.answers;
+    if (!isObject(answers)) return fail('invalid_request', 'Invalid answer');
+    const ids = (card.questions ?? []).map((q) => q.id);
+    const keys = Object.keys(answers);
+    if (keys.length !== ids.length || ids.some((k) => !keys.includes(k))) return fail('invalid_request', 'Invalid answer');
+    const value = {};
+    for (const k of ids) {
+      const v = answers[k];
+      if (typeof v !== 'string' || v.length > 2000 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(v)) return fail('invalid_request', 'Invalid answer');
+      value[k] = v;
+    }
+    return { ok: true, value: { answers: value } };
+  }
+  if (result.choice !== 'once' && result.choice !== 'deny') return fail('invalid_request', 'Invalid answer');
+  return { ok: true, value: { choice: result.choice } };
+}
+
+/** What the web already renders. Confirm is an approval card there; the bot still hears `confirm`. */
+export function cardView(r) {
+  if (r.kind === 'clarify') return { request_id: r.id, kind: 'clarify', questions: r.questions ?? [] };
+  return { request_id: r.id, kind: 'approval', ...(r.command ? { command: r.command } : {}), ...(r.description ? { description: r.description } : {}) };
+}
+
+/** `callback.answer` for a card, not a stop. A stop id never reaches this. */
+export function validateCardCallback(frame) {
+  const id = validId(frame.id) ? frame.id : undefined;
+  if (frame.t !== 'callback.answer') return { ok: false, code: 'unknown_type', message: 'Unknown frame type', id };
+  if (frame.id !== undefined && id === undefined) return { ok: false, code: 'invalid_request', message: 'Invalid request id', id };
+  if (id === undefined) return { ok: false, code: 'invalid_request', message: 'Requests carry an id' };
+  if (RESERVED_FIELDS.some((k) => k in frame)) return { ok: false, code: 'unsupported', message: `${RESERVED_FIELDS.find((k) => k in frame)} is not supported in protocol ${PROTOCOL_V11}`, id };
+  const extra = Object.keys(frame).find((k) => k !== 't' && k !== 'id' && k !== 'callback_id' && k !== 'outcome');
+  if (extra !== undefined) return { ok: false, code: 'invalid_request', message: `Unknown field ${extra}`, id };
+  if (typeof frame.callback_id !== 'string' || !CARD_CALLBACK_ID.test(frame.callback_id)) return { ok: false, code: 'invalid_request', message: 'Invalid callback_id', id };
+  if (!CARD_OUTCOMES.includes(frame.outcome)) return { ok: false, code: 'invalid_request', message: 'Invalid outcome', id };
   return { ok: true, t: 'callback.answer', id, req: { callback_id: frame.callback_id, outcome: frame.outcome } };
 }
 
