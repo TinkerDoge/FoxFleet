@@ -439,3 +439,75 @@ async def test_drain_after_ack_before_handler_start_is_never_lost_silently(real,
     assert await again.connect()
     await asyncio.sleep(0.3)
     assert [r["content"] for r in await real.transcript(chat)].count(UNPROCESSED_NOTICE) == 1
+
+
+async def test_processed_held_message_never_gets_a_false_resend_notice_after_a_crash(real, make_adapter, monkeypatch):
+    """0.3.12 drain persistence race: a message held behind a drain is released and PROCESSED, but the
+    removal of its held-record fails to save (transient disk error). Before the fix the removal was only
+    retried on the next flush (a reconnect), so a crash in between left the record on disk and the
+    restarted gateway told the user 'not processed, please resend' for a message that was answered."""
+    import errno
+    import json
+    from foxfleet import adapter as ff
+    from foxfleet.adapter import UNPROCESSED_NOTICE
+    real_write = ff.atomic_json_write
+    fail_next = {"n": 0}
+
+    def flaky_write(*args, **kwargs):
+        if fail_next["n"] > 0:
+            fail_next["n"] -= 1
+            raise OSError(errno.EIO, "I/O error")
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(ff, "atomic_json_write", flaky_write)
+    adapter = make_adapter()
+    runner = DrainRunner(adapter)
+    adapter.gateway_runner = runner
+    seen = []
+
+    async def handler(event):
+        seen.append(event.text)
+        return "deterministic answer: " + event.text
+
+    original_start = adapter.on_processing_start
+
+    async def drain_begins(event):
+        runner._draining = True
+        await original_start(event)
+
+    adapter.on_processing_start = drain_begins
+    original_release = adapter._release_unprocessed
+
+    def release_with_disk_errors(key):
+        fail_next["n"] = 2  # the first save AND the synchronous retry fail; the disk then recovers
+        original_release(key)
+
+    adapter._release_unprocessed = release_with_disk_errors
+    adapter.set_message_handler(handler)
+    try:
+        assert await adapter.connect()
+        chat = (await real.post_message("held, then processed"))["session_id"]
+        await wait_for(lambda: adapter._unprocessed, timeout=5)
+        runner._draining = False  # the drain clears: the held handler runs
+        await wait_for(lambda: seen == ["held, then processed"], timeout=5)
+
+        def on_disk():
+            try:
+                return json.loads(adapter._state_path.read_text()).get("unprocessed", [])
+            except (OSError, ValueError):
+                return None
+        # The removal must reach the disk WITHOUT a reconnect/flush (bounded: base backoff 0.1 s).
+        await wait_for(lambda: on_disk() == [], timeout=3)
+    finally:
+        runner._draining = False
+    # Crash: tasks die, nothing graceful runs; a new gateway process starts from the disk state.
+    await adapter.cancel_background_tasks()
+    await adapter.disconnect()
+    restarted = make_adapter()
+    restarted.set_message_handler(handler)
+    assert await restarted.connect()
+    await asyncio.sleep(0.5)
+    rows = await real.transcript(chat)
+    assert [r["content"] for r in rows].count(UNPROCESSED_NOTICE) == 0
+    assert seen == ["held, then processed"]
+    await restarted.disconnect()

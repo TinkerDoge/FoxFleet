@@ -335,6 +335,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
     MAX_CHAT_CACHE = 1024
     MAX_COMMANDS = 100
     MAX_UNPROCESSED = 64
+    RELEASE_RETRY_BASE = 0.1
+    RELEASE_RETRY_MAX = 5.0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config=config, platform=Platform(PLATFORM_NAME))
@@ -1112,11 +1114,27 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     def _release_unprocessed(self, key: str) -> None:
         self._held_live.discard(key)
-        if self._unprocessed.pop(key, None) is not None and not self._save_state():
-            # The message WAS processed but the disk still lists it. Park the key: never send a
-            # false "not processed" notice in this process; each flush retries the save.
-            self._released_pending_save.add(key)
-            logger.error("FoxFleet: processed %s but could not persist the removal; retrying on the next flush", key)
+        if self._unprocessed.pop(key, None) is None or self._save_state():
+            return
+        # The handler is about to run but the disk still lists the message as held. A crash before
+        # the removal lands would send a FALSE "not processed, please resend" notice after restart,
+        # so retry once now (same as _hold_unprocessed) and then in the background with backoff,
+        # instead of waiting for the next flush (which only happens on a reconnect).
+        time.sleep(0.05)
+        if self._save_state():
+            return
+        self._released_pending_save.add(key)
+        logger.error("FoxFleet: processed %s but could not persist the removal; retrying in the background", key)
+        self._spawn(self._persist_released())
+
+    async def _persist_released(self) -> None:
+        delay = self.RELEASE_RETRY_BASE
+        while self._released_pending_save and not self._closing:
+            await asyncio.sleep(delay)
+            if self._save_state():
+                self._released_pending_save.clear()
+                return
+            delay = min(delay * 2, self.RELEASE_RETRY_MAX)
 
     async def _send_notice(self, *, chat_id: str, text: str, reply_to: Optional[str], key: str) -> SendResult:
         """A short notice with a DETERMINISTIC idempotency key: the hub collapses any repeat
