@@ -202,9 +202,13 @@ async def test_agent_deletion_is_fatal_bot_gone_without_reconnecting(real, make_
     generation = adapter._generation
     await real.delete_agent()
     await wait_for(lambda: fatal, timeout=5)
-    assert fatal == [("foxfleet_bot_gone", False)] and adapter.is_connected is False
+    # 0.3.12: handed to the gateway as retryable (its 30 s..300 s queue), never retried by the plugin.
+    assert fatal == [("foxfleet_bot_gone", True)] and adapter.is_connected is False
     await asyncio.sleep(1.0)
     assert adapter._generation == generation and len(fatal) == 1
+    # What the gateway's queued retry then sees for a deleted agent: a final auth refusal, no loop.
+    assert await adapter.connect(is_reconnect=True) is False
+    assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("foxfleet_auth_rejected", False)
 
 
 async def test_newer_connection_replaces_the_adapter_which_does_not_fight_back(real, make_adapter):
