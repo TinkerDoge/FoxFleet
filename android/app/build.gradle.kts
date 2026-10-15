@@ -15,7 +15,7 @@ android {
         applicationId = "dev.foxfleet.app"
         minSdk = 29
         targetSdk = 35
-        versionCode = 22
+        versionCode = 23
         versionName = "0.3.10-alpha"
     }
 
