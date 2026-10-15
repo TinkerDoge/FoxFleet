@@ -4,7 +4,8 @@ Status: **experimental, default off**. The hub only exposes anything described h
 `FOXFLEET_BOT_API=1` (or `createHub({ botApi: true })`). With the flag off, every route below answers as if it did not
 exist and saved bot agents fail safe (shown offline, never routed anywhere else).
 `FOXFLEET_BOT_AGENTS=a,b` (0.3.12, `createHub({ botAgents })`) limits the API to those agent names: any other bot
-agent cannot be created or mint a token (403) and its token authenticates nowhere (401). Unset = all bot agents.
+agent cannot be created or mint a token (403) and its token authenticates nowhere (401). **Deny by default:** unset or
+empty = no bot agent at all (the hub logs a warning at start); `*` = every bot agent.
 Rollout/rollback runbook: `docs/BOT-API-ROLLOUT.md`.
 
 The hub acts as a small chat server (Telegram-Bot-API style). A *bot* is a program, normally the future

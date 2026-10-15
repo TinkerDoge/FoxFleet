@@ -9,7 +9,7 @@ decision 1 (default: `sumi` first, connector kept as rollback for one week).
 | Setting | Where | Meaning |
 | --- | --- | --- |
 | `FOXFLEET_BOT_API=1` | hub env (`~/.config/foxfleet/env`, read by `foxfleet.service`) | Turns the bot API on (`/api/bot/ws`, `/api/bot/rpc`, `/api/bot/media`, bot-token routes, `botApi` feature). Unset = everything 404s, as today. |
-| `FOXFLEET_BOT_AGENTS=sumi-native` | hub env | **New in 0.3.12.** Comma-separated agent names allowed on the bot API. Any other bot agent cannot be created (403), cannot mint a token (403), and its existing token authenticates nowhere (socket/RPC/media 401). Unset or empty = every bot agent (pre-0.3.12 behaviour). Exact, case-sensitive. |
+| `FOXFLEET_BOT_AGENTS=sumi-native` | hub env | **New in 0.3.12.** Comma-separated agent names allowed on the bot API. Any other bot agent cannot be created (403), cannot mint a token (403), and its existing token authenticates nowhere (socket/RPC/media 401). **Deny by default:** unset or empty = NO bot agent (the hub prints a WARNING at start); `*` = every bot agent. Exact, case-sensitive. So forgetting this line fails closed: the bot simply cannot connect. |
 
 Also in 0.3.12: authenticated bot reconnects no longer spend the per-IP login budget (a reconnect loop
 behind the Cloudflare tunnel could otherwise lock humans out of login), and fatal closes 4003/1008 are
@@ -71,11 +71,13 @@ Sumi's Hermes profile (host running sumi's gateway; UNVERIFIED which machine, ch
    keeps working throughout; nothing about it was touched.
 2. **Cut the token at the hub:** `DELETE /api/agents/sumi-native/bot-token` → the socket closes 4001
    and the plugin stops (no retry loop by design).
-3. **Whole hub back to today:** remove both lines from `~/.config/foxfleet/env` (or restore the
+3. **Gate only (keeps the flag):** set `FOXFLEET_BOT_AGENTS=` (empty) and restart the hub: every bot
+   token is refused (401), nothing else changes.
+4. **Whole hub back to today:** remove both lines from `~/.config/foxfleet/env` (or restore the
    `env.pre-bot-*` backup) and restart `foxfleet.service`. With the flag off every bot route 404s and
    the saved `sumi-native` agent shows offline (fail safe); delete it later if wanted. Data under
    `bot/` stays on disk until removed by hand.
-4. **Code:** 0.3.12 changes are backward compatible with the flag off; reverting the deploy to the
+5. **Code:** 0.3.12 changes are backward compatible with the flag off; reverting the deploy to the
    previous commit needs nothing else.
 
 After one week without a rollback, decide separately about retiring the connector for sumi.

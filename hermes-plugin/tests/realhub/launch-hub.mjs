@@ -6,7 +6,7 @@ import { pathToFileURL } from 'node:url';
 
 const [serverDir, configPath, botOptionsJson = '{}'] = process.argv.slice(2);
 const { createHub } = await import(pathToFileURL(join(serverDir, 'index.js')).href);
-const server = await createHub({ configPath, host: '127.0.0.1', botApi: true, botOptions: JSON.parse(botOptionsJson), trustedOrigins: '', ownerPassword: '' });
+const server = await createHub({ configPath, host: '127.0.0.1', botApi: true, botAgents: '*', botOptions: JSON.parse(botOptionsJson), trustedOrigins: '', ownerPassword: '' });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 
 let stopping = false;

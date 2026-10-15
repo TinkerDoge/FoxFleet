@@ -10,7 +10,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 - Version 0.3.12-alpha, Android versionCode 25.
 - Hermes plugin: the platform hint no longer tells the model the channel is text-only; it lists what 1.1 supports (images/files out, up to four images in, cards) and what it does not (custom buttons, reactions, threads).
 - Hermes plugin: close 4003 (bot gone / account disabled / bot API off) and 1008 are handed to the Hermes gateway as retryable, so its 30 s→300 s reconnect queue brings the agent back; before, Hermes dropped them and, with FoxFleet as the only platform, stopped the gateway cleanly. 4001 and 4009 stay final by design. New tests run the real GatewayRunner fatal handler.
-- Hub: `FOXFLEET_BOT_AGENTS` per-agent gate for the bot API, plus `docs/BOT-API-ROLLOUT.md` (sumi-first rollout beside the connector, rollback, `stt.provider: local` pin). Production is not changed.
+- Hub: `FOXFLEET_BOT_AGENTS` per-agent gate for the bot API, deny by default (unset/empty = no bot agent, with a start warning; `*` = all), plus `docs/BOT-API-ROLLOUT.md` (sumi-first rollout beside the connector, rollback, `stt.provider: local` pin). Production is not changed.
 
 ## 0.3.11-alpha (not tagged; signed candidate 2026-10-15, Android versionCode 24)
 

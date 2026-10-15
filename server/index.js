@@ -179,9 +179,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
   // FOXFLEET_BOT_AGENTS: comma-separated agent names allowed on the bot API (staged rollout, e.g. "sumi-native").
-  // Unset or empty = every bot agent (the pre-0.3.12 behaviour). Matching is exact and case-sensitive.
-  const botAllow = typeof botAgents === 'string' && botAgents.trim() ? new Set(botAgents.split(',').map((v) => v.trim()).filter(Boolean)) : null;
-  const allowBotAgent = (name) => !botAllow || botAllow.has(name);
+  // DENY BY DEFAULT: unset or empty = NO bot agent is allowed; "*" = every bot agent. Exact, case-sensitive.
+  const botList = typeof botAgents === 'string' ? botAgents.split(',').map((v) => v.trim()).filter(Boolean) : [];
+  const botAll = botList.includes('*'), botAllow = new Set(botList.filter((v) => v !== '*'));
+  const allowBotAgent = (name) => botAll || botAllow.has(name);
+  if (botApi && !botAll && !botAllow.size) console.warn('foxfleet: WARNING FOXFLEET_BOT_API=1 but FOXFLEET_BOT_AGENTS is unset or empty: NO bot agent is allowed (deny by default). Set FOXFLEET_BOT_AGENTS=<name>[,<name>] or "*" for all.');
   const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: { ...botOptions, allowAgent: allowBotAgent }, log }) : null;
   const hubInfo = bot ? { ...HUB_INFO, features: [...HUB_FEATURES, 'botApi'] } : HUB_INFO;
   const publicAgent = (m) => ({ ...publicConnection(m), ...(m.connection === 'bot' ? { hasBotToken: Boolean(bot?.hasToken(m.botId)) } : {}) });

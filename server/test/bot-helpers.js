@@ -18,7 +18,7 @@ export async function bootHub(t, { botApi = true, botOptions, dir, seed, hubOpti
   if (seed) await writeFile(configPath, JSON.stringify(seed));
   const h = { dir, configPath, botApi, token: '' };
   const start = async () => {
-    h.server = await createHub({ configPath, botApi, botOptions, ...hubOptions });
+    h.server = await createHub({ configPath, botApi, botOptions, botAgents: '*', ...hubOptions }); // '*': the gate is deny-by-default
     await new Promise((r) => h.server.listen(0, '127.0.0.1', r));
     h.port = h.server.address().port; h.base = `http://127.0.0.1:${h.port}`;
   };
