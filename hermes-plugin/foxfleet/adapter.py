@@ -131,9 +131,13 @@ class _ConnLogger(logging.LoggerAdapter):
 
 PLATFORM_HINT = (
     "You are chatting through FoxFleet, the user's self-hosted chat hub (web and Android apps). "
-    "Markdown renders. This FoxFleet connection is text-only: you cannot send images, files, voice "
-    "or buttons here, so share links or describe results in text. Each message may hold up to "
-    "64 KiB; longer replies are split into several messages."
+    "Markdown renders. Each message may hold up to 64 KiB; longer replies are split into several "
+    "messages. You can send images and files (up to 25 MiB each; plain text, HTML, SVG and "
+    "executables are refused, so put those in the message or a code block) and the user can send "
+    "you up to four images per message. Voice and video are delivered as file attachments, not "
+    "as a voice bubble or player. Approvals, confirmations and clarifying questions appear as "
+    "tappable cards; there are no other custom buttons, reactions or threads, so offer choices "
+    "as a short list the user can answer in text."
 )
 
 

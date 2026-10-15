@@ -91,3 +91,12 @@ def test_real_gateway_config_loader_enables_and_bridges_settings(tmp_path):
     assert result["enabled"] is True and result["home"] == "chat_home"
     assert result["extra"]["hub_url"] == "https://fleet.example"
     assert "ffb_cfgprobe" not in json.dumps(result)  # the token never lands in extra
+
+
+def test_platform_hint_describes_the_1_1_capabilities_not_text_only(registered_entry):
+    """0.3.12 (audit: stale PLATFORM_HINT): the model must not be told the channel is text-only."""
+    hint = registered_entry.platform_hint.lower()
+    assert "text-only" not in hint and "cannot send images" not in hint
+    for fact in ("images and files", "25 mib", "four images", "cards", "64 kib"):
+        assert fact in hint, fact
+    assert "no other custom buttons" in hint  # still no arbitrary buttons in 1.1
