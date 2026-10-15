@@ -2,7 +2,9 @@
 
 ## Release state
 
-Release **0.3.11-alpha**, Android **versionCode 24**, includes bot cards/reply replacement and fail-closed callback auth. Auth merged as `02d2770` (`f62ae61`); Android/version changes land in the release merge (see `git log`). The independent read-only review `deleg_695da8fc` passed with no security or logic findings.
+Release **0.3.11-alpha**, Android **versionCode 24**, includes bot cards/reply replacement and fail-closed callback auth. Auth merged as `02d2770` (`f62ae61`); Android/version merged as `c42ed3d` (`ce1a13e`), both pushed. Only main remains; both feature branches/worktrees were removed. The independent read-only review `deleg_695da8fc` passed with no security or logic findings.
+
+The signed APK was rebuilt from clean main with all 52 tasks executed (`--rerun-tasks --no-build-cache`). Final size 70823521 bytes; SHA-256 `991b1834bba3f2286398dcde387e6a42e4f49ba0dadf66de3922fa524bfb5be1`; MD5 `bc1e73708d9c41969ef89dc8271c7470`. Existing certificate and all 56 required screen assets verified. Merged-main re-runs: 185 plugin and 148 hub bot tests passed, no skips/failures. Logs and binary are under `/home/doge/outputs/foxfleet/`. The isolated canary profile, tunnel, service and data were removed; rollback snapshot retained.
 
 Doge approved an isolated canary, then merge/push, branch cleanup and signed rebuild. He asked SUMI to do the implementation/release work herself. A separate reviewer is read-only, not an implementation worker.
 
