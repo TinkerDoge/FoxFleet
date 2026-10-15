@@ -80,9 +80,11 @@ class AndroidNotifier(private val context: Context) : Notifier {
     private fun activeChats() = nm.activeNotifications.filter { it.id == CHAT_ID && it.tag?.let { t -> t.startsWith("chat$SEP") || t.startsWith("approval$SEP") } == true }
 
     private fun summary() {
+        // Guard first, before any other nm call, so lint's MissingPermission flow analysis credits it (as in post()).
+        // Disabled notifications cannot show a summary anyway; the next post() with them enabled rebuilds it.
+        if (!nm.areNotificationsEnabled()) return
         val chats = activeChats()
         if (chats.isEmpty()) { nm.cancel(SUMMARY_TAG, SUMMARY_ID); return }
-        if (!nm.areNotificationsEnabled()) return // lint MissingPermission: same guard as post()/postTest()
         val inbox = NotificationCompat.InboxStyle().setBigContentTitle("FoxFleet")
         chats.take(6).forEach { inbox.addLine(it.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString()) }
         val s = base(NotifyChannel.Replies).setContentTitle("FoxFleet").setContentText(if (chats.size == 1) "1 chat with news" else "${chats.size} chats with news")
