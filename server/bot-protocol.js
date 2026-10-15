@@ -1,6 +1,20 @@
 // Frame vocabulary and validation of the bot protocol (contract/bot-api.md), shared by the hub and the contract test.
 export const PROTOCOL = 'foxfleet.bot/1';
+export const PROTOCOL_V11 = 'foxfleet.bot/1.1';
 export const SUBPROTOCOL = 'foxfleet.bot.v1';
+export const SUBPROTOCOL_V11 = 'foxfleet.bot.v1.1';
+/** Stop answers. `stopped` and `idle` are the only outcomes that end the viewer's run. */
+export const STOP_OUTCOMES = ['stopped', 'idle', 'refused', 'expired'];
+export const STOP_ID = /^fs_[A-Za-z0-9_-]{16}$/;
+
+/** Highest mutually supported subprotocol, or null. A client that only offers v1 still connects. */
+export function selectSubprotocol(header) {
+  const offered = String(header ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  if (offered.includes(SUBPROTOCOL_V11)) return SUBPROTOCOL_V11;
+  if (offered.includes(SUBPROTOCOL)) return SUBPROTOCOL;
+  return null;
+}
+export const protocolForSubprotocol = (sub) => (sub === SUBPROTOCOL_V11 ? PROTOCOL_V11 : PROTOCOL);
 export const LIMITS = { max_frame_bytes: 1048576, max_text_bytes: 65536, window: 100, max_unacked: 1000 };
 export const CLOSE = { normal: 1000, going_away: 1001, protocol: 1002, unsupported: 1003, bad_utf8: 1007, bad_frame: 1008, too_big: 1009, internal: 1011, slow: 1013, token_revoked: 4001, gone: 4003, replaced: 4009 };
 export const ERROR_CODES = ['invalid_request', 'unsupported', 'unknown_type', 'bad_frame', 'not_found', 'forbidden', 'too_large', 'rate_limited', 'idempotency_conflict', 'ack_out_of_range', 'internal'];
@@ -110,6 +124,23 @@ function fields(t, f) {
  * `{ ok: false, code, message, id? }` (`id` only when the frame carried a valid request id: the hub answers with a `res` then, and with a
  * bare `error` frame otherwise).
  */
+/**
+ * `callback.answer` for a transient `chat.stop`. v1 `validateRequest` still refuses the name (it stays reserved
+ * there). Only a 1.1 session calls this, and only a matching outstanding stop id is accepted by the hub.
+ */
+export function validateStopAnswer(frame) {
+  const id = validId(frame.id) ? frame.id : undefined;
+  if (frame.t !== 'callback.answer') return { ok: false, code: 'unknown_type', message: 'Unknown frame type', id };
+  if (frame.id !== undefined && id === undefined) return { ok: false, code: 'invalid_request', message: 'Invalid request id', id };
+  if (id === undefined) return { ok: false, code: 'invalid_request', message: 'Requests carry an id' };
+  if (RESERVED_FIELDS.some((k) => k in frame)) return { ok: false, code: 'unsupported', message: `${RESERVED_FIELDS.find((k) => k in frame)} is not supported in protocol ${PROTOCOL_V11}`, id };
+  const extra = Object.keys(frame).find((k) => k !== 't' && k !== 'id' && k !== 'callback_id' && k !== 'outcome');
+  if (extra !== undefined) return { ok: false, code: 'invalid_request', message: `Unknown field ${extra}`, id };
+  if (typeof frame.callback_id !== 'string' || !STOP_ID.test(frame.callback_id)) return { ok: false, code: 'invalid_request', message: 'Invalid callback_id', id };
+  if (!STOP_OUTCOMES.includes(frame.outcome)) return { ok: false, code: 'invalid_request', message: 'Invalid outcome', id };
+  return { ok: true, t: 'callback.answer', id, req: { callback_id: frame.callback_id, outcome: frame.outcome } };
+}
+
 export function validateRequest(frame) {
   const id = validId(frame.id) ? frame.id : undefined;
   if (RESERVED.includes(frame.t)) return { ok: false, code: 'unsupported', message: `${frame.t} is not supported in protocol ${PROTOCOL}`, id };

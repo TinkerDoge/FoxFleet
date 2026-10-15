@@ -97,10 +97,11 @@ the user is on `FOXFLEET_ALLOWED_USERS` (or `GATEWAY_ALLOWED_USERS`), has an app
 
 ## Connection and handshake
 
-- The client offers `Sec-WebSocket-Protocol: foxfleet.bot.v1` and authenticates with
-  `Authorization: Bot ffb_...`. If the hub does not echo the subprotocol the connection is closed and
-  the adapter stops (`foxfleet_protocol`, non-retryable). The first frame must be `hello` with
-  `protocol: "foxfleet.bot/1"` and a 24-hex bot id.
+- The client offers `Sec-WebSocket-Protocol: foxfleet.bot.v1.1, foxfleet.bot.v1` and authenticates with
+  `Authorization: Bot ffb_...`. If the hub does not echo one of those subprotocols the connection is closed and
+  the adapter stops (`foxfleet_protocol`, non-retryable). The first frame must be `hello` whose `protocol`
+  matches the echo (`foxfleet.bot/1` or `foxfleet.bot/1.1`) and a 24-hex bot id. A 1.1 hello that lists `stop`
+  in `features` is the only socket that honours `chat.stop`.
 - Close codes are fatal and are **not** retried:
 
   | Code | Meaning | Fatal error code |

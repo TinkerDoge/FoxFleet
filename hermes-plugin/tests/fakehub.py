@@ -17,7 +17,9 @@ from typing import Any, Callable, Optional
 from aiohttp import WSMsgType, web
 
 PROTOCOL = "foxfleet.bot/1"
+PROTOCOL_V11 = "foxfleet.bot/1.1"
 SUBPROTOCOL = "foxfleet.bot.v1"
+SUBPROTOCOL_V11 = "foxfleet.bot.v1.1"
 TOKEN = "ffb_" + "T" * 43
 BOT_ID = "0123456789abcdef01234567"
 
@@ -33,6 +35,7 @@ _FIELDS = {
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
+    "callback.answer": {"callback_id", "outcome"},
     "ack": {"event_id"}, "ping": set(), "pong": set(),
 }
 
@@ -85,7 +88,7 @@ def validate_request(frame: dict) -> Optional[dict]:
     error = None
     if "idempotency_key" in frame and not (isinstance(frame["idempotency_key"], str) and _KEY.match(frame["idempotency_key"])):
         return _invalid("invalid_request", "Invalid idempotency_key")
-    if kind != "commands.set":
+    if kind not in ("commands.set", "callback.answer"):
         error = _ref(frame.get("chat_id"), _CHAT_ID, "chat_id")
     if error:
         return error
@@ -131,7 +134,8 @@ class FakeHub:
         self.reject_status: Optional[int] = None  # HTTP status to refuse the upgrade with
         self.close_after_hello: Optional[int] = None  # WS close code sent right after hello
         self.echo_subprotocol = True  # False: accept the upgrade but omit the Sec-WebSocket-Protocol echo
-        self.subprotocol_offers: list[str] = []  # raw Sec-WebSocket-Protocol header per attempt
+        self.speak_v11 = False  # True: echo foxfleet.bot.v1.1 and advertise the stop feature
+        self.subprotocol_offers: list[str] = []  # offered subprotocols, comma-joined, per attempt
         self.auth_headers: list[str] = []
         self.query_strings: list[str] = []
         self.connections: list[web.WebSocketResponse] = []
@@ -143,6 +147,7 @@ class FakeHub:
         self.sent: dict[str, dict] = {}  # message_id -> bot message
         self.idempotency: dict[str, tuple[str, str]] = {}  # key -> (fingerprint, message_id)
         self.finals: list[bool] = []  # `final` of every accepted send/edit, in order
+        self.stop_answers: list[dict] = []
         self.commands: Optional[list] = None
         self.rpc_override: Optional[Callable[[dict], Any]] = None  # frame -> res dict | None (drop)
         self._next_message = 0
@@ -179,22 +184,29 @@ class FakeHub:
         self.query_strings.append(request.query_string)
         if self.reject_status is not None:
             return web.Response(status=self.reject_status, text="refused")
-        offered = request.headers.get("Sec-WebSocket-Protocol", "")
-        self.subprotocol_offers.append(offered)
-        if SUBPROTOCOL not in [p.strip() for p in offered.split(",")]:
+        offered = [p.strip() for p in request.headers.get("Sec-WebSocket-Protocol", "").split(",") if p.strip()]
+        self.subprotocol_offers.append(",".join(offered))
+        if SUBPROTOCOL not in offered and SUBPROTOCOL_V11 not in offered:
             return web.Response(status=400, text="subprotocol foxfleet.bot.v1 required")
+        selected = SUBPROTOCOL_V11 if self.speak_v11 and SUBPROTOCOL_V11 in offered else SUBPROTOCOL
+        if selected not in offered:
+            return web.Response(status=400, text="offered subprotocol not spoken by this hub")
         if auth != f"Bot {self.token}":
             return web.Response(status=401, text="bad token")
         ws = web.WebSocketResponse(max_msg_size=1024 * 1024, autoping=True,
-                                   protocols=(SUBPROTOCOL,) if self.echo_subprotocol else ())
+                                   protocols=(selected,) if self.echo_subprotocol else ())
         await ws.prepare(request)
         previous = [c for c in self.connections if not c.closed]
         self.connections.append(ws)
         for old in previous:  # one connection per bot: the newest wins
             await old.close(code=4009, message=b"replaced")
         latest = self.events[-1]["event_id"] if self.events else 0
-        await ws.send_json({"t": "hello", "protocol": self.protocol, "bot": self.bot_id,
-                            "resume_from": self.acked, "latest_event_id": latest})
+        hello_protocol = PROTOCOL_V11 if selected == SUBPROTOCOL_V11 else self.protocol
+        hello = {"t": "hello", "protocol": hello_protocol, "bot": self.bot_id,
+                 "resume_from": self.acked, "latest_event_id": latest}
+        if selected == SUBPROTOCOL_V11:
+            hello["features"] = ["stop"]
+        await ws.send_json(hello)
         if self.close_after_hello is not None:
             await ws.close(code=self.close_after_hello, message=b"closing")
             return ws
@@ -269,6 +281,9 @@ class FakeHub:
             return self.ok(rid)
         if kind == "commands.set":
             self.commands = frame.get("commands")
+            return self.ok(rid)
+        if kind == "callback.answer":
+            self.stop_answers.append(frame)
             return self.ok(rid)
         return self.error(rid, "unknown_type", f"unsupported op {kind}")
 
