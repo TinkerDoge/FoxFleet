@@ -71,10 +71,9 @@ Copied into this repo as `design/notes/native-phase2-research.md` (from scratch;
 
 ## Known residuals (not blockers for the text milestone, do not ignore)
 
-- Drain-notice follow-up `517ff73` was merged because Doge said merge, while re-review `deleg_2728ba97` had not returned a verdict. Check that transcript before trusting the notice path: `/home/doge/.hermes/cache/delegation/live/deleg_2728ba97/task-0.log`. If it failed, fix on top. Do not rewind main.
+- Drain-notice re-review `deleg_2728ba97` returned `passed: false` with one high finding, after the merge. Three of the four earlier holes are closed. The remaining one: if saving state fails while releasing a message that WAS processed, a later reload reads the old disk row and sends a false "please resend" notice. The in-memory park set does not survive that reload. Fix on top of main. Do not rewind. Also: hub idempotency keys already allow `_` (`server/bot-protocol.js` KEY class includes it). The `_`→`-` rewrite is unnecessary and not injective. `time.sleep` in `_hold_unprocessed` blocks the event loop.
 - A crash after a processed message, before the "remove from unprocessed" save succeeds, can still produce one false "please resend" after restart. Repeats of a real notice collapse on the deterministic key.
 - WS upgrade still spends the per-IP login budget on every attempt, valid or not. Same as before the HTTP fix. A bot reconnecting its socket more than 60 times a minute from one IP can lock owner login. Follow-up, not done.
-- Idempotency keys reject `_`. Any new key built from a chat id must replace `_`.
 - Full server suite is not green. Four connector doctor/discovery failures are the baseline on this machine.
 
 ## Do not
