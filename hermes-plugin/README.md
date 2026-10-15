@@ -111,14 +111,17 @@ the user is on `FOXFLEET_ALLOWED_USERS` (or `GATEWAY_ALLOWED_USERS`), has an app
   that sends approval, confirm and clarify cards; otherwise those prompts fall back to text. An approval
   card is sent only when it binds to exactly one pending Hermes approval. A tap resolves that approval
   by id. It never takes the oldest one in the session.
-- Close codes are fatal and are **not** retried:
+- Close codes are fatal and are **not** retried by the plugin. Two of them are handed to the Hermes
+  gateway as *retryable*, so its own reconnect queue tries again (30 s, 60 s, ... capped at 300 s,
+  `gateway/run.py` `_reconnect_backoff`). Hermes drops non-retryable fatals for good, and when FoxFleet
+  is the profile's only platform it stops the gateway cleanly (no service restart) (0.3.12):
 
-  | Code | Meaning | Fatal error code |
-  | --- | --- | --- |
-  | 4001 | token rotated or revoked | `foxfleet_auth_rejected` |
-  | 4003 | agent deleted, owner removed or disabled, or bot API off | `foxfleet_bot_gone` |
-  | 4009 | replaced by a newer connection with the same token | `foxfleet_replaced` |
-  | 1008 | policy violation (bot sent a non-object frame) | `foxfleet_policy` |
+  | Code | Meaning | Fatal error code | Gateway retries |
+  | --- | --- | --- | --- |
+  | 4001 | token rotated or revoked | `foxfleet_auth_rejected` | no (fix the token) |
+  | 4003 | agent deleted, owner removed or disabled, or bot API off | `foxfleet_bot_gone` | yes |
+  | 4009 | replaced by a newer connection with the same token | `foxfleet_replaced` | no (never fight) |
+  | 1008 | policy violation (bot sent a non-object frame) | `foxfleet_policy` | yes |
 
   The newest connection wins on the hub, and the adapter never fights it: after 4009 it stays down.
   HTTP 401/403, HTTP 400/426, a redirect and a changed bot id are fatal too. A hub `error` frame with

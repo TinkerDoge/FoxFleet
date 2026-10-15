@@ -264,6 +264,14 @@ _FATAL_CLOSE = {
     4009: ("foxfleet_replaced", "another connection with this bot token replaced this one; "
                                 "not fighting it"),
 }
+# Fatal for THIS plugin (its own 1 s..60 s loop stops), but handed to the Hermes gateway as
+# RETRYABLE so its reconnect queue (30 s, 60 s, ... capped at 300 s, run.py _reconnect_backoff) tries
+# again. Hermes drops non-retryable fatals for good and, when FoxFleet is the profile's only platform,
+# stops the gateway cleanly (no service restart): a disabled-then-re-enabled account, a bot API flag
+# flipped off and on (rollback), or a one-off policy close would otherwise leave the agent offline
+# until someone restarts it. 4001 (token rotated/revoked) and 4009 (replaced) stay final: retrying
+# cannot fix a stale token, and a replaced connection must not fight its successor.
+_GATEWAY_RETRYABLE = {"foxfleet_bot_gone", "foxfleet_policy"}
 _FATAL_HUB_ERRORS = {"unauthorized": "foxfleet_auth_rejected", "token_revoked": "foxfleet_auth_rejected",
                      "forbidden": "foxfleet_auth_rejected", "version_mismatch": "foxfleet_protocol",
                      "unsupported_protocol": "foxfleet_protocol", "replaced": "foxfleet_replaced"}
@@ -553,7 +561,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             code = exc.rcvd.code if exc.rcvd is not None else None
             fatal = _FATAL_CLOSE.get(code)
             if fatal:
-                raise _FatalConnect(*fatal) from None
+                raise _FatalConnect(*fatal, retryable=fatal[0] in _GATEWAY_RETRYABLE) from None
             raise
         except BaseException:
             with contextlib.suppress(Exception):
@@ -612,10 +620,12 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 break
 
     async def _fatal(self, code: str, message: str) -> None:
-        logger.error("FoxFleet: %s; not reconnecting", message)
+        retryable = code in _GATEWAY_RETRYABLE
+        logger.error("FoxFleet: %s; %s", message,
+                     "handing over to the gateway reconnect queue" if retryable else "not reconnecting")
         with contextlib.suppress(Exception):
             self._release_ownership()
-        self._set_fatal_error(code, message, retryable=False)
+        self._set_fatal_error(code, message, retryable=retryable)
         await self._notify_fatal_error()
 
     def _lost(self, conn: _Conn) -> None:

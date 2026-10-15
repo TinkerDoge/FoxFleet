@@ -136,16 +136,18 @@ async def test_protocol_version_mismatch_is_fatal(hub, make_adapter):
     assert (adapter.fatal_error_code, adapter.fatal_error_retryable) == ("foxfleet_protocol", False)
 
 
-@pytest.mark.parametrize("code,expected", [(4001, "foxfleet_auth_rejected"), (4003, "foxfleet_bot_gone"),
-                                           (4009, "foxfleet_replaced")])
-async def test_real_hub_close_codes_mid_session_are_fatal_and_not_retried(hub, make_adapter, code, expected):
+@pytest.mark.parametrize("code,expected,gateway_retry", [(4001, "foxfleet_auth_rejected", False),
+                                                         (4003, "foxfleet_bot_gone", True),
+                                                         (4009, "foxfleet_replaced", False)])
+async def test_real_hub_close_codes_mid_session_are_fatal_and_not_retried(hub, make_adapter, code, expected, gateway_retry):
     adapter = make_adapter()
     fatal = []
     adapter.set_fatal_error_handler(lambda a: fatal.append(a.fatal_error_code))
     assert await adapter.connect() is True
     await hub.ws.close(code=code, message=b"hub says stop")
     await wait_for(lambda: fatal)
-    assert fatal == [expected] and adapter.is_connected is False and adapter.fatal_error_retryable is False
+    # The plugin never retries these itself; 4003 is handed to the gateway's slow queue (0.3.12).
+    assert fatal == [expected] and adapter.is_connected is False and adapter.fatal_error_retryable is gateway_retry
     await asyncio.sleep(0.15)
     assert len(hub.auth_headers) == 1
 
