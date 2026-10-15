@@ -13,3 +13,6 @@ cd web && npx vitest run tests/contract.test.ts    # web/tools/mock-hub.mjs
 
 When you add or change an endpoint: edit `openapi.json`, extend `run.mjs` if it can be exercised without a live agent, then make the hub and the mock pass.
 Not yet exercised by the scenario (they need a live agent): sessions, chat (SSE), file upload, screen.
+
+- `bot-api.md` and `bot-frames.vectors.json`: the experimental FoxFleet Bot API (`foxfleet.bot/1`); the vectors are checked against the real validator and hub by `server/test/bot-contract.test.js`.
+- `bot-http.vectors.json`: non-displacing `POST /api/bot/rpc`, declared in `openapi.json` and checked with real isolated bot-enabled hubs by `server/test/bot-http-contract.test.js`. The shared `run.mjs` web/mock scenario remains default-off; it does not provision bots or exercise this feature-gated transport.

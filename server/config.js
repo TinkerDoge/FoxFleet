@@ -70,10 +70,16 @@ export function connection(data, previous) {
   if (m.kind !== undefined && !KINDS.includes(m.kind)) throw fault(400, KIND_SPECS[m.kind]?.planned ? 'That agent type is not available yet' : 'Invalid agent kind');
   if (previous && data.kind !== undefined && (previous.kind ?? 'hermes') !== data.kind) throw fault(400, 'Agent kind cannot change; delete and re-add');
   const mode = m.connection ?? 'direct';
-  if (!['machine', 'direct'].includes(mode)) throw fault(400, 'Invalid connection mode');
+  if (!['machine', 'direct', 'bot'].includes(mode)) throw fault(400, 'Invalid connection mode');
   if (previous && (previous.connection ?? 'direct') !== mode) throw fault(400, 'Connection mode cannot change; delete and re-add');
   if (!identifier(m.name) || !identifier(m.profile ?? 'default') || (mode === 'direct' && !validHost(m.host))) throw fault(400, 'Invalid name, host or profile');
   const result = meta(m, { name: m.name, connection: mode, profile: m.profile ?? 'default' });
+  if (mode === 'bot') {
+    // The hub owns the id: it never changes after creation and is not a secret.
+    const botId = previous ? previous.botId : m.botId;
+    if (!/^[0-9a-f]{24}$/.test(botId ?? '')) throw fault(400, 'Invalid bot');
+    result.botId = botId; return result;
+  }
   if (mode === 'machine') {
     // Created only by a paired machine's connector; credentials stay on that machine.
     if (!/^[0-9a-f]{32}$/.test(m.machineId ?? '')) throw fault(400, 'Invalid machine');
@@ -97,10 +103,11 @@ export function connection(data, previous) {
 export function publicConnection(m) {
   const kind = m.kind || 'hermes', out = { name: m.name, kind };
   for (const [key, value] of Object.entries(m)) if (!WRITE_ONLY.includes(key) && key !== 'kind') out[key] = value;
-  for (const f of KIND_SPECS[kind].fields) if (f.secret || f.private) out[hasKey(f.key)] = Boolean(m[f.key]);
+  if (m.connection !== 'bot') for (const f of KIND_SPECS[kind].fields) if (f.secret || f.private) out[hasKey(f.key)] = Boolean(m[f.key]);
   return out;
 }
-export const capabilitiesOf = (m) => ({ ...KIND_SPECS[m.kind || 'hermes'].capabilities });
+export const BOT_CAPABILITIES = { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, bot: true };
+export const capabilitiesOf = (m) => m.connection === 'bot' ? { ...BOT_CAPABILITIES } : { ...KIND_SPECS[m.kind || 'hermes'].capabilities };
 export const secretsOf = (m) => [m.dashboardPass, m.apiServerKey, m.dashboardWsToken];
 
 export async function configStore(configPath) {

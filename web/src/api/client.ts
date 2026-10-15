@@ -35,7 +35,7 @@ export const parseRequest = (r: any): OpenRequest | null => {
 };
 export const parseQueued = (m: any): QueuedMessage => ({ id: String(m?.id ?? ''), state: String(m?.state ?? 'queued'), mode: MODES.includes(m?.mode) ? m.mode : 'queue', text: String(m?.text ?? ''), ...(m?.error ? { error: String(m.error) } : {}), ...(m?.note ? { note: String(m.note) } : {}), ...(m?.run_id ? { runId: String(m.run_id) } : {}), ...(ACKS.includes(m?.ack) ? { ack: m.ack as Ack } : {}) });
 export const parseQueue = (r: any): QueueState => ({ items: (Array.isArray(r?.items) ? r.items : []).map(parseQueued), recent: (Array.isArray(r?.recent) ? r.recent : []).map(parseQueued), halted: r?.halted === true, activeRun: typeof r?.active_run === 'string' ? r.active_run : null, modes: (Array.isArray(r?.modes) ? r.modes : []).filter((m: unknown): m is SendMode => MODES.includes(m as SendMode)), openRequests: (Array.isArray(r?.open_requests) ? r.open_requests : []).map(parseRequest).filter((x: OpenRequest | null): x is OpenRequest => !!x), canCancel: r?.can_cancel !== false });
-export interface StreamOpts { onToolEvent?: (event: ToolEvent) => void; signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onReconnecting?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void }
+export interface StreamOpts { onToolEvent?: (event: ToolEvent) => void; signal?: AbortSignal; onContent: (t: string) => void; onReasoning: (t: string) => void; onTool: (label: string) => void; onSession: (id: string) => void; onRun?: (id: string) => void; onGap?: () => void; onReconnecting?: () => void; onRunState?: (state: string) => void; onRequest?: (r: OpenRequest) => void; onRequestClosed?: (id: string, reason: string) => void; onAck?: (messageId: string, ack: Ack) => void; onReplace?: (text: string) => void }
 export interface RunInfo { id: string; session_id: string | null; state: 'running' | 'stopping' | 'done' | 'error' | 'stopped'; started: number; events: number }
 const sleep = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve, reject) => { const t = setTimeout(resolve, ms); signal?.addEventListener('abort', () => { clearTimeout(t); reject(new DOMException('Aborted', 'AbortError')); }, { once: true }); });
 export function createClient({ base = '', fetch: f = (...a) => fetch(...a), timeoutMs = 15000, retryBaseMs = 400 }: ClientOptions = {}) {
@@ -143,6 +143,7 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
         if (e.event === 'foxfleet.request') { try { const r = parseRequest(JSON.parse(e.data)); if (r) opts.onRequest?.(r); } catch { /* ignore a malformed card */ } return true; }
         if (e.event === 'foxfleet.request_closed') { try { const v = JSON.parse(e.data); if (typeof v?.request_id === 'string') opts.onRequestClosed?.(v.request_id, String(v.reason ?? 'closed')); } catch { /* ignore */ } return true; }
         if (e.event === 'foxfleet.ack') { try { const v = JSON.parse(e.data); if (ACKS.includes(v?.ack)) opts.onAck?.(String(v.message_id), v.ack); } catch { /* ignore */ } return true; }
+        if (e.event === 'foxfleet.replace') { try { const v = JSON.parse(e.data); if (typeof v?.text === 'string') opts.onReplace?.(v.text); } catch { /* ignore */ } return true; }
         if (e.event === 'error') throw fail();
         let v: any; try { v = JSON.parse(e.data); } catch { return true; }
         if (!v || typeof v !== 'object') return true;
@@ -222,6 +223,13 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     deleteAgent: (name: string) => request<unknown>('/api/connections/' + enc(name), { method: 'DELETE' }),
     reorderAgents: (names: string[]) => request<unknown>('/api/connections/order', { body: { names } }),
     testAgent: async (fields: object): Promise<TestResult> => parseTest(await request('/api/connections/test', { body: fields })),
+    /** Mint/rotate is never retried: the secret is returned once, and a retry would revoke the first token. */
+    mintBotToken: async (name: string): Promise<{ token: string; botId: string; created: number }> => {
+      const o = await request<any>(`/api/agents/${enc(name)}/bot-token`, { method: 'POST', body: {}, retries: 0 });
+      if (typeof o?.token !== 'string' || !/^ffb_[A-Za-z0-9_-]{43}$/.test(o.token) || !/^[a-f0-9]{24}$/.test(o.bot_id) || !Number.isSafeInteger(o.created)) throw new ApiError(502, 'The hub returned an invalid bot token response');
+      return { token: o.token, botId: o.bot_id, created: o.created };
+    },
+    revokeBotToken: (name: string) => request<unknown>(`/api/agents/${enc(name)}/bot-token`, { method: 'DELETE', retries: 0 }),
 
     // ---- machines: one connector per computer, paired with a short-lived code ----
     machines: async (): Promise<Machine[]> => ((await request<{ machines?: Machine[] }>('/api/machines')).machines ?? []),

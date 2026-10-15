@@ -7,6 +7,7 @@ import { ErrorLine, Field, PrimaryButton, TextButton } from '../components/ui';
 import { CHECK_LABELS, isEnum, isSecret, moved, payload, scrubAddresses, validate, visible, type AgentKind, type Form, type KindField, type SavedAgent, type TestResult } from '../lib/registry';
 import { t } from '../i18n/t';
 import { Machines } from './Machines';
+import { BotTokens, NativeBot } from './NativeBot';
 
 const fail = (e: unknown) => (e instanceof NetworkError ? t('error.network') : e instanceof ApiError ? scrubAddresses(e.message) : t('error.generic'));
 
@@ -14,16 +15,22 @@ const fail = (e: unknown) => (e instanceof NetworkError ? t('error.network') : e
 export function Manage({ client, onChanged, onAuthLost }: { client: Client; onChanged: () => void; onAuthLost: () => void }) {
   const [list, setList] = useState<SavedAgent[] | null>(null), [kinds, setKinds] = useState<AgentKind[]>([]), [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<{ saved?: SavedAgent; kind?: AgentKind } | null>(null);
+  const [botApi, setBotApi] = useState(false), [newBot, setNewBot] = useState(false);
+  const [tokenFor, setTokenFor] = useState<SavedAgent | null>(null);
   const guard = async (fn: () => Promise<void>) => { try { setError(null); await fn(); } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError(fail(e)); } };
-  const load = () => guard(async () => { const [l, k] = await Promise.all([client.savedAgents(), client.agentKinds()]); setList(l); setKinds(k); });
+  const load = () => guard(async () => { const [l, k, info] = await Promise.all([client.savedAgents(), client.agentKinds(), client.authInfo()]); setList(l); setKinds(k); setBotApi(info.hub?.features.includes('botApi') === true); });
   useEffect(() => { void load(); }, []);
   const refresh = () => { onChanged(); return load(); };
+  if (newBot) return <NativeBot client={client} onSaved={refresh} onClose={() => setNewBot(false)} onAuthLost={onAuthLost} />;
+  if (tokenFor) return <BotTokens client={client} name={tokenFor.name} hasToken={tokenFor.saved.includes('botToken')} onChanged={refresh} onClose={() => setTokenFor(null)} onAuthLost={onAuthLost} />;
+  if (editing?.saved?.values.connection === 'bot') return <NativeBot client={client} saved={editing.saved} onSaved={refresh} onClose={() => setEditing(null)} onAuthLost={onAuthLost} />;
   if (editing) return <Editor client={client} kinds={kinds} initial={editing} onClose={() => setEditing(null)} onSaved={refresh} onAuthLost={onAuthLost} />;
   const move = (i: number, d: number) => list && guard(async () => { const next = moved(list, i, d); setList(next); await client.reorderAgents(next.map((a) => a.name)); onChanged(); });
   const remove = (a: SavedAgent) => { if (confirm(t('manage.confirmRemove', { name: a.name }))) void guard(async () => { await client.deleteAgent(a.name); await refresh(); }); };
   return (
     <div class="page">
       <header class="page-head"><h1>{t('manage.title')}</h1><button class="btn primary inline" onClick={() => setEditing({})}>{t('manage.add')}</button></header>
+      {botApi && <button class="btn primary inline" onClick={() => setNewBot(true)}>Add native Hermes bot</button>}
       <ErrorLine message={error} />
       <Machines client={client} onChanged={refresh} onAuthLost={onAuthLost} />
       {list === null && !error && <p class="muted">{t('home.loading')}</p>}
@@ -35,6 +42,7 @@ export function Manage({ client, onChanged, onAuthLost }: { client: Client; onCh
               <span class="grow"><b>{a.values.label || a.name}</b><small class="muted">{kinds.find((k) => k.kind === a.kind)?.label ?? a.kind}</small></span>
               <button class="icon-btn" aria-label={t('manage.moveUp')} disabled={i === 0} onClick={() => move(i, -1)}><Icon name="up" /></button>
               <button class="icon-btn" aria-label={t('manage.moveDown')} disabled={i === list.length - 1} onClick={() => move(i, 1)}>↓</button>
+              {botApi && a.values.connection === 'bot' && <button class="btn text" onClick={() => setTokenFor(a)}>Bot token</button>}
               <button class="btn text" onClick={() => setEditing({ saved: a, kind: kinds.find((k) => k.kind === a.kind) })}>{t('manage.edit')}</button>
               {a.values.connection === 'machine' ? <small class="muted">{t('manage.fromMachine')}</small> : <button class="btn text danger" onClick={() => remove(a)}>{t('manage.remove')}</button>}
             </li>
@@ -86,7 +94,7 @@ function Editor({ client, kinds, initial, onClose, onSaved, onAuthLost }: { clie
         </div>
         {problem && <p class="muted small">{problem}</p>}
       </form>
-      {editing && kind.kind === 'hermes' && <ProfileBusy client={client} agent={saved!.name} />}
+      {editing && kind.kind === 'hermes' && saved?.values.connection !== 'bot' && <ProfileBusy client={client} agent={saved!.name} />}
     </div>
   );
 }
