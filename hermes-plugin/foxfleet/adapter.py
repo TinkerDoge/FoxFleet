@@ -362,6 +362,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
         # stops before running them leaves a record; the next connect sends UNPROCESSED_NOTICE.
         self._unprocessed: OrderedDict[str, tuple[str, str]] = OrderedDict()
         self._held_live: set[str] = set()
+        self._released_pending_save: set[str] = set()
+        self._flush_lock = asyncio.Lock()
         self._notice_send: ContextVar[bool] = ContextVar("foxfleet_notice_send", default=False)
         self._busy_drain_seen: ContextVar[Optional[list[bool]]] = ContextVar("foxfleet_busy_drain", default=None)
 
@@ -760,7 +762,15 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 held = None
                 if not event.is_command() and self._runner_draining():
                     held = self._hold_unprocessed(event)
-                await self._wait_for_gateway_admission(event)
+                try:
+                    await self._wait_for_gateway_admission(event)
+                except asyncio.CancelledError:
+                    # The gateway cancelled this held task (drain-timeout shutdown): it will never
+                    # run here. Drop ONLY the live marker so a flush can notice it; keep the record.
+                    if held is not None:
+                        self._held_live.discard(held)
+                        self._spawn(self._flush_unprocessed())
+                    raise
                 if held is not None:
                     self._release_unprocessed(held)
                 return await inner(event)
@@ -803,9 +813,11 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 # ack + dedup), the user gets ONE explicit notice for it, and the channel continues.
                 logger.warning("FoxFleet: event %d raced a gateway drain without an acceptance receipt; "
                                "resolving it once with a resend notice (never replayed)", msg.event_id)
-                self._dedup.is_duplicate(key)
                 await self._advance(conn, msg.event_id)
                 if msg.event_id <= self._admitted:
+                    # Mark only after the floor persisted: a failed persist must let the hub's
+                    # replay reach this branch again, or the notice would never be sent.
+                    self._dedup.is_duplicate(key)
                     self._spawn(self._notify_admission_uncertain(msg))
                 return
             logger.warning("FoxFleet: event %d was not admitted by the gateway; not acknowledging it "
@@ -817,14 +829,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
         await self._advance(conn, msg.event_id)
 
     async def _notify_admission_uncertain(self, msg: protocol.InboundMessage) -> None:
-        token = self._notice_send.set(True)  # a notice: never ends another live answer
-        try:
-            result = await self._send_with_retry(chat_id=msg.chat_id, content=ADMISSION_UNCERTAIN_NOTICE,
-                                                 reply_to=msg.message_id)
-        except Exception as exc:  # pragma: no cover - _send_with_retry returns results
-            result = SendResult(success=False, error=self._redact(exc.__class__.__name__))
-        finally:
-            self._notice_send.reset(token)
+        key = self._notice_key("uncertain", msg.chat_id, msg.message_id)
+        result = await self._send_notice(chat_id=msg.chat_id, text=ADMISSION_UNCERTAIN_NOTICE,
+                                         reply_to=msg.message_id, key=key)
+        if not result.success and result.retryable:
+            await asyncio.sleep(0.5)
+            result = await self._send_notice(chat_id=msg.chat_id, text=ADMISSION_UNCERTAIN_NOTICE,
+                                             reply_to=msg.message_id, key=key)
         if not result.success:
             logger.error("FoxFleet: could not deliver the resend notice for message %s in chat %s: %s",
                          msg.message_id, msg.chat_id, result.error)
@@ -836,31 +847,57 @@ class FoxFleetAdapter(BasePlatformAdapter):
         key = f"{chat_id}\x1f{message_id}"
         self._held_live.add(key)
         self._remember(self._unprocessed, key, (chat_id, message_id), self.MAX_UNPROCESSED)
-        self._save_state()
+        if not self._save_state():
+            time.sleep(0.05)  # one synchronous retry: a lost record means a silently lost message
+            if not self._save_state():
+                logger.error("FoxFleet: could not persist the held-message record for %s in %s; "
+                             "a crash now loses its not-processed notice", message_id, chat_id)
         return key
 
     def _release_unprocessed(self, key: str) -> None:
         self._held_live.discard(key)
-        if self._unprocessed.pop(key, None) is not None:
-            self._save_state()
+        if self._unprocessed.pop(key, None) is not None and not self._save_state():
+            # The message WAS processed but the disk still lists it. Park the key: never send a
+            # false "not processed" notice in this process; each flush retries the save.
+            self._released_pending_save.add(key)
+            logger.error("FoxFleet: processed %s but could not persist the removal; retrying on the next flush", key)
+
+    async def _send_notice(self, *, chat_id: str, text: str, reply_to: Optional[str], key: str) -> SendResult:
+        """A short notice with a DETERMINISTIC idempotency key: the hub collapses any repeat
+        (overlapping flushes, a restart after a failed state save) into the one delivered message."""
+        token = self._notice_send.set(True)  # a notice: never ends another live answer
+        try:
+            return await self._send_chunk(chat_id, text, reply_to, final=False, key=key)
+        finally:
+            self._notice_send.reset(token)
+
+    def _notice_key(self, kind: str, chat_id: str, message_id: str) -> str:
+        """Hub idempotency keys reject '_'; chat and message ids contain it."""
+        safe = f"{chat_id}-{message_id}".replace("_", "-")
+        return f"notice-{kind}-{safe}"
 
     async def _flush_unprocessed(self) -> None:
-        """Previous gateway stopped while these accepted+ACKed messages waited behind a drain."""
-        for key, (chat_id, message_id) in list(self._unprocessed.items()):
-            if key in self._held_live:
-                continue  # still waiting in this process: it may yet run
-            token = self._notice_send.set(True)
-            try:
-                result = await self._send_with_retry(chat_id=chat_id, content=UNPROCESSED_NOTICE,
-                                                     reply_to=message_id)
-            finally:
-                self._notice_send.reset(token)
-            if result.success or result.error_kind == "not_found":
-                self._unprocessed.pop(key, None)
-                self._save_state()
-            else:
-                logger.error("FoxFleet: could not deliver the not-processed notice for message %s in "
-                             "chat %s: %s", message_id, chat_id, result.error)
+        """Previous gateway stopped while these accepted+ACKed messages waited behind a drain.
+        Single-flight: a flush started during another waits, then drains anything still listed."""
+        async with self._flush_lock:
+            if self._released_pending_save:
+                if self._save_state():
+                    self._released_pending_save.clear()
+            for key, (chat_id, message_id) in list(self._unprocessed.items()):
+                if key in self._held_live or key in self._released_pending_save:
+                    continue  # still waiting in this process, or already processed
+                result = await self._send_notice(chat_id=chat_id, text=UNPROCESSED_NOTICE,
+                                                 reply_to=message_id,
+                                                 key=self._notice_key("unprocessed", chat_id, message_id))
+                if result.success or result.error_kind == "not_found":
+                    self._unprocessed.pop(key, None)
+                    if not self._save_state():
+                        # Kept in memory with the same deterministic key: a later resend replays
+                        # harmlessly at the hub instead of duplicating the notice.
+                        logger.error("FoxFleet: notice for %s delivered but not persisted; will re-confirm", key)
+                else:
+                    logger.error("FoxFleet: could not deliver the not-processed notice for message %s in "
+                                 "chat %s: %s", message_id, chat_id, result.error)
 
     async def _dispatch_inline_reply(self, event: MessageEvent, *, log_cmd: Optional[str] = None) -> None:
         from hermes_cli.commands import is_interrupt_then_dispatch

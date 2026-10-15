@@ -136,8 +136,9 @@ async def test_transient_mid_stream_edit_failure_keeps_one_run_without_duplicate
         await _poll(lambda: _assistant(real, chat), lambda rows: rows == ["part one "])
         fault = Fault(adapter, "message.edit")
         consumer.on_delta("part two ")
-        await asyncio.sleep(0.4)
-        assert len(fault.hits) == 1
+        async def fault_hits():
+            return list(fault.hits)
+        await _poll(fault_hits, lambda hits: len(hits) == 1)
         await _assert_open(real, chat, sse)
         consumer.on_delta("part three")
         consumer.finish(full)
