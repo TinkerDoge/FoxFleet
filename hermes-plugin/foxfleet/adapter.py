@@ -716,7 +716,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if time.time() * 1000 > stop.expires_at:
             await self._answer_stop(conn, stop.stop_id, "expired")
             return
-        if self._is_sender_authorized(stop.user_id, "dm", stop.chat_id) is False:
+        if self._is_sender_authorized(stop.user_id, "dm", stop.chat_id) is not True:
             await self._answer_stop(conn, stop.stop_id, "refused")
             return
         event = self._stop_event(stop)
@@ -871,7 +871,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if prior:
             await self._answer_card(conn, cb.callback_id, prior)
             return
-        if self._is_sender_authorized(cb.user_id, "dm", cb.chat_id) is False:
+        if self._is_sender_authorized(cb.user_id, "dm", cb.chat_id) is not True:
             await self._finish_card(conn, cb.callback_id, "refused")
             return
         pending = self._cards.pop(cb.request_id, None)
