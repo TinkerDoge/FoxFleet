@@ -38,3 +38,18 @@ This is the acceptance checklist for replacing FoxFleet's connector-driven Herme
 ## Current development discipline
 
 The public bot API is feature-gated, default off. Development uses isolated worktrees, ephemeral loopback hubs and scratch Hermes homes. Existing hub/agents remain unchanged until a separate reviewed cutover. Passing an adapter harness is not proof of a complete native channel, and an admission ACK does not guarantee durable inference completion after a gateway crash.
+
+## Open blockers from 2026-10-15 audit (post-merge, flag still off)
+
+- [ ] **Plugin, high:** one transient `send_stream_frame` failure mid-stream makes Hermes fall back from
+      native streaming and send a `finalize=True` close. The hub run ends early, a second run opens and the
+      streamed text is duplicated (adapter.py ~988-1004 vs Hermes stream_consumer_transport.py ~408-426).
+      Needs a real-hub regression test for the native-to-edit fallback path.
+- [ ] **Hub, medium:** every `POST /api/bot/rpc` counts against the shared per-IP auth throttle
+      (60/min). Above that, owner login and the bot's WebSocket reconnect from the same IP get 429
+      (behind a tunnel, everyone shares one IP). Data-plane RPCs need their own bucket after auth.
+- [ ] **Web, P3:** creating a native bot with an existing agent's ID turns a definite 409 into a
+      registration lock that only a page reload clears. Treat definite 4xx as a non-write, and let a
+      mismatch readback settle the attempt with an "ID taken" message.
+- [ ] Plugin drain-race fail-closed path ends in a non-retryable fatal (operator restart needed); documented, not auto-recovering.
+- Resolved: the E2E "possible duplicate send" warning is a Hermes core diagnostic on a stale /stop-interrupted generation; transcript and hub store show no duplicate.
