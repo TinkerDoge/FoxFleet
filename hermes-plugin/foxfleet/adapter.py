@@ -235,6 +235,7 @@ class _Conn:
         self.overflowed = False  # intake paused: dispatch queue was full
         self.abandoned = False  # an admission failed: stop dispatching this socket's events
         self.close_reason: Optional[tuple[str, str]] = None  # (code, message) for fatal closes
+        self.stop_enabled = False  # set from the negotiated hello; a 1.0 socket never interrupts
 
 
 class _NoRedirectConnect(_ws_connect):  # type: ignore[misc,valid-type]
@@ -365,6 +366,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._released_pending_save: set[str] = set()
         self._flush_lock = asyncio.Lock()
         self._notice_send: ContextVar[bool] = ContextVar("foxfleet_notice_send", default=False)
+        # Chat ids whose next send() is the Stop acknowledgement. A set, not a ContextVar:
+        # Hermes copies context into the drain task, and that copy was swallowing the next reply.
+        self._suppress_stop_reply: set[str] = set()
         self._busy_drain_seen: ContextVar[Optional[list[bool]]] = ContextVar("foxfleet_busy_drain", default=None)
 
     # -- identity / helpers ----------------------------------------------
@@ -507,7 +511,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 user_agent_header=f"hermes-foxfleet/{PLUGIN_VERSION}", compression=None,
                 open_timeout=self.OPEN_TIMEOUT, max_size=protocol.MAX_FRAME_BYTES, max_queue=64,
                 ping_interval=20, ping_timeout=20, close_timeout=5, logger=_ConnLogger(_WS_LOGGER, self._token),
-                subprotocols=[protocol.SUBPROTOCOL])
+                subprotocols=list(protocol.OFFERED_SUBPROTOCOLS))
         except _FatalConnect:
             raise
         except InvalidStatus as exc:
@@ -519,13 +523,16 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 raise _FatalConnect("foxfleet_protocol", f"hub refused the bot socket (HTTP {status})") from None
             raise _FatalConnect("foxfleet_hub_unavailable", f"hub bot socket unavailable (HTTP {status})",
                                 retryable=True) from None
-        if ws.subprotocol != protocol.SUBPROTOCOL:
+        if ws.subprotocol not in protocol.OFFERED_SUBPROTOCOLS:
             with contextlib.suppress(Exception):
                 await ws.close(code=1002, reason="subprotocol")
-            raise _FatalConnect("foxfleet_protocol", "hub did not select the foxfleet.bot.v1 subprotocol")
+            raise _FatalConnect("foxfleet_protocol", "hub did not select an offered foxfleet subprotocol")
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=self.HELLO_TIMEOUT)
             hello = protocol.parse_hello(protocol.parse_frame(raw))
+            negotiated_v11 = ws.subprotocol == protocol.SUBPROTOCOL_V11
+            if negotiated_v11 != (hello.protocol == protocol.PROTOCOL_V11):
+                raise protocol.ProtocolError("version_mismatch", "hello protocol does not match the selected subprotocol")
         except protocol.ProtocolError as exc:
             await ws.close(code=1002, reason="bad hello")
             raise _FatalConnect("foxfleet_protocol", f"bad hub hello: {exc}",
@@ -545,6 +552,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             raise _FatalConnect("foxfleet_identity_changed", "the bot token now belongs to a different bot")
         self._generation += 1
         conn = _Conn(ws, hello, self._generation)
+        conn.stop_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "stop" in hello.features
         self._bot_id = hello.bot
         self._load_state(hello)
         return conn
@@ -658,6 +666,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         elif kind == "replay.gap":
             raise _FatalFrame("foxfleet_protocol", "hub reported a replay gap, which foxfleet.bot/1 "
                               "does not support; stopping without acknowledging past it", 1002)
+        elif kind == "chat.stop":
+            # Off the reader: the answer's res, and any /stop reply, must be readable while we wait.
+            self._spawn(self._on_chat_stop(conn, frame))
         elif kind == "error":
             code = str(frame.get("code") or "")
             logger.warning("FoxFleet: hub error %s", protocol.known_error_code(code))
@@ -672,6 +683,68 @@ class FoxFleetAdapter(BasePlatformAdapter):
             self._enqueue(conn, ("skip", event_id, f"unsupported event type {protocol.safe_frame_type(kind)!r}"), event_id)
         else:
             logger.debug("FoxFleet: ignoring hub frame type %r", protocol.safe_frame_type(kind))
+
+    async def _on_chat_stop(self, conn: _Conn, frame: dict) -> None:
+        """Feed a transient hub Stop through Hermes' own /stop path, then answer once.
+
+        The frame is never acknowledged. An expired or unauthorised stop is not dispatched,
+        so it cannot kill a later turn. The Stop acknowledgement is one discarded send for that
+        chat, consumed before Hermes spawns a follow-up, so the next reply is not dropped. A stop
+        is confirmed only if the turn that was running is actually gone.
+        """
+        if not getattr(conn, "stop_enabled", False):
+            logger.debug("FoxFleet: ignoring chat.stop; stop was not negotiated")
+            return
+        await self._handle_chat_stop(conn, frame)
+
+    async def _handle_chat_stop(self, conn: _Conn, frame: dict) -> None:
+        try:
+            stop = protocol.parse_chat_stop(frame)
+        except protocol.ProtocolError as exc:
+            logger.warning("FoxFleet: ignoring malformed chat.stop (%s)", exc.code)
+            return
+        if time.time() * 1000 > stop.expires_at:
+            await self._answer_stop(conn, stop.stop_id, "expired")
+            return
+        if self._is_sender_authorized(stop.user_id, "dm", stop.chat_id) is False:
+            await self._answer_stop(conn, stop.stop_id, "refused")
+            return
+        event = self._stop_event(stop)
+        session_key = self._event_session_key(event)
+        was_active = session_key in self._active_sessions
+        task_before = self._session_tasks.get(session_key)
+        # One discarded send for this chat. Not a ContextVar: the idle /stop task and the
+        # follow-up it spawns would both copy that flag and drop the next reply.
+        self._suppress_stop_reply.add(str(event.source.chat_id))
+        try:
+            await self.handle_message(event)
+        except Exception:
+            logger.exception("FoxFleet: /stop dispatch failed")
+            self._suppress_stop_reply.discard(str(event.source.chat_id))
+            await self._answer_stop(conn, stop.stop_id, "refused")
+            return
+        # handle_message swallows a failed /stop and restores the running turn.
+        if was_active and task_before is not None and not task_before.done():
+            logger.warning("FoxFleet: /stop left the running turn in place; not confirming")
+            self._suppress_stop_reply.discard(str(event.source.chat_id))
+            await self._answer_stop(conn, stop.stop_id, "refused")
+            return
+        await self._answer_stop(conn, stop.stop_id, "stopped" if was_active else "idle")
+
+    def _stop_event(self, stop: protocol.ChatStop) -> MessageEvent:
+        source = self.build_source(chat_id=stop.chat_id, chat_name=stop.user_name or stop.chat_id,
+                                   chat_type="dm", user_id=stop.user_id, user_name=stop.user_name)
+        return MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source,
+                            user_id=stop.user_id, user_name=stop.user_name, reply_expected=False,
+                            metadata={"foxfleet_stop_id": stop.stop_id})
+
+    async def _answer_stop(self, conn: _Conn, stop_id: str, outcome: str) -> None:
+        if self._conn is not conn or outcome not in protocol.STOP_OUTCOMES:
+            return
+        try:
+            await self._request("callback.answer", retry_unknown=False, callback_id=stop_id, outcome=outcome)
+        except Exception as exc:
+            logger.warning("FoxFleet: stop answer %s was not confirmed (%s)", outcome, type(exc).__name__)
 
     def _enqueue_message(self, conn: _Conn, frame: dict) -> None:
         try:
@@ -909,6 +982,18 @@ class FoxFleetAdapter(BasePlatformAdapter):
             event._foxfleet_receipt = True
         finally:
             self._notice_send.reset(token)
+
+    def _spawn_drain_task(self, pending_event, session_key: str, delay: float = 0.0) -> None:
+        """A follow-up must not inherit a Stop acknowledgement that was never sent."""
+        chat_id = str(getattr(getattr(pending_event, "source", None), "chat_id", "") or "")
+        self._suppress_stop_reply.discard(chat_id)
+        super()._spawn_drain_task(pending_event, session_key, delay=delay)
+
+    async def _drain_pending_after_session_command(self, session_key: str, command_guard) -> None:
+        pending = self._pending_messages.get(session_key)
+        if pending is not None:
+            self._suppress_stop_reply.discard(str(getattr(getattr(pending, "source", None), "chat_id", "") or ""))
+        await super()._drain_pending_after_session_command(session_key, command_guard)
 
     def set_busy_session_handler(self, handler) -> None:
         if handler is not None:
@@ -1245,6 +1330,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:
+        if str(chat_id) in self._suppress_stop_reply:
+            self._suppress_stop_reply.discard(str(chat_id))
+            return SendResult(success=True, message_id="fm_suppressed000000")
         trace = self._busy_drain_seen.get()
         runner = self.gateway_runner
         if trace is not None and runner is not None and (

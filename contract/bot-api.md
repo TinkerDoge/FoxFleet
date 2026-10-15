@@ -341,14 +341,43 @@ the shared hub-side handler.
   the bot edits or deletes a message of the reply (send-then-edit streaming replaces the bubble instead of appending),
   `event: foxfleet.bot` `{"bot":"online"|"offline"}` / `{"action":"typing"}`, and ends with `data: [DONE]` after
   `final: true`, after 30 s without bot activity once the bot has written, or after 5 minutes without any. The
-  persisted transcript stays the source of truth. A run that is stopped (user Stop, chat or agent deleted, hub
-  shutdown) also gets the usual `event: foxfleet.run` `{"state":"stopped"}`. Edits or deletes of bot messages that are
-  not part of the live run reach users only through the transcript. Stop only ends the viewer's run; v1 has no way to
-  stop the bot.
+  persisted transcript stays the source of truth. A run that is stopped (chat or agent deleted, hub shutdown, or a
+  confirmed 1.1 Stop) also gets the usual `event: foxfleet.run` `{"state":"stopped"}`. Edits or deletes of bot messages
+  that are not part of the live run reach users only through the transcript. On `foxfleet.bot/1`, Stop does **not** end
+  the run: `POST /runs/:id/stop` returns `confirmed: false` and the reply keeps going. There is no way to interrupt a
+  1.0 bot. A 1.1 bot is interrupted only as described below.
 - `GET /queue` → `{items: [], recent: [], halted: false, active_run, modes: ["queue"], open_requests: [], can_cancel: false}`.
 - `GET /commands` → `{source: "bot", busy: ["queue"], commands}`: the bot's `commands.set` list
   (`handler: "chat"`, `executable: true`, `verified: false`) plus the app's own client commands. Never the bundled
   Hermes TUI list.
+
+### Stop (`foxfleet.bot/1.1`)
+
+A bot that offers `Sec-WebSocket-Protocol: foxfleet.bot.v1.1, foxfleet.bot.v1` is answered with the highest version
+this hub speaks. `foxfleet.bot.v1` alone still gets today's `hello` (`protocol: "foxfleet.bot/1"`, no `features`).
+A 1.1 hello is `protocol: "foxfleet.bot/1.1"` plus `features: ["stop"]`. Cards and media are not in that list until
+they exist.
+
+`POST /runs/:id/stop` on a live run whose bot is connected at 1.1 sends one transient frame and waits:
+
+```
+hub → bot   {"t":"chat.stop","stop_id":"fs_<16>","chat_id":"fc_…","user":{"id","name"},"date":ms,"expires_at":ms}
+bot → hub   {"t":"callback.answer","id":"…","callback_id":"fs_…","outcome":"stopped"|"idle"|"refused"|"expired"}
+            → {"t":"res","id":"…","ok":true,"result":{}}
+```
+
+- `chat.stop` has no `event_id`. It is not stored, not acknowledged and not replayed. A reconnect cannot deliver a
+  stale stop.
+- At most one stop is outstanding per chat. A second `POST` joins that wait and does not send another frame.
+- `expires_at` is 10 seconds after the send. `stopped` or `idle` ends the view (`confirmed: true`,
+  `state: "stopped"`). `refused`, `expired`, a timeout, or no 1.1 socket throws inside the existing
+  `stopAndWait` contract: `confirmed: false` and the run stays.
+- `callback.answer` is still reserved on a 1.0 socket (`unsupported`). On 1.1 it answers only the outstanding stop
+  of **this** bot. A second, late, foreign or unknown `callback_id` is `not_found` and ends nothing. It is not
+  available over `POST /api/bot/rpc`.
+- The user on the frame is the account user who tapped Stop. The bot applies the same allowlist as a normal message
+  and refuses anyone else. It feeds `/stop` through Hermes' own command path. An already-expired frame is answered
+  `expired` and is not dispatched.
 
 ### Retention (per bot)
 

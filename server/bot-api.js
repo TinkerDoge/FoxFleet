@@ -1,9 +1,10 @@
 // FoxFleet bot API (contract/bot-api.md): token routes, the bot socket, and the agent routes of bot agents.
 import path from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } from './bot-store.js';
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
-import { PROTOCOL, LIMITS, CHAT_ID, parseBotFrame, validateRequest, validateHttpRequest } from './bot-protocol.js';
+import { PROTOCOL_V11, LIMITS, CHAT_ID, parseBotFrame, validateRequest, validateHttpRequest, validateStopAnswer, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { flattenContent } from './transcript.js';
 
 export const BOT_DISABLED = 'The bot API is disabled on this hub';
@@ -37,7 +38,8 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   const limits = botLimits({ maxUnacked: options.maxUnacked, maxChats: options.maxChats, maxMessagesPerChat: options.maxMessagesPerChat });
   const tokens = tokenIndex(path.join(dataDir, 'bot', 'tokens.json'));
   await tokens.ready().catch(() => {});
-  const sessions = new Map(), stores = new Map(), gone = new Set(), requests = new Set();
+  const sessions = new Map(), stores = new Map(), gone = new Set(), requests = new Set(), stops = new Map();
+  const STOP_MS = Number.isInteger(options.stopMs) && options.stopMs > 0 ? options.stopMs : 10_000;
 
   const storeFor = (scope, reg, botId) => { if (gone.has(botId)) throw fault(404, 'Not found'); let e = stores.get(botId); if (!e) stores.set(botId, e = { scope, store: botStore(path.join(reg.dir, 'bot', `${botId}.json`), limits) }); return e.store; };
   const agentOf = (reg, botId) => reg.store.all().find((a) => a.connection === 'bot' && a.botId === botId);
@@ -120,6 +122,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   async function handle(session, text) {
     const { conn } = session, parsed = parseBotFrame(text);
     if (!parsed.ok) { conn.send({ t: 'error', code: 'bad_frame', message: 'Frames are JSON objects with a string "t"' }); return conn.close(1008, 'bad frame'); }
+    if (session.protocol === PROTOCOL_V11 && parsed.frame.t === 'callback.answer') return answerStop(session, parsed.frame);
     const v = validateRequest(parsed.frame);
     if (!v.ok) {
       // Invalid frames cost a token like valid ones, so a socket cannot flood the hub with rejected work for free.
@@ -141,6 +144,67 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     }
   }
 
+  // A user Stop is not a stored event. One outstanding stop per live run; a second tap joins it.
+  // The frame is never replayed, so a reconnect cannot kill a later turn with a stale stop.
+  function settle(entry, outcome) {
+    if (entry.settled) return;
+    entry.settled = true;
+    clearTimeout(entry.timer);
+    stops.delete(entry.stop_id);
+    if (outcome === 'stopped' || outcome === 'idle') entry.resolve(outcome);
+    else entry.reject(Object.assign(new Error(`stop ${outcome}`), { outcome }));
+  }
+  function failStops(session, reason) {
+    for (const entry of [...stops.values()]) if (entry.session === session) settle(entry, reason);
+  }
+  function requestStop(session, st) {
+    const actor = st.link.actor;
+    if (!actor?.id) throw new Error('stop has no user');
+    const existing = [...stops.values()].find((s) => s.key === st.key && s.session === session && !s.settled);
+    if (existing) return existing.promise;
+    const stop_id = 'fs_' + randomBytes(12).toString('base64url');
+    const expires_at = Date.now() + STOP_MS;
+    let resolve, reject;
+    const promise = new Promise((res, rej) => { resolve = res; reject = rej; });
+    const entry = { stop_id, key: st.key, session, expires_at, resolve, reject, promise, settled: false };
+    stops.set(stop_id, entry);
+    const timer = setTimeout(() => settle(entry, 'timeout'), Math.max(0, expires_at - Date.now()));
+    timer.unref?.();
+    entry.timer = timer;
+    try {
+      session.conn.send({ t: 'chat.stop', stop_id, chat_id: st.chatId, user: { id: actor.id, name: actor.name }, date: Date.now(), expires_at });
+    } catch (e) {
+      settle(entry, 'send_failed');
+      throw e;
+    }
+    return promise;
+  }
+  async function interruptRun(st) {
+    const session = sessions.get(st.botId);
+    if (!session || session.protocol !== PROTOCOL_V11 || !session.conn) throw new Error('stop unavailable');
+    const outcome = await requestStop(session, st);
+    if (!st.ended && (outcome === 'stopped' || outcome === 'idle')) end(st, 'stopped');
+  }
+  function answerStop(session, frame) {
+    const v = validateStopAnswer(frame);
+    const answer = (res) => { if (v.id) session.conn.send({ t: 'res', id: v.id, ...res }); else if (!res.ok) session.conn.send({ t: 'error', code: res.error.code, message: res.error.message }); };
+    try { takeToken(session.botId); }
+    catch (e) {
+      if (!(e instanceof BotError)) throw e;
+      return answer({ ok: false, error: { code: e.botCode, message: e.message, ...(e.retry_after_ms ? { retry_after_ms: e.retry_after_ms } : {}) } });
+    }
+    if (!v.ok) return answer({ ok: false, error: { code: v.code, message: v.message } });
+    if (!current(session)) return answer({ ok: false, error: { code: 'forbidden', message: 'This connection is no longer authorised' } });
+    const entry = stops.get(v.req.callback_id);
+    if (!entry || entry.session !== session || entry.settled) return answer({ ok: false, error: { code: 'not_found', message: 'Unknown callback' } });
+    if (Date.now() > entry.expires_at) {
+      settle(entry, 'expired');
+      return answer({ ok: false, error: { code: 'not_found', message: 'That stop has expired' } });
+    }
+    settle(entry, v.req.outcome);
+    return answer({ ok: true, result: {} });
+  }
+
   // ---- the reply run: a view of what the bot writes into one chat, in the shape the apps already follow (see runs.js) ----
   const enc = new TextEncoder(), live = new Map(), starting = new Map();
   const sse = (obj, event) => enc.encode(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(obj)}\n\n`);
@@ -159,7 +223,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const key = `${m.botId}\0${chatId}`, cur = live.get(key); if (cur) return Promise.resolve(cur);
     if (starting.has(key)) return starting.get(key);
     const st = { key, botId: m.botId, chatId, parts: [], ended: false, wrote: false, timer: null, ctl: null, run: null, link: null };
-    st.link = { runId: 'bot', stop: async () => end(st, 'stopped') };
+    st.link = { runId: 'bot', stop: () => interruptRun(st) };
     const p = runs.start({ scope, agent: m.name, session: chatId, timeoutMs: 5000, link: st.link, check: () => ({ 'X-Hermes-Session-Id': chatId }), onFinish: (r) => { r.text = composed(st); },
       open: async () => new Response(new ReadableStream({ start(c) { st.ctl = c; } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) })
       .then((run) => { st.run = run; live.set(key, st); emit(st, sse({ bot: sessions.has(m.botId) ? 'online' : 'offline' }, 'foxfleet.bot')); arm(st); return st; }).finally(() => starting.delete(key));
@@ -235,7 +299,13 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const { req, res, parts, url, scope, m } = c;
     if (parts.length === 4 && req.method === 'GET') return c.sendJson(res, 200, { runs: runs.list(scope, m.name, url.searchParams.get('session_id') || undefined) });
     if (parts.length === 6 && parts[5] === 'events' && req.method === 'GET') { const r = runs.get(scope, m.name, parts[4]), after = Number(url.searchParams.get('after') ?? req.headers['last-event-id'] ?? 0); return runs.attach(req, res, r, Number.isInteger(after) && after > 0 ? after : 0); }
-    if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') return (async () => { await c.readJson(req); const r = runs.get(scope, m.name, parts[4]); const confirmed = await runs.stopAndWait(r); return c.sendJson(res, 200, { run: runs.view(r), confirmed }); })();
+    if (parts.length === 6 && parts[5] === 'stop' && req.method === 'POST') return (async () => {
+      await c.readJson(req);
+      const r = runs.get(scope, m.name, parts[4]);
+      if (r.link) r.link.actor = { id: String(c.user?.id ?? ''), name: String(c.user?.username ?? '').replaceAll('\0', '').slice(0, 256) };
+      const confirmed = await runs.stopAndWait(r);
+      return c.sendJson(res, 200, { run: runs.view(r), confirmed });
+    })();
     throw fault(404, 'Not found');
   }
 
@@ -332,17 +402,19 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       const store = storeFor(id.scope, found.reg, id.botId); await store.load();
       const again = tokens.verify(token), owner = ownerOf(id.scope);
       if (!again || again.botId !== id.botId || !owner || owner.disabled || !agentOf(found.reg, id.botId) || gone.has(id.botId)) return refuse(401);
-      const session = { scope: id.scope, botId: id.botId, store, reg: found.reg, conn: null, delivered: store.acked(), fenced: false };
+      const session = { scope: id.scope, botId: id.botId, store, reg: found.reg, conn: null, delivered: store.acked(), fenced: false, protocol: protocolForSubprotocol(selectSubprotocol(req.headers['sec-websocket-protocol'])) };
       acceptBotSocket(req, socket, head, {
         heartbeatMs: opt.heartbeatMs, maxBufferedBytes: opt.maxBufferedBytes,
         onOpen: (conn) => {
           session.conn = conn; const old = sessions.get(id.botId); sessions.set(id.botId, session); if (old) fence(old, 4009, 'replaced by a newer connection');
-          conn.send({ t: 'hello', protocol: PROTOCOL, bot: id.botId, resume_from: store.acked(), latest_event_id: store.latestEventId(), heartbeat_ms: opt.heartbeatMs, limits: { ...LIMITS, max_unacked: limits.maxUnacked } });
+          const hello = { t: 'hello', protocol: session.protocol, bot: id.botId, resume_from: store.acked(), latest_event_id: store.latestEventId(), heartbeat_ms: opt.heartbeatMs, limits: { ...LIMITS, max_unacked: limits.maxUnacked } };
+          if (session.protocol === PROTOCOL_V11) hello.features = ['stop'];
+          conn.send(hello);
           pushEvents(session); announce(id.botId, true);
           log('bot.connected', { bot: id.botId });
         },
         onMessage: (text) => handle(session, text),
-        onClose: (code) => { if (sessions.get(id.botId) === session) { sessions.delete(id.botId); announce(id.botId, false); } log('bot.closed', { bot: id.botId, code }); },
+        onClose: (code) => { failStops(session, 'disconnected'); if (sessions.get(id.botId) === session) { sessions.delete(id.botId); announce(id.botId, false); } log('bot.closed', { bot: id.botId, code }); },
       });
     } catch (error) { refuse(error.status === 429 ? 429 : error.status === 503 ? 503 : error.safe ? error.status : 503); }
   }
@@ -364,7 +436,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
 
   return {
     hasToken: (botId) => tokens.has(botId),
-    sizes: () => ({ sessions: sessions.size, stores: stores.size, buckets: buckets.size, live: live.size, starting: starting.size, gone: gone.size }),
+    sizes: () => ({ sessions: sessions.size, stores: stores.size, buckets: buckets.size, live: live.size, starting: starting.size, gone: gone.size, stops: stops.size }),
     probe,
     rpc,
     upgrade,

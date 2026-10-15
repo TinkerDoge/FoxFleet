@@ -15,7 +15,14 @@ from dataclasses import dataclass
 from typing import Any, Optional
 
 PROTOCOL = "foxfleet.bot/1"
+PROTOCOL_V11 = "foxfleet.bot/1.1"
 SUBPROTOCOL = "foxfleet.bot.v1"
+SUBPROTOCOL_V11 = "foxfleet.bot.v1.1"
+OFFERED_SUBPROTOCOLS = (SUBPROTOCOL_V11, SUBPROTOCOL)
+ACCEPTED_PROTOCOLS = frozenset({PROTOCOL, PROTOCOL_V11})
+STOP_ID = re.compile(r"^fs_[A-Za-z0-9_-]{16}$")
+STOP_OUTCOMES = frozenset({"stopped", "idle", "refused", "expired"})
+_FEATURE = re.compile(r"^[a-z]{1,32}$")
 BOT_ID = re.compile(r"^[0-9a-f]{24}$")
 CHAT_ID = re.compile(r"^fc_[A-Za-z0-9_-]{16}$")
 MESSAGE_ID = re.compile(r"^fm_[A-Za-z0-9_-]{16}$")
@@ -87,18 +94,35 @@ class Hello:
     bot: str
     resume_from: int  # hub-persisted cumulative ack
     latest_event_id: int
+    protocol: str = PROTOCOL
+    features: frozenset[str] = frozenset()
+
+
+def _features(value: Any) -> frozenset[str]:
+    if value is None:
+        return frozenset()
+    if not isinstance(value, list) or len(value) > 8:
+        raise ProtocolError("bad_hello", "features must be a list of at most 8 names")
+    names = []
+    for item in value:
+        if not isinstance(item, str) or not _FEATURE.match(item):
+            raise ProtocolError("bad_hello", "feature names are lowercase words")
+        names.append(item)
+    return frozenset(names)
 
 
 def parse_hello(frame: dict) -> Hello:
     if frame.get("t") != "hello":
         raise ProtocolError("expected_hello", "first hub frame must be hello")
-    if frame.get("protocol") != PROTOCOL:
-        raise ProtocolError("version_mismatch", f"hub does not speak {PROTOCOL}")
+    protocol = frame.get("protocol")
+    if protocol not in ACCEPTED_PROTOCOLS:
+        raise ProtocolError("version_mismatch", f"hub does not speak {PROTOCOL} or {PROTOCOL_V11}")
     resume_from = _event_id(frame, "resume_from")
     latest = _event_id(frame, "latest_event_id")
     if resume_from > latest:
         raise ProtocolError("bad_event_id", "resume_from is beyond latest_event_id")
-    return Hello(bot=_match(frame, "bot", BOT_ID), resume_from=resume_from, latest_event_id=latest)
+    return Hello(bot=_match(frame, "bot", BOT_ID), resume_from=resume_from, latest_event_id=latest,
+                 protocol=protocol, features=_features(frame.get("features")))
 
 
 def utf8_len(text: str) -> int:
@@ -184,6 +208,37 @@ def parse_message_new(frame: dict) -> InboundMessage:
                           user_name=(name or "").strip() or None, text=text, reply_to=reply_to)
 
 
+@dataclass(frozen=True)
+class ChatStop:
+    """A transient hub stop. It has no event id and must never be acknowledged or replayed."""
+
+    stop_id: str
+    chat_id: str
+    user_id: str
+    user_name: str | None
+    date: int
+    expires_at: int
+
+
+def parse_chat_stop(frame: dict) -> ChatStop:
+    if frame.get("t") != "chat.stop":
+        raise ProtocolError("bad_frame", "not a chat.stop")
+    if "event_id" in frame:
+        raise ProtocolError("bad_frame", "chat.stop is transient and has no event_id")
+    extra = set(frame) - {"t", "stop_id", "chat_id", "user", "date", "expires_at"}
+    if extra:
+        raise ProtocolError("bad_frame", "unexpected chat.stop field")
+    user = frame.get("user")
+    if not isinstance(user, dict):
+        raise ProtocolError("bad_user", "user must be an object")
+    name = user.get("name")
+    if name is not None and (not isinstance(name, str) or len(name) > MAX_ID_CHARS or "\0" in name):
+        raise ProtocolError("bad_user", "user.name must be a bounded string")
+    return ChatStop(stop_id=_match(frame, "stop_id", STOP_ID), chat_id=_match(frame, "chat_id", CHAT_ID),
+                    user_id=_ident(user, "id", where="user."), user_name=(name or "").strip() or None,
+                    date=_event_id(frame, "date"), expires_at=_event_id(frame, "expires_at"))
+
+
 # Contract error codes plus the defensive codes the adapter treats as fatal; hub-supplied codes outside
 # this set are reported as "unrecognized" so hub-controlled text never reaches logs or results.
 KNOWN_ERROR_CODES = frozenset({
@@ -248,6 +303,7 @@ _REQUEST_FIELDS = {
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
+    "callback.answer": {"callback_id", "outcome"},
 }
 
 

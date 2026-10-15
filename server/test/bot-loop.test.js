@@ -150,7 +150,9 @@ test('a bot message to a chat without a live run opens a new run that GET /runs 
   const live = runs.find((r) => r.state === 'running'); const s = sseReader(await b.h.call(`/api/agents/helper/runs/${live.id}/events`)); t.after(() => s.cancel());
   await s.until(() => s.deltas().includes('proactive'));
   assert.equal((await b.h.call(`/api/agents/helper/runs/${live.id}/stop`, { data: {} })).status, 200);
-  await s.finished(); assert.equal((await (await b.h.call(`/api/agents/helper/runs?session_id=${sent.session_id}`)).json()).runs.every((r) => r.state !== 'running'), true);
+  const after = await (await b.h.call(`/api/agents/helper/runs/${live.id}/stop`, { data: {} })).json();
+  assert.equal(after.confirmed, false, 'a foxfleet.bot/1 socket cannot be interrupted');
+  assert.equal(after.run.state, 'running');
 });
 
 test('with 8 live runs the 9th /chat is 429 and writes nothing; /messages still stores the message, just without a run', async (t) => {

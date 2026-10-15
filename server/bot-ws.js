@@ -1,7 +1,7 @@
 // The bot socket: a strict RFC 6455 server side (text frames only, no extensions) for /api/bot/ws. Zero dependencies.
 // It never shares code paths with the connector/screen sockets in ws.js, except the frame encoder and the accept-key function.
 import { encodeFrame, acceptKey } from './ws.js';
-import { SUBPROTOCOL, LIMITS } from './bot-protocol.js';
+import { LIMITS, selectSubprotocol } from './bot-protocol.js';
 
 const UTF8 = new TextDecoder('utf-8', { fatal: true });
 
@@ -12,7 +12,7 @@ export function checkHandshake(req) {
   if (h['sec-websocket-version'] !== '13') return 400;
   const key = h['sec-websocket-key'];
   if (typeof key !== 'string' || !/^[A-Za-z0-9+/]{22}==$/.test(key) || Buffer.from(key, 'base64').length !== 16) return 400;
-  if (!String(h['sec-websocket-protocol'] ?? '').split(',').map((x) => x.trim()).includes(SUBPROTOCOL)) return 400;
+  if (!selectSubprotocol(h['sec-websocket-protocol'])) return 400;
   return null;
 }
 
@@ -26,7 +26,8 @@ export function acceptBotSocket(req, socket, head, opts = {}) {
   let buf = Buffer.alloc(0), finished = false, fragments = null, fragmentBytes = 0, lastFrame = Date.now(), paused = false, pumping = false;
   const queue = [];
   socket.on('error', () => {});
-  socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Accept: ${acceptKey(req.headers['sec-websocket-key'])}`, `Sec-WebSocket-Protocol: ${SUBPROTOCOL}`, '', ''].join('\r\n'));
+  const selected = selectSubprotocol(req.headers['sec-websocket-protocol']);
+  socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Accept: ${acceptKey(req.headers['sec-websocket-key'])}`, `Sec-WebSocket-Protocol: ${selected}`, '', ''].join('\r\n'));
 
   const conn = {
     /** Resolves when the underlying socket is gone. */

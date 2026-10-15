@@ -41,15 +41,18 @@ The public bot API is feature-gated, default off. Development uses isolated work
 
 ## Open blockers from 2026-10-15 audit (post-merge, flag still off)
 
-- [ ] **Plugin, high:** one transient `send_stream_frame` failure mid-stream makes Hermes fall back from
-      native streaming and send a `finalize=True` close. The hub run ends early, a second run opens and the
-      streamed text is duplicated (adapter.py ~988-1004 vs Hermes stream_consumer_transport.py ~408-426).
-      Needs a real-hub regression test for the native-to-edit fallback path.
-- [ ] **Hub, medium:** every `POST /api/bot/rpc` counts against the shared per-IP auth throttle
-      (60/min). Above that, owner login and the bot's WebSocket reconnect from the same IP get 429
-      (behind a tunnel, everyone shares one IP). Data-plane RPCs need their own bucket after auth.
-- [ ] **Web, P3:** creating a native bot with an existing agent's ID turns a definite 409 into a
-      registration lock that only a page reload clears. Treat definite 4xx as a non-write, and let a
-      mismatch readback settle the attempt with an "ID taken" message.
-- [ ] Plugin drain-race fail-closed path ends in a non-retryable fatal (operator restart needed); documented, not auto-recovering.
+The streaming, login-throttle and onboarding bugs below were open when this note was first written. They are
+merged on main. Do not treat these three checkboxes as still open. Stop, cards, media, the standalone sender
+and the canary are not done: the Stop path exists on `foxfleet.bot/1.1` and is tested off the live hub, but
+this gate stays open until a reviewed canary.
+
+- [x] **Plugin, high:** stream-frame failure no longer splits the hub run or duplicates text. Merged in
+      `fix/plugin-stream-fallback`.
+- [x] **Hub, medium:** authenticated bot HTTP takes a per-bot token before the body is read, and failed bot
+      auth spends the shared login throttle. Merged in `fix/hub-rpc-throttle`. WS upgrade still spends the
+      per-IP login budget; that follow-up is not this item.
+- [x] **Web, P3:** a 409 is classified by readback, and an unknown outcome stays locked until that readback.
+      Merged in `fix/web-onboarding-409`.
+- [ ] Plugin drain-race: if saving state fails while releasing a message that was processed, a later reload can
+      send a false "please resend" notice. Fix on top of main. Do not rewind.
 - Resolved: the E2E "possible duplicate send" warning is a Hermes core diagnostic on a stale /stop-interrupted generation; transcript and hub store show no duplicate.

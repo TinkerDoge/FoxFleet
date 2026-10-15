@@ -151,15 +151,15 @@ async def test_real_hub_close_codes_mid_session_are_fatal_and_not_retried(hub, m
 
 
 async def test_connect_offers_the_bot_subprotocol_and_requires_the_echo(hub, make_adapter):
-    from fakehub import SUBPROTOCOL
+    from fakehub import SUBPROTOCOL, SUBPROTOCOL_V11
     adapter = make_adapter()
     assert await adapter.connect() is True
-    assert hub.subprotocol_offers == [SUBPROTOCOL] and adapter._conn.ws.subprotocol == SUBPROTOCOL
+    assert hub.subprotocol_offers == [f"{SUBPROTOCOL_V11},{SUBPROTOCOL}"] and adapter._conn.ws.subprotocol == SUBPROTOCOL
     await adapter.disconnect()
     hub.echo_subprotocol = False  # hub accepts the upgrade but never selects foxfleet.bot.v1
     other = make_adapter()
     assert await other.connect() is False
-    assert hub.subprotocol_offers[-1] == SUBPROTOCOL  # it was offered, the missing echo is what fails
+    assert hub.subprotocol_offers[-1] == f"{SUBPROTOCOL_V11},{SUBPROTOCOL}"  # both were offered; the missing echo is what fails
     assert (other.fatal_error_code, other.fatal_error_retryable) == ("foxfleet_protocol", False)
     await asyncio.sleep(0.1)
     assert len(hub.subprotocol_offers) == 2  # no retry
