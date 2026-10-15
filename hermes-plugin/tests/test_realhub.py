@@ -30,6 +30,10 @@ REPLY = "DETERMINISTIC TEST HANDLER (no LLM/provider): fox reply"
 
 @pytest_asyncio.fixture
 async def real():
+    # Other modules (lifecycle, stream fallback) borrow this fixture: skip there too, instead of
+    # erroring with an empty node path, when the real-hub variables are not set.
+    if skip_reason() is not None:
+        pytest.skip(skip_reason())
     data_dir = make_data_dir()
     hub = RealHub(data_dir)
     try:

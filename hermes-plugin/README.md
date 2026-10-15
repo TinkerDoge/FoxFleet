@@ -272,9 +272,17 @@ Two layers, neither a production-readiness claim:
   with a reason, unless both variables point at existing paths:
 
   ```bash
-  export FOXFLEET_TEST_NODE=/path/to/node              # Node 22+
-  export FOXFLEET_TEST_HUB_SERVER=/path/to/hub/server  # directory containing index.js
+  export FOXFLEET_TEST_NODE=/path/to/node              # Node 22+ binary (a file, absolute path)
+  export FOXFLEET_TEST_HUB_SERVER=/path/to/hub/server  # the hub's server/ DIRECTORY, not server/index.js
   ```
+
+  | Variable | Required for | Value | If unset / wrong |
+  | --- | --- | --- | --- |
+  | `FOXFLEET_TEST_NODE` | every test using the `real` fixture (`test_realhub.py`, `test_native_lifecycle.py`, `test_stream_fallback.py`, ...) | absolute path of a Node 22+ executable | those tests are **skipped** with the reason (0.3.12; before, modules other than `test_realhub.py` errored with an empty executable path) |
+  | `FOXFLEET_TEST_HUB_SERVER` | same | the `server/` directory of the FoxFleet checkout under test (must contain `index.js`) | same |
+
+  A full run with both set is the release gate (191 tests in 0.3.12); a run with skips is not.
+  Example from a repo checkout: `FOXFLEET_TEST_NODE=$(command -v node) FOXFLEET_TEST_HUB_SERVER=$PWD/server`.
 
 The tests use the real Hermes source on `PYTHONPATH` and a disposable `HERMES_HOME`, lock dir and XDG
 state, set up by `tests/conftest.py`. Every `FOXFLEET_*` variable is stripped (the two test variables

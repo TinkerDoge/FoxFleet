@@ -5,7 +5,8 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 ## Unreleased (0.3.12-alpha)
 
 - Hub: the bot WebSocket (`/api/bot/ws`) no longer spends the per-IP login budget on authenticated upgrades; only failed credentials do. Valid reconnects use a per-bot connect bucket (429 when exceeded).
-- Hermes plugin: a message held behind a gateway drain and then processed no longer risks a false "not processed, please resend" notice after a crash: a failed save of the held-record removal is retried immediately and then in the background, not only on the next reconnect.
+- Hermes plugin: a message held behind a gateway drain and then processed no longer risks a false "not processed, please resend" notice after a crash: a failed save of the held-record removal is retried immediately and then in the background, not only on the next reconnect. The retries never block the event loop.
+- Hermes plugin tests: `FOXFLEET_TEST_NODE` / `FOXFLEET_TEST_HUB_SERVER` documented; real-hub tests in every module now skip with a reason when they are unset (they used to error).
 - Android: fix the two release-lint errors (NotifyNotifier MissingPermission on the group summary: the notifications-enabled guard is now the first statement of `summary()`; AvatarStore NewApi WEBP_LOSSY on API 29). `lintRelease`: 0 errors, 75 warnings, 5 hints (JDK 17).
 - Version 0.3.12-alpha, Android versionCode 25.
 - Hermes plugin: the platform hint no longer tells the model the channel is text-only; it lists what 1.1 supports (images/files out, up to four images in, cards) and what it does not (custom buttons, reactions, threads).

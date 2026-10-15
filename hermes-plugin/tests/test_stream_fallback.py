@@ -16,7 +16,7 @@ from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from foxfleet import protocol
 from foxfleet.adapter import _NotSent, _OutcomeUnknown
 from fakehub import wait_for
-from realhub import RealHub, make_data_dir, remove_data_dir
+from realhub import RealHub, make_data_dir, remove_data_dir, skip_reason
 from test_realhub import real, make_adapter, _poll, _finished  # noqa: F401  (fixtures)
 
 pytestmark = pytest.mark.asyncio
@@ -63,6 +63,8 @@ class Observer:
 @pytest_asyncio.fixture
 async def tight_hub():
     """A second REAL hub whose per-bot token bucket is tiny (burst 4, 2 requests/s)."""
+    if skip_reason() is not None:
+        pytest.skip(skip_reason())
     data_dir = make_data_dir()
     hub = RealHub(data_dir, {"rate": {"burst": 4, "perSec": 2}})
     try:
