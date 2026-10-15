@@ -31,7 +31,13 @@ def adapter(monkeypatch):
 
 def mock_http(monkeypatch, handler):
     client = httpx.AsyncClient
-    monkeypatch.setattr(httpx, 'AsyncClient', lambda **kwargs: client(transport=httpx.MockTransport(handler), **kwargs))
+
+    def factory(**kwargs):
+        assert kwargs.get("trust_env") is False
+        assert kwargs.get("follow_redirects") is False
+        return client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", factory)
 
 
 @pytest.mark.asyncio

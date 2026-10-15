@@ -1,5 +1,4 @@
-"""Ownership of one bot token: no out-of-process send (the hub keeps ONE socket per bot and closes
-the older one with 4009), and a crash-safe host lock the connecting gateway must win before it dials."""
+"""HTTP standalone delivery and exclusive gateway socket ownership."""
 
 from __future__ import annotations
 
@@ -40,11 +39,9 @@ def _identity(hub) -> str:
     return f"{protocol.bot_ws_url(hub.url)}\n{hub.token}"
 
 
-async def test_no_standalone_sender_is_registered_or_defined(foxfleet_platform_entry):
-    assert foxfleet_platform_entry.standalone_sender_fn is None
+async def test_standalone_sender_is_registered(foxfleet_platform_entry):
+    assert foxfleet_platform_entry.standalone_sender_fn is ff._standalone_send
     assert foxfleet_platform_entry.cron_deliver_env_var == "FOXFLEET_HOME_CHANNEL"
-    for name in ("_standalone_send", "_await_res", "STANDALONE_RPC_TIMEOUT"):
-        assert not hasattr(ff, name)
 
 
 @pytest.fixture
@@ -112,3 +109,174 @@ async def test_same_process_second_adapter_never_dials_and_first_keeps_its_locks
         assert await second.connect() is True
     finally:
         await second.disconnect()
+
+
+CHAT = "fc_" + "A" * 16
+MID = "fm_" + "B" * 16
+
+
+@pytest.fixture
+def http_sender(monkeypatch):
+    import httpx
+    import json
+    calls = []
+    replies = []
+    real_client = httpx.AsyncClient
+
+    def handler(request):
+        calls.append(request)
+        reply = replies.pop(0) if replies else {}
+        if isinstance(reply, Exception):
+            raise reply
+        if callable(reply):
+            return reply(request)
+        frame = json.loads(request.content)
+        return httpx.Response(200, json={"t": "res", "id": frame["id"], "ok": True,
+                                         "result": {"message_id": MID}, **reply})
+
+    def client(**kwargs):
+        assert kwargs["follow_redirects"] is False
+        assert kwargs.get("trust_env") is False
+        return real_client(**kwargs, transport=httpx.MockTransport(handler))
+
+    def no_socket(*args, **kwargs):
+        pytest.fail("standalone sender must never open a WebSocket")
+
+    monkeypatch.setattr(httpx, "AsyncClient", client)
+    monkeypatch.setattr(ff, "_NoRedirectConnect", no_socket)
+    monkeypatch.setattr(ff, "_ws_connect", no_socket)
+    monkeypatch.setattr(ff, "FoxFleetAdapter", no_socket)
+    monkeypatch.setenv("FOXFLEET_BOT_TOKEN", "ffb_" + "s" * 43)
+    monkeypatch.delenv("FOXFLEET_HUB_URL", raising=False)
+    return calls, replies
+
+
+def rpc_config(url="https://fleet.example"):
+    return PlatformConfig(enabled=True, extra={"hub_url": url})
+
+
+async def test_http_text_and_fresh_keys(http_sender):
+    import json
+    calls, _ = http_sender
+    for _ in range(2):
+        assert await ff._standalone_send(rpc_config(), CHAT, "hello") == {"success": True, "message_id": MID}
+    bodies = [json.loads(r.content) for r in calls]
+    assert calls[0].url.path == "/api/bot/rpc" and calls[0].method == "POST"
+    assert calls[0].headers["Authorization"] == "Bot ffb_" + "s" * 43
+    assert bodies[0]["t"] == "message.send" and bodies[0]["chat_id"] == CHAT
+    assert bodies[0]["text"] == "hello" and bodies[0]["idempotency_key"]
+    assert bodies[0]["idempotency_key"] != bodies[1]["idempotency_key"]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "disconnect"])
+async def test_unknown_outcome_retries_identical_body(http_sender, failure):
+    import httpx
+    calls, replies = http_sender
+    replies.append(httpx.ReadTimeout("secret") if failure == "timeout" else httpx.ReadError("secret"))
+    assert (await ff._standalone_send(rpc_config(), CHAT, "hello"))["success"]
+    assert len(calls) == 2 and calls[0].content == calls[1].content
+
+
+async def test_second_unknown_outcome_stops(http_sender):
+    import httpx
+    calls, replies = http_sender
+    replies.extend([httpx.ReadTimeout("secret")] * 2)
+    out = await ff._standalone_send(rpc_config(), CHAT, "hello")
+    assert "error" in out and "secret" not in str(out) and len(calls) == 2
+
+
+async def test_redirect_is_not_followed(http_sender):
+    import httpx
+    calls, replies = http_sender
+    replies.append(lambda r: httpx.Response(307, headers={"Location": "https://evil.example"}))
+    assert "error" in await ff._standalone_send(rpc_config(), CHAT, "hello")
+    assert len(calls) == 1
+
+
+async def test_http_201_is_not_delivery(http_sender):
+    import httpx
+    import json
+    calls, replies = http_sender
+    replies.append(lambda request: httpx.Response(
+        201, json={"t": "res", "id": json.loads(request.content)["id"], "ok": True,
+                   "result": {"message_id": MID}}))
+    out = await ff._standalone_send(rpc_config(), CHAT, "hello")
+    assert "error" in out and "success" not in out and len(calls) == 1
+
+
+async def test_proxy_env_does_not_move_the_request(http_sender, monkeypatch):
+    calls, _ = http_sender
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(name, "http://evil.example:8080")
+    assert (await ff._standalone_send(rpc_config(), CHAT, "hello"))["success"]
+    assert str(calls[0].url) == "https://fleet.example/api/bot/rpc"
+
+
+@pytest.mark.parametrize("url,chat,kwargs,text", [
+    ("http://fleet.example", CHAT, {}, "hello"),
+    ("https://user:pass@fleet.example", CHAT, {}, "hello"),
+    ("https://fleet.example?q=x", CHAT, {}, "hello"),
+    ("https://fleet.example#x", CHAT, {}, "hello"),
+    ("https://fleet.example", "bad", {}, "hello"),
+    ("https://fleet.example", CHAT, {"thread_id": "thread"}, "hello"),
+    ("https://fleet.example", CHAT, {"thread_id": ""}, "hello"),
+    ("https://fleet.example", CHAT, {"media_files": ["/secret/file"]}, "hello"),
+    ("https://fleet.example", CHAT, {}, " "),
+    ("https://fleet.example", CHAT, {}, "a\0b"),
+    ("https://fleet.example", CHAT, {}, "é" * 32769),
+])
+async def test_invalid_input_never_posts(http_sender, url, chat, kwargs, text):
+    calls, _ = http_sender
+    assert "error" in await ff._standalone_send(rpc_config(url), chat, text, **kwargs)
+    assert not calls
+
+
+@pytest.mark.parametrize("token", ["", "bad token", "bad\nvalue"])
+async def test_bad_token_never_posts(http_sender, monkeypatch, token):
+    calls, _ = http_sender
+    monkeypatch.setenv("FOXFLEET_BOT_TOKEN", token)
+    cfg = rpc_config()
+    cfg.extra["token"] = "ffb_" + "s" * 43
+    assert "error" in await ff._standalone_send(cfg, CHAT, "hello")
+    assert not calls
+
+
+async def test_rate_limit_wait_is_capped_once(http_sender, monkeypatch):
+    calls, replies = http_sender
+    waits = []
+    async def sleep(seconds):
+        waits.append(seconds)
+    monkeypatch.setattr(ff.asyncio, "sleep", sleep)
+    replies.append({"id": None, "ok": False, "error": {"code": "rate_limited", "retry_after_ms": 90000}})
+    out = await ff._standalone_send(rpc_config(), CHAT, "hello")
+    assert "rate_limited" in out["error"] and waits == [5] and len(calls) == 1
+
+
+@pytest.mark.parametrize("reply,meaning", [
+    ({"ok": False, "error": {"code": "forbidden", "message": "/secret/token"}}, "forbidden"),
+    ({"result": {}}, "message id"),
+    ({"result": {"message_id": "wrong"}}, "message id"),
+    ({"t": "event"}, "response"),
+])
+async def test_failed_or_invalid_response(http_sender, reply, meaning):
+    calls, replies = http_sender
+    replies.append(reply)
+    out = await ff._standalone_send(rpc_config(), CHAT, "hello")
+    assert meaning in out["error"] and "/secret" not in str(out) and len(calls) == 1
+
+
+async def test_exact_utf8_limit_and_loopback(http_sender):
+    calls, _ = http_sender
+    assert (await ff._standalone_send(rpc_config("http://127.0.0.1:9000"), CHAT, "é" * 32768))["success"]
+    assert len(calls) == 1 and str(calls[0].url) == "http://127.0.0.1:9000/api/bot/rpc"
+
+
+@pytest.mark.parametrize("hub,expected", [
+    ("https://fleet.example/fleet", "https://fleet.example/fleet/api/bot/rpc"),
+    ("https://fleet.example/fleet/api/bot/ws", "https://fleet.example/fleet/api/bot/rpc"),
+    ("http://127.0.0.1:9000/lab/", "http://127.0.0.1:9000/lab/api/bot/rpc"),
+])
+async def test_hub_path_prefix_is_kept(http_sender, hub, expected):
+    calls, _ = http_sender
+    assert (await ff._standalone_send(rpc_config(hub), CHAT, "hello"))["success"]
+    assert len(calls) == 1 and str(calls[0].url) == expected

@@ -47,7 +47,7 @@ def test_real_plugin_manager_registers_foxfleet_platform(registered_entry):
     for hook in (entry.env_enablement_fn, entry.validate_config, entry.is_connected,
                  entry.apply_yaml_config_fn, entry.check_fn):
         assert callable(hook)
-    assert entry.standalone_sender_fn is None
+    assert callable(entry.standalone_sender_fn)
     assert entry.check_fn() is True
 
 
