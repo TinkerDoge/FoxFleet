@@ -1,10 +1,11 @@
 // FoxFleet bot API (contract/bot-api.md): token routes, the bot socket, and the agent routes of bot agents.
 import path from 'node:path';
-import { randomBytes } from 'node:crypto';
+import { createHmac, createHash, timingSafeEqual, randomBytes } from 'node:crypto';
+import { botMedia, MEDIA_MAX, sniffBotMedia } from './bot-media.js';
 import { fault } from './config.js';
 import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } from './bot-store.js';
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
-import { PROTOCOL_V11, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateHttpRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
+import { PROTOCOL_V11, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateHttpRequest, validateMediaRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { flattenContent } from './transcript.js';
 
 export const BOT_DISABLED = 'The bot API is disabled on this hub';
@@ -38,6 +39,9 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   const limits = botLimits({ maxUnacked: options.maxUnacked, maxChats: options.maxChats, maxMessagesPerChat: options.maxMessagesPerChat });
   const tokens = tokenIndex(path.join(dataDir, 'bot', 'tokens.json'));
   await tokens.ready().catch(() => {});
+  const blobs = botMedia({ maxBytes: options.maxMediaBytes, quotaBytes: options.mediaQuotaBytes ?? options.maxMediaQuotaBytes });
+  const mediaSecret = randomBytes(32);
+  const mediaSign = (p) => createHmac('sha256', mediaSecret).update(p).digest('base64url');
   const sessions = new Map(), stores = new Map(), gone = new Set(), requests = new Set(), stops = new Map();
   const STOP_MS = Number.isInteger(options.stopMs) && options.stopMs > 0 ? options.stopMs : 10_000;
 
@@ -66,7 +70,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
 
   const probe = (m) => {
     const has = tokens.has(m.botId), connected = sessions.has(m.botId);
-    return { name: m.name, kind: 'hermes', label: m.label, online: connected, chatReady: connected, managementReady: false, hasBotToken: has,
+    return { name: m.name, kind: 'hermes', label: m.label, online: connected, chatReady: connected, managementReady: false, hasBotToken: has, media: sessions.get(m.botId)?.protocol === PROTOCOL_V11,
       checks: botCheck(connected, connected ? 'Connected' : has ? 'Waiting for the bot to connect (messages are queued)' : 'No bot token yet: create one to connect a bot') };
   };
 
@@ -86,7 +90,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const out = await store.send(v.req, guard(session));
         if (!out.replayed) {
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
-          await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: v.req.text, final: v.req.final });
+          await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: store.messageText(v.req.chat_id, out.result.message_id), final: v.req.final });
         }
         return out;
       }
@@ -94,7 +98,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const out = await store.edit(v.req, guard(session));
         if (!out.replayed) {
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
-          await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: v.req.text, final: v.req.final });
+          await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: store.messageText(v.req.chat_id, v.req.message_id), final: v.req.final });
         }
         return out;
       }
@@ -137,7 +141,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       if (typeof cid === 'string' && cid.startsWith('fcb_')) return answerCardCallback(session, parsed.frame);
       return answerStop(session, parsed.frame);
     }
-    const v = session.protocol === PROTOCOL_V11 && (parsed.frame.t === 'card.send' || parsed.frame.t === 'card.close') ? validateCardRequest(parsed.frame) : validateRequest(parsed.frame);
+    const v = session.protocol === PROTOCOL_V11 && (parsed.frame.t === 'card.send' || parsed.frame.t === 'card.close') ? validateCardRequest(parsed.frame) : session.protocol === PROTOCOL_V11 ? validateMediaRequest(parsed.frame) : validateRequest(parsed.frame);
     if (!v.ok) {
       // Invalid frames cost a token like valid ones, so a socket cannot flood the hub with rejected work for free.
       try { takeToken(session.botId); } catch (e) { if (!(e instanceof BotError)) throw e; return conn.send(v.id ? { t: 'res', id: v.id, ok: false, error: { code: e.botCode, message: e.message, retry_after_ms: e.retry_after_ms } } : { t: 'error', code: e.botCode, message: e.message }); }
@@ -304,40 +308,73 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (!session.conn) return;
     const room = opt.window - session.store.outstanding(session.delivered);
     if (room <= 0) return;
-    for (const e of session.store.eventsAfter(session.delivered, room)) { session.conn.send(eventFrame(e)); session.delivered = e.id; }
+    for (const e of session.store.eventsAfter(session.delivered, room)) {
+      const frame = eventFrame(e);
+      if (e.media?.length) {
+        if (session.protocol === PROTOCOL_V11) frame.media = e.media.map(({ id, kind, mime, name, size }) => ({ id, kind, mime, name, size }));
+        else frame.text = [e.text, ...e.media.map((m) => `[Attachment: ${m.name} — this bot cannot receive files]`)].filter(Boolean).join('\n');
+      }
+      session.conn.send(frame); session.delivered = e.id;
+    }
   }
   const pushTo = (botId) => { const s = sessions.get(botId); if (s) pushEvents(s); };
 
-  const chatBody = (data) => {
+  const chatBody = (data, botId) => {
     if (!Array.isArray(data.messages) || data.messages.length < 1 || data.messages.length > 2000 || !data.messages.every((x) => x && typeof x === 'object' && ['user', 'assistant', 'system', 'tool', 'function'].includes(x.role) && (typeof x.content === 'string' || Array.isArray(x.content) || x.content === null))) throw fault(400, 'Invalid chat messages');
     if (data.session_id !== undefined && (typeof data.session_id !== 'string' || !CHAT_ID.test(data.session_id))) throw fault(404, 'Unknown session');
     if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
     const last = [...data.messages].reverse().find((x) => x.role === 'user'); if (!last) throw fault(400, 'No user message');
-    if (Array.isArray(last.content) && !last.content.every((p) => typeof p === 'string' || (p && typeof p === 'object' && typeof p.text === 'string' && [undefined, 'text', 'input_text'].includes(p.type)))) throw fault(400, 'Only text messages are supported for bot agents', 'unsupported');
+    const images = [];
+    if (Array.isArray(last.content)) for (const p of last.content) {
+      if (typeof p === 'string' || (p && typeof p.text === 'string' && [undefined, 'text', 'input_text'].includes(p.type))) continue;
+      const u = p?.type === 'image_url' ? (typeof p.image_url === 'string' ? p.image_url : p.image_url?.url) : null;
+      if (sessions.get(botId)?.protocol !== PROTOCOL_V11 || typeof u !== 'string' || !/^data:image\/(?:png|jpe?g|gif|webp|bmp|heic|heif|avif);base64,[A-Za-z0-9+/=]+$/i.test(u) || images.length >= 4) throw fault(400, 'Unsupported image input', 'unsupported');
+      const encoded = u.slice(u.indexOf(',') + 1), bytes = Buffer.from(encoded, 'base64');
+      if (bytes.toString('base64') !== encoded) throw fault(400, 'Invalid image data');
+      if (!sniffBotMedia(bytes).mime.startsWith('image/')) throw fault(415, 'Expected an image');
+      images.push(bytes);
+    }
     const text = flattenContent(last.content).text.trim();
-    if (!text || text.includes('\0')) throw fault(400, 'Empty message');
+    if ((!text && !images.length) || text.includes('\0')) throw fault(400, 'Empty message');
     if (Buffer.byteLength(text) > LIMITS.max_text_bytes) throw fault(413, 'Message too large', 'too_large');
-    return { text, sessionId: data.session_id, clientId: data.client_id };
+    return { text, images, dedupText: images.length ? JSON.stringify([text, ...images.map((b) => createHash('sha256').update(b).digest('hex'))]) : text, sessionId: data.session_id, clientId: data.client_id };
   };
 
-  async function accept(c, { text, sessionId, clientId }, newChatId) {
+  async function accept(c, { text, images = [], dedupText = text, sessionId, clientId }, newChatId) {
     const { m } = c, store = storeFor(c.scope, c.reg, m.botId);
     try { await store.load(); } catch (e) { throw fault(503, 'The bot store is unavailable', 'bot_store_unavailable'); }
-    const result = await store.acceptUser({ user: { id: c.user.id, name: c.user.username }, chatId: sessionId, newChatId, text, clientId });
+    const duplicate = clientId && store.clientMatch({ clientId, chatId: sessionId, text, dedupText });
+    if (duplicate) return duplicate;
+    const media = [];
+    let created = false;
+    try {
+      if (images.length) {
+        if (sessionId && !store.hasChat(sessionId)) throw fault(404, 'Unknown session');
+        if (!sessionId) { await store.createChat(undefined, newChatId); created = true; }
+        for (const bytes of images) {
+          const row = await blobs.fromBytes({ reg: c.reg, botId: m.botId, store, chatId: sessionId ?? newChatId, name: 'image', source: 'user', guard: () => { c.current(m); if (!ownerOf(c.scope) || ownerOf(c.scope).disabled || gone.has(m.botId)) throw fault(404, 'Not found'); } }, bytes);
+          media.push(row);
+        }
+      }
+    } catch (e) { for (const row of media) await blobs.discard(c.reg, m.botId, store, row.id); if (created) { await store.deleteChat(newChatId); await blobs.removeChat(c.reg, m.botId, store, newChatId); } throw e; }
+    let result;
+    try { result = await store.acceptUser({ media, user: { id: c.user.id, name: c.user.username }, chatId: sessionId, newChatId, text, dedupText, clientId }); }
+    catch (e) { for (const row of media) await blobs.discard(c.reg, m.botId, store, row.id); if (created) await store.deleteChat(newChatId); throw e; }
+    if (result.duplicate) { for (const row of media) await blobs.discard(c.reg, m.botId, store, row.id); if (created && result.chat_id !== newChatId) await store.deleteChat(newChatId); }
     if (!result.duplicate) { c.reg.activity.touch(m.name, { role: 'user', text, session: result.chat_id }); pushTo(m.botId); }
     return result;
   }
   const messageView = (result, text, sessionId) => ({ id: result.message.id, state: 'queued', mode: 'queue', ack: 'queued', text, created: result.message.created, session_id: sessionId });
 
   async function postMessages(c) {
-    const input = chatBody(await c.readJson(c.req)), result = await accept(c, input, input.sessionId ? undefined : freshChatId());
+    const input = chatBody(await c.readJson(c.req), c.m.botId), result = await accept(c, input, input.sessionId ? undefined : freshChatId());
     let runId = liveRun(c.m.botId, result.chat_id)?.run.id;
     if (!runId && !result.duplicate) { try { runId = (await startRun(c.scope, c.m, result.chat_id)).run.id; } catch { /* too many live runs: the message is stored, there is just nothing to follow */ } }
     c.sendJson(c.res, result.duplicate ? 200 : 202, { message: messageView(result, input.text, result.chat_id), session_id: result.chat_id, ...(runId ? { run_id: runId } : {}), bot: { online: sessions.has(c.m.botId) }, ...(result.duplicate ? { duplicate: true } : {}) });
   }
   async function postChat(c) {
-    const input = chatBody(await c.readJson(c.req)), store = await readyStore(c);
-    const dup = input.clientId ? store.clientMatch({ clientId: input.clientId, chatId: input.sessionId, text: input.text }) : null;
+    const input = chatBody(await c.readJson(c.req), c.m.botId), store = await readyStore(c);
+    const dup = input.clientId ? store.clientMatch({ clientId: input.clientId, chatId: input.sessionId, text: input.text, dedupText: input.dedupText }) : null;
     const fresh = input.sessionId || dup ? undefined : freshChatId(), chatId = dup?.chat_id ?? input.sessionId ?? fresh;
     if (!dup && input.sessionId && !store.hasChat(chatId)) throw fault(404, 'Unknown session');
     const existed = Boolean(liveRun(c.m.botId, chatId)); let st = await startRun(c.scope, c.m, chatId), result;
@@ -379,10 +416,44 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       return c.sendJson(res, 200, await store.renameChat(parts[4], b.title.trim()));
     }
     if (parts.length === 5 && req.method === 'DELETE') {
-      await store.deleteChat(parts[4]); const st = liveRun(c.m.botId, parts[4]); if (st) end(st, 'stopped');
+      await store.deleteChat(parts[4]); await blobs.removeChat(c.reg, c.m.botId, store, parts[4]); const st = liveRun(c.m.botId, parts[4]); if (st) end(st, 'stopped');
       return c.sendJson(res, 200, { ok: true });
     }
     throw fault(404, 'Not found');
+  }
+
+  async function mediaHttp(req, res, { sendJson, throttle }) {
+    const upload = req.method === 'POST' && req.url === '/api/bot/media';
+    const match = req.method === 'GET' && /^\/api\/bot\/media\/(fbm_[A-Za-z0-9_-]{24})$/.exec(req.url);
+    if (!upload && !match) throw fault(404, 'Not found');
+    if (closing) throw fault(503, 'Unavailable');
+    if (!secureBotRequest({ remoteAddress: req.socket.remoteAddress, host: req.headers.host, xfp: req.headers['x-forwarded-proto'], trusted })) throw fault(403, 'Forbidden');
+    throttle.check(); await tokens.ready();
+    const token = /^Bot (ffb_[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization ?? '')?.[1];
+    const id = tokens.verify(token), owner = id && ownerOf(id.scope);
+    if (!id || !owner || owner.disabled || gone.has(id.botId)) { throttle.fail(); throw fault(401, 'Unauthorized'); }
+    try { takeToken(id.botId); } catch { throw fault(429, 'Too many requests'); }
+    const session = { ...id, fenced: false, authorized: () => !closing && !gone.has(id.botId) && tokens.verify(token)?.botId === id.botId && Boolean(agentOf(session.reg, id.botId)) };
+    requests.add(session);
+    try {
+      const reg = session.reg = await scopeReg(id.scope), store = session.store = storeFor(id.scope, reg, id.botId);
+      await store.load(); guard(session)();
+      if (match) return await blobs.serve({ reg, botId: id.botId, store, id: match[1], req, res });
+      const row = await blobs.upload({ reg, botId: id.botId, store, body: req, length: Number(req.headers['content-length']), name: req.headers['x-foxfleet-name'], chatId: req.headers['x-foxfleet-chat'] ?? req.headers['x-foxfleet-chat-id'], guard: guard(session) });
+      return sendJson(res, 201, { ...row, media_id: row.id, expires_at: row.created + 3600_000 });
+    } finally { requests.delete(session); req.resume(); }
+  }
+  async function serveMediaToken({ token, scope, req, res }) {
+    const [, payload, sig, extra] = token.split('.');
+    if (!payload || !sig || extra || Buffer.byteLength(sig) !== 43 || !timingSafeEqual(Buffer.from(mediaSign(payload)), Buffer.from(sig))) throw fault(404, 'Not found');
+    let v; try { v = JSON.parse(Buffer.from(payload, 'base64url').toString()); } catch { throw fault(404, 'Not found'); }
+    if (v.scope !== scope || v.expires <= Date.now() || gone.has(v.botId)) throw fault(404, 'Not found');
+    const reg = await scopeReg(scope), m = agentOf(reg, v.botId);
+    if (!m) throw fault(404, 'Not found');
+    const store = storeFor(scope, reg, v.botId); await store.load();
+    const row = store.mediaRows().find((m) => m.id === v.id);
+    if (!row || !store.mediaForRef(`/bot-media/${row.id}/${row.name}`)) throw fault(404, 'Not found');
+    return blobs.serve({ reg, botId: v.botId, store, id: v.id, req, res });
   }
 
   /** One request context, never a socket session: HTTP must not acquire or replace the receive lease. */
@@ -458,7 +529,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         onOpen: (conn) => {
           session.conn = conn; const old = sessions.get(id.botId); sessions.set(id.botId, session); if (old) fence(old, 4009, 'replaced by a newer connection');
           const hello = { t: 'hello', protocol: session.protocol, bot: id.botId, resume_from: store.acked(), latest_event_id: store.latestEventId(), heartbeat_ms: opt.heartbeatMs, limits: { ...LIMITS, max_unacked: limits.maxUnacked } };
-          if (session.protocol === PROTOCOL_V11) hello.features = ['stop', 'cards'];
+          if (session.protocol === PROTOCOL_V11) { hello.features = ['stop', 'cards', 'media']; hello.limits.max_media_bytes = options.maxMediaBytes ?? MEDIA_MAX; }
           conn.send(hello);
           pushEvents(session); pushCallbacks(session); announce(id.botId, true);
           log('bot.connected', { bot: id.botId });
@@ -474,13 +545,21 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     for (const s of [...sessions.values()]) if (s.scope === scope) fence(s, code, reason);
     return Promise.all([...stores.values()].filter((e) => e.scope === scope).map((e) => e.store.idle()));
   };
+  const mediaSweep = setInterval(() => {
+    for (const [botId, entry] of stores) if (!gone.has(botId)) {
+      void scopeReg(entry.scope).then((reg) => blobs.sweep(reg, botId, entry.store)).catch(() => {});
+    }
+  }, 60_000);
+  mediaSweep.unref();
   let closing = false;
   async function close() {
     closing = true;
+    clearInterval(mediaSweep);
     const open = [...sessions.values()];
     for (const s of open) s.conn.close(1001, 'hub shutting down');
     for (const st of [...live.values()]) end(st, 'stopped');
     await Promise.all(open.map((s) => s.conn.done));
+    await blobs.idle();
     await Promise.allSettled([tokens.idle(), ...[...stores.values()].map((e) => e.store.idle())]);
   }
 
@@ -489,13 +568,18 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     sizes: () => ({ sessions: sessions.size, stores: stores.size, buckets: buckets.size, live: live.size, starting: starting.size, gone: gone.size, stops: stops.size }),
     probe,
     rpc,
+    mediaHttp,
+    serveMediaToken,
     upgrade,
     close,
     closeScope,
     /** The account is gone: its tokens die with it and its bots are disconnected. */
     async revokeScope(scope) {
       await closeScope(scope);
-      await tokens.ready(); await tokens.revokeScope(scope);
+      await tokens.ready();
+      const reg = await scopeReg(scope);
+      for (const m of reg.store.all().filter((m) => m.connection === 'bot')) await blobs.remove(reg, m.botId);
+      await tokens.revokeScope(scope);
       for (const [botId, e] of [...stores]) if (e.scope === scope) { await e.store.idle(); stores.delete(botId); buckets.delete(botId); }
     },
     /** The agent record is being deleted: revoke its token, disconnect it and delete its store file. */
@@ -505,6 +589,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       endRunsOf(m.botId, 'stopped');
       try { await tokens.ready(); await tokens.revoke(m.botId); } catch { /* an unreadable token file is left for the operator; the deleted agent can no longer be admitted anyway */ }
       await (stores.get(m.botId)?.store ?? botStore(path.join(reg.dir, 'bot', `${m.botId}.json`), limits)).remove(); stores.delete(m.botId); buckets.delete(m.botId);
+      await blobs.remove(reg, m.botId);
       log('bot.removed', { bot: m.botId });
     },
     /** Every /api/agents/:name/... request for a bot agent (except pin) lands here. */
@@ -519,7 +604,15 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         await revoke(m);
         return c.sendJson(res, 200, { ok: true });
       }
-      if (parts[3] === 'messages' && parts.length === 4 && req.method === 'POST') return await postMessages(c);
+      if (parts[3] === 'media' && parts.length === 4 && req.method === 'POST') {
+        const { ref } = await c.readJson(req, 8192), store = await readyStore(c);
+        const row = typeof ref === 'string' && store.mediaForRef(ref);
+        if (!row) throw fault(404, 'Not found');
+        const expires = Date.now() + 15 * 60_000;
+        const payload = Buffer.from(JSON.stringify({ scope: c.scope, botId: m.botId, id: row.id, expires })).toString('base64url');
+        return c.sendJson(res, 200, { url: `/api/media/bot.${payload}.${mediaSign(payload)}`, kind: row.kind, name: row.name, expires });
+      }
+      if (parts[3] === 'messages'  && parts.length === 4 && req.method === 'POST') return await postMessages(c);
       if (parts[3] === 'queue' && parts.length === 4 && req.method === 'GET') {
         const session = c.url.searchParams.get('session_id') || '';
         const store = await readyStore(c);

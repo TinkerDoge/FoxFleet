@@ -26,7 +26,7 @@ test('a 1.0 socket still refuses card.send, and a 1.1 hello advertises cards', a
   assert.equal(refused.error.code, 'unsupported');
   const c = await b.connect(V11);
   const hello = await c.next((x) => x.t === 'hello');
-  assert.deepEqual(hello.features, ['stop', 'cards']);
+  assert.deepEqual(hello.features, ['stop', 'cards', 'media']);
 });
 
 test('a tap resolves only that card, chat and account; forged, replayed and foreign taps do not', async (t) => {

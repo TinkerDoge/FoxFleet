@@ -265,3 +265,15 @@ export function validateRequest(frame) {
   if (req.code) return { ok: false, code: req.code, message: req.message, id };
   return { ok: true, t: frame.t, id, req };
 }
+
+// Only the 1.1 socket selects this validator. HTTP RPC and 1.0 retain v1 fields.
+export function validateMediaRequest(frame) {
+  if (frame.t !== 'message.send' || !('media' in frame)) return validateRequest(frame);
+  const { media, ...rest } = frame;
+  const id = validId(frame.id) ? frame.id : undefined;
+  if (!Array.isArray(media) || media.length < 1 || media.length > 10 || !media.every((x) => typeof x === 'string' && /^fbm_[A-Za-z0-9_-]{24}$/.test(x))) return { ok: false, id, code: 'invalid_request', message: 'media must contain 1–10 upload ids' };
+  const empty = rest.text === '';
+  const v = validateRequest({ ...rest, ...(empty ? { text: ' ' } : {}) });
+  if (v.ok) { v.req.media = media; if (empty) v.req.text = ''; }
+  return v;
+}

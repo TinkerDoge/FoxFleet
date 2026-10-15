@@ -1,4 +1,4 @@
-"""FoxFleet hub platform adapter (protocol ``foxfleet.bot/1``, text-only milestone).
+"""FoxFleet hub platform adapter (text v1, negotiated HTTP media in v1.1).
 
 The gateway dials OUT to the hub's ``/api/bot/ws`` with ``Authorization: Bot <token>``. Hub users
 chat with this agent as DMs; the hub authenticates the humans, Hermes still authorizes them
@@ -235,6 +235,7 @@ class _Conn:
         self.overflowed = False  # intake paused: dispatch queue was full
         self.abandoned = False  # an admission failed: stop dispatching this socket's events
         self.close_reason: Optional[tuple[str, str]] = None  # (code, message) for fatal closes
+        self.media_enabled = False
         self.stop_enabled = False  # set from the negotiated hello; a 1.0 socket never interrupts
         self.cards_enabled = False
 
@@ -558,6 +559,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._generation += 1
         conn = _Conn(ws, hello, self._generation)
         conn.stop_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "stop" in hello.features
+        conn.media_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "media" in hello.features
         conn.cards_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "cards" in hello.features
         self._bot_id = hello.bot
         self._load_state(hello)
@@ -924,6 +926,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
     def _enqueue_message(self, conn: _Conn, frame: dict) -> None:
         try:
             msg = protocol.parse_message_new(frame)
+            if msg.media and not conn.media_enabled:
+                raise protocol.ProtocolError("unsupported_media", "media was not negotiated")
         except protocol.UnsupportedEvent as exc:
             self._enqueue(conn, ("unsupported", exc.event_id, exc), exc.event_id)
             return
@@ -1039,6 +1043,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return
         self._remember(self._chat_names, msg.chat_id, msg.user_name or msg.chat_id, self.MAX_CHAT_CACHE)
         event = self._build_event(msg)
+        if msg.media:
+            event.media_urls = await self._download_media(conn, msg.media)
+            event.media_types = [m["mime"] for m in msg.media]
+            event.message_type = MessageType.PHOTO if all(m["kind"] == "image" for m in msg.media) else MessageType.DOCUMENT
         await self._wait_for_gateway_admission(event)
         if conn.abandoned:
             return
@@ -1306,6 +1314,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if len(self._pending) >= self.MAX_PENDING_RPCS:
             raise _NotSent("too many requests in flight")
         rid = f"r{next(self._rpc_counter)}.{secrets.token_hex(4)}"
+        if params.get("media") is not None and not conn.media_enabled:
+            raise _NotSent("media was not negotiated")
         data = protocol.encode_frame(protocol.build_request(op, rid, **params))
         future = asyncio.get_running_loop().create_future()
         self._pending[rid] = (future, conn)
@@ -1502,6 +1512,161 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if res.ok or res.error_code == "not_found":
             return SendResult(success=True, message_id=message_id)
         return self._error_result(res)
+
+    def _media_connection(self) -> _Conn:
+        conn = self._conn
+        if conn is None or not conn.media_enabled:
+            raise ValueError("FoxFleet hub has not negotiated media")
+        return conn
+
+    def _media_http_base(self) -> str:
+        from urllib.parse import urlsplit, urlunsplit
+        url = urlsplit(self._ws_url)
+        return urlunsplit(("https" if url.scheme == "wss" else "http", url.netloc,
+                           url.path.removesuffix("/api/bot/ws"), "", ""))
+
+    async def _upload_media(self, chat_id: str, file_path: str, conn: _Conn,
+                            file_name: Optional[str] = None) -> str:
+        import httpx
+        from urllib.parse import quote
+        from gateway.platforms.base import validate_media_delivery_path
+        checked = validate_media_delivery_path(file_path)
+        if not checked:
+            raise ValueError("FoxFleet media path was not accepted for delivery")
+        path = Path(checked)
+        size = path.stat().st_size
+        cap = conn.hello.max_media_bytes
+        if not path.is_file() or size < 1 or size > cap:
+            raise ValueError("FoxFleet media exceeds the hub byte limit or is not a file")
+
+        async def chunks():
+            total = 0
+            with path.open("rb") as handle:
+                while chunk := await asyncio.to_thread(handle.read, 64 * 1024):
+                    total += len(chunk)
+                    if total > cap:
+                        raise ValueError("FoxFleet media exceeds the hub byte limit")
+                    yield chunk
+
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            async with client.stream("POST", self._media_http_base() + "/api/bot/media",
+                    headers={**protocol.auth_header(self._token), "Content-Type": "application/octet-stream",
+                             "Content-Length": str(size), "X-Foxfleet-Chat": str(chat_id),
+                             "X-Foxfleet-Name": quote(file_name or path.name, safe="")}, content=chunks()) as response:
+                if response.status_code != 201:
+                    raise ValueError("FoxFleet media upload failed")
+                payload = bytearray()
+                async for chunk in response.aiter_bytes():
+                    payload.extend(chunk)
+                    if len(payload) > 8192:
+                        raise ValueError("Invalid media upload response")
+        media = json.loads(payload)
+        mid = media.get("media_id", media.get("id"))
+        if not isinstance(mid, str) or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", mid):
+            raise ValueError("Invalid media upload id")
+        return mid
+
+    async def _send_media_files(self, chat_id: str, paths: list[str], caption=None,
+                                reply_to=None, metadata=None, file_name=None) -> SendResult:
+        try:
+            conn = self._media_connection()
+            if not 1 <= len(paths) <= 10 or (metadata or {}).get("thread_id"):
+                raise ValueError("FoxFleet media requires 1–10 files in a direct chat")
+            ids = [await self._upload_media(str(chat_id), p, conn, file_name) for p in paths]
+            if self._conn is not conn:
+                raise ValueError("FoxFleet connection changed during upload")
+            res = await self._request("message.send", retry_unknown=True, chat_id=str(chat_id),
+                                      text=_clean_text(caption), media=ids, format="markdown",
+                                      reply_to=reply_to, idempotency_key=secrets.token_hex(16))
+            if not res.ok:
+                return self._error_result(res)
+            mid = res.result.get("message_id")
+            if not isinstance(mid, str) or not protocol.MESSAGE_ID.fullmatch(mid):
+                raise ValueError("FoxFleet did not confirm media delivery")
+            self._remember(self._recent_sent, mid, None, self.MAX_RECENT_SENT)
+            return SendResult(success=True, message_id=mid)
+        except Exception as exc:
+            # Paths, URLs and credentials are never echoed in delivery errors.
+            logger.warning("FoxFleet media delivery failed (%s)", type(exc).__name__)
+            return SendResult(success=False, error="FoxFleet media delivery failed", error_kind="unknown")
+
+    async def send_image_file(self, chat_id, image_path, caption=None, reply_to=None,
+                              metadata=None, **kwargs) -> SendResult:
+        return await self._send_media_files(chat_id, [image_path], caption, reply_to, metadata)
+
+    async def send_document(self, chat_id, file_path, caption=None, file_name=None,
+                            reply_to=None, metadata=None, **kwargs) -> SendResult:
+        return await self._send_media_files(chat_id, [file_path], caption, reply_to, metadata, file_name)
+
+    async def send_voice(self, chat_id, audio_path, caption=None, reply_to=None,
+                         metadata=None, **kwargs) -> SendResult:
+        return await self._send_media_files(chat_id, [audio_path], caption, reply_to, metadata)
+
+    async def send_video(self, chat_id, video_path, caption=None, reply_to=None,
+                         metadata=None, **kwargs) -> SendResult:
+        return await self._send_media_files(chat_id, [video_path], caption, reply_to, metadata)
+
+    async def _image_path(self, url: str) -> str:
+        self._media_connection()  # no downloads for an old or featureless hello
+        if url.startswith("file://"):
+            from urllib.request import url2pathname
+            from gateway.platforms.base import validate_media_delivery_path
+            checked = validate_media_delivery_path(url2pathname(url[7:]))
+            if not checked:
+                raise ValueError("FoxFleet media path was not accepted for delivery")
+            return checked
+        if url.startswith(("https://", "http://")):
+            from gateway.platforms.base import cache_image_from_url
+            return await cache_image_from_url(url)
+        return url
+
+    async def send_image(self, chat_id, image_url, caption=None, reply_to=None,
+                         metadata=None) -> SendResult:
+        try:
+            path = await self._image_path(image_url)
+        except Exception:
+            return SendResult(success=False, error="FoxFleet could not cache the image", error_kind="unknown")
+        return await self._send_media_files(chat_id, [path], caption, reply_to, metadata)
+
+    async def send_animation(self, chat_id, animation_url, caption=None, reply_to=None,
+                             metadata=None) -> SendResult:
+        return await self.send_image(chat_id, animation_url, caption, reply_to, metadata)
+
+    async def send_multiple_images(self, chat_id, images, metadata=None, human_delay=0.0) -> SendResult:
+        try:
+            self._media_connection()
+            if not 1 <= len(images) <= 10:
+                raise ValueError("FoxFleet accepts 1–10 images")
+            paths = [await self._image_path(url) for url, _alt in images]
+        except Exception:
+            return SendResult(success=False, error="FoxFleet could not cache the images", error_kind="unknown")
+        caption = "\n".join(alt for _url, alt in images if alt)
+        return await self._send_media_files(chat_id, paths, caption, metadata=metadata)
+
+    async def _download_media(self, conn: _Conn, attachments: tuple[dict, ...]) -> list[str]:
+        import httpx
+        from gateway.platforms.base import cache_image_from_bytes_async
+        if not conn.media_enabled:
+            raise ValueError("FoxFleet media was not negotiated")
+        paths = []
+        async with httpx.AsyncClient(timeout=120, follow_redirects=False) as client:
+            for item in attachments:
+                if item["kind"] != "image" or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"]):
+                    raise ValueError("Unsupported inbound media")
+                cap = min(conn.hello.max_media_bytes, item["size"])
+                async with client.stream("GET", self._media_http_base() + "/api/bot/media/" + item["id"],
+                                         headers=protocol.auth_header(self._token)) as response:
+                    if response.status_code != 200 or int(response.headers.get("content-length", 0)) > cap:
+                        raise ValueError("FoxFleet media download failed")
+                    data = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        data.extend(chunk)
+                        if len(data) > cap:
+                            raise ValueError("Inbound media exceeds the byte limit")
+                if len(data) != item["size"]:
+                    raise ValueError("Incomplete inbound media")
+                paths.append(await cache_image_from_bytes_async(bytes(data), Path(item["name"]).suffix))
+        return paths
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[dict[str, Any]] = None) -> SendResult:

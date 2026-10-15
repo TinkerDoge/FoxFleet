@@ -18,12 +18,12 @@ async function openRun(t, b, c) {
   return { s, ev, runId: res.headers.get('x-foxfleet-run'), chatId: ev.chat_id };
 }
 
-test('a 1.1 hello advertises stop and cards and the higher subprotocol is echoed', async (t) => {
+test('a 1.1 hello advertises stop, cards and media and the higher subprotocol is echoed', async (t) => {
   const b = await bootBot(t), c = await b.connect(V11);
   const hello = await c.next((x) => x.t === 'hello');
   assert.equal(c.headers['sec-websocket-protocol'], 'foxfleet.bot.v1.1');
   assert.equal(hello.protocol, 'foxfleet.bot/1.1');
-  assert.deepEqual(hello.features, ['stop', 'cards']);
+  assert.deepEqual(hello.features, ['stop', 'cards', 'media']);
   assert.equal(hello.bot, b.botId);
   assert.equal('event_id' in hello, false);
 });

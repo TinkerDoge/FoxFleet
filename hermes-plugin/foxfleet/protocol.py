@@ -96,6 +96,7 @@ class Hello:
     latest_event_id: int
     protocol: str = PROTOCOL
     features: frozenset[str] = frozenset()
+    max_media_bytes: int = 25 * 1024 * 1024
 
 
 def _features(value: Any) -> frozenset[str]:
@@ -121,8 +122,14 @@ def parse_hello(frame: dict) -> Hello:
     latest = _event_id(frame, "latest_event_id")
     if resume_from > latest:
         raise ProtocolError("bad_event_id", "resume_from is beyond latest_event_id")
+    limits = frame.get("limits", {})
+    if not isinstance(limits, dict):
+        raise ProtocolError("bad_hello", "limits must be an object")
+    max_media = limits.get("max_media_bytes", 25 * 1024 * 1024)
+    if isinstance(max_media, bool) or not isinstance(max_media, int) or not 0 < max_media <= 1024 * 1024 * 1024:
+        raise ProtocolError("bad_hello", "invalid media byte limit")
     return Hello(bot=_match(frame, "bot", BOT_ID), resume_from=resume_from, latest_event_id=latest,
-                 protocol=protocol, features=_features(frame.get("features")))
+                 protocol=protocol, features=_features(frame.get("features")), max_media_bytes=max_media)
 
 
 def utf8_len(text: str) -> int:
@@ -175,6 +182,7 @@ class InboundMessage:
     text: str
     reply_to: str | None = None
     chat_type: str = "dm"
+    media: tuple[dict, ...] = ()
 
 
 def parse_message_new(frame: dict) -> InboundMessage:
@@ -204,8 +212,22 @@ def parse_message_new(frame: dict) -> InboundMessage:
     if frame.get("thread_id") is not None:
         raise UnsupportedEvent("unsupported_thread", "threads are not supported in v1",
                                event_id=event_id, chat_id=chat_id)
+    media = frame.get("media", [])
+    if not isinstance(media, list) or len(media) > 10:
+        raise ProtocolError("bad_media", "invalid attachment list")
+    attachments = []
+    for item in media:
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"])
+                or item.get("kind") not in ("image", "audio", "video", "file")
+                or not isinstance(item.get("mime"), str) or len(item["mime"]) > 100
+                or not isinstance(item.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", item["name"])
+                or isinstance(item.get("size"), bool) or not isinstance(item.get("size"), int)
+                or item["size"] < 1 or item["size"] > 1024 * 1024 * 1024):
+            raise ProtocolError("bad_media", "invalid attachment metadata")
+        attachments.append({k: item[k] for k in ("id", "kind", "mime", "name", "size")})
     return InboundMessage(event_id=event_id, chat_id=chat_id, message_id=message_id, user_id=user_id,
-                          user_name=(name or "").strip() or None, text=text, reply_to=reply_to)
+                          user_name=(name or "").strip() or None, text=text, reply_to=reply_to, media=tuple(attachments))
 
 
 @dataclass(frozen=True)
@@ -342,7 +364,7 @@ def error_kind_for(code: str) -> str:
 
 
 _REQUEST_FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media"},
     "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},

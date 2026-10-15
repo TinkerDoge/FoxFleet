@@ -3,6 +3,7 @@ import { readFile, writeFile, rename, mkdir, rm, open } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { fault } from './config.js';
+import { mediaText } from './bot-media.js';
 import { cardView, validateCardAnswer } from './bot-protocol.js';
 
 const sha256 = (v) => createHash('sha256').update(v).digest('hex');
@@ -135,6 +136,7 @@ export function botStore(file, options = {}) {
   const limits = botLimits(options);
   const store = jsonFile(file, { fresh: () => ({ v: 1, next_event_id: 1, acked: 0, events: [], chats: {}, messages: {}, idem: {}, clients: {}, commands: [] }), valid: botShape });
   const st = () => store.state;
+  const referenced = (d, id) => Object.values(d.messages).some((list) => list.some((m) => m.media?.some((a) => a.id === id))) || d.events.some((e) => d.chats[e.chat_id] && e.media?.some((a) => a.id === id));
   const chatOf = (d, chatId) => { const c = d.chats[chatId]; if (!c) throw new BotError('not_found', 'Unknown chat'); return c; };
   const messageOf = (d, chatId, messageId) => { chatOf(d, chatId); const m = d.messages[chatId].find((x) => x.id === messageId); if (!m) throw new BotError('not_found', 'Unknown message'); return m; };
   function newChat(d, title, now, chatId = id('fc_')) {
@@ -155,9 +157,9 @@ export function botStore(file, options = {}) {
     const result = effect(); d.idem[slot] = { fp, result, at: now }; return { result };
   }
   const freshRec = (rec, now) => rec && now - rec.at <= limits.idemMs;
-  function matchIn(d, { clientId, chatId, text }, now) {
+  function matchIn(d, { clientId, chatId, text, dedupText = text }, now) {
     const rec = d.clients[`c:${clientId}`]; if (!freshRec(rec, now)) return null;
-    if (rec.text_hash !== sha256(text)) throw fault(409, 'That client_id was already used for a different message', 'client_id_conflict');
+    if (rec.text_hash !== sha256(dedupText)) throw fault(409, 'That client_id was already used for a different message', 'client_id_conflict');
     if (chatId !== undefined && chatId !== rec.chat_id) throw fault(409, 'That client_id was already used in a different session', 'client_id_conflict');
     // Retain the deduplication tombstone, but never acknowledge an orphan or recreate its deleted chat/run.
     if (!d.chats[rec.chat_id]) throw fault(404, 'Unknown session');
@@ -166,6 +168,12 @@ export function botStore(file, options = {}) {
   const run = async (fn) => { try { return await store.mutate(fn); } catch (e) { if (e instanceof Duplicate) return e.result; throw e; } };
 
   return {
+    mediaRows: () => Object.values(st().media ?? {}).map((m) => ({ ...m, attached: referenced(st(), m.id) })),
+    expireMedia(id, now = Date.now()) { return run((d) => { const m = d.media?.[id]; if (!m || referenced(d, id) || m.created + 3600_000 > now) return false; delete d.media[id]; return true; }); },
+    addMedia(row, guard) { return run((d) => { guard?.(); chatOf(d, row.chat_id); d.media ??= {}; d.media[row.id] = row; }); },
+    dropMedia(id) { return run((d) => { if (d.media) delete d.media[id]; }); },
+    mediaForRef(ref) { return Object.values(st().media ?? {}).find((m) => m.attached && `/bot-media/${m.id}/${m.name}` === ref && Object.values(st().messages).some((list) => list.some((x) => x.media?.some((a) => a.id === m.id)))) ?? null; },
+    messageText(chatId, messageId) { const m = st().messages[chatId]?.find((x) => x.id === messageId); return m ? mediaText(m.text, m.media) : ''; },
     limits,
     load: () => store.load().then(() => undefined),
     idle: () => store.idle(),
@@ -181,20 +189,21 @@ export function botStore(file, options = {}) {
     outstanding: (delivered) => st().events.filter((e) => e.id <= delivered).length,
 
     /** A user's message: chat (when new), message and event, in one write. */
-    acceptUser({ user, chatId, newChatId, text, clientId, title }) {
-      const hash = sha256(text);
-      if (clientId) { let dup; try { dup = matchIn(st(), { clientId, chatId, text }, Date.now()); } catch (e) { return Promise.reject(e); } if (dup) return Promise.resolve(dup); }
+    acceptUser({ user, chatId, newChatId, text, dedupText = text, clientId, title, media = [] }) {
+      const hash = sha256(dedupText);
+      if (clientId) { let dup; try { dup = matchIn(st(), { clientId, chatId, text, dedupText }, Date.now()); } catch (e) { return Promise.reject(e); } if (dup) return Promise.resolve(dup); }
       return run((d) => {
         const now = Date.now(); prune(d, now, limits);
-        const dup = clientId && matchIn(d, { clientId, chatId, text }, now); if (dup) throw new Duplicate(dup);
+        const dup = clientId && matchIn(d, { clientId, chatId, text, dedupText }, now); if (dup) throw new Duplicate(dup);
         const target = chatId ?? newChatId;
         if (!d.chats[target] && target !== newChatId) throw fault(404, 'Unknown session');
         if (d.events.length >= limits.maxUnacked) throw Object.assign(fault(503, 'The bot has too many unread messages; try again shortly', 'bot_backlog_full'), { retryAfter: 30 });
         if (!d.chats[target]) newChat(d, title, now, target);
         else if (title && !d.chats[target].title) d.chats[target].title = title;
-        const message = { id: id('fm_'), role: 'user', text, ts: now, user: { id: user.id, name: user.name } };
+        for (const m of media) { const row = d.media?.[m.id]; if (!row || row.chat_id !== target) throw new BotError('not_found', 'Unknown media'); row.attached = true; }
+        const message = { id: id('fm_'), role: 'user', text, ...(media.length ? { media } : {}), ts: now, user: { id: user.id, name: user.name } };
         addMessage(d, target, message);
-        const event = { id: d.next_event_id++, chat_id: target, message_id: message.id, user: message.user, text, date: now };
+        const event = { id: d.next_event_id++, chat_id: target, message_id: message.id, user: message.user, text, ...(media.length ? { media } : {}), date: now };
         d.events.push(event);
         if (clientId) d.clients[`c:${clientId}`] = { chat_id: target, message_id: message.id, text_hash: hash, created: now, event_id: event.id, at: now };
         return { duplicate: false, chat_id: target, message: { id: message.id, text, created: now }, event_id: event.id, event };
@@ -209,7 +218,13 @@ export function botStore(file, options = {}) {
       return run((d) => { guard?.(); const now = Date.now(); prune(d, now, limits); return once(d, 'message.send', req, now, () => {
         chatOf(d, req.chat_id);
         if (req.reply_to !== undefined) messageOf(d, req.chat_id, req.reply_to);
-        const message = { id: id('fm_'), role: 'assistant', text: req.text, ts: now, format: req.format, ...(req.reply_to ? { reply_to: req.reply_to } : {}) };
+        const media = (req.media ?? []).map((id) => {
+          const m = d.media?.[id];
+          if (!m || m.source !== 'bot' || m.chat_id !== req.chat_id || (!referenced(d, id) && m.created + 3600_000 <= now)) throw new BotError('not_found', 'Unknown media');
+          return { ...m };
+        });
+        for (const m of media) d.media[m.id].attached = true;
+        const message = { ...(media.length ? { media } : {}), id: id('fm_'), role: 'assistant', text: req.text, ts: now, format: req.format, ...(req.reply_to ? { reply_to: req.reply_to } : {}) };
         addMessage(d, req.chat_id, message);
         return { message_id: message.id, chat_id: req.chat_id, date: now };
       }); });
@@ -233,7 +248,7 @@ export function botStore(file, options = {}) {
     setCommands(list, guard) { return store.mutate((d) => { guard?.(); d.commands = list; return { count: list.length }; }); },
     commands: () => st().commands,
 
-    createChat(title) { return store.mutate((d) => { const chatId = newChat(d, title, Date.now()); return { id: chatId, title: d.chats[chatId].title }; }); },
+    createChat(title, requestedId) { return store.mutate((d) => { const chatId = newChat(d, title, Date.now(), requestedId); return { id: chatId, title: d.chats[chatId].title }; }); },
     renameChat(chatId, title) { return run((d) => { try { chatOf(d, chatId); } catch (e) { throw httpFault(e); } d.chats[chatId].title = title; return { id: chatId, title }; }); },
     deleteChat(chatId) { return run((d) => { try { chatOf(d, chatId); } catch (e) { throw httpFault(e); } delete d.chats[chatId]; delete d.messages[chatId]; }); },
     hasChat: (chatId) => Boolean(st().chats[chatId]),
@@ -249,7 +264,7 @@ export function botStore(file, options = {}) {
     transcript(chatId, { limit = 80, offset = 0 } = {}) {
       const d = st(); if (!d.chats[chatId]) throw fault(404, 'Unknown session');
       const list = d.messages[chatId], end = Math.max(0, list.length - offset), start = Math.max(0, end - limit);
-      return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: m.text, ts: m.ts, ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
+      return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: mediaText(m.text, m.media), ts: m.ts, ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
     },
 
     /** Open cards for one chat, in the shape the web already renders. Expired rows are not listed. */
