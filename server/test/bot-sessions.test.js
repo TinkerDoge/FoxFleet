@@ -79,7 +79,7 @@ test('routes a bot does not have are 404 and never reach an upstream; the agent 
   }
   const view = (await (await b.h.call('/api/agents/helper')).json()).agent;
   assert.deepEqual({ ...view.capabilities, media: undefined }, { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, bot: true, reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, media: undefined });
-  assert.equal(view.status, 'offline'); assert.equal(view.hasBotToken, true); assert.equal(view.checks.media.ok, false); assert.match(view.checks.media.message, /not supported for bot agents/);
+  assert.equal(view.status, 'offline'); assert.equal(view.hasBotToken, true); assert.equal(view.checks.media.ok, true); assert.match(view.checks.media.message, /Bot media via hub/);
   assert.equal(view.managementReady, false); assert.equal(view.kind, 'hermes');
   assert.equal((await b.h.call('/api/agents/helper/pin', { method: 'PUT', data: { pinned: true } })).status, 200, 'pin is the shared hub-side handler');
   const direct = await b.h.call('/api/connections', { data: { name: 'desk', host: '127.0.0.1', dashboardPort: 9, apiServerPort: 9 } }); assert.equal(direct.status, 201);

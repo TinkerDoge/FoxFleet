@@ -355,7 +355,7 @@ the shared hub-side handler.
 
 A bot that offers `Sec-WebSocket-Protocol: foxfleet.bot.v1.1, foxfleet.bot.v1` is answered with the highest version
 this hub speaks. `foxfleet.bot.v1` alone still gets today's `hello` (`protocol: "foxfleet.bot/1"`, no `features`).
-A 1.1 hello is `protocol: "foxfleet.bot/1.1"` plus `features: ["stop", "cards"]`. Media is not in that list until it exists.
+A 1.1 hello is `protocol: "foxfleet.bot/1.1"` plus `features: ["stop", "cards", "media"]`.
 
 `POST /runs/:id/stop` on a live run whose bot is connected at 1.1 sends one transient frame and waits:
 
@@ -409,3 +409,33 @@ are omitted. The store is one private JSON file per bot (`<account dir>/bot/<bot
 (temp file, fsync, rename, then a best-effort fsync of the parent directory on POSIX), with all writes for one bot
 serialized. On a filesystem without directory fsync a power loss right after a write may lose that last write: the store
 is not claimed to be crash-durable there.
+
+### Media (1.1)
+
+A 1.1 `hello` advertises `media` and `limits.max_media_bytes` when HTTP media routes are enabled.
+Bytes use HTTP with `Authorization: Bot <token>`. `media.upload` remains unsupported on WebSocket,
+and all v1 reserved fields stay reserved on 1.0 sockets and HTTP RPC.
+
+Upload to the exact `POST /api/bot/media` path (no query), with raw bytes,
+`X-Foxfleet-Chat: <chat_id>` and optional `X-Foxfleet-Name`. The response includes
+`media_id` (also `id`), `kind`, `mime`, `name`, `size`, `sha256`, and `expires_at`.
+The hub sniffs bytes, forces a safe extension, and refuses unrecognized formats, HTML, SVG and executables.
+Ambiguous containers use their generic class (for example, Office ZIP containers become `.zip`).
+The default per-file cap is 25 MiB (`botOptions.maxMediaBytes`); the per-bot disk quota is 1 GiB
+(`botOptions.mediaQuotaBytes`). Known oversized bodies are refused before streaming; failures remove blobs.
+Unreferenced uploads expire after one hour. Chat, bot and account deletion remove their media.
+
+A 1.1 socket can `message.send` with `media: [media_id, ...]` (1–10) and `text: ""`.
+Every upload must belong to that bot and chat; missing, foreign or expired ids return `not_found`
+and attach nothing. Existing idempotency rules apply. `GET /api/bot/media/:id` serves only that
+bot's bytes, supports Range, uses `Cache-Control: no-store`, and sends `application/octet-stream`
+with the sniffed type in `X-Foxfleet-Mime`. No bot-provided URL is fetched by the hub.
+
+User messages to a connected 1.1 bot may contain at most four strict base64 `image_url` data parts.
+The hub stores bytes on disk and sends `message.new.media: [{id, kind, mime, name, size}]`.
+A 1.0 connection receives attachment text lines instead, with no media array, and rejects new image input.
+Plugins download these ids into their own media cache before handing local paths to Hermes.
+
+Bot replies expose attachments as `MEDIA:/bot-media/<id>/<safe-name.ext>` in transcripts and live replies.
+This is a hub namespace. An account's `POST /api/agents/:name/media {ref}` resolves only attachments
+in that bot's messages to a short-lived, account-bound `/api/media/<token>` URL.

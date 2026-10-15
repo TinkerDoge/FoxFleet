@@ -215,10 +215,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : 'offline', online, chatReady, managementReady: false,
-      capabilities: { ...BOT_CAPABILITIES, reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, media: { ...mediaInfo(m), agent: 'none', tags: false } },
+      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       hasBotToken: Boolean(p.hasBotToken),
-      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: false, message: 'Media is not supported for bot agents yet' } } };
+      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: Boolean(bot), message: bot ? 'Bot media via hub' : 'Bot API disabled' } } };
   }
   function agentView(m, p, index) {
     if (m.connection === 'bot') return botAgentView(m, p, index);
@@ -331,7 +331,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (req.headers['sec-fetch-site'] === 'cross-site') throw fault(403, 'Cross-origin request rejected');
       if (req.headers.origin && !requestOrigins.has(req.headers.origin)) throw fault(403, 'Cross-origin request rejected');
       const mime = req.headers['content-type'], hasBody = Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding'];
-      const upload = req.method === 'POST' && /^\/api\/agents\/[^/]+\/files$/.test(req.url.split('?')[0]) && /^application\/octet-stream$/i.test(mime || '');
+      const botMediaUpload = req.method === 'POST' && req.url === '/api/bot/media';
+      const agentFileUpload = req.method === 'POST' && /^\/api\/agents\/[^/]+\/files$/.test(req.url.split('?')[0]) && /^application\/octet-stream$/i.test(mime || '');
+      const upload = botMediaUpload || agentFileUpload;
       if (!upload && (mime || hasBody) && !/^application\/json(?:\s*;|$)/i.test(mime || '')) { req.resume(); throw fault(415, 'Mutations require application/json'); }
     }
   }
@@ -341,6 +343,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       boundary(req, server);
       const url = new URL(req.url, 'http://hub');
       let parts; try { parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { throw fault(400, 'Invalid path'); }
+      if (url.pathname === '/api/bot/media' || url.pathname.startsWith('/api/bot/media/')) {
+        if (!bot) throw fault(404, 'Not found');
+        return await bot.mediaHttp(req, res, { sendJson, throttle: { check: () => authLocked(req), fail: () => authThrottle(req) } });
+      }
       if (url.pathname === '/api/bot/rpc') {
         if (!bot || req.method !== 'POST') throw fault(404, 'Not found');
         return await bot.rpc(req, res, { sendJson, throttle: { check: () => authLocked(req), fail: () => authThrottle(req) } });
@@ -423,7 +429,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); await bot?.revokeScope(parts[3]); const removed = registries.get(parts[3]); if (removed) await (await removed).reactions.clear(); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
       }
-      if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await media.serve({ token: parts[2], scope: scopeOf(ctx), req, res });
+      if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await (parts[2].startsWith('bot.') && bot ? bot.serveMediaToken({ token: parts[2], scope: scopeOf(ctx), req, res }) : media.serve({ token: parts[2], scope: scopeOf(ctx), req, res }));
       if (req.method === 'GET' && url.pathname === '/api/media-proxy') {
         const img = await fetchImage(url.searchParams.get('url'));
         res.writeHead(200, { 'Content-Type': img.type, 'Content-Length': img.body.length, 'Cache-Control': 'private, max-age=3600', 'X-Content-Type-Options': 'nosniff', 'Content-Security-Policy': "sandbox; default-src 'none'", 'Cross-Origin-Resource-Policy': 'same-origin' });
