@@ -113,6 +113,7 @@ const callbacks = (agent: string, ctrl: AbortController, acc: Acc) => {
     onReconnecting: () => { if (live()) patch(agent, { runState: 'reconnecting' }); },
     onGap: () => { if (!live()) return; acc.reply = ''; patch(agent, { streamText: '' }); },
     onContent: (d: string) => { if (!live()) return; if (acc.t0 && !acc.ms) { acc.ms = Date.now() - acc.t0; patch(agent, { reasoningMs: acc.ms }); } acc.reply += d; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
+    onReplace: (text: string) => { if (!live()) return; acc.reply = text; patch(agent, { streamText: acc.reply, tool: undefined, runState: 'working' }); },
     onReasoning: (d: string) => { if (!live()) return; if (!acc.t0) acc.t0 = Date.now(); acc.reasoning += d; patch(agent, { streamReasoning: acc.reasoning, runState: 'working' }); },
     onToolEvent: (event: ToolEvent) => { if (live()) patch(agent, { activity: updateTools(chatOf(agent).activity, event), tool: undefined }); },
     // Legacy label: shown only for providers that never send per-call events (it stays until the turn ends).

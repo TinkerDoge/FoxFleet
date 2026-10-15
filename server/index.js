@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf } from './config.js';
+import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, BOT_CAPABILITIES } from './config.js';
 import { hermesClient, upstreamJson, boundedBytes, safeAgentData } from './hermes.js';
 import { artifactRegistry } from './artifacts.js';
 import { scanAvatarPacks } from './avatars.js';
@@ -25,6 +25,7 @@ import { connectorHub } from './connector.js';
 import { notifyStore, attachNotifyStream, closeDeviceStreams } from './notify.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
+import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
@@ -129,7 +130,7 @@ async function streamResponse(req, res, getResponse, timeoutMs, headers, failure
   } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
 }
 
-export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir } = {}) {
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botOptions = {} } = {}) {
   if (!validHost(host)) throw fault(400, 'Invalid bind host');
   if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
   if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
@@ -149,7 +150,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   function registryFor(userId, owner) {
     if (!registries.has(userId)) registries.set(userId, (async () => {
       const dir = owner ? dataDir : path.join(dataDir, 'users', userId); await mkdir(dir, { recursive: true });
-      const up = hermesClient(timeoutMs), reg = { store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), activity: await activityStore(path.join(dir, 'activity.json')) };
+      const up = hermesClient(timeoutMs), reg = { dir, store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), activity: await activityStore(path.join(dir, 'activity.json')) };
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json'));
@@ -177,6 +178,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${hub}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${hub} --code ${made.code}` } };
   }
   const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
+  const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: botOptions, log }) : null;
+  const hubInfo = bot ? { ...HUB_INFO, features: [...HUB_FEATURES, 'botApi'] } : HUB_INFO;
+  const publicAgent = (m) => ({ ...publicConnection(m), ...(m.connection === 'bot' ? { hasBotToken: Boolean(bot?.hasToken(m.botId)) } : {}) });
   const media = mediaHub({ connectors }); // MEDIA: tags -> cards (see media.js)
   const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n) || reg.store.reserved(n)) n = `${base}-${i++}`; return n; };
   // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
@@ -206,7 +210,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { hub: true, hubVersion: HUB_VERSION, local: Boolean(m.machineId), connector: mach ? { version: mach.connectorVersion ?? null, online: connectors.isOnline(m.machineId), media: mach.connectorFeatures?.includes('media') ?? false } : null,
       agent: nativeUi(m) ? 'native' : 'http', tags: true, toolMedia: nativeUi(m) };
   }
+  function botAgentView(m, p, index) {
+    const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
+    return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
+      description: m.description || '', avatar: m.avatar || null,
+      status: chatReady ? 'ready' : 'offline', online, chatReady, managementReady: false,
+      capabilities: { ...BOT_CAPABILITIES, reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, media: { ...mediaInfo(m), agent: 'none', tags: false } },
+      ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
+      hasBotToken: Boolean(p.hasBotToken),
+      checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: false, message: 'Media is not supported for bot agents yet' } } };
+  }
   function agentView(m, p, index) {
+    if (m.connection === 'bot') return botAgentView(m, p, index);
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
@@ -242,13 +257,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   /** The agent-list fields, per user: when, what and which chat was last active, pin state, and whether the agent works or waits for an answer. Never an address. */
   function withActivity(ctx, m, view) {
     const reg = ctx.reg, scope = scopeOf(ctx), a = reg.activity.get(m.name);
-    if (!a && kindOf(m) === 'hermes') seedFromHermes(ctx, m); // Hermes keeps its own sessions (native/connector or old /chat path): read them once, in the background
+    if (!a && kindOf(m) === 'hermes' && m.connection !== 'bot') seedFromHermes(ctx, m); // Hermes keeps its own sessions (native/connector or old /chat path): read them once, in the background
     const pins = reg.activity.pins(), pinIndex = pins.indexOf(m.name);
     const needs = kindOf(m) === 'hermes' && nativeUi(m) && m.machineId ? reg.native.openRequests(scope, m.machineId, m.profile) > 0 : false;
     return { ...view, last_activity_at: a?.at ?? null, last_session_title: a?.title || null, last_message_preview: a?.preview || null, last_role: a?.role ?? null,
       pinned: pinIndex >= 0, pin_order: pinIndex >= 0 ? pinIndex : null, working: runs.working(scope, m.name), needs_input: needs };
   }
   function probeAny(m) {
+    if (m.connection === 'bot') return Promise.resolve(bot ? bot.probe(m) : disabledBotProbe(m));
     if (m.machineId && !connectors.isOnline(m.machineId)) return Promise.resolve({ name: m.name, kind: 'hermes', label: m.label, online: false, chatReady: false, managementReady: false, checks: { connector: { ok: false, message: 'Waiting for the machine to connect' } } });
     return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
@@ -323,6 +339,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       boundary(req, server);
       const url = new URL(req.url, 'http://hub');
       let parts; try { parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { throw fault(400, 'Invalid path'); }
+      if (url.pathname === '/api/bot/rpc') {
+        if (!bot || req.method !== 'POST') throw fault(404, 'Not found');
+        return await bot.rpc(req, res, { sendJson, throttle: () => authThrottle(req) });
+      }
       if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/health/stream') { // `foxfleet doctor` uses this to see whether a proxy/tunnel buffers streaming responses: 4 chunks, 400 ms apart, nothing private
         res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
@@ -355,7 +375,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const originalConnections = auth ? store.all() : [];
       const body0 = () => readJson(req, 64 * 1024), deviceMeta = (b, client) => ({ name: typeof b.deviceName === 'string' && b.deviceName.trim() ? b.deviceName.trim() : client === 'app' ? 'Android app' : 'Web browser', kind: client, ip: clientIp(req), ua: req.headers['user-agent'] });
       const clientOf = (b) => b.client === 'app' ? 'app' : 'web';
-      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), termsVersion: TERMS_VERSION, hub: HUB_INFO, authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
+      if (req.method === 'GET' && url.pathname === '/api/auth') return sendJson(res, 200, { required: !singleUser, setupRequired: !singleUser && accounts.needsSetup(), setupCodeRequired: Boolean(setupCode), registration: singleUser ? 'closed' : accounts.registration(), termsVersion: TERMS_VERSION, hub: hubInfo, authenticated: Boolean(auth), ...(auth ? { user: auth.user, deviceId: auth.device } : {}) });
       if (req.method === 'POST' && url.pathname === '/api/auth/setup') {
         authThrottle(req); const b = await body0();
         if (singleUser || !accounts.needsSetup()) throw fault(409, 'Setup is already complete');
@@ -395,10 +415,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'invites' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { invites: accounts.invites() });
         if (route === 'pairing' && req.method === 'GET') { const hub = hubOrigin(req), link = `foxfleet://connect?hub=${hub}`; let svg = null; try { svg = qrSvg(link); } catch {} return sendJson(res, 200, { hub, link, svg, rows: qrRows(link) }); }
         if (route === 'invites' && parts.length === 3 && req.method === 'POST') { const b = await body0(), inv = await accounts.createInvite(auth.user.id, Number(b.ttlHours) || 72); const link = `foxfleet://connect?hub=${hubOrigin(req)}&invite=${inv.code}`; return sendJson(res, 201, { ...inv, link, rows: qrRows(link) }); }
-        if (route === 'users' && parts.length === 4 && req.method === 'PATCH') return sendJson(res, 200, { user: await accounts.setDisabled(auth.user.id, parts[3], Boolean((await body0()).disabled)) });
+        if (route === 'users' && parts.length === 4 && req.method === 'PATCH') { const user = await accounts.setDisabled(auth.user.id, parts[3], Boolean((await body0()).disabled)); if (user.disabled) await bot?.closeScope(user.id); return sendJson(res, 200, { user }); }
         if (route === 'invites' && parts.length === 4 && req.method === 'DELETE') { await accounts.deleteInvite(parts[3]); return sendJson(res, 200, { ok: true }); }
         if (route === 'users' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { users: accounts.users() });
-        if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); const removed = registries.get(parts[3]); if (removed) await (await removed).reactions.clear(); return sendJson(res, 200, { ok: true }); }
+        if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); await bot?.revokeScope(parts[3]); const removed = registries.get(parts[3]); if (removed) await (await removed).reactions.clear(); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await media.serve({ token: parts[2], scope: scopeOf(ctx), req, res });
@@ -412,12 +432,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         return sendJson(res, 200, { avatars: await scanAvatarPacks(avatarBase) });
       }
       if (url.pathname === '/api/connections') {
-        if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicConnection) });
+        if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicAgent) });
         if (req.method === 'POST') {
           const data = await readJson(req);
           if (data?.connection === 'machine' || data?.machineId) throw fault(400, 'Machine agents are added by connecting a machine (Manage > Machines)');
-          const m = await store.add(data);
-          return sendJson(res, 201, { connection: publicConnection(m) });
+          if (data?.connection === 'bot' && !bot) throw fault(400, 'Invalid connection mode');
+          const m = await store.add(data?.connection === 'bot' ? { ...data, botId: randomBytes(12).toString('hex') } : data);
+          return sendJson(res, 201, { connection: publicAgent(m) });
         }
       }
       if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
@@ -468,8 +489,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         return sendJson(res, 200, { checks: agentView(draft, result, 0).checks, ok: Boolean(result.chatReady || result.online) });
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
-        if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicConnection(m) }); }
-        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
+        if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicAgent(m) }); }
+        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); if (store.get(parts[2]).connection === 'bot') await bot?.removeAgent(store.get(parts[2]), ctx.reg); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
@@ -477,6 +498,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
+        if (bot && m.connection !== 'bot' && route === 'bot-token' && parts.length === 4 && (req.method === 'POST' || req.method === 'DELETE')) throw fault(409, 'This agent is not a bot');
+        // SINGLE CHOKE POINT for bot agents: every agent route of a bot is handled (or refused) here, so nothing can ever reach the
+        // dashboard, API server, connector, facade or coordinator for one. Only `pin` (hub-side state) falls through to the shared handler below.
+        if (m.connection === 'bot' && !(route === 'pin' && parts.length === 4 && req.method === 'PUT')) {
+          if (!bot) throw botDisabled();
+          return await bot.route({ req, res, url, parts, m, scope: scopeOf(ctx), user: auth.user, reg: ctx.reg, readJson, sendJson, current });
+        }
         // Reactions and "delete for me" live beside each account's history. Never accept an actor identity from a request body.
         if (route === 'sessions' && parts.length === 6 && (parts[5] === 'reactions' || parts[5] === 'hidden')) {
           const sid = sessionId(parts[4]);
@@ -706,6 +734,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const url = new URL(req.url, 'http://hub'), parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       if (req.headers.upgrade?.toLowerCase() !== 'websocket') return deny(404, 'Not Found');
       boundary(req, server);
+      if (url.pathname === '/api/bot/ws') return void (bot ? await bot.upgrade(req, socket, head, { deny, throttle: () => authThrottle(req) }) : deny(404, 'Not Found'));
       if (url.pathname === '/connector') { // a machine dials out: credential is its machine token in the subprotocol list
         authThrottle(req);
         const token = String(req.headers['sec-websocket-protocol'] || '').split(',').map((v) => v.trim()).find((v) => /^[0-9a-f]{32}\.[\w-]{20,100}$/.test(v));
@@ -762,7 +791,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const notifyStores = async () => (await Promise.allSettled([...registries.values()])).filter((x) => x.status === 'fulfilled' && x.value.notify).map((x) => x.value.notify);
   const closeHub = server.close;
   server.close = function (cb) {
-    void (async () => { for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); })().finally(() => cb?.(err)); }));
+    void (async () => { await bot?.close().catch(() => {}); for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); })().finally(() => cb?.(err)); }));
     return this;
   };
   server.setupCode = setupCode; server.accounts = accounts;

@@ -21,6 +21,331 @@
     }
   ],
   "paths": {
+    "/api/bot/rpc": {
+      "post": {
+        "operationId": "botRpc",
+        "summary": "Experimental non-displacing bot HTTP requests (default off).",
+        "description": "Requires bot API flag. Authorization: Bot <token>; no cookie/Bearer auth, query strings, redirects or socket lease. Shared store/rate/idempotency/run behavior with WebSocket. Only send/edit/delete/typing; protocol errors are HTTP 200 res, invalid correlation ids use null. See bot-api.md and bot-http.vectors.json. Encoded body limit 1 MiB. Tested by server/test/bot-http-contract.test.js rather than the default-off web mock scenario.",
+        "tags": [
+          "bot"
+        ],
+        "security": [
+          {
+            "botToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "t",
+                      "id",
+                      "chat_id",
+                      "text"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "enum": [
+                          "message.send"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                      },
+                      "chat_id": {
+                        "type": "string",
+                        "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536,
+                        "description": "1..65536 UTF-8 bytes; no NUL"
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": [
+                          "markdown",
+                          "text"
+                        ],
+                        "default": "markdown"
+                      },
+                      "reply_to": {
+                        "type": "string",
+                        "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+                      },
+                      "final": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "t",
+                      "id",
+                      "chat_id",
+                      "message_id",
+                      "text"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "enum": [
+                          "message.edit"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                      },
+                      "chat_id": {
+                        "type": "string",
+                        "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+                      },
+                      "message_id": {
+                        "type": "string",
+                        "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+                      },
+                      "text": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 65536,
+                        "description": "1..65536 UTF-8 bytes; no NUL"
+                      },
+                      "format": {
+                        "type": "string",
+                        "enum": [
+                          "markdown",
+                          "text"
+                        ],
+                        "default": "markdown"
+                      },
+                      "final": {
+                        "type": "boolean",
+                        "default": false
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "t",
+                      "id",
+                      "chat_id",
+                      "message_id"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "enum": [
+                          "message.delete"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                      },
+                      "chat_id": {
+                        "type": "string",
+                        "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+                      },
+                      "message_id": {
+                        "type": "string",
+                        "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+                      },
+                      "idempotency_key": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "t",
+                      "id",
+                      "chat_id",
+                      "action"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "t": {
+                        "type": "string",
+                        "enum": [
+                          "chat.action"
+                        ]
+                      },
+                      "id": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._:-]{1,64}$"
+                      },
+                      "chat_id": {
+                        "type": "string",
+                        "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+                      },
+                      "action": {
+                        "type": "string",
+                        "enum": [
+                          "typing"
+                        ]
+                      }
+                    }
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success or protocol-error res envelope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "required": [
+                        "t",
+                        "id",
+                        "ok",
+                        "result"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "t": {
+                          "type": "string",
+                          "enum": [
+                            "res"
+                          ]
+                        },
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 64
+                        },
+                        "ok": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        },
+                        "result": {
+                          "type": "object"
+                        },
+                        "replayed": {
+                          "type": "boolean",
+                          "enum": [
+                            true
+                          ]
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "t",
+                        "id",
+                        "ok",
+                        "error"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "t": {
+                          "type": "string",
+                          "enum": [
+                            "res"
+                          ]
+                        },
+                        "id": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "maxLength": 64
+                        },
+                        "ok": {
+                          "type": "boolean",
+                          "enum": [
+                            false
+                          ]
+                        },
+                        "error": {
+                          "type": "object",
+                          "required": [
+                            "code",
+                            "message"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "code": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "retry_after_ms": {
+                              "type": "integer",
+                              "minimum": 1
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "503": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
     "/api/machines": {
       "get": {
         "operationId": "listMachines",
@@ -4958,6 +5283,12 @@
   },
   "components": {
     "securitySchemes": {
+      "botToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "Bot <token>, never Bearer; experimental bot API only"
+      },
       "session": {
         "type": "apiKey",
         "in": "cookie",

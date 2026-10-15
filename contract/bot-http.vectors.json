@@ -1,0 +1,29 @@
+{
+  "protocol": "foxfleet.bot/1",
+  "method": "POST",
+  "path": "/api/bot/rpc",
+  "authorization": "Bot <token>",
+  "allowed": ["message.send", "message.edit", "message.delete", "chat.action"],
+  "statuses": {"envelope": 200, "malformed_json_or_utf8_or_query": 400, "unauthorized": 401, "boundary": 403, "flag_off_or_wrong_method": 404, "body_too_large": 413, "wrong_mime": 415, "ip_throttle": 429, "store_unavailable": 503},
+  "frames": [
+    {"name":"send explicit false", "frame":{"t":"message.send","id":"send","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"draft","final":false,"idempotency_key":"http-contract-send"},"ok":true,"response_id":"send"},
+    {"name":"edit explicit true", "frame":{"t":"message.edit","id":"edit","chat_id":"fc_AAAAAAAAAAAAAAAA","message_id":"fm_BBBBBBBBBBBBBBBB","text":"finished","final":true},"ok":true,"response_id":"edit"},
+    {"name":"delete", "frame":{"t":"message.delete","id":"delete","chat_id":"fc_AAAAAAAAAAAAAAAA","message_id":"fm_BBBBBBBBBBBBBBBB"},"ok":true,"response_id":"delete"},
+    {"name":"typing", "frame":{"t":"chat.action","id":"typing","chat_id":"fc_AAAAAAAAAAAAAAAA","action":"typing"},"ok":true,"response_id":"typing"},
+    {"name":"socket ack refused", "frame":{"t":"ack","id":"ack","event_id":0},"ok":false,"response_id":"ack","code":"unsupported"},
+    {"name":"socket ping refused", "frame":{"t":"ping","id":"ping"},"ok":false,"response_id":"ping","code":"unsupported"},
+    {"name":"socket pong refused", "frame":{"t":"pong","id":"pong"},"ok":false,"response_id":"pong","code":"unsupported"},
+    {"name":"commands refused", "frame":{"t":"commands.set","id":"commands","commands":[]},"ok":false,"response_id":"commands","code":"unsupported"},
+    {"name":"reserved refused", "frame":{"t":"media.upload","id":"reserved"},"ok":false,"response_id":"reserved","code":"unsupported"},
+    {"name":"unknown refused", "frame":{"t":"not.a.type","id":"unknown"},"ok":false,"response_id":"unknown","code":"unknown_type"},
+    {"name":"missing id", "frame":{"t":"message.send","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"x"},"ok":false,"response_id":null,"code":"invalid_request"},
+    {"name":"invalid id", "frame":{"t":"ping","id":"bad id"},"ok":false,"response_id":null,"code":"invalid_request"},
+    {"name":"null frame", "frame":null,"ok":false,"response_id":null,"code":"bad_frame"},
+    {"name":"array frame", "frame":[],"ok":false,"response_id":null,"code":"bad_frame"},
+    {"name":"missing type", "frame":{"id":"shape"},"ok":false,"response_id":"shape","code":"bad_frame"},
+    {"name":"no body authority", "frame":{"t":"message.send","id":"authority","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"x","bot_id":"not-authority"},"ok":false,"response_id":"authority","code":"invalid_request"},
+    {"name":"reserved fields refused", "frame":{"t":"message.send","id":"buttons","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"x","buttons":[]},"ok":false,"response_id":"buttons","code":"unsupported"},
+    {"name":"invalid final", "frame":{"t":"message.send","id":"final","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"x","final":"false"},"ok":false,"response_id":"final","code":"invalid_request"},
+    {"name":"invalid format", "frame":{"t":"message.send","id":"format","chat_id":"fc_AAAAAAAAAAAAAAAA","text":"x","format":"html"},"ok":false,"response_id":"format","code":"invalid_request"}
+  ]
+}
