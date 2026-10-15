@@ -78,6 +78,7 @@ async def _connect(hub, make_adapter, *, v11=True):
         return "Stopped."
 
     adapter.set_message_handler(handler)
+    adapter.set_authorization_check(lambda user_id, chat_type, chat_id, **_extra: True)
     assert await adapter.connect() is True
     return adapter, seen
 
