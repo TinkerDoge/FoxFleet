@@ -1029,7 +1029,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             async def retained(event: MessageEvent):
                 held = None
                 if not event.is_command() and self._runner_draining():
-                    held = self._hold_unprocessed(event)
+                    held = await self._hold_unprocessed(event)
                 try:
                     await self._wait_for_gateway_admission(event)
                 except asyncio.CancelledError:
@@ -1040,7 +1040,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                         self._spawn(self._flush_unprocessed())
                     raise
                 if held is not None:
-                    self._release_unprocessed(held)
+                    await self._release_unprocessed(held)
                 return await inner(event)
 
             handler = retained
@@ -1112,7 +1112,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             logger.error("FoxFleet: could not deliver the resend notice for message %s in chat %s: %s",
                          msg.message_id, msg.chat_id, result.error)
 
-    def _hold_unprocessed(self, event: MessageEvent) -> Optional[str]:
+    async def _hold_unprocessed(self, event: MessageEvent) -> Optional[str]:
         chat_id, message_id = str(event.source.chat_id or ""), str(event.message_id or "")
         if not (protocol.CHAT_ID.match(chat_id) and protocol.MESSAGE_ID.match(message_id)):
             return None
@@ -1120,26 +1120,36 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._held_live.add(key)
         self._remember(self._unprocessed, key, (chat_id, message_id), self.MAX_UNPROCESSED)
         if not self._save_state():
-            time.sleep(0.05)  # one synchronous retry: a lost record means a silently lost message
+            await asyncio.sleep(0.05)  # one quick retry (non-blocking): a lost record means a silently lost message
             if not self._save_state():
                 logger.error("FoxFleet: could not persist the held-message record for %s in %s; "
-                             "a crash now loses its not-processed notice", message_id, chat_id)
+                             "retrying in the background (a crash before it lands loses its notice)",
+                             message_id, chat_id)
+                self._spawn(self._persist_state_retry())
         return key
 
-    def _release_unprocessed(self, key: str) -> None:
+    async def _release_unprocessed(self, key: str) -> None:
         self._held_live.discard(key)
         if self._unprocessed.pop(key, None) is None or self._save_state():
             return
         # The handler is about to run but the disk still lists the message as held. A crash before
         # the removal lands would send a FALSE "not processed, please resend" notice after restart,
         # so retry once now (same as _hold_unprocessed) and then in the background with backoff,
-        # instead of waiting for the next flush (which only happens on a reconnect).
-        time.sleep(0.05)
+        # instead of waiting for the next flush (which only happens on a reconnect). Non-blocking.
+        await asyncio.sleep(0.05)
         if self._save_state():
             return
         self._released_pending_save.add(key)
         logger.error("FoxFleet: processed %s but could not persist the removal; retrying in the background", key)
         self._spawn(self._persist_released())
+
+    async def _persist_state_retry(self) -> None:
+        delay = self.RELEASE_RETRY_BASE
+        while not self._closing:
+            await asyncio.sleep(delay)
+            if self._save_state():
+                return
+            delay = min(delay * 2, self.RELEASE_RETRY_MAX)
 
     async def _persist_released(self) -> None:
         delay = self.RELEASE_RETRY_BASE

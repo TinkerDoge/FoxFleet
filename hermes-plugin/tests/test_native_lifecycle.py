@@ -460,6 +460,16 @@ async def test_processed_held_message_never_gets_a_false_resend_notice_after_a_c
         return real_write(*args, **kwargs)
 
     monkeypatch.setattr(ff, "atomic_json_write", flaky_write)
+    import time as _time
+    real_sleep = _time.sleep
+    blocked = []
+
+    def no_blocking_sleep(seconds):  # the retry must not block the event loop (Soran, 0.3.12)
+        if seconds >= 0.01:
+            blocked.append(seconds)
+        return real_sleep(seconds)
+
+    monkeypatch.setattr(ff.time, "sleep", no_blocking_sleep)
     adapter = make_adapter()
     runner = DrainRunner(adapter)
     adapter.gateway_runner = runner
@@ -478,9 +488,9 @@ async def test_processed_held_message_never_gets_a_false_resend_notice_after_a_c
     adapter.on_processing_start = drain_begins
     original_release = adapter._release_unprocessed
 
-    def release_with_disk_errors(key):
-        fail_next["n"] = 2  # the first save AND the synchronous retry fail; the disk then recovers
-        original_release(key)
+    async def release_with_disk_errors(key):
+        fail_next["n"] = 2  # the first save AND the quick retry fail; the disk then recovers
+        await original_release(key)
 
     adapter._release_unprocessed = release_with_disk_errors
     adapter.set_message_handler(handler)
@@ -510,4 +520,5 @@ async def test_processed_held_message_never_gets_a_false_resend_notice_after_a_c
     rows = await real.transcript(chat)
     assert [r["content"] for r in rows].count(UNPROCESSED_NOTICE) == 0
     assert seen == ["held, then processed"]
+    assert blocked == [], "a synchronous sleep blocked the event loop"
     await restarted.disconnect()
