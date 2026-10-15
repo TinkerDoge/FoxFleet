@@ -94,6 +94,15 @@ class NotifyNotifierTest {
         notifier.post(notice()); notifier.postTest(); notifier.clearAll(); assertTrue(nm.activeNotifications.isEmpty())
     }
 
+    @Test fun aStaleSummaryIsCancelledWhenNotificationsGetDisabled() {
+        notifier.post(notice("h_1")); notifier.post(notice("h_2", agent = "echo", label = "Echo"))
+        assertTrue(nm.activeNotifications.any { it.id == AndroidNotifier.SUMMARY_ID })
+        org.robolectric.Shadows.shadowOf(nm).setNotificationsEnabled(false)
+        notifier.clearChat("nova", "h_1")
+        assertFalse(nm.activeNotifications.any { it.id == AndroidNotifier.SUMMARY_ID })
+        assertEquals(1, chats().size)
+    }
+
     @Test fun nothingIsPostedWhenTheSystemBlocksNotifications() {
         org.robolectric.Shadows.shadowOf(nm).setNotificationsEnabled(false)
         notifier.post(notice()); assertTrue(nm.activeNotifications.isEmpty())

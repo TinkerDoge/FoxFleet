@@ -81,8 +81,8 @@ class AndroidNotifier(private val context: Context) : Notifier {
 
     private fun summary() {
         // Guard first, before any other nm call, so lint's MissingPermission flow analysis credits it (as in post()).
-        // Disabled notifications cannot show a summary anyway; the next post() with them enabled rebuilds it.
-        if (!nm.areNotificationsEnabled()) return
+        // Disabled: drop any stale summary (cancel needs no permission); the next enabled post() rebuilds it.
+        if (!nm.areNotificationsEnabled()) { nm.cancel(SUMMARY_TAG, SUMMARY_ID); return }
         val chats = activeChats()
         if (chats.isEmpty()) { nm.cancel(SUMMARY_TAG, SUMMARY_ID); return }
         val inbox = NotificationCompat.InboxStyle().setBigContentTitle("FoxFleet")
