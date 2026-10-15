@@ -9,13 +9,26 @@ retryable and which stay final on purpose."""
 from __future__ import annotations
 
 import asyncio
+import subprocess
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import pytest_asyncio
 
-from gateway.config import GatewayConfig, PlatformConfig
-from gateway.run import GatewayRunner, _reconnect_backoff
+from conftest import TEST_GATEWAY_HANDOFF
+
+# OPT-IN (FOXFLEET_TEST_GATEWAY_HANDOFF=1): this is the ONE plugin test that imports gateway.run, which
+# runs hermes_bootstrap at import. conftest has already pointed HERMES_HOME/XDG at a throwaway dir.
+# It is part of the release gate, pinned to the Hermes commit below; skipped (before the import) otherwise.
+if not TEST_GATEWAY_HANDOFF:
+    pytest.skip("gateway hand-off test is opt-in: set FOXFLEET_TEST_GATEWAY_HANDOFF=1", allow_module_level=True)
+
+HERMES_PIN = "f9bdaa303e1614245cf1104db52ed0efd90b6f13"
+
+from gateway.config import GatewayConfig, PlatformConfig  # noqa: E402
+import gateway  # noqa: E402
+from gateway.run import GatewayRunner, _reconnect_backoff  # noqa: E402
 
 from fakehub import FakeHub, wait_for
 from foxfleet.adapter import FoxFleetAdapter
@@ -44,6 +57,14 @@ async def made(monkeypatch, hub):
     yield _make
     for a in adapters:
         await asyncio.wait_for(a.disconnect(), timeout=10)
+
+
+async def test_hermes_source_is_the_pinned_commit():
+    """The hand-off semantics (non-retryable dropped, 30 s..300 s queue) were read at this commit only."""
+    root = Path(gateway.__file__).resolve().parents[1]
+    head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], capture_output=True, text=True,
+                          timeout=10).stdout.strip()
+    assert head == HERMES_PIN, f"Hermes at {root} is {head or 'not a git checkout'}, the gate is pinned to {HERMES_PIN}"
 
 
 def _runner(adapter) -> GatewayRunner:

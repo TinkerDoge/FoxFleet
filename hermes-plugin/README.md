@@ -281,7 +281,7 @@ Two layers, neither a production-readiness claim:
   | `FOXFLEET_TEST_NODE` | every test using the `real` fixture (`test_realhub.py`, `test_native_lifecycle.py`, `test_stream_fallback.py`, ...) | absolute path of a Node 22+ executable | those tests are **skipped** with the reason (0.3.12; before, modules other than `test_realhub.py` errored with an empty executable path) |
   | `FOXFLEET_TEST_HUB_SERVER` | same | the `server/` directory of the FoxFleet checkout under test (must contain `index.js`) | same |
 
-  A full run with both set is the release gate (191 tests in 0.3.12); a run with skips is not.
+  A full run with both set plus `FOXFLEET_TEST_GATEWAY_HANDOFF=1` is the release gate (192 tests in 0.3.12, see below); a run with skips is not.
   Example from a repo checkout: `FOXFLEET_TEST_NODE=$(command -v node) FOXFLEET_TEST_HUB_SERVER=$PWD/server`.
 
 The tests use the real Hermes source on `PYTHONPATH` and a disposable `HERMES_HOME`, lock dir and XDG
@@ -297,3 +297,15 @@ PYTHONPATH=/tmp/ff-pytest:/path/to/hermes-agent:hermes-plugin \
 
 Do not import `gateway.run` in unit tests. It runs `hermes_bootstrap`, which provisions
 dependencies for whatever data root it is pointed at.
+
+**The one exception:** `tests/test_gateway_handoff.py` (0.3.12) drives the real `GatewayRunner` fatal
+handler and `_reconnect_backoff` to prove which plugin fatals Hermes requeues. It is **opt-in**: it is
+skipped before any import unless `FOXFLEET_TEST_GATEWAY_HANDOFF=1`, and then runs against the throwaway
+`HERMES_HOME` set by `conftest.py`. It is part of the **release gate**, pinned to Hermes
+`f9bdaa303e1614245cf1104db52ed0efd90b6f13` (its first test fails if the Hermes checkout on `PYTHONPATH`
+is any other commit; re-read `gateway/run_adapters.py` fatal handling before moving the pin). Release run:
+
+```bash
+FOXFLEET_TEST_GATEWAY_HANDOFF=1 FOXFLEET_TEST_NODE=... FOXFLEET_TEST_HUB_SERVER=... \
+  python -m pytest -p no:cacheprovider -q hermes-plugin/tests   # 0.3.12: 192 passed, 0 skipped
+```

@@ -19,6 +19,8 @@ if str(_PLUGIN_ROOT) not in sys.path:
 
 TEST_NODE = os.environ.get("FOXFLEET_TEST_NODE", "")
 TEST_HUB_SERVER = os.environ.get("FOXFLEET_TEST_HUB_SERVER", "")
+# Opt-in: test_gateway_handoff.py imports gateway.run (the one exception to the no-gateway.run rule).
+TEST_GATEWAY_HANDOFF = os.environ.get("FOXFLEET_TEST_GATEWAY_HANDOFF", "") == "1"
 
 for _name in list(os.environ):
     if _name.startswith("FOXFLEET_"):
