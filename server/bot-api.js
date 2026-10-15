@@ -121,7 +121,11 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const { conn } = session, parsed = parseBotFrame(text);
     if (!parsed.ok) { conn.send({ t: 'error', code: 'bad_frame', message: 'Frames are JSON objects with a string "t"' }); return conn.close(1008, 'bad frame'); }
     const v = validateRequest(parsed.frame);
-    if (!v.ok) return conn.send(v.id ? { t: 'res', id: v.id, ok: false, error: { code: v.code, message: v.message } } : { t: 'error', code: v.code, message: v.message });
+    if (!v.ok) {
+      // Invalid frames cost a token like valid ones, so a socket cannot flood the hub with rejected work for free.
+      try { takeToken(session.botId); } catch (e) { if (!(e instanceof BotError)) throw e; return conn.send(v.id ? { t: 'res', id: v.id, ok: false, error: { code: e.botCode, message: e.message, retry_after_ms: e.retry_after_ms } } : { t: 'error', code: e.botCode, message: e.message }); }
+      return conn.send(v.id ? { t: 'res', id: v.id, ok: false, error: { code: v.code, message: v.message } } : { t: 'error', code: v.code, message: v.message });
+    }
     if (v.t === 'ping') return conn.send({ t: 'pong', ...(v.id ? { id: v.id } : {}) });
     if (v.t === 'pong') return;
     const answer = (res) => { if (v.id) conn.send({ t: 'res', id: v.id, ...res }); else if (!res.ok) conn.send({ t: 'error', code: res.error.code, message: res.error.message }); };
@@ -267,11 +271,21 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (req.url !== '/api/bot/rpc') throw fault(400, 'Use the exact bot RPC path without a query string');
     if (!secureBotRequest({ remoteAddress: req.socket.remoteAddress, host: req.headers.host, xfp: req.headers['x-forwarded-proto'], trusted })) throw fault(403, 'Forbidden');
     const token = /^Bot (ffb_[A-Za-z0-9_-]{43})$/.exec(req.headers.authorization ?? '')?.[1];
-    throttle();
-    if (!token) throw fault(401, 'Unauthorized');
+    // Only failed authentication spends the shared per-IP login budget; authenticated requests are bounded by the bot's own bucket.
+    const unauthorized = () => { throttle.fail(); return fault(401, 'Unauthorized'); };
+    throttle.check();
+    if (!token) throw unauthorized();
     await tokens.ready();
     const id = tokens.verify(token), owner = id && ownerOf(id.scope);
-    if (!id || !owner || owner.disabled || gone.has(id.botId)) throw fault(401, 'Unauthorized');
+    if (!id || !owner || owner.disabled || gone.has(id.botId)) throw unauthorized();
+    // Every authenticated request costs one bot rate token BEFORE any store load or body read, so invalid or
+    // oversized bodies are bounded too. The frame is unread here, so the envelope carries id: null.
+    try { takeToken(id.botId); }
+    catch (e) {
+      if (!(e instanceof BotError)) throw e;
+      req.resume();
+      return sendJson(res, 200, { t: 'res', id: null, ok: false, error: { code: e.botCode, message: e.message, retry_after_ms: e.retry_after_ms } });
+    }
     const session = { ...id, fenced: false, authorized: () => !closing && !gone.has(id.botId) && Boolean(session.reg && agentOf(session.reg, id.botId)) && tokens.verify(token)?.botId === id.botId };
     requests.add(session);
     try {
@@ -290,7 +304,6 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       const answer = (out) => sendJson(res, 200, { t: 'res', id: v.id, ...out });
       if (!v.ok) return answer({ ok: false, error: { code: v.code, message: v.message } });
       try {
-        takeToken(id.botId);
         const out = await dispatch(session, v);
         return answer({ ok: true, result: out.result, ...(out.replayed ? { replayed: true } : {}) });
       } catch (e) {

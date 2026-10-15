@@ -132,7 +132,9 @@ Content-Type: application/json
 - The token is the only account/bot/agent authority. Such fields in the body are rejected, not used for routing.
   The path is exactly `/api/bot/rpc`: no trailing slash, query string (even an empty `?`), URL tokens or redirects.
   Clients must disable redirect following when sending credentials.
-- Same host/origin boundary, transport-security rule and per-IP auth throttle as socket admission. Browser-style
+- Same host/origin boundary and transport-security rule as socket admission. The per-IP auth throttle (shared with
+  logins) is spent only by **failed** bot authentication; an IP already over that limit is refused (429) even with a
+  valid token. Authenticated requests never spend it: they are bounded by the per-bot rate bucket instead. Browser-style
   cross-site requests are refused. Native clients can omit `Origin`; published proxy hosts must be explicitly trusted.
 - One **shared per-bot rate bucket** across HTTP and WebSocket. Idempotency keys and durable stores are also shared
   across transports and hub restarts. Replays do not duplicate activity or start a new run. A valid HTTP call can work
@@ -154,7 +156,7 @@ Content-Type: application/json
 | 404 | Feature flag off, or non-POST method (no redirect) |
 | 413 | Encoded request exceeds 1 MiB (declared or streamed) |
 | 415 | A body with a non-JSON Content-Type (the shared hub mutation boundary) |
-| 429 | Shared per-IP auth throttle; per-bot rate errors instead use HTTP 200 `res.error.code = "rate_limited"` |
+| 429 | The IP is over the shared per-IP auth throttle (spent only by failed authentication); per-bot rate errors instead use HTTP 200 `res.error.code = "rate_limited"` |
 | 503 | Token index/bot store unavailable, or hub shutting down |
 
 All admitted, syntactically valid JSON frames get a `res` envelope, even if the JSON value is not a frame object.
