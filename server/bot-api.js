@@ -46,7 +46,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   const STOP_MS = Number.isInteger(options.stopMs) && options.stopMs > 0 ? options.stopMs : 10_000;
 
   const storeFor = (scope, reg, botId) => { if (gone.has(botId)) throw fault(404, 'Not found'); let e = stores.get(botId); if (!e) stores.set(botId, e = { scope, store: botStore(path.join(reg.dir, 'bot', `${botId}.json`), limits) }); return e.store; };
-  const agentOf = (reg, botId) => reg.store.all().find((a) => a.connection === 'bot' && a.botId === botId);
+  // Per-agent rollout gate (FOXFLEET_BOT_AGENTS): a bot agent whose name is not allowed is treated as no bot at all,
+  // so its token authenticates nowhere (socket, /rpc, /media: 401) and it cannot mint one. null = every bot agent.
+  const allowAgent = typeof options.allowAgent === 'function' ? options.allowAgent : () => true;
+  const agentOf = (reg, botId) => reg.store.all().find((a) => a.connection === 'bot' && a.botId === botId && allowAgent(a.name));
 
   const fence = (s, code, reason) => { s.fenced = true; s.conn?.close(code, reason); };
   const current = (s) => !s.fenced && (s.authorized ? s.authorized() : sessions.get(s.botId) === s) && (() => { const o = ownerOf(s.scope); return Boolean(o && !o.disabled); })();
@@ -612,6 +615,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       const { req, res, parts, m } = c;
       if (parts[3] === 'bot-token' && parts.length === 4 && req.method === 'POST') {
         await c.readJson(req, 4096); c.current(m);
+        if (!allowAgent(m.name)) throw fault(403, 'The bot API is not enabled for this agent (FOXFLEET_BOT_AGENTS)');
         return c.sendJson(res, 201, await mint(c.scope, m));
       }
       if (parts[3] === 'bot-token' && parts.length === 4 && req.method === 'DELETE') {

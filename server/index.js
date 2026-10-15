@@ -130,7 +130,7 @@ async function streamResponse(req, res, getResponse, timeoutMs, headers, failure
   } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
 }
 
-export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botOptions = {} } = {}) {
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {} } = {}) {
   if (!validHost(host)) throw fault(400, 'Invalid bind host');
   if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
   if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
@@ -178,7 +178,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       commands: { sh: `curl -fsSL ${url} | sh`, powershell: `irm ${url}.ps1 | iex`, node: `curl -fsSL ${hub}/connector.mjs -o foxfleet-connector.mjs && node foxfleet-connector.mjs pair --hub ${hub} --code ${made.code}` } };
   }
   const ownerOf = (userId) => singleUser ? { id: 'local', role: 'owner' } : accounts.users().find((u) => u.id === userId);
-  const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: botOptions, log }) : null;
+  // FOXFLEET_BOT_AGENTS: comma-separated agent names allowed on the bot API (staged rollout, e.g. "sumi-native").
+  // Unset or empty = every bot agent (the pre-0.3.12 behaviour). Matching is exact and case-sensitive.
+  const botAllow = typeof botAgents === 'string' && botAgents.trim() ? new Set(botAgents.split(',').map((v) => v.trim()).filter(Boolean)) : null;
+  const allowBotAgent = (name) => !botAllow || botAllow.has(name);
+  const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: { ...botOptions, allowAgent: allowBotAgent }, log }) : null;
   const hubInfo = bot ? { ...HUB_INFO, features: [...HUB_FEATURES, 'botApi'] } : HUB_INFO;
   const publicAgent = (m) => ({ ...publicConnection(m), ...(m.connection === 'bot' ? { hasBotToken: Boolean(bot?.hasToken(m.botId)) } : {}) });
   const media = mediaHub({ connectors }); // MEDIA: tags -> cards (see media.js)
@@ -445,6 +449,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const data = await readJson(req);
           if (data?.connection === 'machine' || data?.machineId) throw fault(400, 'Machine agents are added by connecting a machine (Manage > Machines)');
           if (data?.connection === 'bot' && !bot) throw fault(400, 'Invalid connection mode');
+          if (data?.connection === 'bot' && !allowBotAgent(String(data?.name ?? ''))) throw fault(403, 'The bot API is not enabled for this agent (FOXFLEET_BOT_AGENTS)');
           const m = await store.add(data?.connection === 'bot' ? { ...data, botId: randomBytes(12).toString('hex') } : data);
           return sendJson(res, 201, { connection: publicAgent(m) });
         }
