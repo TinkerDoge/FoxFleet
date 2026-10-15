@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import { bootBot, bootHub, addBot, member, sseReader } from './bot-helpers.js';
+import { bootBot, bootHub, addBot, member, sseReader, upgradeStatus, PW } from './bot-helpers.js';
 
 const user = (text, extra = {}) => ({ messages: [{ role: 'user', content: text }], ...extra });
 const rpc = (b, frame, options = {}) => b.h.call('/api/bot/rpc', { data: frame, headers: { Authorization: `Bot ${b.token}` }, ...options });
@@ -96,7 +96,7 @@ test('HTTP and WebSocket share idempotency in both directions and after restart'
   assert.deepEqual((await transcript(b, id)).map((m) => m.content), ['hello', 'edited']);
 });
 
-test('HTTP and socket use one bot rate bucket; IP auth throttle is shared too', async (t) => {
+test('HTTP and socket use one bot rate bucket; authenticated requests do not spend the login throttle', async (t) => {
   const b = await bootBot(t, { botOptions: { rate: { burst: 2, perSec: 0.001 } } }), c = await b.connect(), id = await chat(b);
   assert.equal((await c.request({ t: 'message.send', id: 'w', chat_id: id, text: 'ws' })).ok, true);
   assert.equal((await (await rpc(b, { t: 'message.send', id: 'h', chat_id: id, text: 'http' })).json()).ok, true);
@@ -105,7 +105,39 @@ test('HTTP and socket use one bot rate bucket; IP auth throttle is shared too', 
   assert.equal((await c.request({ t: 'message.send', id: 'over-w', chat_id: id, text: 'no' })).error.code, 'rate_limited');
   assert.deepEqual((await transcript(b, id)).map((m) => m.content), ['hello', 'ws', 'http']);
   for (let i = 0; i < 58; i++) await rpc(b, { t: 'ping', id: 'unsupported' });
-  assert.equal((await rpc(b, { t: 'ping', id: 'throttled' })).status, 429);
+  assert.equal((await rpc(b, { t: 'ping', id: 'still-ok' })).status, 200, 'authenticated data-plane requests are bounded by the bot bucket, not the login throttle');
+});
+
+test('HTTP every authenticated request costs a bot rate token before the body is read, including invalid ones', async (t) => {
+  const b = await bootBot(t, { botOptions: { rate: { burst: 1, perSec: 0.0001 } } }), id = await chat(b);
+  assert.equal((await (await rpc(b, { t: 'message.send', id: 'ok', chat_id: id, text: 'x' })).json()).ok, true);
+  for (const body of ['{bad', JSON.stringify({ t: 'zzz', id: 'u' }), JSON.stringify({ t: 'ping', id: 'p' }), `{${' '.repeat(900_000)}bad`]) {
+    const r = await rawRpc(b, { body });
+    assert.equal(r.status, 200, 'refused as a rate-limited envelope, not parsed');
+    const out = JSON.parse(r.text); assert.equal(out.ok, false); assert.equal(out.error.code, 'rate_limited'); assert.ok(out.error.retry_after_ms > 0);
+  }
+  const ws = await b.connect();
+  const bad = await ws.request({ t: 'message.send', id: 'w1' });
+  assert.equal(bad.error.code, 'rate_limited', 'invalid socket frames cost a token too');
+});
+
+test('HTTP data-plane requests never spend the per-IP login throttle', async (t) => {
+  const b = await bootBot(t, { botOptions: { rate: { burst: 1000, perSec: 1000 } } }), id = await chat(b);
+  for (let i = 0; i < 80; i++) {
+    const r = await rpc(b, { t: 'chat.action', id: `a${i}`, chat_id: id, action: 'typing' });
+    assert.equal(r.status, 200); assert.equal((await r.json()).ok, true);
+  }
+  const login = await b.h.call('/api/auth/login', { token: '', data: { username: 'owner1', password: PW, client: 'app' } });
+  assert.equal(login.status, 200, 'owner login from the same IP still works after a busy bot');
+  assert.equal(await upgradeStatus(b.h.port, { token: b.token }), 101, 'the bot can still reconnect its socket');
+});
+
+test('HTTP failed bot authentication stays throttled per IP, and a locked-out IP is refused even with a valid token', async (t) => {
+  const b = await bootBot(t), bad = `Bot ffb_${'A'.repeat(43)}`;
+  let status = 0;
+  for (let i = 0; i < 70 && status !== 429; i++) status = (await rawRpc(b, { headers: { Authorization: bad }, body: JSON.stringify({ t: 'chat.action', id: 'x', chat_id: 'fc_AAAAAAAAAAAAAAAA', action: 'typing' }) })).status;
+  assert.equal(status, 429, 'token guessing is throttled');
+  assert.equal((await rpc(b, { t: 'ping', id: 'locked' })).status, 429, 'a throttled IP cannot slip a valid token through');
 });
 
 test('HTTP ownership refuses another bot/account/chat and user-authored mutations without authority fields', async (t) => {

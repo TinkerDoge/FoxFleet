@@ -132,7 +132,9 @@ Content-Type: application/json
 - The token is the only account/bot/agent authority. Such fields in the body are rejected, not used for routing.
   The path is exactly `/api/bot/rpc`: no trailing slash, query string (even an empty `?`), URL tokens or redirects.
   Clients must disable redirect following when sending credentials.
-- Same host/origin boundary, transport-security rule and per-IP auth throttle as socket admission. Browser-style
+- Same host/origin boundary and transport-security rule as socket admission. The per-IP auth throttle (shared with
+  logins) is spent only by **failed** bot authentication; an IP already over that limit is refused (429) even with a
+  valid token. Authenticated requests never spend it: they are bounded by the per-bot rate bucket instead. Browser-style
   cross-site requests are refused. Native clients can omit `Origin`; published proxy hosts must be explicitly trusted.
 - One **shared per-bot rate bucket** across HTTP and WebSocket. Idempotency keys and durable stores are also shared
   across transports and hub restarts. Replays do not duplicate activity or start a new run. A valid HTTP call can work
@@ -154,7 +156,7 @@ Content-Type: application/json
 | 404 | Feature flag off, or non-POST method (no redirect) |
 | 413 | Encoded request exceeds 1 MiB (declared or streamed) |
 | 415 | A body with a non-JSON Content-Type (the shared hub mutation boundary) |
-| 429 | Shared per-IP auth throttle; per-bot rate errors instead use HTTP 200 `res.error.code = "rate_limited"` |
+| 429 | The IP is over the shared per-IP auth throttle (spent only by failed authentication); per-bot rate errors instead use HTTP 200 `res.error.code = "rate_limited"` — over HTTP every authenticated request costs one bot token and rate-limited envelopes always carry `id: null` because the frame is not read |
 | 503 | Token index/bot store unavailable, or hub shutting down |
 
 All admitted, syntactically valid JSON frames get a `res` envelope, even if the JSON value is not a frame object.
@@ -279,7 +281,9 @@ Rules:
 - `chat.action` is transient (not stored); users following the chat see `event: foxfleet.bot` `{"action":"typing"}`.
 - `final: true` tells the hub the reply in this chat is complete (ends the user's live run, section 7).
 - Rate: a token bucket per bot (default 60 requests burst, 20/s refill), shared by all of the bot's connections;
-  `ack`, `ping` and `pong` are not counted. Over the limit: `rate_limited` with `retry_after_ms`, no state change.
+  `ack`, `ping` and `pong` are not counted on the socket. Over the limit: `rate_limited` with `retry_after_ms`, no state change.
+  Over HTTP every authenticated request (including `ping`, `ack`-shaped or unsupported frames) costs one bot token before its
+  body is read, so malformed or oversized bodies are bounded too.
 - `id` is required on every request except `ack`, `ping` and `pong`. An `ack` at or below the current ack answers
   `{"acked": N}` with the value sent and changes nothing.
 

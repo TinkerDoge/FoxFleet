@@ -310,6 +310,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   const clientIp = (req) => req.socket.remoteAddress || '';
   function authThrottle(req) { const ip = clientIp(req), now = Date.now(), a = authFails.get(ip) || { count: 0, until: now + 60000 }; if (a.until < now) { a.count = 0; a.until = now + 60000; } if (++a.count > 60) throw fault(429, 'Too many requests'); authFails.set(ip, a); if (authFails.size > 5000) authFails.clear(); }
+  /** Refuses an IP that is already over the limit without spending budget (authenticated bot data-plane requests). */
+  function authLocked(req) { const a = authFails.get(clientIp(req)); if (a && a.until >= Date.now() && a.count >= 60) throw fault(429, 'Too many requests'); }
   const sessionReply = (req, res, auth, user, client, deviceId, token) => sendJson(res, 200, { authenticated: true, user, deviceId, ...(client === 'app' ? { token } : {}) }, client === 'app' ? {} : { 'Set-Cookie': cookieFor(req, token) });
   function boundary(req, server) {
     if (typeof req.headers.host !== 'string' || /[\s\/\\@?#]/.test(req.headers.host)) throw fault(403, 'Untrusted host');
@@ -341,7 +343,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       let parts; try { parts = url.pathname.split('/').filter(Boolean).map(decodeURIComponent); } catch { throw fault(400, 'Invalid path'); }
       if (url.pathname === '/api/bot/rpc') {
         if (!bot || req.method !== 'POST') throw fault(404, 'Not found');
-        return await bot.rpc(req, res, { sendJson, throttle: () => authThrottle(req) });
+        return await bot.rpc(req, res, { sendJson, throttle: { check: () => authLocked(req), fail: () => authThrottle(req) } });
       }
       if (req.method === 'GET' && url.pathname === '/health') return sendJson(res, 200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/health/stream') { // `foxfleet doctor` uses this to see whether a proxy/tunnel buffers streaming responses: 4 chunks, 400 ms apart, nothing private
