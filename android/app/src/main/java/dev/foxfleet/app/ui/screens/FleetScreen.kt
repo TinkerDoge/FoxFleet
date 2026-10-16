@@ -1,5 +1,6 @@
 package dev.foxfleet.app.ui.screens
 
+import androidx.lifecycle.repeatOnLifecycle
 import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -101,7 +102,9 @@ fun FleetScreen(
     var entered by rememberSaveable { mutableStateOf(false) }
     val animateIn = !entered && !reduceMotion()
     LaunchedEffect(agents.isNotEmpty()) { if (agents.isNotEmpty()) entered = true }
-    LaunchedEffect(Unit) { while (true) { kotlinx.coroutines.delay(12_000); onPoll() } } // keeps previews, times and pins fresh while the list is open
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    // Keeps previews, times and pins fresh while the list is open and the app is in the foreground (no polling in the background).
+    LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (true) { kotlinx.coroutines.delay(12_000); onPoll() } } }
     var searching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
     val shown = remember(agents, query) {

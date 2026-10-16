@@ -32,4 +32,10 @@ class MachinesTest {
         assertEquals("https://hub.example.com", l.hub); assertEquals("ABCDEFGHJK", l.code)
         assertNull(HubAddress.parsePairLink("foxfleet://pair?hub=https%3A%2F%2Fh&code=short")); assertNull(HubAddress.parsePairLink("foxfleet://connect?hub=https%3A%2F%2Fh"))
     }
+
+    @Test fun pairingPollsOnlyWhileACodeWaits() {
+        org.junit.Assert.assertTrue(PairingState.Waiting.keepsPolling())
+        org.junit.Assert.assertFalse(PairingState.Expired.keepsPolling())
+        org.junit.Assert.assertFalse(PairingState.Paired(null).keepsPolling())
+    }
 }

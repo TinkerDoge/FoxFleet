@@ -44,6 +44,8 @@ import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.components.Hairline
 import dev.foxfleet.app.ui.components.SectionLabel
 import dev.foxfleet.app.ui.components.SoftCard
+import androidx.lifecycle.repeatOnLifecycle
+import dev.foxfleet.app.data.keepsPolling
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -73,15 +75,17 @@ fun MachinesScreen(api: HubApi, hub: String, initialCode: String?, onBack: () ->
     fun load() { scope.launch { try { machines = api.machines() } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't load machines"); if (machines == null) machines = emptyList() } } }
     fun start(id: String?) { scope.launch { try { error = null; machineId = id; state = PairingState.Waiting; pairing = if (id == null) api.createPairing() else api.rotateMachine(id) } catch (e: CancellationException) { throw e } catch (e: Exception) { error = scrubAddresses(e.message ?: "Couldn't create a code") } } }
     LaunchedEffect(Unit) { load() }
-    LaunchedEffect(pairing?.code) {
+    val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(pairing?.code, lifecycle) {
         val code = pairing?.code ?: return@LaunchedEffect
-        while (state !is PairingState.Expired) {
+        // Only while a code waits, and only in the foreground (paused with the app; resumes at once when it comes back).
+        lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (state.keepsPolling()) {
             try {
                 val s = api.pairingStatus(code)
                 state = if (s is PairingState.Paired && s.machine != null) s.copy(machine = api.machines().firstOrNull { it.id == s.machine.id } ?: s.machine) else s
             } catch (e: CancellationException) { throw e } catch (_: Exception) { }
-            delay(2000)
-        }
+            if (state.keepsPolling()) delay(2000)
+        } }
     }
     MachinesContent(machines, pairing, state, error, onBack = { if (pairing != null) { pairing = null; load(); onChanged() } else onBack() },
         onConnect = { start(null) }, onRepair = { start(it.id) }, onRevoke = { revoke = it }, onNewCode = { start(machineId) })

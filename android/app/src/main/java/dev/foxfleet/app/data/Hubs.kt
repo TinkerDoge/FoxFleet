@@ -33,6 +33,8 @@ sealed interface PairingState {
     data object Expired : PairingState
     data class Paired(val machine: Machine?) : PairingState
 }
+/** The 2 s pairing-status poll runs only while a code is still waiting (not after it paired or expired). */
+fun PairingState.keepsPolling(): Boolean = this is PairingState.Waiting
 /** foxfleet://pair?hub=…&code=… */
 data class PairLink(val hub: String, val code: String)
 
