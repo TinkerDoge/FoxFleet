@@ -18,7 +18,7 @@ bot connector) started it, and then fetches the newest page itself. **No message
 
 Types: `run_started`, `run_finished` (`state`: `done` / `error` / `stopped`), `approval`.
 
-Resume with `Last-Event-ID: <epoch>:<n>` or `?after=<epoch>:<n>`. Without a cursor the stream starts at "now". At most 8 streams
+Resume with `Last-Event-ID: <epoch>:<n>` or `?after=<epoch>:<n>`; a bare id without the epoch is answered with `foxfleet.gap` (it cannot be checked against a restart). Without a cursor the stream starts at "now". At most 8 streams
 per account (429). The bus is in memory: a hub restart changes the epoch, so every client gets `foxfleet.gap` and catches up.
 
 ## Client contract (Android 0.3.14)

@@ -54,7 +54,7 @@ test('bus: typed events only, no text, bounded, ids increase', () => {
 test('cursor: epoch:id, bare id, other epoch or future id is a gap, junk is fresh', () => {
   const b = liveBus({ epoch: 'ep' }); b.emit({ type: 'approval', agent: 'a' }); b.emit({ type: 'approval', agent: 'a' });
   assert.deepEqual(parseLiveCursor('ep:1', b), { after: 1, gap: false, fresh: false });
-  assert.deepEqual(parseLiveCursor('2', b), { after: 2, gap: false, fresh: false });
+  assert.equal(parseLiveCursor('2', b).gap, true, 'a bare id cannot be checked against a restart');
   assert.equal(parseLiveCursor('old:1', b).gap, true, 'hub restarted'); assert.equal(parseLiveCursor('ep:9', b).gap, true, 'future id');
   for (const v of ['', 'x y', '-1', '1e3', undefined]) assert.equal(parseLiveCursor(v, b).fresh, true, String(v));
 });
@@ -73,6 +73,17 @@ test('stream: ready, live push, heartbeat, resume by Last-Event-ID without dupli
   const g = sse(t, base + '?after=OLD:7'); await g.wait((f) => f.event === 'foxfleet.ready');
   assert.ok(g.frames.some((f) => f.event === 'foxfleet.gap'), 'cursor from an earlier hub process: gap'); assert.equal(g.lives().length, 0);
   const fresh = sse(t, base); await fresh.wait((f) => f.event === 'foxfleet.ready'); assert.equal(fresh.lives().length, 0, 'a fresh client starts at now');
+});
+
+test('stream: a cursor from an empty bus (epoch:0) that fell behind the buffer gets a gap; a bare id after a restart is a gap', async (t) => {
+  const b = liveBus({ epoch: 'Z', maxEvents: 5 }), base = await busServer(t, b);
+  for (let i = 0; i < 10; i++) b.emit({ type: 'run_finished', agent: 'a', chat: 's', state: 'done' });
+  const s = sse(t, base, { 'Last-Event-ID': 'Z:0' }); await s.wait((f) => f.event === 'foxfleet.ready');
+  assert.ok(s.frames.some((f) => f.event === 'foxfleet.gap'), 'gap marker, not a silent partial replay'); assert.equal(s.lives().length, 0);
+  const ok = sse(t, base, { 'Last-Event-ID': 'Z:6' }); await ok.wait((f) => f.event === 'foxfleet.ready');
+  assert.ok(!ok.frames.some((f) => f.event === 'foxfleet.gap')); assert.deepEqual(ok.lives().map((f) => f.id), ['Z:7', 'Z:8', 'Z:9', 'Z:10']);
+  const bare = sse(t, base, { 'Last-Event-ID': '2' }); await bare.wait((f) => f.event === 'foxfleet.ready');
+  assert.ok(bare.frames.some((f) => f.event === 'foxfleet.gap')); assert.equal(bare.lives().length, 0);
 });
 
 test('stream: too many streams is 429, a closed stream frees its slot, signed-out device is told', async (t) => {

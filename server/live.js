@@ -36,12 +36,12 @@ export function liveBus({ maxEvents = MAX_EVENTS, now = () => Date.now(), epoch 
   return bus;
 }
 
-/** `after` is "<epoch>:<id>" (or a bare id). A cursor from another epoch (hub restarted) or older than the buffer is a gap. */
+/** `after` is "<epoch>:<id>". A bare id (no epoch: it cannot be checked against a restart), another epoch (hub restarted), a future id or one older than the buffer is a gap. */
 export function parseLiveCursor(v, bus) {
   if (typeof v !== 'string' || !v) return { after: 0, gap: false, fresh: true };
   const m = /^(?:([A-Za-z0-9_-]{1,32}):)?(\d{1,15})$/.exec(v); if (!m) return { after: 0, gap: false, fresh: true };
   const id = Number(m[2]);
-  if ((m[1] && m[1] !== bus.epoch) || id > bus.cursor) return { after: 0, gap: true, fresh: false };
+  if (!m[1] || m[1] !== bus.epoch || id > bus.cursor) return { after: 0, gap: true, fresh: false };
   return { after: id, gap: false, fresh: false };
 }
 
@@ -52,7 +52,7 @@ export function attachLiveStream(req, res, bus, { cursor = '', keepAliveMs = HEA
   res.write(`retry: ${RETRY_MS}\n\n`);
   bus.streams++;
   const { events, first } = bus.since(c.after);
-  let gap = c.gap || (!c.fresh && c.after > 0 && c.after + 1 < first);
+  let gap = c.gap || (!c.fresh && c.after + 1 < first);
   if (gap) res.write(`event: foxfleet.gap\ndata: ${JSON.stringify({ cursor: `${bus.epoch}:${bus.cursor}` })}\n\n`);
   let last = gap ? bus.cursor : c.after, closed = false, ka, unsub = () => {};
   const send = (e) => { if (closed || e.id <= last) return; last = e.id; res.write(`id: ${bus.epoch}:${e.id}\nevent: live\ndata: ${JSON.stringify(e)}\n\n`); if (res.writableLength > MAX_BACKLOG) end(true); };
