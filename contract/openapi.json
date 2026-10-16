@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.13-alpha",
+    "version": "0.3.14-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -5299,6 +5299,58 @@
           }
         }
       }
+    },
+    "/api/live/stream": {
+      "get": {
+        "operationId": "liveStream",
+        "summary": "Live chat events for open clients (SSE, feature `live`).",
+        "description": "Server-Sent Events, no message text (docs/LIVE-EVENTS.md). Resume with Last-Event-ID or ?after=<epoch>:<n>; no cursor starts at now. Frames: `retry: 2000`; optional `event: foxfleet.gap` {cursor} (hub restarted or buffer overrun: do a full catch-up); `event: live` with `id: <epoch>:<n>` and {id,type,agent,chat,at,run_id?,state?,request_id?,kind?}, type one of run_started, run_finished, approval; once `event: foxfleet.ready` {contract:'foxfleet.live/1',cursor,heartbeat_ms} (no id); `: keep-alive` every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close. At most 8 streams per account (429).",
+        "tags": [
+          "live"
+        ],
+        "parameters": [
+          {
+            "name": "after",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 48
+            },
+            "description": "Cursor `<epoch>:<n>` (or a bare id); same as Last-Event-ID (this one wins)."
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 48
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "text/event-stream",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -5580,7 +5632,8 @@
                     "agentActivity",
                     "pin",
                     "hubInfo",
-                    "notify"
+                    "notify",
+                    "live"
                   ]
                 }
               }

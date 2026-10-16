@@ -11,7 +11,7 @@ const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-
 
 export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, maxRunMs = 30 * 60_000, maxActive = 8, keepAliveMs = 15_000, now = () => Date.now() } = {}) {
   const runs = new Map(); // id -> run
-  const finishListeners = [];
+  const finishListeners = [], startListeners = [];
 
   function sweep() { const t = now(); for (const [id, r] of runs) if (r.done && t - r.finished > ttlMs) runs.delete(id); }
   const push = (r, text) => {
@@ -47,10 +47,12 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
       const headers = check(up);
       const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', link: link || null, stopping: false, done: false, stopped: false, started: now(), finished: 0, log: [], text: '', onFinish, next: 1, bytes: 0, subs: new Set() };
       r.timer = setTimeout(() => { abort.abort(); }, maxRunMs); r.timer.unref?.();
-      runs.set(r.id, r); void pump(r, link || !/text\/event-stream/.test(up.headers?.get?.('content-type') ?? '') ? up.body : normaliseSse(up.body)); return r;
+      runs.set(r.id, r); for (const f of startListeners) { try { f(r); } catch { /* listeners are best effort */ } } void pump(r, link || !/text\/event-stream/.test(up.headers?.get?.('content-type') ?? '') ? up.body : normaliseSse(up.body)); return r;
     },
     /** Called for every run that ends (any agent, any user): the agent list's last-activity line uses it. */
     onFinish(fn) { finishListeners.push(fn); },
+    /** Called for every run that starts (after the agent accepted it): live chat events use it. */
+    onStart(fn) { startListeners.push(fn); },
     /** Is a reply running for this user and agent right now? */
     working(scope, agent) { for (const r of runs.values()) if (r.scope === scope && r.agent === agent && !r.done) return true; return false; },
     /** Reply text of this user's runs for an agent (running or just finished): lets the media hub know about a tag the moment it is written. */

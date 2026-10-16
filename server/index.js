@@ -23,6 +23,7 @@ import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
 import { notifyStore, attachNotifyStream, closeDeviceStreams } from './notify.js';
+import { liveBus, attachLiveStream } from './live.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
@@ -50,7 +51,7 @@ export const APP_ORIGIN = 'https://appassets.androidplatform.net';
 // What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
 /** Opt-in diagnostics (FOXFLEET_DEBUG=1): one JSON line per event, never message text or addresses. */
 const log = (event, data = {}) => { if (process.env.FOXFLEET_DEBUG) console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data })); };
-export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify'];
+export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify', 'live'];
 const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
 const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
@@ -144,7 +145,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
   const setupCode = accounts.needsSetup() && !loopback(host) ? (process.env.FOXFLEET_SETUP_CODE || randomBytes(9).toString('base64url')) : '';
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
-  const runs = runRegistry(); runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.notify.fromRun(r, state)).catch(() => {}); });
+  const runs = runRegistry();
+  runs.onStart((r) => { void registries.get(r.scope)?.then((reg) => reg.live.fromRunStart(r)).catch(() => {}); });
+  runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.live.fromRunFinish(r, state)).catch(() => {}); });
+  runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.notify.fromRun(r, state)).catch(() => {}); });
   runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
   // Per-user registry: own agents, secrets, upstream caches and screen tickets. Handlers reach it through these scoped views.
   function registryFor(userId, owner) {
@@ -153,8 +157,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const up = hermesClient(timeoutMs), reg = { dir, store: await configStore(owner ? cfgPath : path.join(dir, 'config.json')), upstream: up, artifacts: artifactRegistry(), screens: screenRelay(up), activity: await activityStore(path.join(dir, 'activity.json')) };
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
-      reg.notify = await notifyStore(path.join(dir, 'notify.json'));
-      reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); });
+      reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
+      reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); });
       return reg;
     })());
     return registries.get(userId);
@@ -480,6 +484,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const m = await store.add(data?.connection === 'bot' ? { ...data, botId: randomBytes(12).toString('hex') } : data);
           return sendJson(res, 201, { connection: publicAgent(m) });
         }
+      }
+      if (parts[0] === 'api' && parts[1] === 'live' && parts[2] === 'stream' && parts.length === 3 && req.method === 'GET') { // live chat events (docs/LIVE-EVENTS.md): resumable SSE, 15 s heartbeat
+        const device = singleUser ? null : auth.device;
+        return void attachLiveStream(req, res, ctx.reg.live, { cursor: url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined });
       }
       if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
         const nt = ctx.reg.notify, route = parts[2];
