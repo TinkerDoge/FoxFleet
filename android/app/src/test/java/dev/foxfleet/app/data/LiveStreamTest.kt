@@ -36,7 +36,7 @@ class LiveStreamRunnerTest {
             "retry: 2000\n\n" + ready("E:0") + live("E:1", "run_started") + ": keep-alive\n\n",
             ready("E:2") + live("E:2", "run_finished"),
         ))
-        val runner = LiveStreamRunner(LiveTransport { c -> cursors += c; val b = bodies.removeFirstOrNull() ?: return@LiveTransport LiveOpen(401, null, null); LiveOpen(200, "text/event-stream", StringReader(b)) }, sink, sleep = { sleeps += it }, random = { 1.0 })
+        val runner = LiveStreamRunner(LiveTransport { c, _ -> cursors += c; val b = bodies.removeFirstOrNull() ?: return@LiveTransport LiveOpen(401, null, null); LiveOpen(200, "text/event-stream", StringReader(b)) }, sink, sleep = { sleeps += it }, random = { 1.0 })
         assertEquals(LiveEnd.SignedOut, runner.run())
         assertEquals(listOf(null, "E:1"), cursors.take(2)) // resumes after the last event it saw
         assertEquals(listOf("run_started", "run_finished"), sink.events.map { it.type })
@@ -45,28 +45,46 @@ class LiveStreamRunnerTest {
 
     @Test fun gapAsksForCatchUpAndAdoptsHubCursor() = runTest {
         val sink = Sink(); var n = 0; val cursors = mutableListOf<String?>()
-        val runner = LiveStreamRunner(LiveTransport { c -> cursors += c; if (n++ == 0) LiveOpen(200, "text/event-stream", StringReader("event: foxfleet.gap\ndata: {}\n\n" + ready("NEW:5"))) else LiveOpen(401, null, null) }, sink, sleep = {}, random = { 0.0 })
+        val runner = LiveStreamRunner(LiveTransport { c, _ -> cursors += c; if (n++ == 0) LiveOpen(200, "text/event-stream", StringReader("event: foxfleet.gap\ndata: {}\n\n" + ready("NEW:5"))) else LiveOpen(401, null, null) }, sink, sleep = {}, random = { 0.0 })
         assertEquals(LiveEnd.SignedOut, runner.run())
         assertEquals(listOf(true), sink.connects)
         assertEquals("NEW:5", cursors[1])
     }
 
     @Test fun authFrameEndsSignedOutAnd404IsUnsupported() = runTest {
-        val r1 = LiveStreamRunner(LiveTransport { LiveOpen(200, "text/event-stream", StringReader(ready("E:0") + "event: foxfleet.auth\ndata: {\"reason\":\"signed_out\"}\n\n")) }, Sink(), sleep = {})
+        val r1 = LiveStreamRunner(LiveTransport { _, _ -> LiveOpen(200, "text/event-stream", StringReader(ready("E:0") + "event: foxfleet.auth\ndata: {\"reason\":\"signed_out\"}\n\n")) }, Sink(), sleep = {})
         assertEquals(LiveEnd.SignedOut, r1.run())
-        val r2 = LiveStreamRunner(LiveTransport { LiveOpen(404, "text/html", null) }, Sink(), sleep = {})
+        val r2 = LiveStreamRunner(LiveTransport { _, _ -> LiveOpen(404, "text/html", null) }, Sink(), sleep = {})
         assertEquals(LiveEnd.Unsupported, r2.run())
     }
 
     @Test fun failuresBackOffAndProxyPagesRetry() = runTest {
         val sleeps = mutableListOf<Long>(); var n = 0
-        val runner = LiveStreamRunner(LiveTransport {
+        val runner = LiveStreamRunner(LiveTransport { _, _ ->
             when (n++) { 0 -> throw IOException("timeout"); 1 -> LiveOpen(502, "text/html", StringReader("<html>")); 2 -> throw HubApiException(0, "Set the server address first"); else -> LiveOpen(401, null, null) }
         }, Sink(), sleep = { sleeps += it }, random = { 1.0 })
         assertEquals(LiveEnd.SignedOut, runner.run())
         assertEquals(listOf(1000L, 2000L, 4000L), sleeps)
         assertEquals(30_000L, LiveStreamRunner.delayMs(20, 1.0)); assertEquals(500L, LiveStreamRunner.delayMs(0, 0.0))
     }
+
+    @Test fun closeAbortsAConnectStillInProgress() {
+        val entered = java.util.concurrent.CountDownLatch(1); val aborted = java.util.concurrent.CountDownLatch(1)
+        lateinit var runner: LiveStreamRunner
+        runner = LiveStreamRunner(LiveTransport { _, cancel ->
+            val gate = java.util.concurrent.CountDownLatch(1)
+            cancel.onCancel { aborted.countDown(); gate.countDown() }
+            entered.countDown(); gate.await(5, java.util.concurrent.TimeUnit.SECONDS) // a blocking execute()
+            throw IOException("Canceled")
+        }, Sink(), sleep = { throw kotlinx.coroutines.CancellationException("stopped") })
+        val t = Thread { runCatching { kotlinx.coroutines.runBlocking { runner.run() } } }; t.start()
+        assertTrue(entered.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        runner.close()
+        assertTrue("close() reached the in-flight call", aborted.await(1, java.util.concurrent.TimeUnit.SECONDS))
+        t.join(5000); assertFalse(t.isAlive)
+    }
+
+    @Test fun cancelBeforeRegisterStillAborts() { val c = LiveCancel(); c.cancel(); var hit = false; c.onCancel { hit = true }; assertTrue(hit); assertTrue(c.cancelled) }
 
     @Test fun readTimeoutIsThreeHeartbeats() { assertEquals(45L, LiveStreamRunner.READ_TIMEOUT_SEC) }
 }

@@ -75,7 +75,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             } finally { clearingMedia = false }
         }
     }
-    override fun onCleared() { dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { null }; deactivateMedia(); super.onCleared() }
+    override fun onCleared() { dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { null }; stopLive(); deactivateMedia(); super.onCleared() }
 
 
     var prefs by mutableStateOf(settings.appPrefs); private set

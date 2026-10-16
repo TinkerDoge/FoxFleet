@@ -50,7 +50,16 @@ class LiveOpen(val status: Int, val contentType: String?, val body: Reader?, pri
 }
 
 /** Opens the stream with `Last-Event-ID` (null = start at now). Blocking; a silent link must surface as [IOException] (read timeout ≈ 3 missed heartbeats). */
-fun interface LiveTransport { fun open(cursor: String?): LiveOpen }
+fun interface LiveTransport { fun open(cursor: String?, cancel: LiveCancel): LiveOpen }
+
+/** The in-flight connect of one attempt: the transport registers how to abort it, [LiveStreamRunner.close] fires it (app to background). */
+class LiveCancel {
+    @Volatile private var action: (() -> Unit)? = null
+    @Volatile var cancelled = false; private set
+    /** Registers the abort; runs it at once when [cancel] already happened. */
+    fun onCancel(a: () -> Unit) { action = a; if (cancelled) a() }
+    fun cancel() { cancelled = true; action?.let { runCatching { it() } } }
+}
 
 interface LiveSink {
     /** A pushed event (live or replayed after a reconnect). */
@@ -76,11 +85,13 @@ class LiveStreamRunner(
     private val wake = Channel<Unit>(Channel.CONFLATED)
     @Volatile private var nudged = false
     @Volatile private var current: LiveOpen? = null
+    @Volatile private var connecting: LiveCancel? = null
     @Volatile var cursor: String? = null; private set
     @Volatile var connected = false; private set
 
     fun nudge() { nudged = true; wake.trySend(Unit) }
-    fun close() { current?.close() }
+    /** Stop: aborts a connect still in progress (so it never holds one of the hub's stream slots) and the open stream. */
+    fun close() { connecting?.cancel(); current?.close() }
 
     private suspend fun pause(ms: Long) { val s = sleep; if (s != null) s(ms) else withTimeoutOrNull(ms) { wake.receive() } }
 
@@ -91,7 +102,10 @@ class LiveStreamRunner(
             wake.tryReceive(); nudged = false
             var upSince: Long? = null
             try {
-                val open = transport.open(cursor); current = open
+                val cancel = LiveCancel(); connecting = cancel
+                val open = try { transport.open(cursor, cancel) } finally { connecting = null }
+                current = open
+                if (cancel.cancelled) { open.close(); currentCoroutineContext().ensureActive() }
                 open.use { o ->
                     when {
                         o.status == 401 -> return LiveEnd.SignedOut
