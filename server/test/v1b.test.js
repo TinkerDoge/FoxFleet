@@ -49,8 +49,27 @@ test('screen route refuses when the machine is offline (no stale ports)', async 
   const mock = await mockHermes(t), { base, call } = await hub(t), root = await fakeHermesHome(t, mock, { profiles: [] });
   const pr = runConnector(t, ['pair', '--hub', base, '--code', (await (await call('/api/machines/pairing', {})).json()).code, '--all', '--dashboard-port', String(mock.connection.dashboardPort)], { hermes: root, configDir: await tmpDir() });
   assert.ok(await waitFor(async () => (await (await call('/api/agents')).json()).agents.length), pr.out); pr.p.kill();
-  await waitFor(async () => !(await (await call('/api/agents')).json()).agents[0].online);
+  // Wait for the machine itself (its connector link) to be offline, not for a cached agent status.
+  assert.ok(await waitFor(async () => { const ms = (await (await call('/api/machines')).json()).machines; return ms.length === 1 && ms[0].online === false; }), 'machine never went offline');
+  assert.equal((await (await call('/api/agents')).json()).agents[0].online, false, 'the agent list follows the machine at once');
   const r = await call('/api/agents/default/screen/status'); assert.equal(r.status, 503); assert.equal((await r.json()).code, 'machine_offline');
+});
+
+test('agent probe cache: dropped when the machine connector disconnects and when it reconnects', async (t) => {
+  const mock = await mockHermes(t), { base, call } = await hub(t), root = await fakeHermesHome(t, mock, { profiles: [] }), cfgDir = await tmpDir();
+  const pr = runConnector(t, ['pair', '--hub', base, '--code', (await (await call('/api/machines/pairing', {})).json()).code, '--all', '--dashboard-port', String(mock.connection.dashboardPort)], { hermes: root, configDir: cfgDir });
+  const agent = async () => (await (await call('/api/agents')).json()).agents[0];
+  const machineOnline = async () => (await (await call('/api/machines')).json()).machines[0]?.online;
+  const up = await waitFor(async () => { const a = await agent(); return a?.online ? a : null; }); assert.ok(up, pr.out);
+  assert.equal((await agent()).checked_at, up.checked_at, 'cached inside the 10 s window');
+  pr.p.kill('SIGKILL'); assert.ok(await waitFor(async () => (await machineOnline()) === false), 'machine never went offline: ' + JSON.stringify((await (await call('/api/machines')).json())));
+  assert.equal((await agent()).online, false, 'disconnect: no cached "online"');
+  const run = runConnector(t, ['run'], { hermes: root, configDir: cfgDir });
+  assert.ok(await waitFor(async () => (await machineOnline()) === true), run.out);
+  const back = await waitFor(async () => { const a = await agent(); return a?.online ? a : null; }, { tries: 20, ms: 150 });
+  assert.ok(back, 'reconnect: the agent is online again within ~3 s, not after a cached offline result expires');
+  assert.ok(back.checked_at > up.checked_at, 'a fresh probe after the reconnect');
+  run.p.kill();
 });
 
 import { qrMatrix, qrSvg } from '../qr.js';

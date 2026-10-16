@@ -279,15 +279,20 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // Now: a result younger than PROBE_TTL_MS is reused as is; otherwise one probe per agent is shared by concurrent requests
   // (single-flight), and once an agent has any result the list waits at most PROBE_WAIT_MS for the fresh one, then answers with
   // the last result marked stale (the probe finishes in the background). Each view carries stale + checked_at (contract/openapi.json).
-  const PROBE_TTL_MS = probeTtlMs, PROBE_WAIT_MS = 1500, probeLast = new Map(), probeFlight = new Map();
+  // An offline/failed result is kept at most PROBE_FAIL_TTL_MS, and a machine's entries are dropped whenever its connector
+  // connects, disconnects or changes profiles (a cached "offline" used to outlive a reconnect, or "online" a disconnect, by 10 s).
+  const PROBE_TTL_MS = probeTtlMs, PROBE_FAIL_TTL_MS = 1500, PROBE_WAIT_MS = 1500, probeLast = new Map(), probeFlight = new Map();
+  const probeGen = new Map(); // machineId -> bumps on every connector change; a probe that started before one is not stored
+  connectors.onChange((machineId) => { probeGen.set(machineId, (probeGen.get(machineId) ?? 0) + 1); for (const [k, r] of probeLast) if (r.machineId === machineId) probeLast.delete(k); });
   function probeShared(m) {
     // Cheap, local answers (bot agents, a machine whose connector is down) are never cached: they must flip at once.
     if (m.connection === 'bot' || (m.machineId && !connectors.isOnline(m.machineId))) return probeAny(m).then((view) => ({ view, stale: false, at: Date.now() }));
     const k = JSON.stringify(m), last = probeLast.get(k);
-    if (last && Date.now() - last.at < PROBE_TTL_MS) return Promise.resolve({ view: last.view, stale: false, at: last.at });
+    if (last && Date.now() - last.at < (last.view?.online ? PROBE_TTL_MS : Math.min(PROBE_TTL_MS, PROBE_FAIL_TTL_MS))) return Promise.resolve({ view: last.view, stale: false, at: last.at });
     let p = probeFlight.get(k);
     if (!p) {
-      p = probeAny(m).then((view) => { const r = { view, at: Date.now() }; probeLast.delete(k); probeLast.set(k, r); if (probeLast.size > 500) probeLast.delete(probeLast.keys().next().value); return r; }).finally(() => probeFlight.delete(k));
+      const gen = probeGen.get(m.machineId);
+      p = probeAny(m).then((view) => { const r = { view, at: Date.now(), machineId: m.machineId ?? null }; if (probeGen.get(m.machineId) !== gen) return r; probeLast.delete(k); probeLast.set(k, r); if (probeLast.size > 500) probeLast.delete(probeLast.keys().next().value); return r; }).finally(() => probeFlight.delete(k));
       p.catch((error) => console.warn(`foxfleet: probe of ${m.name} failed: ${error?.message || error}`)); probeFlight.set(k, p);
     }
     const fresh = p.then((r) => ({ view: r.view, stale: false, at: r.at }));

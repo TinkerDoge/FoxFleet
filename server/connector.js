@@ -11,6 +11,7 @@ const HOP = new Set(['host', 'connection', 'keep-alive', 'proxy-connection', 'tr
 
 export function connectorHub() {
   const links = new Map(); // connectorId -> link
+  const changeListeners = new Set(), changed = (id, why) => { for (const fn of changeListeners) { try { fn(id, why); } catch (e) { console.warn(`foxfleet: connector change listener failed: ${e?.message || e}`); } } };
   const upListeners = new Set(); // called when a (re)connected machine has announced its native capabilities
   function forwarder(link, agent, svc) {
     const server = http.createServer((creq, cres) => {
@@ -43,13 +44,15 @@ export function connectorHub() {
     fetchMedia: (id, agent, filePath, o) => { const l = links.get(id); if (!l) return Promise.reject(Object.assign(new Error('The machine is offline'), { safe: true, status: 503 })); return l.fetchMedia(agent, filePath, o); },
     /** fn(machineId) runs each time a machine (re)connects and announces itself: the hub re-attaches live native sessions then. */
     onUp(fn) { upListeners.add(fn); return () => upListeners.delete(fn); },
+    /** fn(machineId, why) on connect ('up'), disconnect ('down') and profile/tunnel changes ('profiles'): status caches drop that machine. */
+    onChange(fn) { changeListeners.add(fn); return () => changeListeners.delete(fn); },
     drop: (id) => links.get(id)?.close(),
     isOnline: (id) => links.has(id),
     lastSeen: (id) => links.get(id)?.seen ?? null,
     async attach(connectorId, ws, hooks = {}) {
       links.get(connectorId)?.close(); // a new connection replaces the old one
       const link = { streams: new Map(), seen: Date.now(), servers: [], agents: new Set(), send: (o) => { try { ws.send(JSON.stringify(o)); } catch {} },
-        close() { this.closed = true; for (const [, p] of this.mediaPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { safe: true, status: 503 })); } this.mediaPending?.clear(); for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) { server.close(); server.closeAllConnections?.(); } for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); try { ws.close(); } catch {} } };
+        close() { this.closed = true; for (const [, p] of this.mediaPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { safe: true, status: 503 })); } this.mediaPending?.clear(); for (const [, p] of this.uiPending ?? []) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The machine disconnected'), { code: 'disconnected' })); } this.uiPending?.clear(); for (const fn of this.uiListeners ?? []) { try { fn('*', { kind: 'link.down' }); } catch {} } for (const { server } of this.servers) { server.close(); server.closeAllConnections?.(); } for (const a of this.agents) tunnelPorts.delete(`${connectorId}:${a}`); this.agents.clear(); for (const s of this.streams.values()) { try { (s.cres || s.socket).destroy(); } catch {} } this.streams.clear(); if (links.get(connectorId) === this) links.delete(connectorId); changed(connectorId, 'down'); try { ws.close(); } catch {} } };
       // Profiles the machine exposes: one pair of loopback forwarders each, replaced wholesale on every `profiles` frame.
       // Serialised, and aware of close(): a link that closes while a forwarder is still being created used to leak that listening
       // server (it was pushed after close() had already walked link.servers), which kept the process alive forever.
@@ -82,7 +85,8 @@ export function connectorHub() {
         },
         subscribe(fn) { link.uiListeners.add(fn); return () => link.uiListeners.delete(fn); },
       };
-      links.set(connectorId, link);
+      { const expose0 = link.expose; link.expose = (names) => expose0(names).finally(() => { if (!link.closed) changed(connectorId, 'profiles'); }); }
+      links.set(connectorId, link); changed(connectorId, 'up');
       ws.on('message', (text) => {
         link.seen = Date.now(); let m; try { m = JSON.parse(text); } catch { return; }
         if (m.t === 'ui-caps') { link.uiCaps = m.caps && typeof m.caps === 'object' ? m.caps : {}; for (const fn of upListeners) { try { fn(connectorId); } catch { /* a listener must not break the tunnel */ } } return; }

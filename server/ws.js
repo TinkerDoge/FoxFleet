@@ -87,6 +87,9 @@ export function wsAccept(req, socket, { protocol } = {}) {
   socket.write(['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Accept: ${acceptKey(key)}`, ...(protocol ? [`Sec-WebSocket-Protocol: ${protocol}`] : []), '', ''].join('\r\n'));
   const ws = new EventEmitter(), parse = frameParser();
   socket.on('data', (chunk) => { for (const f of parse(chunk)) { if (f.opcode === 1) ws.emit('message', f.data.toString('utf8')); else if (f.opcode === 2) ws.emit('binary', f.data); else if (f.opcode === 8) { socket.end(encodeFrame(8, f.data)); ws.emit('close'); } } });
+  // An upgraded HTTP socket is half-open capable: a peer that dies (FIN, no close frame) only emits 'end'. End our side too, or
+  // 'close' never fires and the hub keeps a dead machine 'online' (with its tunnel ports) until the next write fails.
+  socket.on('end', () => socket.end());
   socket.on('close', () => ws.emit('close'));
   ws.send = (text) => socket.write(encodeFrame(1, Buffer.from(text)));
   ws.sendBinary = (data) => socket.write(encodeFrame(2, data));
