@@ -63,7 +63,7 @@ test('Hermes sessions through the hub: list rows, paged messages are normalised'
   const mock = await mockHermes(t, { messages: ROWS }), { call } = await setup(t, [mock.connection]);
   const list = await (await call('/api/agents/fixture/sessions?limit=20')).json(); assert.equal(list.sessions[0].id, 'sess-1'); assert.equal(list.sessions[0].title, 'real session');
   const m = await (await call('/api/agents/fixture/sessions/sess-1/messages?limit=100')).json(); assert.equal(m.messages.length, 4); assert.equal(m.has_more, false);
-  const q = mock.requests.filter((r) => /messages$/.test(r.path)).at(-1).query; assert.equal(q.get('limit'), '100'); assert.equal(q.get('order'), 'latest');
+  const q = mock.requests.filter((r) => r.service === 'dashboard' && /messages$/.test(r.path)).at(-1).query; assert.equal(q.get('limit'), '100'); assert.equal(q.get('order'), 'latest');
 });
 
 test('slash-command catalog: the full bundled Hermes list for a Hermes agent', async (t) => {

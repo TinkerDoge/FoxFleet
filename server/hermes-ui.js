@@ -163,7 +163,8 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       const first = s.log[0]?.seq ?? s.next, truncated = after > 0 && after + 1 < first, missed = s.log.filter((e) => e.seq > after);
       s.viewers.add(push); return { events: missed, truncated, cursor: s.next - 1, unsubscribe: () => s.viewers.delete(push) };
     },
-    list: (scope, agent, stored) => journal.messages.filter((m) => m.scope === scope && m.agent === agent && m.session === stored).slice(-50).map(msgView),
+    // Newest 50 for one session: walk back from the end and stop at 50 (the journal is capped at KEEP_JOURNAL; this skips the full filter + copy).
+    list: (scope, agent, stored) => { const out = []; for (let i = journal.messages.length - 1; i >= 0 && out.length < 50; i--) { const m = journal.messages[i]; if (m.scope === scope && m.agent === agent && m.session === stored) out.push(m); } return out.reverse().map(msgView); },
     reconcileFor: (scope, agent, stored, snapshot) => { own(scope, stored); const s = [...sessions.values()].find((x) => x.agent === agent && x.stored === stored); if (s) reconcile(s, snapshot); },
     async flush() { await save(); await writing; },
     _journal: () => journal,

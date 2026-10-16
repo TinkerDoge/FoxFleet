@@ -32,7 +32,7 @@ test('privacy: agent and connection lists, detail, kinds and test results contai
   assert.equal(desk.status, 201); const created = await desk.json(); assertNoLeaks('create', created); assert.equal(created.connection.hasHost, true); assert.equal(created.connection.hasApiServerUrl, true);
   const agents = await (await request('/api/agents')).json(); assertNoLeaks('/api/agents', agents);
   for (const a of agents.agents) {
-    assert.deepEqual(Object.keys(a).filter((k) => !['id', 'name', 'displayName', 'kind', 'order', 'description', 'avatar', 'status', 'online', 'chatReady', 'managementReady', 'capabilities', 'activeSessions', 'last_activity_at', 'last_session_title', 'last_message_preview', 'last_role', 'pinned', 'pin_order', 'working', 'needs_input', 'lastSeen', 'checks'].includes(k)), [], a.name);
+    assert.deepEqual(Object.keys(a).filter((k) => !['id', 'name', 'displayName', 'kind', 'order', 'description', 'avatar', 'status', 'online', 'chatReady', 'managementReady', 'capabilities', 'activeSessions', 'stale', 'checked_at', 'last_activity_at', 'last_session_title', 'last_message_preview', 'last_role', 'pinned', 'pin_order', 'working', 'needs_input', 'lastSeen', 'checks'].includes(k)), [], a.name);
     for (const k of ['host', 'profile', 'baseUrl', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'model', 'version']) assert.equal(a[k], undefined, `${a.name}.${k}`);
   }
   assert.deepEqual(agents.agents.map((a) => a.kind), ['hermes', 'hermes']);

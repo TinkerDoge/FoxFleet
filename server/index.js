@@ -130,7 +130,7 @@ async function streamResponse(req, res, getResponse, timeoutMs, headers, failure
   } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
 }
 
-export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {} } = {}) {
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, probeTtlMs = 10_000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {} } = {}) {
   if (!validHost(host)) throw fault(400, 'Invalid bind host');
   if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
   if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
@@ -275,22 +275,25 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
   function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
-  // GET /api/agents is polled every 12 s by every open web/Android client and used to wait for the slowest agent's live probe
-  // (3 upstream calls each, 5 s timeout): one hung agent made the whole list take 5 s. Probes are now shared between concurrent
-  // requests (single-flight), and once an agent has a known result the list waits at most PROBE_WAIT_MS for a fresh one, then
-  // answers with the last result while the probe finishes in the background.
-  const PROBE_WAIT_MS = 1500, probeLast = new Map(), probeFlight = new Map();
+  // GET /api/agents is polled by every open web/Android client, and used to wait for the slowest agent's live probe each time.
+  // Now: a result younger than PROBE_TTL_MS is reused as is; otherwise one probe per agent is shared by concurrent requests
+  // (single-flight), and once an agent has any result the list waits at most PROBE_WAIT_MS for the fresh one, then answers with
+  // the last result marked stale (the probe finishes in the background). Each view carries stale + checked_at (contract/openapi.json).
+  const PROBE_TTL_MS = probeTtlMs, PROBE_WAIT_MS = 1500, probeLast = new Map(), probeFlight = new Map();
   function probeShared(m) {
-    const k = JSON.stringify(m);
+    // Cheap, local answers (bot agents, a machine whose connector is down) are never cached: they must flip at once.
+    if (m.connection === 'bot' || (m.machineId && !connectors.isOnline(m.machineId))) return probeAny(m).then((view) => ({ view, stale: false, at: Date.now() }));
+    const k = JSON.stringify(m), last = probeLast.get(k);
+    if (last && Date.now() - last.at < PROBE_TTL_MS) return Promise.resolve({ view: last.view, stale: false, at: last.at });
     let p = probeFlight.get(k);
     if (!p) {
-      p = probeAny(m).then((v) => { probeLast.delete(k); probeLast.set(k, v); if (probeLast.size > 500) probeLast.delete(probeLast.keys().next().value); return v; }).finally(() => probeFlight.delete(k));
-      p.catch(() => {}); probeFlight.set(k, p); // the rejection still reaches the caller that awaits p
+      p = probeAny(m).then((view) => { const r = { view, at: Date.now() }; probeLast.delete(k); probeLast.set(k, r); if (probeLast.size > 500) probeLast.delete(probeLast.keys().next().value); return r; }).finally(() => probeFlight.delete(k));
+      p.catch((error) => console.warn(`foxfleet: probe of ${m.name} failed: ${error?.message || error}`)); probeFlight.set(k, p);
     }
-    const last = probeLast.get(k);
-    if (!last) return p;
-    let timer; const stale = new Promise((r) => { timer = setTimeout(() => r(last), PROBE_WAIT_MS); timer.unref?.(); });
-    return Promise.race([p, stale]).finally(() => clearTimeout(timer));
+    const fresh = p.then((r) => ({ view: r.view, stale: false, at: r.at }));
+    if (!last) return fresh;
+    let timer; const old = new Promise((r) => { timer = setTimeout(() => r({ view: last.view, stale: true, at: last.at }), PROBE_WAIT_MS); timer.unref?.(); });
+    return Promise.race([fresh, old]).finally(() => clearTimeout(timer));
   }
   // Which native run controls this Hermes profile advertises (GET /v1/capabilities), cached briefly. Other kinds have none.
   const nativeCache = new Map();
@@ -526,7 +529,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
-        const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, agentView(m, await probeShared(m), i)))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
+        const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, await probeShared(m).then((p) => ({ ...agentView(m, p.view, i), stale: p.stale, checked_at: p.at }))))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];

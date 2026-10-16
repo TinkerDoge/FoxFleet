@@ -55,6 +55,8 @@
           "message": "hub 0.3.5-alpha · agent: media tags in replies"
         }
       },
+      "stale": false,
+      "checked_at": 1791407500000,
       "last_activity_at": 1791407520500,
       "last_session_title": "real session",
       "last_message_preview": "Here is the plan we agreed on",

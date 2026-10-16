@@ -2003,6 +2003,26 @@
           },
           "404": {
             "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "description": "The agent could not serve the history; `code` is agent_offline, auth_failed or upstream_error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The agent did not answer in time (`code`: timeout)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         },
         "parameters": [
@@ -5462,7 +5482,7 @@
           },
           "code": {
             "type": "string",
-            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes."
+            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md)."
           }
         }
       },
@@ -5979,6 +5999,14 @@
           "needs_input": {
             "type": "boolean",
             "description": "An approval or clarification request is open (native Hermes)"
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "true: the live probe of this agent did not finish in time for this response, so the status fields (online, chatReady, managementReady, checks, ...) are the last known result from checked_at. A fresh probe is still running; the next poll picks it up. See docs/API-ERRORS.md."
+          },
+          "checked_at": {
+            "type": "integer",
+            "description": "Unix ms when the status fields were last probed. Results are reused for about 10 s."
           }
         }
       },
