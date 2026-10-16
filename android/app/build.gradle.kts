@@ -69,6 +69,7 @@ android {
         unitTests.all {
             it.maxHeapSize = "1g"
             it.forkEvery = 8
+            it.maxParallelForks = 1 // explicit for CI: one test JVM at a time on 2-core runners
         }
     }
 }
