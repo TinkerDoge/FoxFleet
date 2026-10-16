@@ -2,7 +2,17 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.3.12-alpha)
+## Unreleased (0.3.13-alpha)
+
+- Hub: agent list (`GET /api/agents`) probes are cached ~10 s, shared between concurrent requests, give up after ~2.5 s (was 5 s), and a slow agent is answered from its last result within ~1.5 s; each agent carries `stale` + `checked_at` (contract/openapi.json, docs/API-ERRORS.md). One hung agent no longer makes every 12 s poll take 5 s.
+- Hub: session history asks the agent dashboard and API server in parallel (dashboard preferred, API used if the dashboard fails or is >1 s slower) and fails with a specific `code`: `agent_offline`, `timeout` (504), `auth_failed`, `upstream_error`; every failure is logged (`history.failed`).
+- Hub: the native session message list stops at the newest 50 instead of filtering the whole journal.
+- Web: machines list refreshes every 30 s (was 8 s) and not while the tab is hidden; pairing status polls every 2 s only while a code waits.
+- Android: fleet and pairing polls run only while the app is in the foreground; pairing stops once paired.
+- Android tests: Robolectric runs under a test Application that keeps Coil off background threads (fixes the CI exit 134 JniConstants abort, coil#3049) and registers ComponentActivity for release unit tests (fixes 178 "Unable to resolve activity" failures); explicit `maxParallelForks = 1`.
+- Version 0.3.13-alpha, Android versionCode 26.
+
+## 0.3.12-alpha (not tagged; Android versionCode 25)
 
 - Hub: the bot WebSocket (`/api/bot/ws`) no longer spends the per-IP login budget on authenticated upgrades; only failed credentials do. Valid reconnects use a per-bot connect bucket (429 when exceeded).
 - Hermes plugin: a message held behind a gateway drain and then processed no longer risks a false "not processed, please resend" notice after a crash: a failed save of the held-record removal is retried immediately and then in the background, not only on the next reconnect. The retries never block the event loop.
