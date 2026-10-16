@@ -2,7 +2,14 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.3.13-alpha)
+## Unreleased (0.3.14-alpha)
+
+- Fix (Android liveliness): new messages and task/status updates in the open chat now appear without reopening it from history. Root cause: the app had no live channel for a chat it did not send into itself; the open chat was only filled by its own reply stream, reopening a chat already in memory did not refetch, and only the fleet list polled (every 12 s). The notification stream only fed system notifications.
+- Hub: live chat events `GET /api/live/stream` (feature `live`, docs/LIVE-EVENTS.md): per-account in-memory bus pushing `run_started`, `run_finished` (with `state`) and `approval` for every chat run, whichever client started it. No message text on the wire. Resumable by `Last-Event-ID` (`<epoch>:<id>`), `foxfleet.gap` after a hub restart or a buffer overrun, `foxfleet.ready`, heartbeat comment every 15 s (`FOXFLEET_LIVE_HEARTBEAT_MS`) so Cloudflare's 100 s idle cut never fires, at most 8 streams per account, signed-out devices are told (`foxfleet.auth`).
+- Android: `LiveStreamRunner` holds the stream while the app is in the foreground (45 s read timeout = 3 missed heartbeats, backoff 1 s→30 s with jitter, immediate retry when the app returns). Events for the open chat fetch its newest page and append only what is new; a reply started elsewhere in the open chat is followed live; approvals refresh the card queue; any event refreshes the agent list (debounced). After every reconnect or gap the open chat and the list catch up. Fallback newest-page check of the open chat every 20 s without the stream (older hub) and every 60 s with it, for messages that never pass through the hub. Reopening a chat already in memory catches it up.
+- Version 0.3.14-alpha, Android versionCode 27.
+
+## 0.3.13-alpha (not tagged; Android versionCode 26)
 
 - Hub: agent list (`GET /api/agents`) probes are cached ~10 s, shared between concurrent requests, give up after ~2.5 s (was 5 s), and a slow agent is answered from its last result within ~1.5 s; each agent carries `stale` + `checked_at` (contract/openapi.json, docs/API-ERRORS.md). One hung agent no longer makes every 12 s poll take 5 s.
 - Hub: session history asks the agent dashboard and API server in parallel (dashboard preferred, API used if the dashboard fails or is >1 s slower) and fails with a specific `code`: `agent_offline`, `timeout` (504), `auth_failed`, `upstream_error`; every failure is logged (`history.failed`).
