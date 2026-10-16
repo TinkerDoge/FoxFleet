@@ -16,12 +16,15 @@ function Copy({ text, label = t('machines.copy') }: { text: string; label?: stri
 export const profileLine = (m: Machine) => (m.profiles.length ? m.profiles.map((p) => p.agent).join(', ') : t('machines.noProfiles'));
 export const foundLine = (m: Machine) => (m.profiles.length === 1 ? t('machines.found1', { names: profileLine(m) }) : t('machines.found', { n: m.profiles.length, names: profileLine(m) }));
 
+/** Machines list refresh (was 8 s); pairing status still polls every 2 s while a code waits. */
+export const MACHINES_POLL_MS = 30_000;
+
 /** Owner screen section: connected machines (status, profiles, last seen) and the "Connect a machine" flow. */
 export function Machines({ client, onChanged, onAuthLost }: { client: Client; onChanged: () => void; onAuthLost: () => void }) {
   const [list, setList] = useState<Machine[] | null>(null), [error, setError] = useState<string | null>(null), [pairing, setPairing] = useState<{ p: Pairing; machineId?: string } | null>(null);
   const guard = async (fn: () => Promise<void>) => { try { setError(null); await fn(); } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); else setError(fail(e)); } };
   const load = () => guard(async () => setList(await client.machines()));
-  useEffect(() => { void load(); const id = setInterval(() => { if (!pairing) void load(); }, 8000); return () => clearInterval(id); }, [pairing]);
+  useEffect(() => { void load(); const id = setInterval(() => { if (!pairing && document.visibilityState !== 'hidden') void load(); }, MACHINES_POLL_MS); return () => clearInterval(id); }, [pairing]);
   const start = (machineId?: string) => guard(async () => setPairing({ p: machineId ? await client.rotateMachine(machineId) : await client.createPairing(), machineId }));
   const rename = (m: Machine) => { const name = prompt(t('machines.newName'), m.name)?.trim(); if (name && name !== m.name) void guard(async () => { await client.renameMachine(m.id, name); await load(); }); };
   const revoke = (m: Machine) => { if (confirm(t('machines.confirmRevoke', { name: m.name }))) void guard(async () => { await client.revokeMachine(m.id); await load(); onChanged(); }); };
@@ -54,9 +57,10 @@ function PairPanel({ client, first, machineId, onClose, onAuthLost }: { client: 
   const [p, setP] = useState(first), [tab, setTab] = useState<'sh' | 'powershell' | 'node'>('sh'), [state, setState] = useState<'waiting' | 'expired' | 'paired'>('waiting'), [machine, setMachine] = useState<Machine | null>(null), [error, setError] = useState<string | null>(null);
   const live = useRef(true); useEffect(() => () => { live.current = false; }, []);
   useEffect(() => {
-    if (state === 'expired') return;
+    if (state === 'expired' || state === 'paired') return; // 2 s polling only while a pairing code is waiting
     let stop = false;
     const tick = async () => {
+      if (document.visibilityState === 'hidden') return;
       try {
         const s = await client.pairingStatus(p.code); if (stop || !live.current) return;
         if (s.state === 'paired') { setState('paired'); const m = (await client.machines()).find((x) => x.id === (s.machine?.id)) ?? s.machine ?? null; if (m) setMachine(m); }
@@ -64,7 +68,7 @@ function PairPanel({ client, first, machineId, onClose, onAuthLost }: { client: 
       } catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); }
     };
     void tick(); const id = setInterval(tick, 2000); return () => { stop = true; clearInterval(id); };
-  }, [p.code, state === 'expired']);
+  }, [p.code, state === 'expired' || state === 'paired']);
   const renew = async () => { try { setError(null); const n = machineId ? await client.rotateMachine(machineId) : await client.createPairing(); setP(n); setState('waiting'); setMachine(null); } catch (e) { setError(fail(e)); } };
   const cmd = p.commands[tab];
   return (
