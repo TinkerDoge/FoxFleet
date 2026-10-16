@@ -88,6 +88,7 @@ const ENV = {
   NOTE_PYTHON: ['Test helper only (`server/test/agent-note.test.js`): Python with PyYAML used to check the `config.yaml` edit round trip.', '/tmp/hv/bin/python', 'tests'],
   UPDATE_GOLDEN: ['Test helper only: rewrites `contract/agent-note.golden.txt` from the generated agent note.', '-', 'tests'],
   FOXFLEET_NOTIFY_HEARTBEAT_MS: ['Hub: interval between keep-alive pings on the notification stream (`GET /api/notify/stream`), in milliseconds. Tests shorten it.', 'built-in default', 'hub'],
+  FOXFLEET_LIVE_HEARTBEAT_MS: ['Hub: interval between keep-alive pings on the live chat event stream (`GET /api/live/stream`), in milliseconds (default 15000, well under the 100 s Cloudflare idle cut). Tests shorten it.', 'built-in default', 'hub'],
   CHROME: ['Test helper only (`server/test/screen-dom.test.js`): path of a Chrome or Chromium binary for the screen DOM tests; they are skipped when none is found.', 'auto-detected, else tests skipped', 'tests'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
