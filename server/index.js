@@ -275,6 +275,23 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return upstream.probe(m).then((a) => ({ kind: 'hermes', ...a, ...(m.machineId ? { checks: { connector: { ok: true, message: 'Machine online' }, ...a.checks } } : {}) }));
   }
   function current(m) { if (!store.isCurrent(m)) throw fault(409, 'Connection changed; retry the request'); }
+  // GET /api/agents is polled every 12 s by every open web/Android client and used to wait for the slowest agent's live probe
+  // (3 upstream calls each, 5 s timeout): one hung agent made the whole list take 5 s. Probes are now shared between concurrent
+  // requests (single-flight), and once an agent has a known result the list waits at most PROBE_WAIT_MS for a fresh one, then
+  // answers with the last result while the probe finishes in the background.
+  const PROBE_WAIT_MS = 1500, probeLast = new Map(), probeFlight = new Map();
+  function probeShared(m) {
+    const k = JSON.stringify(m);
+    let p = probeFlight.get(k);
+    if (!p) {
+      p = probeAny(m).then((v) => { probeLast.delete(k); probeLast.set(k, v); if (probeLast.size > 500) probeLast.delete(probeLast.keys().next().value); return v; }).finally(() => probeFlight.delete(k));
+      p.catch(() => {}); probeFlight.set(k, p); // the rejection still reaches the caller that awaits p
+    }
+    const last = probeLast.get(k);
+    if (!last) return p;
+    let timer; const stale = new Promise((r) => { timer = setTimeout(() => r(last), PROBE_WAIT_MS); timer.unref?.(); });
+    return Promise.race([p, stale]).finally(() => clearTimeout(timer));
+  }
   // Which native run controls this Hermes profile advertises (GET /v1/capabilities), cached briefly. Other kinds have none.
   const nativeCache = new Map();
   async function nativeFor(m) {
@@ -509,7 +526,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
-        const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, agentView(m, await probeAny(m), i)))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
+        const agents = await Promise.all(originalConnections.map(async (m, i) => withActivity(ctx, m, agentView(m, await probeShared(m), i)))); originalConnections.forEach(current); return sendJson(res, 200, { agents: sortAgents(agents) }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
