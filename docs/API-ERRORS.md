@@ -20,11 +20,12 @@ The hub asks the agent's dashboard and its API server at the same time and uses 
 | status | `code`           | meaning                                                                                       | suggested UI                                          |
 |--------|------------------|-----------------------------------------------------------------------------------------------|-------------------------------------------------------|
 | 502    | `agent_offline`  | The agent's machine or ports are unreachable, e.g. the connector isn't running or the machine is asleep | "Agent offline", plus Retry                           |
-| 502    | `auth_failed`    | The agent rejected the hub's credentials (profile or key mismatch). **The user's login is fine.** | "Agent needs reconnecting", pointing to Machines/doctor |
+| 502 or 403 | `auth_failed` | The **agent** rejected the **hub's** credentials (profile or key mismatch on the agent's machine). It's never about the user's own login or permissions, even when the status is 403 (the agent's 403 is passed through). | "Agent needs reconnecting", pointing to Machines/doctor; don't show "you don't have permission" |
 | 504    | `timeout`        | The agent didn't answer within the hub's timeout (5 s per attempt)                            | "Agent is slow", plus Retry                           |
 | 502    | `upstream_error` | The agent answered with an error or something it couldn't read                                | "Couldn't load this chat", plus Retry                 |
 
 Notes:
+- Fallback cap: when the dashboard fails or is slow and the API server answers instead, an **unpaged** history request returns at most the newest **500** messages (the Hermes API server's own cap); the dashboard may return more. Paged requests (`limit`/`offset`, which the web and Android apps use, 80 per page) are unaffected.
 - A history failure is never a 401. Only a 401 means the user's own login expired.
 - The hub logs every failure as one line, e.g. `{"event":"history.failed","agent":…,"attempts":[{"via":"dashboard","code":…,"status":…},{"via":"api",…}]}`. Secrets are not included.
 - Other routes that call the agent can return the same codes, depending on which way the request failed (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`).
