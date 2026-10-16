@@ -91,6 +91,8 @@ const ENV = {
   CHROME: ['Test helper only (`server/test/screen-dom.test.js`): path of a Chrome or Chromium binary for the screen DOM tests; they are skipped when none is found.', 'auto-detected, else tests skipped', 'tests'],
   MOCK_API_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
   MOCK_DASH_PORT: ['Test helper only (`server/test/mock-hermes.js`).', '-', 'tests'],
+  FOXFLEET_BOT_API: ['Set to `1` to turn on the bot API (`/api/bot/ws`, `/api/bot/rpc`, `/api/bot/media`, bot-token routes). Unset, every bot route answers 404. See `docs/BOT-API-ROLLOUT.md`.', 'unset (off)', 'hub'],
+  FOXFLEET_BOT_AGENTS: ['With `FOXFLEET_BOT_API=1`: comma-separated agent names allowed on the bot API, or `*` for all. Unset or empty denies every bot agent.', 'unset (deny all)', 'hub'],
 };
 const found = new Set();
 const scan = (dir) => { for (const e of readdirSync(dir, { withFileTypes: true })) { if (e.name === 'node_modules') continue; const f = resolve(dir, e.name); if (e.isDirectory()) scan(f); else if (/\.(js|mjs)$/.test(e.name)) for (const m of readFileSync(f, 'utf8').matchAll(/process\.env\.([A-Z][A-Z0-9_]+)/g)) found.add(m[1]); } };

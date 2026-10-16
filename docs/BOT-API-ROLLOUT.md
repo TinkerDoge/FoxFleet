@@ -51,7 +51,7 @@ Sumi's Hermes profile (host running sumi's gateway; UNVERIFIED which machine, ch
 8. Profile `config.yaml`:
    ```yaml
    foxfleet:
-     hub_url: https://fleet.indc.io.vn
+     hub_url: https://<your-host>
    stt:
      provider: local   # pin: voice must never auto-route to a cloud STT (Groq/OpenAI/xAI...) if keys exist
    ```
