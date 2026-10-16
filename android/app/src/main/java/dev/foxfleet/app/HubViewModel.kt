@@ -124,7 +124,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun switchHub(id: String) { settings.switchHub(id); resetForHubChange(); boot() }
     fun removeHub(id: String) { settings.removeHub(id); resetForHubChange(); route = Route.Fleet; boot() }
     private fun resetForHubChange() {
-        authGeneration++; deactivateMedia()
+        authGeneration++; deactivateMedia(); stopLive()
         dev.foxfleet.app.notify.NotifyController.onHubChanged(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear(); skills.clear()
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; username = ""; isOwner = false
@@ -194,6 +194,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 }
             }
             if (authed == true) { dev.foxfleet.app.notify.NotifyController.onAuthed(getApplication(), settings.activeHubId, username); refreshFleet() }
+            syncLive()
         }
     }
 
@@ -202,7 +203,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun onLoggedIn() { inviteDraft = ""; boot() }
 
     fun signOut() {
-        authGeneration++; deactivateMedia(purge = true)
+        authGeneration++; deactivateMedia(purge = true); stopLive()
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
@@ -247,7 +248,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun navigate(r: Route) {
         val leaving = (route as? Route.Chat)?.agent
         if (leaving != null && (r as? Route.Chat)?.agent != leaving) viewModelScope.launch { delay(900); refreshFleet(silent = true); delay(600); settings.markSeen(leaving, agents.firstOrNull { it.name == leaving }?.lastActivityAt) } // what arrived while you were in the chat is read
-        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent); settings.savedChat(r.agent).session?.let { dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), r.agent, it) } }
+        if (r is Route.Chat) { settings.lastAgent = r.agent; chatFor(r.agent).markRead(); restore(r.agent); catchUp(r.agent); /* reopening a chat already in memory used to show it as it was when you left */ settings.savedChat(r.agent).session?.let { dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), r.agent, it) } }
         dev.foxfleet.app.notify.NotifyForeground.agent = (r as? Route.Chat)?.agent
         route = r
     }
@@ -265,6 +266,96 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState().also { s -> s.persist = { c -> settings.saveChat(agent, c) } } }
 
     fun agent(name: String): AgentStatus? = agents.firstOrNull { it.name == name }
+
+    // ---- live updates (0.3.14): the hub pushes run/approval events; the open chat catches up without a reload ----
+    private var foreground = false
+    private var liveJob: Job? = null
+    private var liveRunner: dev.foxfleet.app.data.LiveStreamRunner? = null
+    private var pollJob: Job? = null
+    private var fleetSoon: Job? = null
+    private val catchUps = HashMap<String, Job>()
+    /** True while the live stream is connected (a hub without the `live` feature never connects; the fallback poll covers it). */
+    var liveConnected by mutableStateOf(false); private set
+
+    /** MainActivity onStart / onStop: the stream and the poll only run while the app is on screen (the notification service covers the rest). */
+    fun onForeground(on: Boolean) {
+        foreground = on; syncLive()
+        if (on) { liveRunner?.nudge(); openChatAgent()?.let { catchUp(it) }; if (authed == true) refreshFleet(silent = true) }
+    }
+
+    private fun openChatAgent(): String? = (route as? Route.Chat)?.agent
+
+    private fun syncLive() {
+        val want = foreground && authed == true
+        if (!want) { stopLive(); return }
+        if (pollJob?.isActive != true) pollJob = viewModelScope.launch {
+            // Fallback for what the hub cannot push (a message that reached the agent from another app, an older hub): a cheap newest-page check.
+            while (true) { delay(if (liveConnected) POLL_LIVE_MS else POLL_MS); openChatAgent()?.let { catchUp(it) } }
+        }
+        if (liveJob?.isActive == true || !hubHas("live")) return
+        val gen = authGeneration
+        val runner = dev.foxfleet.app.data.LiveStreamRunner(api.liveTransport, object : dev.foxfleet.app.data.LiveSink {
+            override suspend fun onEvent(e: dev.foxfleet.app.data.LiveEvent) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) onLiveEvent(e) }
+            override suspend fun onConnected(catchUp: Boolean) = withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (gen != authGeneration) return@withContext
+                liveConnected = true
+                if (catchUp) { openChatAgent()?.let { catchUp(it) }; fleetSoon() }
+            }
+        })
+        liveRunner = runner
+        liveJob = viewModelScope.launch {
+            val end = try { withContext(kotlinx.coroutines.Dispatchers.IO) { runner.run() } } finally { liveConnected = false }
+            if (end == dev.foxfleet.app.data.LiveEnd.SignedOut && gen == authGeneration) boot() // let boot decide: a real sign-out shows the login
+        }
+    }
+
+    private fun stopLive() {
+        liveRunner?.close(); liveRunner = null; liveJob?.cancel(); liveJob = null; pollJob?.cancel(); pollJob = null; liveConnected = false
+        catchUps.values.forEach { it.cancel() }; catchUps.clear()
+    }
+
+    /** Many events in a burst cost one list refresh. */
+    private fun fleetSoon() { if (fleetSoon?.isActive == true) return; fleetSoon = viewModelScope.launch { delay(400); refreshFleet(silent = true) } }
+
+    internal fun onLiveEvent(e: dev.foxfleet.app.data.LiveEvent) {
+        fleetSoon()
+        val open = openChatAgent()
+        if (open == null || !dev.foxfleet.app.data.LiveCatchUp.touchesChat(e, open, chatFor(open).sessionId)) { if (e.type == "run_finished" && open != e.agent) chats.peek(e.agent)?.markUnread(); return }
+        val state = chatFor(open); val run = e.runId
+        when (e.type) {
+            // A reply started elsewhere (web, another phone) in the chat you are looking at: follow it live, as if you had sent it.
+            "run_started" -> if (run != null && !state.streaming && !state.loading && jobs[open]?.isActive != true && state.sessionId != null) {
+                jobs[open] = viewModelScope.launch {
+                    try { catchUpNow(open); state.resume(api, open, run, null) }
+                    catch (x: CancellationException) { throw x } catch (x: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+                }
+            }
+            "approval" -> viewModelScope.launch { runCatching { state.syncQueue(api, open) } }
+            else -> catchUp(open)
+        }
+    }
+
+    /** Fetch the newest page of [agent]'s open chat and add what is new (no spinner, no error: the next event or poll retries). */
+    fun catchUp(agent: String) {
+        val state = chatFor(agent)
+        if (state.sessionId == null || state.streaming || state.loading || jobs[agent]?.isActive == true || catchUps[agent]?.isActive == true) return
+        catchUps[agent] = viewModelScope.launch {
+            try { catchUpNow(agent) }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun catchUpNow(agent: String) {
+        val state = chatFor(agent); val sid = state.sessionId ?: return
+        val page = api.messages(agent, sid)
+        if (state.sessionId != sid || state.streaming || state.loading) return
+        when (val plan = dev.foxfleet.app.data.LiveCatchUp.plan(state.messages, page.messages)) {
+            dev.foxfleet.app.data.CatchUp.None -> {}
+            is dev.foxfleet.app.data.CatchUp.Append -> { state.appendLive(plan.messages); if (openChatAgent() != agent) state.markUnread() }
+            dev.foxfleet.app.data.CatchUp.Replace -> state.load(page.messages, sid, page.hasMore)
+            dev.foxfleet.app.data.CatchUp.Reconcile -> state.reconcile(api, agent)
+        }
+    }
 
     val avatars = dev.foxfleet.app.media.AvatarStore(app)
     val skills = mutableStateMapOf<String, List<String>>()
@@ -543,5 +634,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load")
             }
         }
+    }
+
+    companion object {
+        /** Open-chat newest-page check: every 20 s without the live stream, every 60 s with it (covers messages that never pass through the hub). */
+        const val POLL_MS = 20_000L
+        const val POLL_LIVE_MS = 60_000L
     }
 }

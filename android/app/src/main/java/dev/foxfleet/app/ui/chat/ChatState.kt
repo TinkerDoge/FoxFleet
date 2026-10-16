@@ -133,6 +133,8 @@ class ChatState {
 
     /** Append a fully-formed message (history load or user send). */
     fun push(m: UiMessage) { messages = messages + m }
+    /** Live catch-up (0.3.14): messages that arrived after the newest one shown. They shift the history window, so the next older page starts later. */
+    fun appendLive(fresh: List<UiMessage>) { if (fresh.isEmpty()) return; messages = messages + fresh; olderOffset += fresh.size }
 
     private fun resetStream() {
         streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); requests = emptyList()

@@ -443,6 +443,17 @@ class HubApi(private val store: SettingsStore) {
         }
     }
 
+    /** Live chat events (hub feature `live`): its own client, read timeout = 3 missed heartbeats so a dead link reconnects. */
+    private val liveClient by lazy { client.newBuilder().readTimeout(LiveStreamRunner.READ_TIMEOUT_SEC, TimeUnit.SECONDS).build() }
+    val liveTransport = LiveTransport { cursor ->
+        val url = base().newBuilder().encodedPath("/api/live/stream").build()
+        val req = Request.Builder().url(url).get().header("Accept", "text/event-stream").apply { if (!cursor.isNullOrBlank()) header("Last-Event-ID", cursor) }.build()
+        val call = liveClient.newCall(req)
+        val r = call.execute()
+        if (r.code == 401) { r.close(); return@LiveTransport LiveOpen(401, null, null) }
+        LiveOpen(r.code, r.header("Content-Type"), r.body?.byteStream()?.let { java.io.InputStreamReader(it, Charsets.UTF_8) }) { call.cancel(); r.close() }
+    }
+
     private suspend fun openEvents(agent: String, run: String, after: Int): Response {
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/runs/" + enc(run) + "/events").addQueryParameter("after", after.toString()).build()
         return await(client.newCall(Request.Builder().url(url).get().build()))

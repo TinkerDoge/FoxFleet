@@ -55,8 +55,8 @@ class MainActivity : ComponentActivity() {
         dev.foxfleet.app.notify.LaunchLink.consume(null, intent)?.let { vm.openConnectLink(it); vm.openNotification(it) }
     }
 
-    override fun onStart() { super.onStart(); dev.foxfleet.app.notify.NotifyForeground.visible = true }
-    override fun onStop() { dev.foxfleet.app.notify.NotifyForeground.visible = false; super.onStop() }
+    override fun onStart() { super.onStart(); dev.foxfleet.app.notify.NotifyForeground.visible = true; vm.onForeground(true) }
+    override fun onStop() { dev.foxfleet.app.notify.NotifyForeground.visible = false; vm.onForeground(false); super.onStop() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
