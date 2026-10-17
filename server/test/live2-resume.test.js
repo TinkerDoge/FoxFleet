@@ -137,7 +137,7 @@ test('two accounts: separate stores and events; the other account gets 404 on ev
   assert.ok(sa.events('message.new').length >= 2, 'A saw its own messages');
 });
 
-test('reply rate limit: a 409 (bot agent) or a chat the agent cannot load (404/502) does not use a slot; replays do not either', async (t) => {
+test('reply rate limit: a 409 (bot agent) or a 404 chat_not_found (both history paths 404) does not use a slot; replays do not either', async (t) => {
   const { mock } = await hermes(t, { messages: [{ id: 1, role: 'user', content: 'q' }, { id: 2, role: 'assistant', content: 'a' }], sessions: [] });
   const x = await hub(t, { replyRatePerMin: 1, botApi: true, botAgents: '*' });
   assert.equal((await x.call('/api/connections', { ...mock.connection, name: 'atlas' })).status, 201);
@@ -146,7 +146,9 @@ test('reply rate limit: a 409 (bot agent) or a chat the agent cannot load (404/5
   const { mock: empty } = await hermes(t, { noDashboardMessages: true, sessions: [], apiRoute: gone }); // cannot load any session
   assert.equal((await x.call('/api/connections', { ...empty.connection, name: 'ghost' })).status, 201);
   for (let i = 0; i < 3; i++) assert.equal((await x.call('/api/notify/reply', { agent: 'helper', chat: 'sess-1', text: 'hi', idempotency_key: `bot-key-${i}0` })).status, 409);
-  for (let i = 0; i < 3; i++) { const r = await x.call('/api/notify/reply', { agent: 'ghost', chat: 'sess-9', text: 'hi', idempotency_key: `nf-key-${i}0` }); assert.ok([404, 502].includes(r.status), JSON.stringify(r.body)); }
+  for (let i = 0; i < 3; i++) { const r = await x.call('/api/notify/reply', { agent: 'ghost', chat: 'sess-9', text: 'hi', idempotency_key: `nf-key-${i}0` }); assert.equal(r.status, 404, JSON.stringify(r.body)); assert.equal(r.body.code, 'chat_not_found'); }
+  for (const [p, body] of [['/api/notify/read', { agent: 'ghost', chat: 'sess-9' }], ['/api/chats/ghost/read', { chat: 'sess-9', up_to: 1 }]]) { const r = await x.call(p, body); assert.equal(r.status, 404, p); assert.equal(r.body.code, 'chat_not_found', p); }
+  assert.equal((await x.call('/api/agents/ghost/sessions/sess-9/messages')).status, 502, 'history itself keeps its 502 upstream_error');
   const ok = await x.call('/api/notify/reply', { agent: 'atlas', chat: 'sess-1', text: 'go', idempotency_key: 'real-key-1' }); assert.equal(ok.status, 202, JSON.stringify(ok.body));
   assert.equal((await x.call('/api/notify/reply', { agent: 'atlas', chat: 'sess-1', text: 'go', idempotency_key: 'real-key-1' })).status, 200, 'replay');
   const over = await x.call('/api/notify/reply', { agent: 'atlas', chat: 'sess-1', text: 'again', idempotency_key: 'real-key-2' }); assert.equal(over.status, 429); assert.equal(over.body.code, 'rate_limited');

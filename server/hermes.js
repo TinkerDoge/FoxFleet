@@ -89,7 +89,9 @@ export function hermesClient(timeoutMs = 5000, { probeTimeoutMs = 2500 } = {}) {
       const errors = [d.error, a.error], codes = errors.map((e) => (e?.safe && e.code) || 'upstream_error');
       console.warn(JSON.stringify({ t: new Date().toISOString(), event: 'history.failed', agent: m.name, attempts: errors.map((e, i) => ({ via: e?.via, code: codes[i], status: e?.status ?? null })) }));
       const code = ['agent_offline', 'auth_failed', 'timeout'].find((c) => codes.includes(c)) || 'upstream_error';
-      throw coded(fault(code === 'timeout' ? 504 : 502, HISTORY_MESSAGES[code]), code);
+      // Both paths answering 404 most likely means the agent has no such session (or a Hermes too old for the route). History keeps
+      // its 502, but callers that need to tell "chat gone" apart (notification reply / read) can see it.
+      throw Object.assign(coded(fault(code === 'timeout' ? 504 : 502, HISTORY_MESSAGES[code]), code), { notFound: errors.every((e) => e?.status === 404) });
     } finally { stop.abort(); }
   }
   async function probe(m) {

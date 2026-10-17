@@ -223,7 +223,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   async function ensureOr404(reg, m, chat) {
     if (!validSessionId(chat)) throw fault(404, 'Chat not found', 'chat_not_found');
-    let ok; try { ok = await ensureIndexed(reg, m, chat); } catch (e) { if (e?.status === 404) throw fault(404, 'Chat not found', 'chat_not_found'); throw e; }
+    let ok; try { ok = await ensureIndexed(reg, m, chat); } catch (e) { if (e?.status === 404 || e?.notFound === true) throw fault(404, 'Chat not found', 'chat_not_found'); throw e; } // the agent knows no such session (both history paths 404)
     if (!ok) throw fault(404, 'Chat not found', 'chat_not_found');
   }
   const sendRefs = new WeakMap(); // the user message object handed to the coordinator -> its ledger entry, so the launch marks the right one delivered
@@ -547,8 +547,19 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (!upload && (mime || hasBody) && !/^application\/json(?:\s*;|$)/i.test(mime || '')) { req.resume(); throw fault(415, 'Mutations require application/json'); }
     }
   }
+  // Open event streams (live v1/v2, notifications, run and native streams): a shutdown ends them, since they never end by themselves.
+  const sseOpen = new Set(); let stopping = false;
+  const trackSse = (res) => {
+    const writeHead = res.writeHead;
+    res.writeHead = function (status, ...rest) {
+      const h = rest.find((x) => x && typeof x === 'object' && !Array.isArray(x)), type = String((h && (h['Content-Type'] ?? h['content-type'])) ?? res.getHeader('content-type') ?? '');
+      if (type.startsWith('text/event-stream')) { if (stopping) setImmediate(() => res.destroy()); else { sseOpen.add(res); res.once('close', () => sseOpen.delete(res)); } }
+      return writeHead.call(this, status, ...rest);
+    };
+  };
   const server = http.createServer((req, res) => als.run({}, async () => {
     const ctx = als.getStore();
+    trackSse(res);
     try {
       boundary(req, server);
       const url = new URL(req.url, 'http://hub');
@@ -1084,6 +1095,16 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     void (async () => { await bot?.close().catch(() => {}); for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); for (const r of await liveStores()) { clearImmediate(r.rowTimer); r.rowTimer = null; await r.ledger.close().catch(() => {}); await r.live2.close().catch(() => {}); } })().finally(() => cb?.(err)); }));
     return this;
   };
+  /** Graceful stop (SIGTERM/SIGINT): stop accepting, end every open event stream (clients reconnect and resume by cursor), let other
+   *  requests finish for up to `timeoutMs`, then cut what is left. Resolves once the stores are closed, so the live log records a clean
+   *  stop and every cursor stays valid after the restart. */
+  server.shutdown = ({ timeoutMs = 5000 } = {}) => new Promise((resolve) => {
+    stopping = true; let hard = null, tick = null;
+    server.close(() => { clearTimeout(hard); clearInterval(tick); resolve(); });
+    const sweep = () => { for (const res of [...sseOpen]) { sseOpen.delete(res); res.destroy(); } server.closeIdleConnections(); };
+    sweep(); tick = setInterval(sweep, 100); tick.unref?.();
+    hard = setTimeout(() => server.closeAllConnections(), timeoutMs); hard.unref?.();
+  });
   server.setupCode = setupCode; server.accounts = accounts;
   return server;
 }
@@ -1095,7 +1116,13 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const server = await createHub({ host });
     server.on('error', () => { console.error('Foxfleet could not start'); process.exitCode = 1; });
     server.listen(port, host, () => { console.log(`Foxfleet listening on ${host}:${port}`); if (server.setupCode) console.log(`First-run setup code (needed to create the owner account): ${server.setupCode}`); });
-    const shutdown = () => { server.close(); server.closeIdleConnections(); };
+    let stopping = false;
+    const shutdown = () => { // clean stop within the 10 s Docker / 90 s systemd grace, even with apps connected
+      if (stopping) return; stopping = true;
+      const timeoutMs = 5000;
+      void server.shutdown({ timeoutMs }).then(() => { setTimeout(() => process.exit(process.exitCode ?? 0), 1000).unref(); });
+      setTimeout(() => { console.error('Foxfleet did not stop in time'); process.exit(1); }, timeoutMs + 3000).unref();
+    };
     process.once('SIGINT', shutdown); process.once('SIGTERM', shutdown);
   } catch (error) { console.error(error.safe ? error.message : 'Foxfleet could not start'); process.exitCode = 1; }
 }
