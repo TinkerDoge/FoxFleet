@@ -3,9 +3,18 @@ import { readFile, writeFile, mkdir, rename, unlink } from 'node:fs/promises';
 import { randomBytes } from 'node:crypto';
 import path from 'node:path';
 import { fault } from './config.js';
-import { takeReact } from './media-tags.js';
+import { takeReact, parseMedia } from './media-tags.js';
 
 export const validEmoji = (value) => typeof value === 'string' && value.length <= 64 && /^\p{RGI_Emoji}$/v.test(value);
+// an agent may write a bare symbol (❤, ☺) without the emoji variation selector
+const asEmoji = (react) => (validEmoji(react) ? react : validEmoji(react + '\uFE0F') ? react + '\uFE0F' : null);
+/** 0.4.1: what a finished reply's REACT: line does. react: the emoji it applies (or null); only: nothing else would show (no text, no media). */
+export function replyReaction(text) {
+  const t = typeof text === 'string' ? text : '', { react } = takeReact(t);
+  if (!react) return { react: null, only: false };
+  const rest = parseMedia(t);
+  return { react: asEmoji(react), only: !rest.text.trim() && !rest.media.length };
+}
 /** Reactions agents write in their replies (a REACT: line). Each lands on the nearest earlier user message with an id. Derived on read, never stored. */
 export function agentReactions(messages, actor) {
   const out = []; let user = null;
@@ -14,8 +23,7 @@ export function agentReactions(messages, actor) {
     if (m?.role !== 'assistant' || !user || typeof m.content !== 'string') continue;
     const { react } = takeReact(m.content);
     if (!react) continue;
-    // an agent may write a bare symbol (❤, ☺) without the emoji variation selector
-    const emoji = validEmoji(react) ? react : validEmoji(react + '\uFE0F') ? react + '\uFE0F' : null;
+    const emoji = asEmoji(react);
     if (emoji) out.push({ message: user, emoji, actor });
   }
   return out;
@@ -62,21 +70,28 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
       }
       return Object.fromEntries([...messages].map(([id, groups]) => [id, [...groups].map(([emoji, actors]) => ({ emoji, actors }))]));
     },
+    /**
+     * Add (present) or remove one actor's emoji on a message. `message` is one id or (0.4.1) every id of the same message
+     * (its upstream id and its hub id): a reaction under any of them counts, removal clears all of them, and a new one is
+     * stored under the first. Resolves to true when something changed (idempotent: repeating it resolves to false).
+     */
     set(agent, session, message, emoji, actor, present) {
-      if (!validEmoji(emoji)) throw fault(400, 'Choose one emoji');
-      if (typeof message !== 'string' || !message || message.length > 200) throw fault(400, 'Invalid message ID');
+      if (!validEmoji(emoji)) throw fault(400, 'Choose one emoji', 'invalid_emoji');
+      const keys = (Array.isArray(message) ? message : [message]);
+      if (!keys.length || keys.some((k) => typeof k !== 'string' || !k || k.length > 200)) throw fault(400, 'Invalid message ID', 'invalid_message_id');
       if (!actor || !['human', 'agent'].includes(actor.kind) || typeof actor.id !== 'string' || typeof actor.name !== 'string') throw fault(400, 'Invalid reaction actor');
+      let changed = false;
       return mutate(next => {
-        const i = next.findIndex(r => r.agent === agent && r.session === session && r.message === message && r.emoji === emoji && r.actor.id === actor.id);
-        if (!present) { if (i >= 0) next.splice(i, 1); return; }
-        if (i >= 0) return;
-        if (next.length >= 50000 || next.filter(r => r.agent === agent && r.session === session && r.message === message).length >= 256) throw fault(409, 'Reaction limit reached');
-        next.push({ agent, session, message, emoji, actor: { id: actor.id, kind: actor.kind, name: actor.name.slice(0, 100) }, at: now() });
-      });
+        const mine = (r) => r.agent === agent && r.session === session && keys.includes(r.message) && r.emoji === emoji && r.actor.id === actor.id;
+        if (!present) { for (let i = next.length - 1; i >= 0; i--) if (mine(next[i])) { next.splice(i, 1); changed = true; } return; }
+        if (next.some(mine)) return;
+        if (next.length >= 50000 || next.filter(r => r.agent === agent && r.session === session && keys.includes(r.message)).length >= 256) throw fault(409, 'Reaction limit reached', 'reaction_limit');
+        next.push({ agent, session, message: keys[0], emoji, actor: { id: actor.id, kind: actor.kind, name: actor.name.slice(0, 100) }, at: now() }); changed = true;
+      }).then(() => changed);
     },
     /** "Delete for me": hide (present) or show again one message in this account's view. Idempotent. */
     hide(agent, session, message, present) {
-      if (typeof message !== 'string' || !message || message.length > 200) throw fault(400, 'Invalid message ID');
+      if (typeof message !== 'string' || !message || message.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
       return mutate((_, next) => {
         const i = next.findIndex(h => h.agent === agent && h.session === session && h.message === message);
         if (!present) { if (i >= 0) next.splice(i, 1); return; }
@@ -91,4 +106,23 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
     clear() { return mutate((next, nextHidden) => { next.length = 0; nextHidden.length = 0; }); },
     flush: () => pending,
   };
+}
+/**
+ * 0.4.1: a chat's reactions keyed by message, whichever id each was stored under (upstream id or hub id) plus the ones derived from
+ * REACT: lines. resolve(id) -> { n, u, hub_id } | null (the ledger). Returns { messages: { upstream_id: groups } (ids still in the
+ * transcript, as before 0.4.1), by_hub_id: { hub_id: groups } }. One actor counts once per emoji on a message.
+ */
+export function reactionView({ rows = {}, derived = [], resolve = () => null, transcriptIds = new Set() }) {
+  const flat = [], canon = new Map();
+  for (const [key, groups] of Object.entries(rows)) for (const g of groups) for (const actor of g.actors) flat.push({ message: key, emoji: g.emoji, actor });
+  flat.push(...derived);
+  const keyOf = (k) => {
+    const r = resolve(k), c = r ? 'h:' + r.hub_id : 'u:' + k;
+    if (!canon.has(c)) canon.set(c, { hub_id: r?.hub_id ?? null, u: r ? r.u ?? (transcriptIds.has(k) ? k : null) : k });
+    return c;
+  };
+  const merged = mergeReactions({}, flat.map((x) => ({ ...x, message: keyOf(x.message) })));
+  const messages = Object.create(null), byHub = Object.create(null);
+  for (const [c, groups] of Object.entries(merged)) { const { hub_id, u } = canon.get(c); if (u != null && transcriptIds.has(u)) messages[u] = groups; if (hub_id) byHub[hub_id] = groups; }
+  return { messages, by_hub_id: byHub };
 }

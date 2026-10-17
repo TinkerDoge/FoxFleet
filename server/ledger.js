@@ -13,6 +13,7 @@ import { readFile, writeFile, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { previewOf } from './activity.js';
 import { messageExtras } from './steps.js';
+import { replyReaction } from './reactions.js';
 
 export const PREVIEW_MAX = 160, TEXT_MAX_BYTES = 64 * 1024, IDEM_TTL_MS = 24 * 3600_000;
 const MAX_MODEL_OVERRIDES = 2000, MAX_ENTRIES = 300, MAX_IDS = 20_000, MAX_SESSIONS = 100, IDEM_MAX = 30 * 60 * 24, SAVE_MS = 250, RESYNC_MS = 30_000;
@@ -55,7 +56,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
   const bindId = (s, u, n) => { s.ids[u] = n; const k = Object.keys(s.ids); if (k.length > MAX_IDS) for (const x of k.slice(0, k.length - MAX_IDS)) delete s.ids[x]; };
   const pushEntry = (s, e) => { s.msgs.push(e); if (s.msgs.length > MAX_ENTRIES) s.msgs.splice(0, s.msgs.length - MAX_ENTRIES); };
   const entryOf = (s, n) => s.msgs.find((e) => e.n === n) ?? null;
-  const unreadIn = (s) => (s ? s.msgs.filter((e) => e.r === 'assistant' && e.n > s.read && !e.hid).length : 0);
+  const unreadIn = (s) => (s ? s.msgs.filter((e) => e.r === 'assistant' && e.n > s.read && !e.hid && !e.ro).length : 0); // a reply that is only a REACT: line draws no row: never unread (0.4.1)
   const agentUnread = (agent) => Object.values(db.agents[agent]?.sessions ?? {}).reduce((t, s) => t + unreadIn(s), 0);
   function totals() {
     let badge = 0, all = 0;
@@ -63,11 +64,15 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
     return { total_unread: badge, total_unread_all: all };
   }
   // x: the reply's reasoning / tools (live run or transcript), clipped like history; they ride on the event only and are never stored here.
+  // 0.4.1 reactions: `react` / `reaction_only` from the reply's REACT: line, `reactions` (hook) when the message has any.
+  const reactionsOf = (agent, chat, e) => { try { const g = hooks.reactions?.(agent, chat, { n: e.n, u: e.u ?? null, hub_id: hubIdOf(agent, chat, e.n) }); return Array.isArray(g) && g.length ? { reactions: g } : {}; } catch { return {}; } };
   const view = (agent, chat, e, text, x) => {
-    const body = clipText(text ?? ''), extra = x && e.r === 'assistant' ? messageExtras(x) : {};
+    const body = clipText(text ?? ''), extra = x && e.r === 'assistant' ? messageExtras(x) : {}, rr = e.r === 'assistant' ? replyReaction(text ?? '') : null;
     return { hub_id: hubIdOf(agent, chat, e.n), upstream_id: e.u ?? null, n: e.n, role: e.r, text: body.text, ...(body.truncated ? { truncated: true } : {}), at: e.at, source: e.src ?? 'external',
-      ...(e.r === 'user' && e.st ? { status: e.st } : {}), ...(e.err ? { error: e.err } : {}), reply_to: e.rt ?? null, edited_at: e.ed ?? null, run_id: e.run ?? null, ...extra };
+      ...(e.r === 'user' && e.st ? { status: e.st } : {}), ...(e.err ? { error: e.err } : {}), reply_to: e.rt ?? null, edited_at: e.ed ?? null, run_id: e.run ?? null, ...extra,
+      ...(rr?.react ? { react: rr.react } : {}), ...(rr?.only || e.ro ? { reaction_only: true } : {}), ...reactionsOf(agent, chat, e) };
   };
+  const markOnly = (e, text) => { if (e.r === 'assistant' && replyReaction(text ?? '').only) e.ro = 1; return e; };
   function readState(agent, chat) {
     const s = sessOf(agent, chat);
     return { chat, read_up_to: s?.read ?? 0, unread_count: unreadIn(s), agent_unread: agentUnread(agent), total_unread: totals().total_unread };
@@ -75,7 +80,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
   /** Add a message the hub saw (sent through it, or a finished reply). Returns the Message object (as on the wire). */
   function add(agent, chat, { role, text, at, source, status, upstreamId, runId, replyTo, cid, error, reasoning, tools }) {
     const s = sessOf(agent, chat) ?? newSession(agent, chat), n = ++s.last, t = Number.isFinite(at) ? at : now();
-    const e = { n, r: role, at: t, p: previewOf(text ?? '', PREVIEW_MAX), src: source || 'external' };
+    const e = markOnly({ n, r: role, at: t, p: previewOf(text ?? '', PREVIEW_MAX), src: source || 'external' }, text);
     if (upstreamId) { e.u = String(upstreamId); bindId(s, e.u, n); }
     if (role === 'user' && status) { e.st = status; if (status === 'delivered') e.dt = t; }
     if (runId) e.run = runId; if (replyTo) e.rt = replyTo; if (cid) e.cid = cid; if (error) e.err = String(error).slice(0, 300);
@@ -114,7 +119,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       s = newSession(agent, chat);
       for (const m of list) {
         const n = ++s.last; if (m.id != null) bindId(s, String(m.id), n);
-        pushEntry(s, { n, r: m.role, at: Number.isFinite(m.ts) ? m.ts : now(), p: previewOf(m.content ?? '', PREVIEW_MAX), src: 'external', ...(m.id != null ? { u: String(m.id) } : {}) });
+        pushEntry(s, markOnly({ n, r: m.role, at: Number.isFinite(m.ts) ? m.ts : now(), p: previewOf(m.content ?? '', PREVIEW_MAX), src: 'external', ...(m.id != null ? { u: String(m.id) } : {}) }, m.content));
         if (unreadNew) event('message.new', { agent, chat, message: view(agent, chat, s.msgs.at(-1), m.content, m) });
       }
       s.read = unreadNew ? 0 : s.last; s.at = Math.max(s.at, ...list.map((m) => (Number.isFinite(m.ts) ? m.ts : 0)));
@@ -128,7 +133,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       const open = s.msgs.filter((e) => !e.u && e.r === m.role && e.n > anchor);
       const e = open.find((x) => x.p === p) ?? open[0];
       if (e) { e.u = u; bindId(s, u, e.n); anchor = e.n; bound++; event('message.edited', { agent, chat, message: view(agent, chat, e, m.content, m) }); continue; }
-      const n = ++s.last, at = Number.isFinite(m.ts) ? m.ts : now(), ne = { n, r: m.role, at, p, src: 'external', u };
+      const n = ++s.last, at = Number.isFinite(m.ts) ? m.ts : now(), ne = markOnly({ n, r: m.role, at, p, src: 'external', u }, m.content);
       bindId(s, u, n); pushEntry(s, ne); s.at = Math.max(s.at, at); anchor = n; added++;
       const a = agentOf(agent); if (m.role === 'assistant' && a.archived && !muted(agent)) a.archived = false;
       event('message.new', { agent, chat, message: view(agent, chat, ne, m.content, m) });
@@ -170,6 +175,25 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       return { changed: moved || unflag, state };
     },
     lastN: (agent, chat) => sessOf(agent, chat)?.last ?? 0,
+    /**
+     * 0.4.1 reactions: which message of this chat an id names: an upstream id the ledger has bound, or one of this chat's hub ids
+     * (n from 1 to the newest). Returns { n, u, hub_id } (u = the upstream id, or null while unknown) or null.
+     */
+    resolve(agent, chat, id) {
+      const s = sessOf(agent, chat); if (!s || typeof id !== 'string' || !id) return null;
+      let n = s.ids[id] ?? null;
+      if (!n) { const prefix = hubIdOf(agent, chat, ''); if (id.startsWith(prefix) && /^[1-9]\d{0,8}$/.test(id.slice(prefix.length))) n = Number(id.slice(prefix.length)); }
+      if (!n || n > s.last) return null;
+      let u = entryOf(s, n)?.u ?? null;
+      if (!u) for (const [k, v] of Object.entries(s.ids)) if (v === n) { u = k; break; }
+      return { n, u, hub_id: hubIdOf(agent, chat, n) };
+    },
+    /** The newest user message before n (the one an agent's REACT: line reacts to), as resolve() returns it, or null. */
+    userBefore(agent, chat, n) {
+      const s = sessOf(agent, chat); if (!s) return null;
+      for (let i = s.msgs.length - 1; i >= 0; i--) { const e = s.msgs[i]; if (e.n < n && e.r === 'user') return { n: e.n, u: e.u ?? null, hub_id: hubIdOf(agent, chat, e.n) }; }
+      return null;
+    },
     readUpTo: (agent, chat) => sessOf(agent, chat)?.read ?? 0,
     sessionAt: (agent, chat) => sessOf(agent, chat)?.at ?? 0,
     /** The current wire view of message n (status as of now), with the given text. */
@@ -179,7 +203,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
     latest(agent) { const ss = db.agents[agent]?.sessions ?? {}; let best = null; for (const [k, s] of Object.entries(ss)) if (!best || (s.at ?? 0) > (ss[best].at ?? 0)) best = k; return best; },
     lastMessage(agent) {
       const ss = db.agents[agent]?.sessions ?? {}; let best = null;
-      for (const [chat, s] of Object.entries(ss)) for (const e of s.msgs) if (!e.hid && (!best || e.at > best.e.at || (e.at === best.e.at && chat === best.chat && e.n > best.e.n))) best = { chat, e };
+      for (const [chat, s] of Object.entries(ss)) for (const e of s.msgs) if (!e.hid && !e.ro && (!best || e.at > best.e.at || (e.at === best.e.at && chat === best.chat && e.n > best.e.n))) best = { chat, e };
       return best;
     },
     setArchived(agent, on) { const a = agentOf(agent); if (a.archived !== on) { a.archived = on; touch(agent); save(); changed(agent); } return a; },

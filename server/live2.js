@@ -17,7 +17,7 @@ import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 
 export const LIVE2_CONTRACT = 'foxfleet.live/2';
-export const LIVE2_TYPES = ['message.new', 'message.edited', 'message.deleted', 'message.status', 'read', 'chat.updated', 'chat.removed', 'run.started', 'run.finished', 'approval'];
+export const LIVE2_TYPES = ['message.new', 'message.edited', 'message.deleted', 'message.status', 'read', 'chat.updated', 'chat.removed', 'run.started', 'run.finished', 'approval', 'message.reaction'];
 export const RETAIN_EVENTS = 5000, RETAIN_DAYS = 7, RETAIN_BYTES = 32 * 1024 * 1024, PULL_MAX = 500, PULL_DEFAULT = 200;
 const BLOCK = 1000, RETRY_MS = 2000, HEARTBEAT_MS = 15_000, MAX_BACKLOG = 1024 * 1024, MAX_STREAMS = 8, FLUSH_MS = 25, DAY = 86_400_000, DRAIN_MS = 60_000;
 const bytesOf = (line) => Buffer.byteLength(line, 'utf8') + 1; // + the newline on disk

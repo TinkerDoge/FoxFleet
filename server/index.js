@@ -33,7 +33,7 @@ import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
-import { reactionStore, agentReactions, mergeReactions } from './reactions.js';
+import { reactionStore, agentReactions, reactionView, replyReaction } from './reactions.js';
 import { TERMS_VERSION, acceptedTerms } from './legal.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { mkdir } from 'node:fs/promises';
@@ -54,7 +54,7 @@ export const APP_ORIGIN = 'https://appassets.androidplatform.net';
 // What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
 /** Opt-in diagnostics (FOXFLEET_DEBUG=1): one JSON line per event, never message text or addresses. */
 const log = (event, data = {}) => { if (process.env.FOXFLEET_DEBUG) console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data })); };
-export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify', 'live', 'live2', 'chats', 'readReceipts', 'notifyReply'];
+export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify', 'live', 'live2', 'chats', 'readReceipts', 'notifyReply', 'reactionEvents'];
 const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
 const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
@@ -152,6 +152,33 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
   const runs = runRegistry();
   runs.onStart((r) => { void registries.get(r.scope)?.then((reg) => reg.live.fromRunStart(r)).catch(() => {}); });
+  // 0.4.1 reactions (docs/LIVE-EVENTS.md "Reactions"): stored rows of one message under either of its ids, the live event, and the
+  // agent's REACT: line applied when its reply is committed.
+  const agentActor = (m) => ({ id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' });
+  function storedReactions(reg, agent, chat, ref) {
+    const rows = reg.reactions.list(agent, chat), keys = [ref.u, ref.hub_id].filter(Boolean);
+    return reactionView({ rows: Object.fromEntries(Object.entries(rows).filter(([k]) => keys.includes(k))), resolve: () => ref }).by_hub_id[ref.hub_id] ?? [];
+  }
+  const reactionEvent = (reg, agent, chat, ref, groups, change) => reg.live2.emit('message.reaction', { agent, chat, hub_id: ref.hub_id, upstream_id: ref.u ?? null, reactions: groups, change });
+  async function agentReacts(reg, m, chat, msg, text) {
+    const { react } = replyReaction(text); if (!react) return;
+    const ref = reg.ledger.userBefore(m.name, chat, msg.n); if (!ref) return;
+    const actor = agentActor(m);
+    try { if (await reg.reactions.set(m.name, chat, [ref.u, ref.hub_id].filter(Boolean), react, actor, true)) reactionEvent(reg, m.name, chat, ref, storedReactions(reg, m.name, chat, ref), { emoji: react, present: true, actor }); }
+    catch { /* a full store keeps the reply; the reaction is still derived from the transcript */ }
+  }
+  /** The chat's reactions as the snapshot shows them: stored (by upstream or hub id) plus REACT: lines in the transcript. */
+  /** History messages gain `reactions` (when any) and, on replies, `react` / `reaction_only` (0.4.1). */
+  function withReactions(reg, m, sid, list) {
+    let v; try { v = reactionsOf(reg, m, sid, list); } catch { return list; }
+    for (const x of list) {
+      const g = (x.hub_id && v.by_hub_id[x.hub_id]) || (x.id != null && v.messages[String(x.id)]); if (g?.length) x.reactions = g;
+      if (x.role === 'assistant' && typeof x.content === 'string') { const rr = replyReaction(x.content); if (rr.react) x.react = rr.react; if (rr.only) x.reaction_only = true; }
+    }
+    return list;
+  }
+  const reactionsOf = (reg, m, sid, transcript) => reactionView({ rows: reg.reactions.list(m.name, sid), derived: agentReactions(transcript, agentActor(m)), resolve: (k) => reg.ledger.resolve(m.name, sid, k), transcriptIds: new Set(transcript.filter((x) => x.id != null).map((x) => String(x.id))) });
+
   // Live v2 (docs/LIVE-EVENTS.md): run notices, typing, the agent's reply as message.new, and the user's message statuses.
   const withReg = (scope, fn) => { void registries.get(scope)?.then(fn).catch(() => {}); };
   runs.onStart((r) => withReg(r.scope, (reg) => { reg.live2.emit('run.started', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id }); typingSet(reg, r, 'thinking', null); rowChanged(reg, r.scope, r.agent); }));
@@ -165,7 +192,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       const cleaned = cleanText(r.text || ''), text = cleaned.text, m = reg.store.all().find((x) => x.name === r.agent), x = runs.extras(r);
       if (r.session && m && state !== 'error' && text.trim()) {
         if (!reg.ledger.has(r.agent, r.session)) await ensureIndexed(reg, m, r.session).catch(() => false);
-        if (reg.ledger.has(r.agent, r.session)) { reg.ledger.readByAgent(r.agent, r.session, r); reg.ledger.add(r.agent, r.session, { role: 'assistant', text, source: 'agent', runId: r.id, reasoning: [x.reasoning, cleaned.reasoning].filter((v) => v && v.trim()).join('\n\n'), tools: x.tools }); }
+        if (reg.ledger.has(r.agent, r.session)) {
+          reg.ledger.readByAgent(r.agent, r.session, r);
+          const msg = reg.ledger.add(r.agent, r.session, { role: 'assistant', text, source: 'agent', runId: r.id, reasoning: [x.reasoning, cleaned.reasoning].filter((v) => v && v.trim()).join('\n\n'), tools: x.tools });
+          await agentReacts(reg, m, r.session, msg, text); // 0.4.1: the reply's REACT: line lands on the user's message now, not at the next poll
+        }
       }
     } finally { reg.live2.emit('run.finished', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id, state: state === 'error' ? 'error' : state === 'stopped' ? 'stopped' : 'done' }); rowChanged(reg, r.scope, r.agent); }
   }));
@@ -181,7 +212,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
       reg.live2 = await liveLog(path.join(dir, 'live-events'), { ...retention, now: liveClock });
-      reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { idemMax: Math.max(500, replyRatePerMin * 60 * 24), hooks: { event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
+      reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { idemMax: Math.max(500, replyRatePerMin * 60 * 24), hooks: { reactions: (agent, chat, ref) => storedReactions(reg, agent, chat, ref), event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
       reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live2.emit('approval', { agent: a?.name ?? s.agent, chat: s.stored ?? undefined, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); rowChanged(reg, userId, a?.name ?? s.agent); });
       return reg;
     })());
@@ -807,16 +838,28 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             messages = normalizeTranscript((await upstream.messages(m, sid)).messages);
           } catch (e) { if (e.status === 404) await ctx.reg.reactions.remove(m.name, sid); throw e; }
           current(m);
+          const L = ctx.reg.ledger, inTranscript = (id) => messages.some(x => x.id != null && String(x.id) === id);
+          try { L.reconcile(m.name, sid, messages); } catch { /* the snapshot is still served */ } // binds upstream ids to hub ids (message.edited for the apps)
           const actor = { id: 'user:' + scopeOf(ctx), name: auth?.user?.username || 'You', kind: 'human' };
+          let changed, change = null, ref = null;
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const b = await readJson(req, 2048);
-            if (!messages.some(x => x.id != null && String(x.id) === b.message_id)) throw fault(404, 'Message not found');
-            if (parts[5] === 'hidden') { await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT'); try { ctx.reg.ledger.reconcile(m.name, sid, messages); ctx.reg.ledger.hide(m.name, sid, b.message_id, req.method === 'PUT', messages.find((x) => String(x.id) === b.message_id)?.content ?? ''); } catch { /* best effort */ } }
-            else await ctx.reg.reactions.set(m.name, sid, b.message_id, b.emoji, actor, req.method === 'PUT');
+            if (parts[5] === 'hidden') {
+              if (!inTranscript(b.message_id)) throw fault(404, 'Message not found', 'message_not_found');
+              await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT'); try { L.hide(m.name, sid, b.message_id, req.method === 'PUT', messages.find((x) => String(x.id) === b.message_id)?.content ?? ''); } catch { /* best effort */ }
+            } else {
+              if (typeof b.message_id !== 'string' || !b.message_id || b.message_id.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
+              // 0.4.1: the agent's own id (as before) or the hub id of a message this chat has (live v2, history)
+              ref = L.resolve(m.name, sid, b.message_id); const known = inTranscript(b.message_id);
+              if (!ref && !known) throw fault(404, 'Message not found', 'message_not_found');
+              const keys = [...new Set([ref?.u ?? (known ? b.message_id : null), ref?.hub_id].filter(Boolean))];
+              changed = await ctx.reg.reactions.set(m.name, sid, keys, b.emoji, actor, req.method === 'PUT');
+              if (changed) change = { emoji: b.emoji, present: req.method === 'PUT', actor };
+            }
           } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
-          const ids = new Set(messages.map(x => String(x.id)));
-          const all = mergeReactions(ctx.reg.reactions.list(m.name, sid), agentReactions(messages, { id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' }));
-          return sendJson(res, 200, { actor, messages: Object.fromEntries(Object.entries(all).filter(([id]) => ids.has(id))), hidden: ctx.reg.reactions.hidden(m.name, sid).filter(id => ids.has(id)) });
+          const ids = new Set(messages.map(x => String(x.id))), view = reactionsOf(ctx.reg, m, sid, messages);
+          if (change && ref) reactionEvent(ctx.reg, m.name, sid, ref, view.by_hub_id[ref.hub_id] ?? [], change);
+          return sendJson(res, 200, { actor, messages: view.messages, by_hub_id: view.by_hub_id, hidden: ctx.reg.reactions.hidden(m.name, sid).filter(id => ids.has(id)), ...(changed === undefined ? {} : { changed }) });
         }
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
         if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned
@@ -1032,14 +1075,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             L.reconcile(m.name, sid, full); L.annotate(m.name, sid, full);
             const after = full.filter((x) => Number.isInteger(x.n) && x.n > Number(rawAfter)), page = after.slice(0, limit);
             for (const x of page) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content);
-            return sendJson(res, 200, agentData(m, route, { messages: page, offset: 0, limit, has_more: after.length > limit }, originalConnections));
+            return sendJson(res, 200, agentData(m, route, { messages: withReactions(ctx.reg, m, sid, page), offset: 0, limit, has_more: after.length > limit }, originalConnections));
           }
           const raw = (await upstream.messages(m, sid, { limit, offset })).messages;
           const msgs = normalizeTranscript(raw); for (const x of msgs) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content); // old chats keep their pictures
           if (L.annotate(m.name, sid, msgs) > 0 && (offset === 0 && raw.length < limit ? true : L.mayResync(m.name, sid))) { // some messages are not numbered yet: number the chat (this page if it is the whole chat, else read it once)
             try { const full = offset === 0 && raw.length < limit ? msgs : normalizeTranscript((await upstream.messages(m, sid)).messages); L.reconcile(m.name, sid, full); L.annotate(m.name, sid, msgs); } catch { /* the page is still served */ }
           }
-          return sendJson(res, 200, agentData(m, route, { messages: msgs, offset, limit, has_more: raw.length >= limit }, originalConnections));
+          return sendJson(res, 200, agentData(m, route, { messages: withReactions(ctx.reg, m, sid, msgs), offset, limit, has_more: raw.length >= limit }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
         if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); await ctx.reg.reactions.remove(m.name, parts[4]); ctx.reg.ledger.removeSession(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
