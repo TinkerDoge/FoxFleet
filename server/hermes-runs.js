@@ -3,7 +3,7 @@
 // and Steer/Stop reach the agent's own run. Older Hermes keeps the /v1/chat/completions path (queue + transport abort only).
 // Upstream event names below follow the Hermes docs (message.delta, message.interim, tool events, terminal run events); they are
 // matched loosely and normalised to the stream the clients already parse. NEEDS a live Hermes check (see docs/HERMES-CHAT-CONTROLS.md).
-import { fault } from './config.js';
+import { fault, redact } from './config.js';
 import { argsPreview, toolOutcome, durationMs, levelOf, stepText, TOOL_NAME_MAX } from './steps.js';
 
 export const FEATURES = ['run_submission', 'run_status', 'run_events_sse', 'run_steer', 'run_stop'];
@@ -37,7 +37,7 @@ export function normalise(ev, name, link) {
   }
   else if (type === 'message.delta' || (/delta/.test(type) && !/tool/.test(type))) { const t = asText(d.delta ?? d.text ?? d.content); if (t) { link.streamed = true; out.push(frame({ choices: [{ delta: { content: t } }] })); } }
   else if (type === 'message.interim') {
-    const raw = asText(d.text ?? d.message ?? d.content), t = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+    const raw = redact(asText(d.text ?? d.message ?? d.content)), t = raw.replace(/\s+/g, ' ').trim().slice(0, 120); // redacted before it is cut
     if (t) out.push(frame({ tool: t }, 'hermes.tool.progress'));
     if (t && d.already_streamed !== true) out.push(frame({ kind: 'commentary', text: stepText(raw), level: 'info' }, 'foxfleet.step'));
   } else if (/^subagent\.(start|started|complete|completed|failed|end)$/.test(type)) {

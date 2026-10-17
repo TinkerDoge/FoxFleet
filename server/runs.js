@@ -4,7 +4,7 @@
 import { normaliseSse } from './reasoning.js';
 import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
-import { clip, TOOL_NAME_MAX, TOOL_PREVIEW_MAX, MSG_TOOLS_MAX } from './steps.js';
+import { clip, safeClip, TOOL_NAME_MAX, TOOL_PREVIEW_MAX, MSG_TOOLS_MAX } from './steps.js';
 
 /** Reconnect hint sent at the start of every event stream. */
 export const RETRY_MS = 3000;
@@ -19,20 +19,20 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
   const activityOf = (text, r) => {
     const ev = /^event: (\S+)$/m.exec(text)?.[1];
     if (ev === 'hermes.tool.progress') {
-      const d = dataOf(text), tool = String(d?.tool ?? '') || 'tool', label = typeof d?.label === 'string' && d.label.trim() ? clip(d.label.replace(/\s+/g, ' ').trim(), TOOL_PREVIEW_MAX) : null;
+      const d = dataOf(text), tool = String(d?.tool ?? '') || 'tool', label = typeof d?.label === 'string' && d.label.trim() ? safeClip(d.label.replace(/\s+/g, ' ').trim(), TOOL_PREVIEW_MAX) : null;
       // chat completions (no native link) only send this frame, once per tool start; the native and /v1/runs paths also send foxfleet.tool, which carries the step
       const cc = !r.link;
       return { kind: 'tool', tool, label, ...(cc ? { step: { kind: 'tool.start', name: clip(tool, TOOL_NAME_MAX), ...(label ? { preview: label } : {}) }, cc: true } : {}) };
     }
     if (ev === 'foxfleet.tool') {
       const d = dataOf(text), name = clip(String(d?.name ?? 'tool'), TOOL_NAME_MAX), tool_id = typeof d?.tool_id === 'string' && d.tool_id ? d.tool_id.slice(0, 120) : undefined;
-      if (d?.type === 'tool.start') return { kind: 'tool', tool: name, toolId: tool_id, label: d.preview || null, step: { kind: 'tool.start', ...(tool_id ? { tool_id } : {}), name, ...(d.preview ? { preview: d.preview } : {}) }, lifecycle: d };
-      if (d?.type === 'tool.end') return { kind: null, step: { kind: 'tool.end', ...(tool_id ? { tool_id } : {}), name, ...(typeof d.ok === 'boolean' ? { ok: d.ok } : {}), ...(Number.isFinite(d.duration_ms) ? { duration_ms: d.duration_ms } : {}), ...(d.result_preview ? { preview: d.result_preview } : {}) }, lifecycle: d };
+      if (d?.type === 'tool.start') { const pv = d.preview ? safeClip(d.preview, 201) : ''; return { kind: 'tool', tool: name, toolId: tool_id, label: pv || null, step: { kind: 'tool.start', ...(tool_id ? { tool_id } : {}), name, ...(pv ? { preview: pv } : {}) }, lifecycle: d }; }
+      if (d?.type === 'tool.end') return { kind: null, step: { kind: 'tool.end', ...(tool_id ? { tool_id } : {}), name, ...(typeof d.ok === 'boolean' ? { ok: d.ok } : {}), ...(Number.isFinite(d.duration_ms) ? { duration_ms: d.duration_ms } : {}), ...(d.result_preview ? { preview: safeClip(d.result_preview, 501) } : {}) }, lifecycle: d };
       return { kind: 'tool', tool: name, toolId: tool_id, label: null };
     }
     if (ev === 'foxfleet.step') {
       const d = dataOf(text), t = typeof d?.text === 'string' ? d.text : '';
-      return t ? { kind: null, label: clip(t, TOOL_PREVIEW_MAX), step: { kind: d.kind === 'commentary' ? 'commentary' : 'status', text: t } } : null;
+      const safe = safeClip(t, 301); return safe ? { kind: null, label: clip(safe, TOOL_PREVIEW_MAX), step: { kind: d.kind === 'commentary' ? 'commentary' : 'status', text: safe } } : null;
     }
     if (ev) return null;
     let kind = null;

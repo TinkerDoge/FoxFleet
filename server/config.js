@@ -166,5 +166,10 @@ export function redact(value, secrets = []) {
   for (const secret of secrets.filter(Boolean).sort((a, b) => b.length - a.length)) text = text.split(secret).join('[redacted]');
   return text.replace(/\bBearer\s+[^\s"',;]+/gi, 'Bearer [redacted]')
     .replace(/((?:password|passwd|secret|token|api[_-]?key|api[_-]?server[_-]?key|authorization|cookie|credentials?)\s*[=:]\s*)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s,;]+)/gi, '$1[redacted]')
+    // command-line forms: --password=x / --password x (also --pass, --passwd, --secret, --token, --api-key); a value starting with - is the next flag
+    .replace(/(--(?:password|passwd|pass|secret|token|api-key)(?:=|[ \t]+))(?!-)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/gi, '$1[redacted]')
+    // mysql-style -p<password> (attached only: `-p value` asks for the password and the value is the database). Only after a client that
+    // takes it that way, so `cp -p`, `mkdir -p`, `find -print`, `gcc -pthread` and `ssh -p 22` are left alone.
+    .replace(/(\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlpump|mysqlsh|mariadb(?:-dump|-admin|-import|-check|-show)?|sshpass)\b[^\n;|&]*?\s-p)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/g, '$1[redacted]')
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,})\b/g, '[redacted]');
 }

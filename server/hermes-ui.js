@@ -10,7 +10,7 @@
 import { toolMedia, withMediaLines } from './media-tags.js';
 import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
-import { fault } from './config.js';
+import { fault, redact } from './config.js';
 import { argsPreview, toolOutcome, durationMs, stepText, levelOf } from './steps.js';
 
 export const CONTRACT = 'foxfleet.native/1';
@@ -36,7 +36,7 @@ export function normalise(up, s) {
     case 'tool.progress': return { ...base, type: 'tool.progress', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
     case 'tool.complete': { const media = toolMedia(p.name, p.args, p.result).filter((m) => !(s.media ?? []).includes(m.ref)); if (media.length) s.media = [...(s.media ?? []), ...media.map((m) => m.ref)]; return { ...base, type: 'tool.end', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(media.length ? { media } : {}), ...(typeof p.duration_s === 'number' ? { duration_s: p.duration_s } : {}), ...toolEnd(p) }; }
     case 'request.cancel': return { ...base, type: 'request.cancel', request_id: String(p.id ?? ''), reason: String(p.reason ?? '') };
-    case 'status.update': return p.text ? { ...base, type: 'status', ...(s.turn ? { turn_id: s.turn } : {}), level: String(p.kind ?? 'info'), text: String(p.text).slice(0, 300) } : null;
+    case 'status.update': return p.text ? { ...base, type: 'status', ...(s.turn ? { turn_id: s.turn } : {}), level: String(p.kind ?? 'info'), text: redact(String(p.text)).slice(0, 300) } : null;
     case 'message.interim': { if (p.already_streamed === true) return null; const t = stepText(p.text ?? p.message ?? p.content); return t ? { ...base, type: 'step', kind: 'commentary', turn_id: s.turn, text: t, level: 'info' } : null; }
     case 'subagent.start': case 'subagent.complete': { const done = up.type === 'subagent.complete', st = String(p.status ?? ''), what = p.goal ?? p.summary ?? p.task ?? '';
       return { ...base, type: 'step', kind: 'subagent', turn_id: s.turn, text: stepText(done ? `Subagent ${/fail|error/.test(st) ? 'failed' : 'finished'}${what ? `: ${what}` : ''}` : `Subagent started${what ? `: ${what}` : ''}`), level: done ? levelOf(st) : 'info' }; }

@@ -175,7 +175,7 @@ test('event mapping keeps session, turn, message and tool identities distinct an
   assert.deepEqual(evs.map((e) => e?.type), ['turn.start', 'tool.start', 'message.delta', 'tool.end', 'turn.end', undefined]);
   assert.ok(evs[1].turn_id === evs[4].turn_id && evs[1].tool_id === 'call_9' && evs[0].session_id === 'S'); assert.ok(!('result' in evs[3]) && !('args' in evs[3]), 'the raw tool result and args are not forwarded');
   // 0.4.1: tool.end carries ok, duration_ms and a clipped result preview (<= 500 chars + …), never the full result
-  assert.equal(evs[3].ok, true); assert.equal(evs[3].duration_ms, 1500); assert.equal(evs[3].result_preview, '{"secret":"x"}');
+  assert.equal(evs[3].ok, true); assert.equal(evs[3].duration_ms, 1500); assert.equal(evs[3].result_preview, '{"secret":"[redacted]"}', 'previews are redacted (values under secret-looking keys)');
   const big = normalise({ type: 'tool.complete', payload: { tool_id: 'c2', name: 'sh', result: 'y'.repeat(2000) + 'TAIL', duration_s: 0.25 } }, s);
   assert.equal(big.result_preview.length, 501); assert.ok(big.result_preview.endsWith('…') && !big.result_preview.includes('TAIL')); assert.equal(big.duration_ms, 250);
   const failed = normalise({ type: 'tool.complete', payload: { tool_id: 'c3', name: 'sh', result: '{"exit_code":2,"output":"boom"}' } }, s);

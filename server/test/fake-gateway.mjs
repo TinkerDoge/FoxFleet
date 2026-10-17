@@ -26,7 +26,12 @@ async function turn(s, text) {
     out({ jsonrpc: '2.0', id, method: 'sudo', params }); await new Promise((res) => { open.get(id).done = res; }); const was = open.get(id); open.delete(id); const note = was.answer === null ? 'sudo-refused ' : 'sudo-answered '; s.partial += note; ev(s, 'message.delta', { text: note });
   }
   if (/\[with \d+ image/.test(text)) { s.partial += text + ' '; ev(s, 'message.delta', { text: text + ' ' }); } // echo what the picture attach did
-  if (/steps/.test(text)) { // 0.4.1 step detail: commentary, a status line, one tool with args and a result, reasoning in one piece
+  if (/secretsteps/.test(text)) { // 0.4.1 redaction: FAKE secrets only (never real ones) in args, result, status and commentary
+    const SK = 'sk-test-FAKEFAKEFAKE0000000000', GH = 'ghp_FAKEFAKEFAKEFAKE0000000000';
+    ev(s, 'message.interim', { text: `Using ${SK} to call the API`, already_streamed: false }); ev(s, 'status.update', { kind: 'info', text: `token ${GH} accepted` });
+    ev(s, 'tool.start', { tool_id: 'call_x1', name: 'terminal', args: { command: `mysql -u root -pFAKEpw1111 db; deploy --password=FAKEpw2222 --password FAKEpw3333 --key ${SK}` } }); await sleep(5);
+    ev(s, 'tool.complete', { tool_id: 'call_x1', name: 'terminal', result: `ok ${GH} done`, duration_s: 0.1 }); ev(s, 'reasoning.available', { text: `I will use ${SK} and -p in mysql -pFAKEpw1111` });
+  } else   if (/steps/.test(text)) { // 0.4.1 step detail: commentary, a status line, one tool with args and a result, reasoning in one piece
     ev(s, 'message.interim', { text: 'Checking the folder first', already_streamed: false }); ev(s, 'status.update', { kind: 'warn', text: 'Context is getting long' });
     ev(s, 'tool.start', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' } }); await sleep(5);
     ev(s, 'tool.complete', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' }, result: '{"output":"a b","exit_code":0}', duration_s: 0.5 }); ev(s, 'reasoning.available', { text: 'thought about it' });

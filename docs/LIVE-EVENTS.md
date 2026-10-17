@@ -268,6 +268,15 @@ byte and adds:
 - **`event: foxfleet.step`** `{kind, text, level, turn_id?}`: `kind` `commentary` (Hermes `message.interim` not already streamed as text),
   `status` (native `status.update`), `subagent` (Hermes `subagent.start` / `subagent.complete`); `level` `info` / `warn` / `error`.
 
+**Redaction (0.4.1).** Every preview and step text (`preview`, `result_preview`, `foxfleet.step` text, the commentary
+`hermes.tool.progress` line, typing `label`, `run.step` `preview` / `text`) and the reply's `tools` / `reasoning` on `message.new` go
+through the hub's secret redaction on the full text **before** they are clipped, and a cut end is checked again, so neither the stream
+nor `live-events.jsonl` holds the forms it knows: `sk-…` keys, `gh?_…` tokens, `Bearer …`, `password=` / `token:` style pairs and
+values under secret-looking keys, `--password=x` / `--password x` (also `--pass`, `--passwd`, `--secret`, `--token`, `--api-key`), and
+mysql-style `-p<password>` after `mysql`, `mysqldump`, `mariadb`, `sshpass` and friends (`-p value` with a space is the mysql
+password prompt plus a database name and is left alone, as are `cp -p`, `mkdir -p`, `find -print`, `ssh -p 22`). Masked text reads
+`[redacted]`. Streamed reply text and streamed reasoning deltas are not rewritten (history shows them as the agent wrote them).
+
 Clients ignore unknown events and fields, so older apps see no change. Live v2 mirrors these steps as `typing` labels and `run.step`
 (above); the run stream stays the place for streaming text and full detail.
 
