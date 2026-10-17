@@ -113,6 +113,7 @@ Ordering guarantees: events are delivered in `seq` order. For one chat, `message
 | `run.started` | `run_id` | a reply started in `chat` (any client); follow it on `/api/agents/{agent}/runs/{run_id}/events` to stream it |
 | `run.finished` | `run_id`, `state`: `done`/`error`/`stopped` | |
 | `approval` | `request_id`, `kind` | the agent waits on a question or approval in `chat` |
+| `message.reaction` | `hub_id`, `upstream_id`, `reactions: ReactionGroup[]`, `change: {emoji, present, actor}` | 0.4.1, feature `reactionEvents`: the reactions on one message changed (yours on any device, or the agent's `REACT:` line). `reactions` is the full current set: replace, don't merge. See "Reactions (0.4.1)" |
 
 Streaming text is **not** on this stream: it stays on the run's own stream. The finished reply arrives as `message.new` (or `message.edited` if the client already got a placeholder with the same `hub_id`).
 
@@ -121,7 +122,7 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | field | type | notes |
 |---|---|---|
 | `hub_id` | string | stable id given by the hub, never changes. Key your cache on it |
-| `upstream_id` | string \| null | the agent's own message id once known (reactions and hide address this id) |
+| `upstream_id` | string \| null | the agent's own message id once known (hide addresses this id; reactions take it or, since 0.4.1, the `hub_id`) |
 | `n` | int | position in the chat: 1, 2, 3 … per chat, gap-free, never reused (a deleted message keeps its number) |
 | `role` | `user` \| `assistant` | |
 | `text` | string | full text, at most 64 KB; when longer, `truncated: true` and the client fetches the message from history |
@@ -134,6 +135,10 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | `images` | `{url, mime}[]` | short-lived media links, same rules as history. Not filled in 0.4.0-alpha: fetch the message from history for media |
 | `reasoning` | string | 0.4.1, assistant messages: the reply's reasoning (streamed deltas, or the agent's one-piece reasoning, or `<think>` blocks), at most 64 KiB UTF-8; `reasoning_truncated: true` when cut. Absent when none |
 | `tools` | `{name, args?, result?, ok?}[]` | 0.4.1, assistant messages: the tools the reply ran, same shape as history; at most 50, `args` / `result` at most 500 characters + `…` (previews, never the full result). From a live run: `args` is the arguments preview, `result` / `ok` when the agent reported the end. Chat-completions agents only report tool starts (`name`, `args` = Hermes' label). Absent when none |
+
+| `reactions` | `ReactionGroup[]` | 0.4.1 (`reactionEvents`): the message's current reactions, only when it has any (also on history messages). Live changes come as `message.reaction` |
+| `react` | string | 0.4.1, assistant messages: the emoji its `REACT:` line applied to the user's message (the line itself stays in `text`; apps hide it as before) |
+| `reaction_only` | `true` | 0.4.1, assistant messages: nothing to show besides the `REACT:` line. Draw no row; it is not unread and not the chat-list preview |
 
 Fields that are null or unknown may be left out of a `Message` (treat absent as null).
 
@@ -294,6 +299,42 @@ Clients ignore unknown events and fields, so older apps see no change. Live v2 m
 (at most 60 providers × 300 models; `override` = the chat's `{model, provider}` for `request` agents when `session_id` is given and one
 is set). Send a `provider` with the model: Hermes ignores a bare model on chat completions. Errors: `docs/API-ERRORS.md`.
 
+## Reactions (0.4.1, feature `reactionEvents`)
+
+Emoji reactions are per account (`reactions.json` beside the account's other stores). The actor is always the signed-in account
+(`user:<account>`) or the agent (`agent:<name>`), never taken from a request. Reactions are not sent to the agent: reacting does not
+post a message or start a turn.
+
+**Routes** (unchanged paths): `GET|PUT|DELETE /api/agents/{agent}/sessions/{chat}/reactions`, body `{message_id, emoji}` for PUT
+(add) and DELETE (remove). Both are idempotent; a toggle is the client's choice of PUT or DELETE (there is no toggle route, because a
+retried toggle would undo itself). Since 0.4.1:
+
+- `message_id` takes the message's `hub_id` as well as its `upstream_id`. A message that arrived live and has no `upstream_id` yet
+  can be reacted to at once.
+- The snapshot gains `by_hub_id: {hub_id: ReactionGroup[]}` (same reactions keyed by `hub_id`; `messages` stays keyed by
+  `upstream_id`), and PUT/DELETE answers carry `changed: false` when nothing changed.
+- Errors carry codes: 400 `invalid_emoji`, 400 `invalid_message_id`, 404 `message_not_found`, 409 `reaction_limit`
+  (256 per message, 50 000 per account). See `docs/API-ERRORS.md`.
+
+`ReactionGroup` = `{emoji, actors: [{id, name, kind: "human"|"agent"}]}`.
+
+**Event** `message.reaction` (stored: it has a `seq`, is replayed after a reconnect and is returned by the pull):
+
+```json
+{ "seq": 530, "type": "message.reaction", "at": 1792195200000, "agent": "nova", "chat": "20261017_101500_ab12cd",
+  "hub_id": "hAbCdEfGhIjKl.7", "upstream_id": "412",
+  "reactions": [{ "emoji": "❤️", "actors": [{ "id": "user:owner", "name": "owner", "kind": "human" }] }],
+  "change": { "emoji": "❤️", "present": true, "actor": { "id": "user:owner", "name": "owner", "kind": "human" } } }
+```
+
+- Sent only when something changed (a repeated PUT or DELETE sends nothing), to every device of the account that owns the chat
+  and never to another account. Not on the v1 stream.
+- The agent's reaction: when a live reply is committed, the first valid `REACT: <emoji>` line in it is applied to the newest
+  earlier user message of the chat (stored, actor `agent:<name>`), and the reply's `message.new` carries `react` (and
+  `reaction_only` when nothing else is in it). Reactions in transcripts written elsewhere are still derived on read, as before.
+- A client keeps the snapshot from `GET …/reactions` (on open, and after a `gap`) and applies `message.reaction` by `hub_id`.
+  With `reactionEvents` it no longer needs to poll.
+
 ## Flags and compatibility summary
 
 | feature in `hub.features` | adds |
@@ -303,6 +344,7 @@ is set). Send a `provider` with the model: Hermes ignores a bare model on chat c
 | `chats` | `GET /api/chats`, `GET /api/chats/{agent}`, archive, mark unread |
 | `readReceipts` | `POST /api/chats/{agent}/read`, `hub_id` / `n` / `status` / `after_n` on history, `message.status` |
 | `notifyReply` | `POST /api/notify/reply`, `POST /api/notify/read`, `?reply=1` tokens |
+| `reactionEvents` | 0.4.1: `message.reaction`, `hub_id` as a reaction `message_id`, `by_hub_id`, `reactions` / `react` / `reaction_only` on messages, reaction error codes |
 
 Nothing existing changes shape: new fields are additive, `/api/agents` keeps its unread-free rows, and the v1 stream is untouched.
 

@@ -1995,6 +1995,21 @@
                               "failed"
                             ],
                             "description": "0.4.0: user messages."
+                          },
+                          "reactions": {
+                            "type": "array",
+                            "items": {
+                              "$ref": "#/components/schemas/ReactionGroup"
+                            },
+                            "description": "0.4.1 (feature `reactionEvents`): the message's current reactions (yours, other actors' and the agent's), only when it has any."
+                          },
+                          "react": {
+                            "type": "string",
+                            "description": "0.4.1, assistant messages: the emoji its `REACT:` line applies."
+                          },
+                          "reaction_only": {
+                            "type": "boolean",
+                            "description": "0.4.1, assistant messages: nothing to show besides the `REACT:` line."
                           }
                         }
                       }
@@ -4295,7 +4310,7 @@
     "/api/agents/{name}/sessions/{id}/reactions": {
       "get": {
         "operationId": "getReactions",
-        "summary": "Emoji reactions in one conversation (humans and agents). Only ids of messages still in the conversation are returned.",
+        "summary": "Emoji reactions in one conversation (humans and agents). Only ids of messages still in the conversation are returned. Since 0.4.1 also keyed by hub_id (`by_hub_id`).",
         "tags": [
           "agents"
         ],
@@ -4324,7 +4339,7 @@
       },
       "put": {
         "operationId": "addReaction",
-        "summary": "Add your reaction (idempotent: repeating it changes nothing).",
+        "summary": "Add your reaction (idempotent: repeating it changes nothing). Since 0.4.1 a change is sent to every device of the account as live v2 `message.reaction`.",
         "tags": [
           "agents"
         ],
@@ -4340,10 +4355,12 @@
                 ],
                 "properties": {
                   "message_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The message: its `upstream_id` (the agent's own id, as before) or, since 0.4.1 (feature `reactionEvents`), its `hub_id`."
                   },
                   "emoji": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "One RGI emoji."
                   }
                 },
                 "additionalProperties": false
@@ -4363,7 +4380,7 @@
             }
           },
           "400": {
-            "description": "Not one emoji, or an invalid message id",
+            "description": "code invalid_emoji (not one emoji) or invalid_message_id",
             "content": {
               "application/json": {
                 "schema": {
@@ -4373,7 +4390,7 @@
             }
           },
           "404": {
-            "description": "Unknown conversation or message",
+            "description": "Unknown conversation, or code message_not_found (not a message of this chat)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4383,7 +4400,7 @@
             }
           },
           "409": {
-            "description": "Reaction limit reached",
+            "description": "code reaction_limit (256 per message, 50000 per account)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4396,7 +4413,7 @@
       },
       "delete": {
         "operationId": "removeReaction",
-        "summary": "Remove your reaction (idempotent).",
+        "summary": "Remove your reaction (idempotent). Since 0.4.1 a change is sent as live v2 `message.reaction`.",
         "tags": [
           "agents"
         ],
@@ -4412,10 +4429,12 @@
                 ],
                 "properties": {
                   "message_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The message: its `upstream_id` (the agent's own id, as before) or, since 0.4.1 (feature `reactionEvents`), its `hub_id`."
                   },
                   "emoji": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "One RGI emoji."
                   }
                 },
                 "additionalProperties": false
@@ -4435,7 +4454,7 @@
             }
           },
           "400": {
-            "description": "Not one emoji, or an invalid message id",
+            "description": "code invalid_emoji (not one emoji) or invalid_message_id",
             "content": {
               "application/json": {
                 "schema": {
@@ -4445,7 +4464,7 @@
             }
           },
           "404": {
-            "description": "Unknown conversation or message",
+            "description": "Unknown conversation, or code message_not_found (not a message of this chat)",
             "content": {
               "application/json": {
                 "schema": {
@@ -4455,7 +4474,7 @@
             }
           },
           "409": {
-            "description": "Reaction limit reached",
+            "description": "code reaction_limit (256 per message, 50000 per account)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6330,7 +6349,7 @@
           },
           "code": {
             "type": "string",
-            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams (429, live v1 and v2), chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After). 0.4.1 (model routes): models_unsupported (409), invalid_model (400)."
+            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams (429, live v1 and v2), chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After). 0.4.1 (model routes): models_unsupported (409), invalid_model (400). 0.4.1 (reactions): invalid_emoji (400), invalid_message_id (400), message_not_found (404), reaction_limit (409)."
           },
           "cursor": {
             "type": "string",
@@ -6437,7 +6456,8 @@
                     "live2",
                     "chats",
                     "readReceipts",
-                    "notifyReply"
+                    "notifyReply",
+                    "reactionEvents"
                   ]
                 }
               }
@@ -7484,6 +7504,20 @@
               "type": "string"
             },
             "description": "Ids of messages this account hid (delete for me). Absent on hubs before 0.3.9."
+          },
+          "by_hub_id": {
+            "type": "object",
+            "description": "0.4.1 (feature `reactionEvents`): the same reactions keyed by the hub's stable message id (`hub_id`, live v2 and history), for every message the hub has numbered, including messages that have no upstream id yet.",
+            "additionalProperties": {
+              "type": "array",
+              "items": {
+                "$ref": "#/components/schemas/ReactionGroup"
+              }
+            }
+          },
+          "changed": {
+            "type": "boolean",
+            "description": "0.4.1, PUT/DELETE only: false when the call changed nothing (the reaction was already there / already gone); no `message.reaction` event is sent then."
           }
         }
       },
@@ -7631,6 +7665,21 @@
                 }
               }
             }
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReactionGroup"
+            },
+            "description": "0.4.1 (feature `reactionEvents`): the message's current reactions, only when it has any. Live updates come as `message.reaction`."
+          },
+          "react": {
+            "type": "string",
+            "description": "0.4.1, assistant messages: the emoji the reply's `REACT:` line applied to the user's message."
+          },
+          "reaction_only": {
+            "type": "boolean",
+            "description": "0.4.1, assistant messages: true when the reply shows nothing besides its `REACT:` line (apps draw no row; it is not unread and not the chat-list preview)."
           }
         }
       },
@@ -7817,7 +7866,7 @@
           },
           "type": {
             "type": "string",
-            "description": "message.new, message.edited, message.deleted, message.status, read, chat.updated, chat.removed, run.started, run.finished, approval (open set)"
+            "description": "message.new, message.edited, message.deleted, message.status, read, chat.updated, chat.removed, run.started, run.finished, approval, message.reaction (0.4.1) (open set)"
           },
           "at": {
             "type": "integer"
@@ -7884,6 +7933,44 @@
           },
           "kind": {
             "type": "string"
+          },
+          "hub_id": {
+            "type": "string",
+            "description": "message.reaction: the message reacted to."
+          },
+          "upstream_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "message.reaction: the agent's id of that message when known."
+          },
+          "reactions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReactionGroup"
+            },
+            "description": "message.reaction: the full current set on that message after the change ([] when none). Replace, do not merge."
+          },
+          "change": {
+            "type": "object",
+            "required": [
+              "emoji",
+              "present",
+              "actor"
+            ],
+            "description": "message.reaction: what changed.",
+            "properties": {
+              "emoji": {
+                "type": "string"
+              },
+              "present": {
+                "type": "boolean"
+              },
+              "actor": {
+                "$ref": "#/components/schemas/ReactionActor"
+              }
+            }
           }
         }
       },
@@ -8198,6 +8285,25 @@
               "string",
               "null"
             ]
+          }
+        }
+      },
+      "ReactionGroup": {
+        "type": "object",
+        "required": [
+          "emoji",
+          "actors"
+        ],
+        "properties": {
+          "emoji": {
+            "type": "string",
+            "description": "One RGI emoji (Unicode, not artwork)."
+          },
+          "actors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ReactionActor"
+            }
           }
         }
       }

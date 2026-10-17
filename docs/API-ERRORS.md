@@ -73,6 +73,17 @@ Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these codes is a 401. `POS
 
 `POST /api/notify/reply` also passes through the agent codes above (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`) when the hub could not hand the text to the agent. A `202` whose `message.status` is `failed` (with `error`) means the hub stored the text but the agent refused it; show it in the chat as failed, like any other send.
 
+## Reactions (0.4.1-alpha): `PUT|DELETE /api/agents/{name}/sessions/{id}/reactions`
+
+Feature `reactionEvents`; see `docs/LIVE-EVENTS.md` "Reactions (0.4.1)". The route also passes through the agent codes above when the hub could not read the chat.
+
+| status | `code` | meaning | suggested UI |
+|---|---|---|---|
+| 400 | `invalid_emoji` | `emoji` is not exactly one emoji | client bug |
+| 400 | `invalid_message_id` | `message_id` missing, empty or longer than 200 characters | client bug |
+| 404 | `message_not_found` | neither an `upstream_id` in the agent's transcript nor a `hub_id` of this chat | drop the optimistic reaction, re-read the snapshot |
+| 409 | `reaction_limit` | 256 reactions on the message, or 50 000 for the account | "Couldn't add the reaction" |
+
 ## Model picker (0.4.1-alpha): `GET /api/agents/{name}/models`, `POST /api/agents/{name}/sessions/{id}/model`
 
 See `docs/LIVE-EVENTS.md` "Model picker" and `capabilities.models`.
