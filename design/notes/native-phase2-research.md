@@ -376,6 +376,7 @@ Short repo prefixes used below: `srv/` = `server/`, `web/` = `web/src/`,
   1. Check that the user is allowed (the same allowlist as message admission).
   2. Build `MessageEvent(text="/stop", source=build_source(chat_id=…, user_id=user.id, chat_type="dm"),
      reply_expected=False, metadata={"foxfleet_stop_id": …})`.
+     _(0.4.2-alpha: this `metadata` stamp was removed. Hermes v0.22.1+ native admission refuses non-WhatsApp `MessageEvent.metadata` as `invalid_params`; the plugin now sends no inbound metadata.)_
   3. `await self.handle_message(event)`. This reuses Hermes' own `/stop` path (B.4), including authorisation and
      session-key derivation, with no core edits.
   4. Answer `stopped` if `_active_sessions` had the session key before dispatch, otherwise `idle`.

@@ -20,6 +20,7 @@ Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone who
 - Fix (Android, since 0.4.0): in a reopened chat, the second reply sometimes showed twice until the chat was reopened.
   - Cause: the reply's stream closed and the reply was committed, but the next queue sync still found that run as the hub's active run, because the hub finishes it a moment later. The app followed it again from the start and committed the same reply a second time.
   - Now the app remembers the runs it already followed to the end and doesn't reattach to them. A run cut off mid-stream (the app was away) still reattaches.
+- Hermes plugin: drop inbound metadata so Hermes v0.22.1+ native admission accepts FoxFleet messages (fixes invalid_params)
 
 ## 0.4.1-alpha (not tagged; Android versionCode 29)
 
