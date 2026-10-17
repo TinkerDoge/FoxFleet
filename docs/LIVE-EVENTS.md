@@ -57,7 +57,8 @@ v1 and v2 are separate cursors: never send a v1 id to v2 or the reverse (a forei
 - The SSE `id:` of an event is `<store>:<seq>`. `store` is a random id of the hub's data directory: it changes only when the hub's data is reset or restored from elsewhere.
 - Resume with `Last-Event-ID: <store>:<seq>` (what EventSource sends) or `?since=<store>:<seq>` (alias `after`, as in v1; the query wins over the header). The hub replays every retained event with a larger `seq`, in order, then goes live.
 - No cursor: the stream starts at "now" (nothing replayed). Take a snapshot first (`GET /api/chats` returns `cursor`) and connect with `since=<that cursor>`: then nothing that happened between the snapshot and the connect is lost.
-- Retention: the newest **5000** events per account (`FOXFLEET_LIVE_RETAIN_EVENTS`, 100–100000), at most **7 days** (`FOXFLEET_LIVE_RETAIN_DAYS`, 1–90), and at most 32 MiB of event data. Events are persisted (one file per account, mode 0600, like the notification log).
+- Retention: the newest **5000** events per account (`FOXFLEET_LIVE_RETAIN_EVENTS`, 100–100000), at most **7 days** (`FOXFLEET_LIVE_RETAIN_DAYS`, 1–90), and at most 32 MiB of event data (UTF-8 bytes). Events are persisted (one file per account, mode 0600, like the notification log). Age is checked when a cursor is used, so a cursor older than 7 days is `expired` even if nothing happened since.
+- After an unclean hub stop (crash, power loss, `kill -9`) the last few milliseconds of events may not be on disk, so every cursor from before the stop is answered with an `expired` gap (a clean stop or restart keeps them).
 
 ### Gap
 
@@ -85,7 +86,7 @@ After a gap the stream continues live from `cursor`. The client must resync: `GE
 | `: keep-alive` | every 15 s (`FOXFLEET_LIVE_HEARTBEAT_MS`); 45 s of silence = dead link |
 | `event: foxfleet.auth` `data: {"reason":"signed_out"}` | the device session ended; the stream closes; do not reconnect |
 
-Limits: 8 streams per account across v1 and v2 (`429 too_many_streams`); a client more than 1 MB behind is disconnected and resumes by id.
+Limits: 8 streams per account across v1 and v2 (`429 too_many_streams`). The replay can be any size: the hub sends it as fast as the client reads, and closes the stream only if the client reads nothing for 60 s. Once live, a client more than 1 MB behind is disconnected and resumes by id.
 
 Ordering guarantees: events are delivered in `seq` order. For one chat, `message.new` for message `n` always comes before a `read` or `chat.updated` that counts it. `run.started` can come before the `message.new` of the user message that started it (a new chat learns its session id at launch): key runs on `run_id`. Clients **must ignore unknown event types and unknown fields** (new ones are added without a version bump).
 

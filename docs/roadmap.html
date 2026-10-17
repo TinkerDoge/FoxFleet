@@ -12,13 +12,17 @@
   "version": "0.4.0-alpha",
   "releasedVersion": "0.3.10-alpha",
   "nextVersion": "0.4.0-alpha",
-  "nextReleaseNote": "Signed Android vc27 updates the open chat live (hub live events, catch-up on reconnect). Earlier: vc24 added bot cards and reply replacement. The native bot plugin passed an isolated real-model canary; public fleet migration and physical-device acceptance remain pending.",
+  "nextReleaseNote": "0.4.0-alpha (hub, not released yet): phase 1 of the chat list. A persistent, resumable live event stream (live v2) with message text, typing and read state; a chat list API with unread counts, archive, mute and mark unread; read receipts; direct reply and mark read from a notification. The Android app is being built on it; no new APK until it lands. The latest public release is still 0.3.10-alpha.",
   "overview": [
     "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
     "The latest public downloads are 0.3.10-alpha (Android notifications, per-chat backgrounds, a lighter dark theme, message actions, reactions, a Telegram-style agent list, agent awareness, reasoning and better screen, media and scroll handling, on top of resilient connections, resumable chats, Hermes commands and the foxfleet CLI), including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
     "Credentials of directly connected Hermes agents stay on the hub; paired Hermes dashboard passwords and chat API keys stay on the agent machine."
   ],
   "timeline": [
+    {
+      "v": "0.4.0-alpha (in progress, not released)",
+      "what": "Chat list phase 1 on the hub: a persistent per-account live event stream that resumes across restarts without losing or repeating events (gap when it cannot), a pull endpoint, chat rows with unread counts, previews, archive, mute and mark unread, read receipts with per-chat message numbers, and direct reply / mark read from a notification with scoped reply tokens. Android client in progress."
+    },
     {
       "v": "0.2.0-alpha (9 October 2026)",
       "what": "Easy connect release with 15-minute single-use pairing codes, command/QR/magic-link onboarding, live connection status, automatic Hermes profile discovery, one multiplexed connector per computer, background service installers, and Machines screens on web and Android. Machine pairing replaces per-agent connector tokens; dashboard passwords and chat API keys stay on the machine. Includes real app screenshots and reproducible image tooling. Signed APK, server bundle, checksums, and certificate fingerprint are published. Real Hermes discovery and platform service installs still need validation."
@@ -29,6 +33,24 @@
     }
   ],
   "board": [
+    {
+      "id": "p1h",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.4.0-alpha",
+      "text": "Chat list phase 1: live events v2, chats API, read receipts, notification reply",
+      "doneWhen": "Resume after a drop or a restart replays every missed event once (any size), or gives an explicit gap; unread and badge counts match on every device; a notification reply is sent exactly once.",
+      "detail": "Persistent per-account event log with store:seq cursors, gap reasons, typing; GET /api/chats with unread, preview, archive, mute and manual unread; hub_id, n and status on history; POST /api/notify/reply and /read with 24 h scoped tokens, idempotency and a rate limit. Contract in docs/LIVE-EVENTS.md."
+    },
+    {
+      "id": "p1a",
+      "col": "Next",
+      "area": "Android",
+      "release": "0.4.0-alpha",
+      "text": "Android chat list on live events v2",
+      "doneWhen": "The chat list, unread badges, typing and read receipts stay in sync with the web and another phone, across app restarts and network drops, on a physical device.",
+      "detail": "Local cache keyed on hub_id, resume by cursor, resync after a gap, archive and mute, and direct reply from the notification."
+    },
     {
       "id": "cc7",
       "col": "Done",
@@ -540,8 +562,8 @@
       "file": "../SECURITY.md"
     }
   ],
-  "stage": "Validating 0.3.10-alpha",
-  "focus": "0.3.10-alpha is the latest public release. Machine pairing, multi-profile Hermes connectors, and Machines screens now ship on web and Android. The next priority is validation on physical devices, real Hermes installations, and deployment hosts.",
+  "stage": "Building 0.4.0-alpha (chat list, phase 1)",
+  "focus": "0.3.10-alpha is the latest public release; 0.3.14-alpha (live updates in the open chat) is signed but not tagged. The hub side of 0.4.0 phase 1 is implemented and in QA: live events v2, chat list, read receipts and notification reply (docs/LIVE-EVENTS.md). Next: the Android chat list on top of it, then validation on physical devices and real Hermes installations.",
   "milestones": [
     {
       "label": "01 / Current priority",

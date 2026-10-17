@@ -54,7 +54,7 @@ Suggested UI: when `stale` is true, show the status dimmed with "checking…" or
 
 ## Phase 1 (0.4.0-alpha): live v2, chat list, read receipts, notification reply
 
-Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these is ever a 401; only a 401 means the user's own login expired.
+Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these codes is a 401. `POST /api/notify/reply` and `POST /api/notify/read` answer 401 only when the request carries no credential at all (neither a sign-in nor a reply token); a bad, expired or out-of-scope reply token is always 403 `reply_token_invalid`, so a 401 still means only that the user's own login expired.
 
 | status | `code` | routes | meaning | suggested UI |
 |---|---|---|---|---|
