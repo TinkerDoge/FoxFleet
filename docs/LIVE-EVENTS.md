@@ -1,4 +1,4 @@
-# Live chat events (hub features `live` (v1, 0.3.14) and `live2` (v2, 0.4.0))
+# Live chat events (hub features `live` (v1, 0.3.14) and `live2` (v2, 0.4.0; step detail 0.4.1))
 
 > **Status:** v1 shipped in 0.3.14. v2 and everything under "0.4.0" below is implemented in the hub since 0.4.0-alpha (routes marked `x-foxfleet-status: implemented (0.4.0-alpha)` in `contract/openapi.json`). A hub without them answers 404: clients must check the matching feature in `GET /api/auth` → `hub.features`, never the version string.
 
@@ -83,6 +83,7 @@ After a gap the stream continues from `cursor`: events after it follow, then `fo
 | `id: <store>:<seq>` `event: <type>` `data: <Event>` | replay, then live |
 | `event: foxfleet.ready` `data: {"contract":"foxfleet.live/2","cursor":"<store>:<seq>","store":"…","heartbeat_ms":15000}` | once, after the replay; no `id` |
 | `event: typing` `data: <Typing>` | ephemeral, **no `id`, no `seq`**, never replayed |
+| `event: run.step` `data: <RunStep>` | 0.4.1, ephemeral like typing: **no `id`, no `seq`**, never stored, replayed or pulled |
 | `: keep-alive` | every 15 s (`FOXFLEET_LIVE_HEARTBEAT_MS`); 45 s of silence = dead link |
 | `event: foxfleet.auth` `data: {"reason":"signed_out"}` | the device session ended; the stream closes; do not reconnect |
 
@@ -131,6 +132,8 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | `edited_at` | int \| null | |
 | `run_id` | string \| null | the run that produced an assistant message |
 | `images` | `{url, mime}[]` | short-lived media links, same rules as history. Not filled in 0.4.0-alpha: fetch the message from history for media |
+| `reasoning` | string | 0.4.1, assistant messages: the reply's reasoning (streamed deltas, or the agent's one-piece reasoning, or `<think>` blocks), at most 64 KiB UTF-8; `reasoning_truncated: true` when cut. Absent when none |
+| `tools` | `{name, args?, result?, ok?}[]` | 0.4.1, assistant messages: the tools the reply ran, same shape as history; at most 50, `args` / `result` at most 500 characters + `…` (previews, never the full result). From a live run: `args` is the arguments preview, `result` / `ok` when the agent reported the end. Chat-completions agents only report tool starts (`name`, `args` = Hermes' label). Absent when none |
 
 Fields that are null or unknown may be left out of a `Message` (treat absent as null).
 
@@ -143,6 +146,35 @@ Fields that are null or unknown may be left out of a `Message` (treat absent as 
 `state`: `thinking` (reasoning), `typing` (writing the reply), `tool` (running a tool; `tool` is a short label, ≤ 80 chars), `idle` (stop
 showing). The hub repeats a non-idle state at least every 5 s while it lasts; a client clears it after `ttl_ms` without a repeat, on
 `idle`, on `run.finished` or on `message.new` from the agent in that chat. Typing is only about the agent; there is no user typing.
+
+0.4.1 adds two optional fields (absent when unknown, so a plain frame is byte-identical to 0.4.0):
+- `label` (≤ 200 chars): what the current step is about: the tool's arguments preview (state `tool`, e.g. `ls -la /tmp`), or the
+  agent's commentary / a status line (keeps the current state). Show it under the "is working…" line.
+- `tool_id`: the running tool call (state `tool`), the same id as on `run.step` and the run stream's `foxfleet.tool`.
+
+```json
+{ "agent": "nova", "chat": "…", "state": "tool", "tool": "terminal", "label": "ls -la /tmp", "tool_id": "t1", "ttl_ms": 6000 }
+```
+
+### RunStep (ephemeral, 0.4.1)
+
+One frame per step of a running reply, for a Telegram-like live step list in the chat without opening the run stream:
+
+```json
+{ "agent": "nova", "chat": "…", "run_id": "…", "kind": "tool.end", "tool_id": "t1", "name": "terminal", "ok": true, "duration_ms": 250, "preview": "a b", "at": 1792195200000 }
+```
+
+| field | notes |
+|---|---|
+| `kind` | `tool.start`, `tool.end`, `commentary` (what the agent says between tool calls), `status` (a status line or a subagent starting / finishing) |
+| `tool_id` | tool steps, when known: pairs a start with its end (the agent's call id, else `t1`, `t2` … per run) |
+| `name` | tool steps: the tool name |
+| `preview` | `tool.start`: arguments preview (≤ 200 chars + `…`); `tool.end`: result preview (≤ 500 chars + `…`) |
+| `ok`, `duration_ms` | `tool.end`, when the agent reports them |
+| `text` | `commentary` / `status`: the line to show (≤ 300 chars + `…`) |
+
+Like typing it has no `id` and no `seq`, is never stored, replayed or returned by the pull endpoint: a client that connects mid-run sees
+the next steps only, and the finished `message.new` carries the summary (`reasoning`, `tools`). Not on v1.
 
 ## Chat list (0.4.0, feature `chats`)
 
@@ -218,6 +250,41 @@ only** (it is never written to the notification log and differs per device), is 
 `POST /api/notify/read` on that event's agent and chat. It stops working when the device signs out or is revoked. A bad, expired,
 revoked or out-of-scope token is `403 reply_token_invalid`, **never 401** (401 would sign the app out).
 
+## Step detail on the run stream (0.4.1)
+
+The run stream (`/api/agents/{agent}/runs/{run_id}/events`, also the body of `POST /chat` / `/messages`) keeps every 0.4.0 frame byte for
+byte and adds:
+
+- **Reasoning on Hermes `/v1/runs` agents**: Hermes' one-piece `reasoning.available` becomes the usual
+  `data: {"choices":[{"delta":{"reasoning_content":"…"}}]}` frame, only when no reasoning delta streamed in that run (never shown twice;
+  a later step's one-piece reasoning is appended after a blank line). Native gateway agents already did this.
+- **`event: foxfleet.tool`** on `/v1/runs` agents too (native gateway agents had it): `{type: "tool.start"|"tool.progress"|"tool.end", tool_id, name, turn_id?}`
+  plus, new in 0.4.1, `preview` on `tool.start` (arguments, one line, ≤ 200 chars + `…`) and `ok`, `duration_ms`, `result_preview`
+  (≤ 500 chars + `…`, never the full result) on `tool.end`. `ok` is false when the agent reports an error or the result says so
+  (`error`, `success: false`, `ok: false`, non-zero `exit_code`).
+- **`event: hermes.tool.progress` `{tool}`** is now sent once per tool, **when it starts** (on `/v1/runs` it was also sent on completion,
+  which showed a finished tool as running again). Commentary still sends it as before (`{tool: "<first 120 chars>"}`), so 0.4.0 clients
+  keep their "working" line. Native gateway agents unchanged (start, and Hermes' tool.generating / tool.progress ticks).
+- **`event: foxfleet.step`** `{kind, text, level, turn_id?}`: `kind` `commentary` (Hermes `message.interim` not already streamed as text),
+  `status` (native `status.update`), `subagent` (Hermes `subagent.start` / `subagent.complete`); `level` `info` / `warn` / `error`.
+
+Clients ignore unknown events and fields, so older apps see no change. Live v2 mirrors these steps as `typing` labels and `run.step`
+(above); the run stream stays the place for streaming text and full detail.
+
+## Model picker (0.4.1)
+
+`capabilities.models` on `/api/agents` says how a client changes the model:
+
+| value | list | change |
+|---|---|---|
+| `native` | `GET /api/agents/{agent}/models` (same list as `/native/models`) | `POST /api/agents/{agent}/native/sessions/{sid}/model` (unchanged, may ask to confirm an expensive model) |
+| `request` | `GET /api/agents/{agent}/models` (the agent's `GET /api/model/options`) | `POST /api/agents/{agent}/sessions/{id}/model` `{model, provider?}`: a per-chat override the hub keeps (in `chats.json`) and sends as `model` / `provider` with every new run of that chat (`/v1/runs` and chat completions). `{model: null}` clears it. A running reply keeps its model |
+| `none` | 409 `models_unsupported` | hide the picker (bots, older Hermes, other kinds) |
+
+`GET /api/agents/{agent}/models[?refresh=1][&session_id=]` → `{ mode, providers: [{slug, name, current, models: string[]}], override? }`
+(at most 60 providers × 300 models; `override` = the chat's `{model, provider}` for `request` agents when `session_id` is given and one
+is set). Send a `provider` with the model: Hermes ignores a bare model on chat completions. Errors: `docs/API-ERRORS.md`.
+
 ## Flags and compatibility summary
 
 | feature in `hub.features` | adds |
@@ -232,4 +299,4 @@ Nothing existing changes shape: new fields are additive, `/api/agents` keeps its
 
 v1 change in 0.4.0: its `429` body now carries `code: too_many_streams` (frames unchanged).
 
-Hub environment (documented in `site/.vitepress/gen.mjs`): `FOXFLEET_LIVE_RETAIN_EVENTS` (default 5000), `FOXFLEET_LIVE_RETAIN_DAYS` (default 7).
+Hub environment (documented in `site/.vitepress/gen.mjs`): `FOXFLEET_LIVE_RETAIN_EVENTS` (default 5000), `FOXFLEET_LIVE_RETAIN_DAYS` (default 7). 0.4.1 adds none.

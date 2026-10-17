@@ -1,4 +1,4 @@
-# Hub API: error codes and agent staleness (0.3.13-alpha; 0.4.0-alpha phase 1 codes below)
+# Hub API: error codes and agent staleness (0.3.13-alpha; 0.4.0-alpha phase 1 and 0.4.1-alpha model codes below)
 
 This page is for client UI work. The machine-readable source is `contract/openapi.json`, in the `Error` and `Agent` schemas.
 
@@ -72,3 +72,15 @@ Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these codes is a 401. `POS
 | 409 | (none) | `POST /api/notify/reply` | the agent is a bot agent; direct reply is not available | open the chat |
 
 `POST /api/notify/reply` also passes through the agent codes above (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`) when the hub could not hand the text to the agent. A `202` whose `message.status` is `failed` (with `error`) means the hub stored the text but the agent refused it; show it in the chat as failed, like any other send.
+
+## Model picker (0.4.1-alpha): `GET /api/agents/{name}/models`, `POST /api/agents/{name}/sessions/{id}/model`
+
+See `docs/LIVE-EVENTS.md` "Model picker" and `capabilities.models`.
+
+| status | `code` | routes | meaning | suggested UI |
+|---|---|---|---|---|
+| 409 | `models_unsupported` | both | the agent has no model list (`capabilities.models` is `none`: a bot, an older Hermes without `/api/model/options`, another kind), or the override route was called for a `native` agent (use `/native/sessions/{sid}/model`) | hide the picker; for `native`, use the native route |
+| 400 | `invalid_model` | `POST …/sessions/{id}/model` | `model` is not a model id (1–200 of letters, digits, `. _ : / @ + -`) or null, or `provider` is not a slug | client bug |
+| 400 | (none) | `POST …/sessions/{id}/model` | the session id is malformed | client bug |
+
+The list route also passes through the agent codes above (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`) when the agent could not be asked. Neither route is ever a 401 for an agent problem.

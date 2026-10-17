@@ -11,8 +11,8 @@
   "updated": "2026-10-17",
   "version": "0.4.0-alpha",
   "releasedVersion": "0.3.10-alpha",
-  "nextVersion": "0.4.0-alpha",
-  "nextReleaseNote": "0.4.0-alpha (hub, not released yet): phase 1 of the chat list. A persistent, resumable live event stream (live v2) with message text, typing and read state; a chat list API with unread counts, archive, mute and mark unread; read receipts; direct reply and mark read from a notification. The Android app is being built on it; no new APK until it lands. The latest public release is still 0.3.10-alpha.",
+  "nextVersion": "0.4.1-alpha",
+  "nextReleaseNote": "0.4.1-alpha (not released yet): fixes from testing 0.4.0. The hub now passes the agent's thinking and every tool step to the apps as it happens (tool name, arguments, result, duration, commentary and status lines), the finished reply carries its reasoning and tools, and the model picker works for every Hermes agent with a model list, with a per-chat model. 0.4.0-alpha (phase 1 of the chat list) is not tagged. The latest public release is still 0.3.10-alpha.",
   "overview": [
     "Foxfleet is a self-hosted hub with web and Android clients for your AI agents.",
     "The latest public downloads are 0.3.10-alpha (Android notifications, per-chat backgrounds, a lighter dark theme, message actions, reactions, a Telegram-style agent list, agent awareness, reasoning and better screen, media and scroll handling, on top of resilient connections, resumable chats, Hermes commands and the foxfleet CLI), including machine pairing, multi-profile Hermes connectors, and Machines screens on web and Android.",
@@ -20,7 +20,11 @@
   ],
   "timeline": [
     {
-      "v": "0.4.0-alpha (in progress, not released)",
+      "v": "0.4.1-alpha (in progress, not released)",
+      "what": "Fixes from testing 0.4.0 on the hub: the agent's thinking reaches the apps on every Hermes path, every tool step is visible while it runs (name, arguments, result preview, duration, commentary and status lines, ephemeral on the live stream), the finished reply carries its reasoning and tools, and a model list with a per-chat model for Hermes agents without the native gateway."
+    },
+    {
+      "v": "0.4.0-alpha (not tagged)",
       "what": "Chat list phase 1 on the hub: a persistent per-account live event stream that resumes across restarts without losing or repeating events (gap when it cannot), a pull endpoint, chat rows with unread counts, previews, archive, mute and mark unread, read receipts with per-chat message numbers, and direct reply / mark read from a notification with scoped reply tokens. Android client in progress."
     },
     {
@@ -33,6 +37,15 @@
     }
   ],
   "board": [
+    {
+      "id": "p11h",
+      "col": "Done",
+      "area": "Hub",
+      "release": "0.4.1-alpha",
+      "text": "Live thinking, tool steps and model picker for every Hermes agent",
+      "doneWhen": "A reply shows its thinking as it streams, each tool step with arguments and result while it runs, and /model opens a picker on native and API-server Hermes agents.",
+      "detail": "reasoning.available on /v1/runs; foxfleet.tool with ok, duration_ms and previews; foxfleet.step for commentary, status and subagents; live v2 typing label, run.step and reasoning/tools on message.new; GET /api/agents/{name}/models, capabilities.models and a per-chat model override."
+    },
     {
       "id": "p1h",
       "col": "Done",
@@ -562,8 +575,8 @@
       "file": "../SECURITY.md"
     }
   ],
-  "stage": "Building 0.4.0-alpha (chat list, phase 1)",
-  "focus": "0.3.10-alpha is the latest public release; 0.3.14-alpha (live updates in the open chat) is signed but not tagged. The hub side of 0.4.0 phase 1 is implemented and in QA: live events v2, chat list, read receipts and notification reply (docs/LIVE-EVENTS.md). Next: the Android chat list on top of it, then validation on physical devices and real Hermes installations.",
+  "stage": "Building 0.4.1-alpha (chat list, phase 1 fixes)",
+  "focus": "0.3.10-alpha is the latest public release; 0.3.14-alpha and 0.4.0-alpha (chat list, phase 1) are not tagged. 0.4.1-alpha fixes what testing 0.4.0 found: live thinking and tool steps in the chat (like a Telegram bot's progress), and the model picker. Next: the Android side of 0.4.1, then validation on physical devices and real Hermes installations.",
   "milestones": [
     {
       "label": "01 / Current priority",

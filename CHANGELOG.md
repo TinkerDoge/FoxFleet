@@ -2,7 +2,18 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.4.0-alpha)
+## Unreleased (0.4.1-alpha)
+
+Fixes from Doge's 0.4.0 test (main 8d1aa85): thinking that did not stream, no live tool/step detail ("Agent is working…", then the reply), and `/model` not opening the picker. Hub side on branch fix/0.4.1-hub (no UI or Android changes; Android is fixed on fix/0.4.1). All additions; every 0.4.0 frame keeps its bytes. Contract: docs/LIVE-EVENTS.md ("Step detail", "Model picker"), docs/API-ERRORS.md, contract/openapi.json.
+
+- Hub (run stream, Hermes `/v1/runs` agents): `reasoning.available` is no longer dropped: it becomes the usual `reasoning_content` delta, only when no reasoning delta streamed in that run, so it is never shown twice.
+- Hub (run stream): tool lifecycle on every path: `event: foxfleet.tool` now also on `/v1/runs` agents (`tool.start` / `tool.progress` / `tool.end`, a per-run `tool_id` when Hermes sends none), with `preview` (arguments, ≤ 200 chars) on start and `ok`, `duration_ms`, `result_preview` (≤ 500 chars, never the full result) on end, also for native gateway agents. `hermes.tool.progress` is sent once per tool on start (and for commentary, as before); `/v1/runs` no longer repeats it on completion.
+- Hub (run stream): new `event: foxfleet.step` `{kind: commentary|status|subagent, text, level}` from Hermes `message.interim` (when not already streamed), native `status.update` and `subagent.start` / `subagent.complete`. Native `message.interim` was dropped before; it now also sends the commentary `hermes.tool.progress` line like `/v1/runs`.
+- Hub (live v2): `typing` gains `label` (tool arguments, commentary or status line) and `tool_id`, only when known (a plain frame is byte-identical to 0.4.0); new ephemeral `event: run.step` (tool.start / tool.end / commentary / status, no id or seq, never stored, replayed or pulled); the reply's `message.new` (and `message.edited` / `message.new` from a resync) carries `reasoning` (≤ 64 KiB, `reasoning_truncated`) and `tools` (`{name, args?, result?, ok?}`, history shape, ≤ 50, ≤ 500 chars each).
+- Hub (model picker): `capabilities.models` (`native` | `request` | `none`); `GET /api/agents/{name}/models` for native gateway agents and Hermes API-server agents (`/api/model/options`), `{mode, providers, override?}`; `POST /api/agents/{name}/sessions/{id}/model` `{model, provider?}` (or `{model: null}`) keeps a per-chat override in `chats.json` that the hub sends as `model` / `provider` with each new run of that chat (`/v1/runs` and chat completions). New error codes `models_unsupported` (409) and `invalid_model` (400).
+- Contract: `info.version` 0.4.1-alpha; new schemas `RunStepEvent`, `RunToolFrame`, `RunStepFrame`, `ModelList`, `ModelOverride`; `TypingEvent.label` / `tool_id`, `LiveMessage.reasoning` / `reasoning_truncated` / `tools`, `Capabilities.models`; two new routes `x-foxfleet-status: implemented (0.4.1-alpha)`. No new environment variables. Package versions stay 0.4.0-alpha on this branch (bumped at release); Android unchanged.
+
+## 0.4.0-alpha (not tagged)
 
 Phase 1 of the chat-list work (contract at 48eb160: docs/LIVE-EVENTS.md, docs/API-ERRORS.md, contract/openapi.json). The entries below are the hub side (branch feat/tg-phase1, no UI or Android changes); the Android client for it is on feat/tg-phase1-android.
 
