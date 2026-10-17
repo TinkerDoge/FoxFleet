@@ -67,6 +67,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.foxfleet.app.data.AgentStatus
+import dev.foxfleet.app.data.live.HubChat
+import dev.foxfleet.app.data.live.LinkState
+import dev.foxfleet.app.ui.ChatRows
+import dev.foxfleet.app.ui.components.ArchiveGlyph
+import dev.foxfleet.app.ui.components.MutedGlyph
+import dev.foxfleet.app.ui.components.StatusTicks
+import androidx.compose.foundation.layout.defaultMinSize
 import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.components.AgentAvatar
 import dev.foxfleet.app.ui.components.Presence
@@ -78,7 +85,7 @@ import dev.foxfleet.app.ui.motion.reduceMotion
 import dev.foxfleet.app.ui.motion.sharedAvatar
 import dev.foxfleet.app.ui.motion.staggerDelayMs
 
-/** Agent list, Telegram style: avatar, name, last message, time, unread dot; pinned on top; newest activity first. Swipe or long-press to pin. */
+/** Agent list, messenger style: avatar, name, last message, time, unread dot; pinned on top; newest activity first. Swipe or long-press to pin. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun FleetScreen(
@@ -97,6 +104,16 @@ fun FleetScreen(
     running: (String) -> Boolean = { false },
     userInitials: String = "",
     now: () -> Long = { System.currentTimeMillis() },
+    /** Phase 1 (`chats`): the hub's row per agent (badge, preview with sender, archived, muted). Empty = the agent list as before. */
+    rows: Map<String, HubChat> = emptyMap(),
+    archivedView: Boolean = false,
+    onArchivedView: (Boolean) -> Unit = {},
+    /** Swipe and menu actions on rows; null on hubs without `chats` (swipe pins, as before). */
+    rowActions: ChatRowActions? = null,
+    /** Connection indicator (Connecting…, Updating…, Offline); null = live or nothing to say. */
+    link: LinkState? = null,
+    /** The agent's typing line from the live stream ("typing…", "thinking…"), or null. */
+    typingLabel: (String) -> String? = { null },
 ) {
     val c = LocalHubColors.current
     var entered by rememberSaveable { mutableStateOf(false) }
@@ -107,10 +124,13 @@ fun FleetScreen(
     LaunchedEffect(lifecycle) { lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (true) { kotlinx.coroutines.delay(12_000); onPoll() } } }
     var searching by rememberSaveable { mutableStateOf(false) }
     var query by rememberSaveable { mutableStateOf("") }
-    val shown = remember(agents, query) {
+    val listed = remember(agents, rows, archivedView) { if (rows.isEmpty()) agents else ChatRows.visible(agents, rows, archivedView) }
+    val archived = remember(agents, rows) { if (rows.isEmpty()) emptyList() else ChatRows.visible(agents, rows, true) }
+    val shown = remember(listed, query, rows) {
         val q = query.trim().lowercase()
-        if (q.isEmpty()) agents else agents.filter { "${it.displayName} ${it.name} ${it.lastMessagePreview.orEmpty()}".lowercase().contains(q) }
+        if (q.isEmpty()) listed else listed.filter { "${it.displayName} ${it.name} ${it.lastMessagePreview.orEmpty()} ${rows[it.name]?.last?.preview.orEmpty()}".lowercase().contains(q) }
     }
+    androidx.activity.compose.BackHandler(archivedView) { onArchivedView(false) }
 
     Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
         Row(
@@ -118,14 +138,19 @@ fun FleetScreen(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box(
+            if (archivedView) SoftIconButton(FoxIcons.get("back"), "Back to chats", { onArchivedView(false) }, tint = c.text)
+            else Box(
                 Modifier.size(44.dp).clip(CircleShape).background(c.surfaceAlt).clickable(onClick = onSettings).semantics { contentDescription = "Settings" },
                 contentAlignment = Alignment.Center,
             ) { if (userInitials.isNotBlank()) Text(userInitials, color = c.text, style = MaterialTheme.typography.labelLarge) else FoxIcon("settings", tint = c.text) }
             Column(Modifier.weight(1f).padding(start = 4.dp)) {
-                Text("Agents", style = MaterialTheme.typography.titleLarge, color = c.text, maxLines = 1)
+                // The title says how the link is while it is not live (messenger pattern); the list below stays usable from the cache.
+                val linkText = ChatRows.linkLabel(link)
+                if (linkText != null) LinkTitle(link!!, linkText)
+                else Text(if (archivedView) "Archived chats" else "Agents", style = MaterialTheme.typography.titleLarge, color = c.text, maxLines = 1)
                 val ready = agents.count { it.chatReady }
-                if (agents.isNotEmpty()) Text("$ready of ${agents.size} ready", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
+                if (archivedView) Text(if (listed.size == 1) "1 chat" else "${listed.size} chats", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
+                else if (agents.isNotEmpty()) Text("$ready of ${agents.size} ready", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
             }
             SoftIconButton(FoxIcons.get(if (searching) "close" else "search"), if (searching) "Close search" else "Search agents", { searching = !searching; if (!searching) query = "" }, background = c.surfaceAlt, tint = c.text)
             if (onAddAgent != null) SoftIconButton(FoxIcons.get("add"), "Add agent", onAddAgent, background = c.surfaceAlt, tint = c.text)
@@ -142,13 +167,18 @@ fun FleetScreen(
                     if (error != null) item(key = "error") {
                         Text(error, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.animateItem().padding(horizontal = 20.dp, vertical = 6.dp))
                     }
-                    if (shown.isEmpty()) item(key = "nomatch") { Text("No agent matches", color = c.textMuted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(32.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
-                    itemsIndexed(shown, key = { _, a -> a.name }) { i, a ->
+                    if (!archivedView && archived.isNotEmpty() && query.isBlank()) item(key = "archived", contentType = "archived") {
+                        ArchivedEntry(archived.size, archived.sumOf { rows[it.name]?.badge ?: 0 }, Modifier.animateItem()) { onArchivedView(true) }
+                    }
+                    if (shown.isEmpty() && archivedView) item(key = "noarchived") { Text("No archived chats", color = c.textMuted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(32.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+                    else if (shown.isEmpty()) item(key = "nomatch") { Text("No agent matches", color = c.textMuted, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().padding(32.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) }
+                    itemsIndexed(shown, key = { _, a -> a.name }, contentType = { _, _ -> "agent" }) { i, a ->
                         val anim = remember { Animatable(if (animateIn) 0f else 1f) }
                         LaunchedEffect(Unit) { if (anim.value < 1f) { kotlinx.coroutines.delay(staggerDelayMs(i).toLong()); anim.animateTo(1f, tween(360)) } }
                         AgentRow(
                             a, unread(a), running(a.name), now(), onOpen, onPin, onAvatarLongPress,
                             Modifier.animateItem().graphicsLayer { alpha = anim.value; translationY = (1f - anim.value) * 24.dp.toPx() },
+                            row = rows[a.name], actions = rowActions, typing = typingLabel(a.name),
                         )
                     }
                     item(key = "footer") { Spacer(Modifier.navigationBarsPadding()) }
@@ -182,7 +212,7 @@ private fun SearchField(value: String, onChange: (String) -> Unit, modifier: Mod
 @Composable
 private fun AgentRow(
     a: AgentStatus, unread: Boolean, runningHere: Boolean, now: Long, onOpen: (AgentStatus) -> Unit, onPin: (AgentStatus) -> Unit,
-    onChangePicture: (String) -> Unit, modifier: Modifier,
+    onChangePicture: (String) -> Unit, modifier: Modifier, row: HubChat? = null, actions: ChatRowActions? = null, typing: String? = null,
 ) {
     val c = LocalHubColors.current
     val haptic = rememberHaptic()
@@ -190,17 +220,26 @@ private fun AgentRow(
     val preview = AgentList.preview(a, runningHere)
     var menu by remember { mutableStateOf(false) }
     val src = remember { MutableInteractionSource() }
+    val muted = row?.mutedAt(now) == true
+    val rowSwipe = actions != null && row != null
+    // With the hub's rows: swipe left archives (or unarchives), swipe right mutes (or unmutes). Otherwise both directions pin, as before.
     val swipe = rememberSwipeToDismissBoxState(confirmValueChange = { v ->
-        if (v != SwipeToDismissBoxValue.Settled) { haptic(HapticFeedbackType.LongPress); onPin(a) }
-        false // snaps back: the row moves because the order changed, not because it was dismissed
+        if (v != SwipeToDismissBoxValue.Settled) {
+            haptic(HapticFeedbackType.LongPress)
+            if (rowSwipe) { if (v == SwipeToDismissBoxValue.EndToStart) actions!!.onArchive(a.name, !row!!.archived) else actions!!.onMute(a.name) } else onPin(a)
+        }
+        false // snaps back: the row moves because the order or list changed, not because it was dismissed
     })
     SwipeToDismissBox(
         state = swipe, modifier = modifier,
         backgroundContent = {
             Box(Modifier.fillMaxSize().background(c.accent.copy(alpha = 0.16f)).padding(horizontal = 24.dp), contentAlignment = if (swipe.dismissDirection == SwipeToDismissBoxValue.StartToEnd) Alignment.CenterStart else Alignment.CenterEnd) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FoxIcon(if (a.pinned) "unpin" else "pin", tint = c.accent)
-                    Text(if (a.pinned) "Unpin" else "Pin", color = c.accent, style = MaterialTheme.typography.labelLarge)
+                    when {
+                        !rowSwipe -> { FoxIcon(if (a.pinned) "unpin" else "pin", tint = c.accent); Text(if (a.pinned) "Unpin" else "Pin", color = c.accent, style = MaterialTheme.typography.labelLarge) }
+                        swipe.dismissDirection == SwipeToDismissBoxValue.EndToStart -> { ArchiveGlyph(c.accent); Text(if (row!!.archived) "Unarchive" else "Archive", color = c.accent, style = MaterialTheme.typography.labelLarge) }
+                        else -> { MutedGlyph(c.accent, size = 20.dp); Text(if (muted) "Unmute" else "Mute", color = c.accent, style = MaterialTheme.typography.labelLarge) }
+                    }
                 }
             }
         },
@@ -226,13 +265,33 @@ private fun AgentRow(
                             }
                         }
                         Spacer(Modifier.width(8.dp))
-                        if (a.pinned) { FoxIcon("pin", tint = c.textMuted, size = 14.dp); Spacer(Modifier.width(4.dp)) }
-                        Text(AgentList.time(a.lastActivityAt, now), style = MaterialTheme.typography.labelSmall, color = if (unread) c.accent else c.textMuted, maxLines = 1)
+                        if (muted) { MutedGlyph(c.textMuted); Spacer(Modifier.width(4.dp)) }
+                        if (a.pinned || row?.pinned == true) { FoxIcon("pin", tint = c.textMuted, size = 14.dp); Spacer(Modifier.width(4.dp)) }
+                        if (row?.last?.role == "user") { StatusTicks(row.last.status, c.textMuted, c.accent, MaterialTheme.colorScheme.error); Spacer(Modifier.width(4.dp)) }
+                        Text(AgentList.time(row?.last?.at ?: a.lastActivityAt, now), style = MaterialTheme.typography.labelSmall, color = if (unread && !muted) c.accent else c.textMuted, maxLines = 1)
                     }
                     Spacer(Modifier.height(2.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { PreviewText(preview, a) }
-                        if (unread) {
+                        val rp = row?.let { ChatRows.preview(it) }
+                        Box(Modifier.weight(1f)) {
+                            when {
+                                typing != null -> Row(verticalAlignment = Alignment.CenterVertically) { Text(typing, style = MaterialTheme.typography.bodyMedium, color = c.accent, maxLines = 1); TypingDots(c.accent) }
+                                rp != null && preview.kind != AgentList.Kind.Approval && preview.kind != AgentList.Kind.Typing -> Text(
+                                    buildAnnotatedString { rp.sender?.let { withStyle(SpanStyle(color = c.text.copy(alpha = 0.75f))) { append("$it: ") } }; append(rp.text) },
+                                    style = MaterialTheme.typography.bodyMedium, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                                )
+                                else -> PreviewText(preview, a)
+                            }
+                        }
+                        val count = row?.badge ?: 0
+                        if (row != null && count > 0) {
+                            Spacer(Modifier.width(8.dp))
+                            val label = ChatRows.badgeText(count)
+                            Text(label, style = MaterialTheme.typography.labelMedium, color = if (muted) androidx.compose.ui.graphics.Color.White else c.onAccent, maxLines = 1,
+                                modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(if (muted) c.textFaint else c.accent).padding(horizontal = 7.dp, vertical = 2.dp)
+                                    .semantics { contentDescription = if (row.unread > 0) "$label unread" + if (muted) ", muted" else "" else "Marked unread" },
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                        } else if (row == null && unread) {
                             Spacer(Modifier.width(8.dp))
                             Box(Modifier.size(10.dp).clip(CircleShape).background(c.accent).semantics { contentDescription = "Unread" })
                         }
@@ -245,9 +304,47 @@ private fun AgentRow(
                     leadingIcon = { FoxIcon(if (a.pinned) "unpin" else "pin", tint = c.text) },
                     onClick = { menu = false; onPin(a) },
                 )
+                if (actions != null && row != null) {
+                    val isUnread = row.badge > 0
+                    DropdownMenuItem(text = { Text(if (isUnread) "Mark as read" else "Mark as unread") }, leadingIcon = { FoxIcon(if (isUnread) "check" else "chat", tint = c.text) }, onClick = { menu = false; actions.onUnread(a.name, !isUnread) })
+                    DropdownMenuItem(text = { Text(if (muted) "Unmute" else "Mute") }, leadingIcon = { MutedGlyph(c.text, size = 20.dp) }, onClick = { menu = false; actions.onMute(a.name) })
+                    DropdownMenuItem(text = { Text(if (row.archived) "Unarchive" else "Archive") }, leadingIcon = { ArchiveGlyph(c.text) }, onClick = { menu = false; actions.onArchive(a.name, !row.archived) })
+                }
                 DropdownMenuItem(text = { Text("Change picture") }, leadingIcon = { FoxIcon("image", tint = c.text) }, onClick = { menu = false; onChangePicture(a.name) })
             }
         }
+    }
+}
+
+/** Archive and mute from the list (feature `chats`). */
+data class ChatRowActions(val onArchive: (agent: String, archived: Boolean) -> Unit, val onMute: (agent: String) -> Unit, val onUnread: (agent: String, unread: Boolean) -> Unit)
+
+/** The "Archived chats" entry on top of the main list (messenger pattern): count of chats, unread among them in a quiet badge. */
+@Composable
+private fun ArchivedEntry(count: Int, unread: Int, modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalHubColors.current
+    Row(modifier.fillMaxWidth().heightIn(min = 60.dp).clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp).semantics { contentDescription = "Archived chats, $count" },
+        verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(c.surfaceAlt), contentAlignment = Alignment.Center) { ArchiveGlyph(c.textMuted, size = 26.dp) }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Text("Archived chats", style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
+            Text(if (count == 1) "1 chat" else "$count chats", style = MaterialTheme.typography.bodyMedium, color = c.textMuted, maxLines = 1)
+        }
+        if (unread > 0) Text(ChatRows.badgeText(unread), style = MaterialTheme.typography.labelMedium, color = androidx.compose.ui.graphics.Color.White,
+            modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(c.textFaint).padding(horizontal = 7.dp, vertical = 2.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+    }
+}
+
+/** The title while the link is not live: a small spinner-like pulse for Connecting/Updating, a quiet dot for Offline. */
+@Composable
+fun LinkTitle(state: LinkState, text: String, modifier: Modifier = Modifier) {
+    val c = LocalHubColors.current
+    Row(modifier.semantics { contentDescription = text }, verticalAlignment = Alignment.CenterVertically) {
+        if (state == LinkState.Offline) Box(Modifier.size(8.dp).clip(CircleShape).background(c.textFaint))
+        else TypingDots(c.accent, Modifier.padding(end = 2.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.titleLarge, color = if (state == LinkState.Offline) c.textMuted else c.text, maxLines = 1)
     }
 }
 

@@ -275,6 +275,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
+        chatRows = emptyMap(); archivedRows = emptyList(); showArchived = false; totalUnread = 0; publishBadge()
         wipeCache(); offline = false // the cache holds message text: it never outlives the sign-in
         settings.clearSession() // chat backgrounds stay: they are cleared only when a different account or hub signs in (see claimBackgroundOwner)
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
@@ -294,6 +295,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 fresh.forEach { a -> if (a.name == open) settings.markSeen(a.name, a.lastActivityAt) else if (settings.seenAt(a.name) == null) settings.markSeen(a.name, a.lastActivityAt) } // a new device starts out read
                 agents = AgentList.sort(fresh); fleetLoadedOnce = true; restoreLastChat()
                 val sorted = agents; cached { saveAgents(sorted) }
+                if (features.chats) loadChats()
             } catch (e: AuthRequiredException) {
                 deactivateMedia(purge = true)
                 authed = false
@@ -304,7 +306,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Is there a reply in this agent's chat that you have not seen on this device? */
-    fun unreadFor(a: AgentStatus): Boolean = chatFor(a.name).unread || AgentList.unread(a, settings.seenAt(a.name), (route as? Route.Chat)?.agent == a.name)
+    fun unreadFor(a: AgentStatus): Boolean = chatRows[a.name]?.let { it.badge > 0 && (route as? Route.Chat)?.agent != a.name } ?: chatFor(a.name).unread || AgentList.unread(a, settings.seenAt(a.name), (route as? Route.Chat)?.agent == a.name)
 
     /** Pin or unpin: the row moves at once; the hub's answer (or the next refresh) is the truth. */
     fun pin(a: AgentStatus) {
@@ -365,7 +367,9 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             // Fallback for what the hub cannot push (a message that reached the agent from another app, an older hub): a cheap newest-page check.
             while (true) { delay(if (liveConnected) POLL_LIVE_MS else POLL_MS); openChatAgent()?.let { catchUp(it) } }
         }
-        if (liveJob?.isActive == true || !hubHas("live")) return
+        if (liveJob?.isActive == true) return
+        if (features.live2 && !v2Unsupported && cache != null) { startLiveV2(); return }
+        if (!hubHas("live")) return
         val gen = authGeneration
         val runner = dev.foxfleet.app.data.LiveStreamRunner(api.liveTransport, object : dev.foxfleet.app.data.LiveSink {
             override suspend fun onEvent(e: dev.foxfleet.app.data.LiveEvent) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) onLiveEvent(e) }
@@ -383,6 +387,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun stopLive() {
+        v2Runner?.close(); v2Runner = null; link = null; typing.clearAll(); typingTick++
         liveRunner?.close(); liveRunner = null; liveJob?.cancel(); liveJob = null; pollJob?.cancel(); pollJob = null; liveConnected = false
         catchUps.values.forEach { it.cancel() }; catchUps.clear()
     }
@@ -729,7 +734,219 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+
+    // ---- phase 1 (0.4.0): live v2, chat list rows, typing, read receipts, badge. Every part is gated by hub.features ----
+
+    val features: dev.foxfleet.app.data.live.HubFeatures get() = dev.foxfleet.app.data.live.HubFeatures.of(hubFeatures)
+    /** The hub answered 404/400 to `?v=2` although it listed `live2`: v1 for the rest of this login. */
+    private var v2Unsupported = false
+    private var v2Runner: dev.foxfleet.app.data.live.LiveV2Runner? = null
+    /** Connection indicator: null = nothing to show (live, or a hub without a live stream). */
+    var link by mutableStateOf<dev.foxfleet.app.data.live.LinkState?>(null); private set
+    /** What the title bars show: offline start wins, then the v2 state, then v1 (connected or connecting). */
+    val linkIndicator: dev.foxfleet.app.data.live.LinkState? get() = when {
+        offline -> dev.foxfleet.app.data.live.LinkState.Offline
+        link != null -> link.takeIf { it != dev.foxfleet.app.data.live.LinkState.Live }
+        hubHas("live") && authed == true && foreground && !liveConnected && liveJob?.isActive == true -> dev.foxfleet.app.data.live.LinkState.Connecting
+        else -> null
+    }
+    /** Chat-list rows by agent (feature `chats`), main list and archived; empty on hubs without it (the agent list is then the list). */
+    var chatRows by mutableStateOf<Map<String, dev.foxfleet.app.data.live.HubChat>>(emptyMap()); private set
+    var archivedRows by mutableStateOf<List<dev.foxfleet.app.data.live.HubChat>>(emptyList()); private set
+    var showArchived by mutableStateOf(false); private set
+    /** Unread over rows that are neither muted nor archived: the launcher badge. */
+    var totalUnread by mutableStateOf(0); private set
+    val typing = dev.foxfleet.app.data.live.TypingTracker()
+    var typingTick by mutableStateOf(0); private set
+    private var typingJob: Job? = null
+    private val readSent = HashMap<String, Int>()
+
+    /** The header line for [agent]'s chat [chat]: "typing…", "thinking…", "running bash…", or null. */
+    fun typingLabel(agent: String, chat: String?): String? { typingTick; return dev.foxfleet.app.data.live.TypingTracker.label(typing.get(agent, chat)) }
+
+    private fun bumpTyping() {
+        typingTick++
+        typingJob?.cancel()
+        val next = typing.nextExpiryIn() ?: return
+        typingJob = viewModelScope.launch { delay(next + 50); bumpTyping() }
+    }
+
+    private fun startLiveV2() {
+        val c = cache ?: return; val gen = authGeneration
+        val reducer = dev.foxfleet.app.data.live.LiveReducer(c)
+        val sink = object : dev.foxfleet.app.data.live.V2Sink {
+            override suspend fun onLink(state: dev.foxfleet.app.data.live.LinkState) = withContext(kotlinx.coroutines.Dispatchers.Main) {
+                if (gen != authGeneration) return@withContext
+                link = state; liveConnected = state == dev.foxfleet.app.data.live.LinkState.Live
+            }
+            override suspend fun onEvent(e: dev.foxfleet.app.data.live.V2Event) {
+                val effects = withContext(kotlinx.coroutines.Dispatchers.IO) { reducer.apply(e) }
+                withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) effects.forEach { onEffect(it) } }
+            }
+            override fun onTyping(t: dev.foxfleet.app.data.live.Typing) { viewModelScope.launch { if (gen == authGeneration && typing.on(t)) bumpTyping() } }
+            override suspend fun onResync(reason: String) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) resync(reason) }
+        }
+        val cursors = object : dev.foxfleet.app.data.live.CursorStore {
+            override suspend fun load() = withContext(kotlinx.coroutines.Dispatchers.IO) { c.sync()?.cursor }
+            override suspend fun save(cursor: String) = withContext(kotlinx.coroutines.Dispatchers.IO) { c.saveCursor(cursor) }
+        }
+        val runner = dev.foxfleet.app.data.live.LiveV2Runner(api.liveV2Transport, cursors, sink)
+        v2Runner = runner
+        liveJob = viewModelScope.launch {
+            // No cursor yet: take the chat-list snapshot first and start the stream at its cursor, so nothing between the two is lost.
+            if (features.chats && withContext(kotlinx.coroutines.Dispatchers.IO) { c.sync()?.cursor } == null) loadChats(takeCursor = true)
+            val end = try { withContext(kotlinx.coroutines.Dispatchers.IO) { runner.run() } } finally { liveConnected = false; if (v2Runner === runner) link = null }
+            if (gen != authGeneration) return@launch
+            when (end) {
+                dev.foxfleet.app.data.live.V2End.SignedOut -> boot()
+                dev.foxfleet.app.data.live.V2End.Unsupported -> { v2Unsupported = true; v2Runner = null; liveJob = null; syncLive() } // feature fallback: v1 + polling
+            }
+        }
+    }
+
+    /** One reducer effect on the screens (main thread). */
+    internal fun onEffect(f: dev.foxfleet.app.data.live.LiveEffect) {
+        val open = openChatAgent()
+        when (f) {
+            is dev.foxfleet.app.data.live.LiveEffect.Upserted -> {
+                val state = chats.peek(f.agent)
+                if (state != null && state.sessionId == f.chat && state.applyLive(f.message.toUi(), f.edited)) {
+                    if (open == f.agent && foreground) sendRead(f.agent, f.chat, f.message.n)
+                    else if (f.message.role == "assistant" && !f.edited) state.markUnread()
+                }
+            }
+            is dev.foxfleet.app.data.live.LiveEffect.Deleted -> chats.peek(f.agent)?.takeIf { it.sessionId == f.chat }?.applyDeleted(f.hubIds)
+            is dev.foxfleet.app.data.live.LiveEffect.Status -> chats.peek(f.agent)?.takeIf { it.sessionId == f.chat }?.applyStatus(f.hubIds, f.status)
+            is dev.foxfleet.app.data.live.LiveEffect.FetchAfter -> fetchAfter(f.agent, f.chat, f.afterN)
+            dev.foxfleet.app.data.live.LiveEffect.ListChanged -> reloadRows()
+            is dev.foxfleet.app.data.live.LiveEffect.Read -> {
+                // read on another device: the notification for that chat goes too (as messengers do)
+                if (f.state.agentUnread == 0) dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), f.agent, null)
+                if (f.state.agentUnread == 0) chats.peek(f.agent)?.markRead()
+            }
+            is dev.foxfleet.app.data.live.LiveEffect.Notice -> onLiveEvent(dev.foxfleet.app.data.LiveEvent("", f.type, f.agent, f.chat, f.runId, f.state))
+            is dev.foxfleet.app.data.live.LiveEffect.StopTyping -> if (typing.clear(f.agent, f.chat)) bumpTyping()
+        }
+    }
+
+    /** Messages after [afterN] for a cached chat (a gap inside one chat, or resync); null = the chat is not numbered: drop its cache. */
+    private fun fetchAfter(agent: String, chat: String, afterN: Int?) {
+        val key = "after:$agent\u0000$chat"
+        if (catchUps[key]?.isActive == true) return
+        catchUps[key] = viewModelScope.launch {
+            try {
+                if (afterN == null) { cached { dropChatMessages(agent, chat) }; return@launch }
+                var from: Int = afterN; var pages = 0
+                while (pages++ < 10) {
+                    val p = api.messagesAfter(agent, chat, from)
+                    for (m in p.messages) {
+                        cached { upsertLive(agent, chat, m) }
+                        chats.peek(agent)?.takeIf { it.sessionId == chat }?.applyLive(m, edited = false)
+                    }
+                    from = p.messages.mapNotNull { it.n }.maxOrNull() ?: break
+                    if (!p.hasMore) break
+                }
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: dev.foxfleet.app.data.HubApiException) { if (e.status == 404 || e.status == 400) cached { dropChatMessages(agent, chat) } // no after_n on this hub: the next open reloads
+            } catch (_: Exception) {}
+        }
+    }
+
+    /** After a gap (or the first connect): the list, then every cached chat by `after_n`, then the open chat's newest page. */
+    private fun resync(reason: String) {
+        viewModelScope.launch {
+            if (features.chats) loadChats()
+            val refs = fromCache { cachedChats() }.orEmpty()
+            refs.forEachIndexed { i, r ->
+                val numbered = fromCache { numbered(r.agent, r.chatId) } == true
+                if (i < MAX_RESYNC_CHATS && numbered && r.maxN != null) fetchAfter(r.agent, r.chatId, r.maxN)
+                else if (chats.peek(r.agent)?.sessionId != r.chatId) cached { dropChatMessages(r.agent, r.chatId) }
+            }
+            openChatAgent()?.let { catchUp(it) }
+            fleetSoon()
+        }
+    }
+
+    /** `GET /api/chats` (main, and archived when that view is open): rows to the cache, then to the screen. */
+    private suspend fun loadChats(takeCursor: Boolean = false) {
+        if (!features.chats) return
+        try {
+            val main = api.chats(archived = false)
+            cached { saveSnapshot(false, main, takeCursor) }
+            if (showArchived) { val arch = api.chats(archived = true); cached { saveSnapshot(true, arch, false) } }
+            reloadRows()
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+    }
+
+    private var rowsJob: Job? = null
+    /** Rows from the cache (the single source the list draws from), coalesced. */
+    private fun reloadRows() {
+        if (rowsJob?.isActive == true) return
+        rowsJob = viewModelScope.launch {
+            delay(60)
+            val main = fromCache { chatRows(false) }.orEmpty(); val arch = fromCache { chatRows(true) }.orEmpty()
+            chatRows = (main + arch).associateBy { it.agent }; archivedRows = arch
+            val now = System.currentTimeMillis()
+            totalUnread = dev.foxfleet.app.ui.ChatRows.badgeTotal(main, now)
+            publishBadge()
+        }
+    }
+
+    private fun publishBadge() {
+        val per = chatRows.values.filter { !it.archived && !it.mutedAt(System.currentTimeMillis()) }.associate { it.agent to it.badge }
+        dev.foxfleet.app.notify.NotifyController.setBadge(getApplication(), totalUnread, per)
+    }
+
+    fun setArchivedView(on: Boolean) { showArchived = on; if (on) viewModelScope.launch { loadChats() } }
+
+    /** Optimistic row change, the hub's row replaces it; on failure the old row comes back. */
+    private fun rowAction(agent: String, local: (dev.foxfleet.app.data.live.HubChat) -> dev.foxfleet.app.data.live.HubChat, call: suspend () -> dev.foxfleet.app.data.live.HubChat?, failText: String) {
+        val before = chatRows[agent] ?: return
+        val after = local(before)
+        chatRows = chatRows + (agent to after); archivedRows = chatRows.values.filter { it.archived }
+        totalUnread = dev.foxfleet.app.ui.ChatRows.badgeTotal(chatRows.values.filter { !it.archived }, System.currentTimeMillis())
+        viewModelScope.launch {
+            try { val row = call() ?: after; cached { saveChatRow(row) }; reloadRows() }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { cached { saveChatRow(before) }; reloadRows(); fleetError = failText }
+        }
+    }
+
+    fun archiveChat(agent: String, archived: Boolean) {
+        if (!features.chats) return
+        rowAction(agent, { it.copy(archived = archived) }, { api.archiveChat(agent, archived) }, if (archived) "Couldn't archive the chat" else "Couldn't unarchive the chat")
+    }
+
+    fun toggleMute(agent: String) {
+        val row = chatRows[agent] ?: return
+        val on = !row.mutedAt(System.currentTimeMillis())
+        rowAction(agent, { it.copy(muted = on, mutedUntil = null) }, { api.muteAgent(agent, on); null }, if (on) "Couldn't mute the chat" else "Couldn't unmute the chat")
+    }
+
+    /** Mark unread / read from the list. Without `chats` it is the device-local unread mark, as before. */
+    fun setUnread(agent: String, unread: Boolean) {
+        if (!features.chats || chatRows[agent] == null) { if (unread) chatFor(agent).markUnread() else chatFor(agent).markRead(); return }
+        if (unread) rowAction(agent, { it.copy(manualUnread = true) }, { api.markChatUnread(agent, true) }, "Couldn't mark as unread")
+        else rowAction(agent, { it.copy(manualUnread = false, unread = 0) }, {
+            if (features.readReceipts) { api.markChatRead(agent, null, null); null } else api.markChatUnread(agent, false)
+        }, "Couldn't mark as read")
+    }
+
+    /** Read receipts: the open chat is read up to its newest numbered message (monotonic; one request per new position). */
+    fun sendRead(agent: String, chat: String, upTo: Int? = chats.peek(agent)?.messages?.mapNotNull { it.n }?.maxOrNull()) {
+        if (!features.readReceipts || upTo == null) return
+        val key = "$agent\u0000$chat"; if ((readSent[key] ?: 0) >= upTo) return
+        readSent[key] = upTo
+        viewModelScope.launch {
+            try {
+                val st = api.markChatRead(agent, chat, upTo)
+                chatRows[agent]?.let { r -> val nr = r.copy(unread = st.agentUnread, readUpTo = maxOf(r.readUpTo, st.readUpTo), manualUnread = false); cached { saveChatRow(nr) }; reloadRows() }
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { readSent.remove(key) }
+        }
+    }
+
     companion object {
+        const val MAX_RESYNC_CHATS = 20
         const val OFFLINE_NOTICE = "Offline. Showing saved messages."
         /** Open-chat newest-page check: every 20 s without the live stream, every 60 s with it (covers messages that never pass through the hub). */
         const val POLL_MS = 20_000L

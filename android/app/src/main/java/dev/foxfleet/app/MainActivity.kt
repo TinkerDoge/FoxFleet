@@ -162,6 +162,9 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             onAvatarLongPress = { vm.avatarTarget = it }, onPin = vm::pin,
             onAddAgent = if (vm.isOwner) ({ vm.navigate(Route.Agents) }) else null,
             running = { vm.chatFor(it).streaming }, userInitials = dev.foxfleet.app.ui.components.initials(vm.username),
+            rows = vm.chatRows, archivedView = vm.showArchived, onArchivedView = vm::setArchivedView,
+            rowActions = if (vm.features.chats && vm.chatRows.isNotEmpty()) dev.foxfleet.app.ui.screens.ChatRowActions(vm::archiveChat, vm::toggleMute, vm::setUnread) else null,
+            link = vm.linkIndicator, typingLabel = { vm.typingLabel(it, null) },
         )
         is Route.Chat -> {
             val agent = vm.agent(route.agent)
@@ -192,7 +195,11 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 allowImages = agent.capabilities.images,
                 onUploadFile = if (agent.capabilities.files) ({ uri, progress -> vm.uploadFile(agent.name, uri, progress) }) else null,
                 onOpenScreen = if (agent.capabilities.screen) ({ vm.navigate(Route.Screen(agent.name)) }) else null,
+                typingLabel = vm.typingLabel(agent.name, vm.chatFor(agent.name).sessionId), link = vm.linkIndicator,
             )
+            // read receipts: what is on screen is read (monotonic, one request per new newest number)
+            val st = vm.chatFor(agent.name)
+            LaunchedEffect(agent.name, st.sessionId, st.messages.size, st.loading) { val sid = st.sessionId; if (sid != null && !st.loading) vm.sendRead(agent.name, sid) }
             LaunchedEffect(agent.name) { if (agent.capabilities.skills) vm.loadSkills(agent.name) }
         }
         is Route.Screen -> dev.foxfleet.app.ui.screens.ScreenScreen(

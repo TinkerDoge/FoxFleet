@@ -251,6 +251,9 @@ fun ChatScreen(
     onEditLast: ((target: UiMessage, onUndone: () -> Unit) -> Unit)? = null,
     /** Screenshot tests: open with a reply already chosen. */
     initialReply: ReplyTarget? = null,
+    /** Phase 1 live v2: the agent's typing line ("typing…", "thinking…", "running bash…") and the connection indicator. */
+    typingLabel: String? = null,
+    link: dev.foxfleet.app.data.live.LinkState? = null,
 ) {
     val c = LocalHubColors.current
     var viewing by remember { mutableStateOf(initialViewing) }
@@ -317,7 +320,12 @@ fun ChatScreen(
                         agent.badge?.let { Spacer(Modifier.width(6.dp)); KindBadge(it) }
                     }
                     // Connection here; what the agent is doing shows once, under the reply it is writing.
+                    val linkText = dev.foxfleet.app.ui.ChatRows.linkLabel(link)
                     if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
+                    else if (typingLabel != null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = "${agent.label ?: agent.name} is $typingLabel" }) {
+                        Text(typingLabel, style = MaterialTheme.typography.bodySmall, color = c.accent, maxLines = 1); TypingDots(c.accent)
+                    }
+                    else if (linkText != null) ShimmerStatusText(linkText, style = MaterialTheme.typography.bodySmall)
                     else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
                 if (!compact) {
@@ -567,7 +575,10 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 if (quoted != null) ReplyQuote(quoted.quote, Modifier.align(Alignment.Start).padding(horizontal = 8.dp, vertical = 4.dp))
                 val shownText = quoted?.body ?: bodyText
                 if (shownText.isNotBlank()) Text(shownText, style = MaterialTheme.typography.bodyLarge, color = c.text, modifier = Modifier.align(Alignment.Start).padding(horizontal = 8.dp, vertical = 4.dp))
-                if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.padding(horizontal = 8.dp))
+                if (m.ts > 0 || m.status != null) Row(Modifier.padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint)
+                    if (m.status != null) { Spacer(Modifier.width(4.dp)); dev.foxfleet.app.ui.components.StatusTicks(m.status, c.textFaint, c.accent, MaterialTheme.colorScheme.error) }
+                }
             }
             HeartPop(pop)
             }
