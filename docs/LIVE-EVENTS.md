@@ -277,10 +277,13 @@ byte and adds:
 `hermes.tool.progress` line, typing `label`, `run.step` `preview` / `text`) and the reply's `tools` / `reasoning` on `message.new` go
 through the hub's secret redaction on the full text **before** they are clipped, and a cut end is checked again, so neither the stream
 nor `live-events.jsonl` holds the forms it knows: `sk-…` keys, `gh?_…` tokens, `Bearer …`, `password=` / `token:` style pairs and
-values under secret-looking keys, `--password=x` / `--password x` (also `--pass`, `--passwd`, `--secret`, `--token`, `--api-key`), and
-mysql-style `-p<password>` after `mysql`, `mysqldump`, `mariadb`, `sshpass` and friends (`-p value` with a space is the mysql
-password prompt plus a database name and is left alone, as are `cp -p`, `mkdir -p`, `find -print`, `ssh -p 22`). Masked text reads
-`[redacted]`. Streamed reply text and streamed reasoning deltas are not rewritten (history shows them as the agent wrote them).
+values under secret-looking keys, `--password=x` / `--password x` (also `--pass`, `--passwd`, `--secret`, `--token`, `--api-key`),
+mysql-style `-p<password>` after `mysql`, `mysqldump`, `mariadb` and friends (`-p value` with a space is the mysql password prompt plus
+a database name and is left alone, as are `cp -p`, `mkdir -p`, `find -print`, `ssh -p 22`), sshpass's own `-p<password>` and
+`-p <password>`, the same forms in argv arrays (`["mysql", "-pX"]`, `["deploy", "--password", "X"]`, `["sshpass", "-p", "X"]`), and
+the saved connections' own secrets (API server key, dashboard password and token, 8 characters or more, also when a cut leaves the
+start of one). Masked text reads `[redacted]`. Streamed reply text and streamed reasoning deltas are not rewritten on the run stream;
+history replies go through the hub's redaction (the same patterns and the connection's secrets) before they are served.
 
 Clients ignore unknown events and fields, so older apps see no change. Live v2 mirrors these steps as `typing` labels and `run.step`
 (above); the run stream stays the place for streaming text and full detail.

@@ -10,7 +10,8 @@
 import { toolMedia, withMediaLines } from './media-tags.js';
 import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
-import { fault, redact } from './config.js';
+import { fault } from './config.js';
+import { redact } from './steps.js'; // patterns + the connections' own secrets
 import { argsPreview, toolOutcome, durationMs, stepText, levelOf } from './steps.js';
 
 export const CONTRACT = 'foxfleet.native/1';

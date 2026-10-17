@@ -3,7 +3,8 @@
 // and Steer/Stop reach the agent's own run. Older Hermes keeps the /v1/chat/completions path (queue + transport abort only).
 // Upstream event names below follow the Hermes docs (message.delta, message.interim, tool events, terminal run events); they are
 // matched loosely and normalised to the stream the clients already parse. NEEDS a live Hermes check (see docs/HERMES-CHAT-CONTROLS.md).
-import { fault, redact } from './config.js';
+import { fault } from './config.js';
+import { redact } from './steps.js'; // patterns + the connections' own secrets
 import { argsPreview, toolOutcome, durationMs, levelOf, stepText, TOOL_NAME_MAX } from './steps.js';
 
 export const FEATURES = ['run_submission', 'run_status', 'run_events_sse', 'run_steer', 'run_stop'];

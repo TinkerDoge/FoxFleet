@@ -110,6 +110,13 @@ export const BOT_CAPABILITIES = { chat: true, images: false, files: false, scree
 export const capabilitiesOf = (m) => m.connection === 'bot' ? { ...BOT_CAPABILITIES } : { ...KIND_SPECS[m.kind || 'hermes'].capabilities };
 export const secretsOf = (m) => [m.dashboardPass, m.apiServerKey, m.dashboardWsToken];
 
+// 0.4.1: the secrets of every saved connection (dashboard password, API server key, dashboard ws token), per config file, for the
+// redaction of live step detail (steps.js), which has no connection at hand. Values under 8 characters are left out: they would mask
+// ordinary words. Only ever used to mask text, so a secret of one account also masked in another account's steps is harmless.
+const liveSecrets = new Map(); let liveSecretList = [];
+const rememberSecrets = (key, list) => { liveSecrets.set(key, list.flatMap(secretsOf).filter((v) => typeof v === 'string' && v.length >= 8)); liveSecretList = [...new Set([...liveSecrets.values()].flat())].sort((a, b) => b.length - a.length); };
+/** Every saved connection's secrets (longest first). */
+export const connectionSecrets = () => liveSecretList;
 export async function configStore(configPath) {
   // `kept`: saved agents of a kind this build does not run (e.g. the removed API-key chat kinds). They are ignored, never
   // validated or shown, and written back verbatim on every save so the owner's file loses nothing.
@@ -128,7 +135,7 @@ export async function configStore(configPath) {
   } catch (error) { if (error.code !== 'ENOENT') throw fault(500, 'Invalid hub configuration'); }
   if (kept.length) console.warn(`Foxfleet: ignoring ${kept.length} saved agent(s) of a kind this hub no longer runs (${[...new Set(kept.map((m) => m.kind))].join(', ')}); they stay in ${path.basename(configPath)} unchanged`);
   const keptNames = new Set(kept.map((m) => m.name));
-  let entries = new Map(machines.map((m) => [m.name, m])), pending = Promise.resolve();
+  let entries = new Map(machines.map((m) => [m.name, m])), pending = Promise.resolve(); rememberSecrets(configPath, machines);
   async function mutate(action) {
     const work = pending.then(async () => {
       const next = new Map(entries); const value = action(next);
@@ -136,7 +143,7 @@ export async function configStore(configPath) {
       const temp = configPath + '.' + randomUUID() + '.tmp';
       try {
         await writeFile(temp, JSON.stringify({ version: REGISTRY_VERSION, machines: [...next.values(), ...kept] }, null, 2) + '\n', { mode: 0o600, flag: 'wx' });
-        await rename(temp, configPath); entries = next; return value;
+        await rename(temp, configPath); entries = next; rememberSecrets(configPath, [...next.values()]); return value;
       } catch { await rm(temp, { force: true }).catch(() => {}); throw fault(500, 'Could not save hub configuration'); }
     }); pending = work.catch(() => {}); return work;
   }
@@ -158,8 +165,32 @@ export async function configStore(configPath) {
 
 const secretKey = /(?:password|passwd|secret|token|cookie|authorization|credential|api[_-]?key|api[_-]?server[_-]?key|private[_-]?key|client[_-]?secret|dashboard[_-]?pass)/i;
 const metricKey = /^(?:(?:input|output|prompt|completion|total|cache_read|cache_write|reasoning|max|max_output|avg|avg_tokens_per_session|cached)_?tokens?|tokens?_(?:per_second|per_minute|used|count|limit)|avg_tokens_per_session)$/i;
+// argv arrays (["mysql", "-pX"], ["deploy", "--password", "X"], ["sshpass", "-p", "X"]): an element is masked by what came before it,
+// which the text patterns below cannot see across elements. Only arrays made entirely of strings are treated as argv.
+const MYSQLISH = /^(?:.*\/)?(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlpump|mysqlsh|mariadb(?:-dump|-admin|-import|-check|-show)?)(?:\.exe)?$/;
+const SECRET_FLAG = /^--(?:password|passwd|pass|secret|token|api-key)$/i;
+function redactArgv(list, secrets) {
+  // sshpass: -p is its own option only before the command it runs (`sshpass -f file ssh -p 22 host`: that -p is ssh's port)
+  let client = false, sshpass = 0; // sshpass: 0 none, 1 in its options, 2 next element is its option's argument, 3 its password
+  return list.map((v, i) => {
+    const prev = i > 0 ? list[i - 1] : '';
+    if (sshpass === 3) { sshpass = 1; if (!v.startsWith('-')) return '[redacted]'; }
+    else if (sshpass === 2) { sshpass = 1; return redact(v, secrets); }
+    else if (sshpass === 1) {
+      if (v === '-p') { sshpass = 3; return v; }
+      if (/^-p./.test(v)) return '-p[redacted]';
+      if (/^-[fdP]$/.test(v)) { sshpass = 2; return v; }
+      if (!v.startsWith('-')) sshpass = 0; // the command sshpass runs
+    }
+    if (/^(?:.*\/)?sshpass(?:\.exe)?$/.test(v)) { sshpass = 1; return v; }
+    if (MYSQLISH.test(v)) client = true;
+    if (SECRET_FLAG.test(prev) && !v.startsWith('-')) return '[redacted]';
+    if (client && /^-p./.test(v)) return '-p[redacted]';
+    return redact(v, secrets);
+  });
+}
 export function redact(value, secrets = []) {
-  if (Array.isArray(value)) return value.map((v) => redact(v, secrets));
+  if (Array.isArray(value)) return value.length > 1 && value.every((v) => typeof v === 'string') ? redactArgv(value, secrets) : value.map((v) => redact(v, secrets));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, secretKey.test(k) && !(metricKey.test(k) && typeof v === 'number') ? '[redacted]' : redact(v, secrets)]));
   if (typeof value !== 'string') return value;
   let text = value;
@@ -170,6 +201,8 @@ export function redact(value, secrets = []) {
     .replace(/(--(?:password|passwd|pass|secret|token|api-key)(?:=|[ \t]+))(?!-)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/gi, '$1[redacted]')
     // mysql-style -p<password> (attached only: `-p value` asks for the password and the value is the database). Only after a client that
     // takes it that way, so `cp -p`, `mkdir -p`, `find -print`, `gcc -pthread` and `ssh -p 22` are left alone.
-    .replace(/(\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlpump|mysqlsh|mariadb(?:-dump|-admin|-import|-check|-show)?|sshpass)\b[^\n;|&]*?\s-p)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/g, '$1[redacted]')
+    .replace(/(\b(?:mysql|mysqldump|mysqladmin|mysqlimport|mysqlshow|mysqlcheck|mysqlpump|mysqlsh|mariadb(?:-dump|-admin|-import|-check|-show)?)\b[^\n;|&]*?\s-p)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/g, '$1[redacted]')
+    // sshpass takes the password after its own -p (before the command it runs), also with a space (`sshpass -p S3cret ssh host`); mysql's `-p db` is not touched
+    .replace(/(\bsshpass(?:[ \t]+-[fdP][ \t]*[^\s-]\S*|[ \t]+-[evhV])*[ \t]+-p[ \t]*)(?!-)(?:"[^"\r\n]*"|'[^'\r\n]*'|[^\s"',;|&]+)/g, '$1[redacted]')
     .replace(/\b(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9]{12,})\b/g, '[redacted]');
 }

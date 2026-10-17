@@ -2,7 +2,10 @@
 // live v2 log: short, clipped and REDACTED previews (config.js redact() runs on the full text first, then the result is clipped, so a
 // cut can never leave part of a secret the patterns would have caught) of tool arguments and results, status levels, and the reasoning/tools summary a finished
 // reply carries on message.new. See docs/LIVE-EVENTS.md ("Step detail").
-import { redact } from './config.js';
+import { redact as redactWith, connectionSecrets } from './config.js';
+
+/** Patterns plus every saved connection's own secrets (its API key / token / dashboard password). */
+export const redact = (v) => redactWith(v, connectionSecrets());
 
 const REASONING_MAX_BYTES = 64 * 1024;
 const clipText = (t) => (Buffer.byteLength(t) <= REASONING_MAX_BYTES ? { text: t, truncated: false } : { text: Buffer.from(t).subarray(0, REASONING_MAX_BYTES).toString('utf8').replace(/\uFFFD+$/, ''), truncated: true });
@@ -13,7 +16,8 @@ export const MSG_TOOLS_MAX = 50, MSG_TOOL_FIELD_MAX = 500;
 /** Cut to n characters (code points) and mark the cut with "…", the way history clips tool args and results. */
 export const clip = (s, n) => { const a = [...String(s ?? '')]; return a.length > n ? a.slice(0, n).join('') + '…' : a.join(''); };
 const flat = (s) => String(s ?? '').replace(/\s+/g, ' ').trim();
-const asText = (v) => (typeof v === 'string' ? v : Array.isArray(v) ? v.map(asText).join('\n') : v && typeof v === 'object' ? asText(v.text ?? v.content ?? '') : '');
+// a list of plain strings is argv-like: masked as argv (redact), then joined with spaces so the command-line patterns see one line
+const asText = (v) => (typeof v === 'string' ? v : Array.isArray(v) ? (v.length > 1 && v.every((x) => typeof x === 'string') ? redact(v).join(' ') : v.map(asText).join('\n')) : v && typeof v === 'object' ? asText(v.text ?? v.content ?? '') : '');
 
 /** One-line preview of tool arguments (object, JSON string or plain text), at most TOOL_PREVIEW_MAX characters. Empty when none. */
 export function argsPreview(args) {
@@ -32,8 +36,11 @@ export function argsPreview(args) {
 const PAD = 'Z'.repeat(24);
 export function guardCut(text, mark = '…') {
   if (mark && !text.endsWith(mark)) return text;
-  const body = mark ? text.slice(0, -mark.length) : text, r = redact(body + PAD);
-  return r.endsWith(PAD) ? text : r.replace(/Z+$/, '') + mark;
+  let body = mark ? text.slice(0, -mark.length) : text;
+  // a connection secret is a literal, not a pattern: a cut that ends inside one leaves its first 6+ characters, which are masked
+  for (const sec of connectionSecrets()) for (let k = Math.min(sec.length - 1, body.length); k >= 6; k--) if (body.endsWith(sec.slice(0, k))) { body = body.slice(0, -k) + '[redacted]'; break; }
+  const r = redact(body + PAD);
+  return r.endsWith(PAD) ? body + (mark || '') : r.replace(/Z+$/, '') + mark;
 }
 /** Redacted on the full text, then clipped, then cut-checked: every preview and step text goes through here. */
 export const safeClip = (v, n) => guardCut(clip(redact(String(v ?? '')), n));

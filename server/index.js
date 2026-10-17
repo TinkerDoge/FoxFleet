@@ -7,6 +7,7 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { configStore, publicConnection, fault, identifier, validHost, secretsOf, connection as validateConnection, kindSpecs, capabilitiesOf, BOT_CAPABILITIES, redact } from './config.js';
+import { redact as redactStep } from './steps.js'; // step labels: patterns + the connections' own secrets
 import { hermesClient, upstreamJson, boundedBytes, safeAgentData } from './hermes.js';
 import { artifactRegistry } from './artifacts.js';
 import { scanAvatarPacks } from './avatars.js';
@@ -227,7 +228,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     if (!r.session || r.done) return;
     let t = typingRuns.get(r.id); if (!t) { t = { reg, agent: r.agent, chat: r.session, state: null, tool: null, label: null, toolId: null, sent: 0 }; typingRuns.set(r.id, t); }
     if (!state) { if (!x.label || !t.state) return; state = t.state; tool = t.tool; } // a label-only step (commentary, status) keeps the current state
-    const name = state === 'tool' && tool ? oneLine(redact(String(tool)), 80) : null, label = x.label ? oneLine(redact(String(x.label)), 200) : null, toolId = state === 'tool' && x.toolId ? oneLine(x.toolId, 120) : null;
+    const name = state === 'tool' && tool ? oneLine(redactStep(String(tool)), 80) : null, label = x.label ? oneLine(redactStep(String(x.label)), 200) : null, toolId = state === 'tool' && x.toolId ? oneLine(x.toolId, 120) : null;
     if (t.state !== state || t.tool !== name || t.label !== label || t.toolId !== toolId || Date.now() - t.sent >= TYPING_REPEAT_MS) { t.state = state; t.tool = name; t.label = label; t.toolId = toolId; typingSend(t); }
     if (!typingTimer) { typingTimer = setInterval(() => { const n = Date.now(); for (const x of typingRuns.values()) if (n - x.sent >= TYPING_REPEAT_MS) typingSend(x); if (!typingRuns.size) { clearInterval(typingTimer); typingTimer = null; } }, 1000); typingTimer.unref?.(); }
   }
