@@ -2,7 +2,7 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.4.2-alpha, Android only)
+## Unreleased (0.4.2-alpha)
 
 Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone whose hub was not redeployed (0.4.0 or older). The reactions he saw were missing or failed without a word. The app now explains instead. No hub, web or contract changes. Android versionCode 30.
 
@@ -21,7 +21,7 @@ Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone who
   - Cause: the reply's stream closed and the reply was committed, but the next queue sync still found that run as the hub's active run, because the hub finishes it a moment later. The app followed it again from the start and committed the same reply a second time.
   - Now the app remembers the runs it already followed to the end and doesn't reattach to them. A run cut off mid-stream (the app was away) still reattaches.
 
-## Unreleased (0.4.1-alpha)
+## 0.4.1-alpha (not tagged; Android versionCode 29)
 
 Fixes from Doge's 0.4.0 test (main 8d1aa85): thinking that did not stream, no live tool/step detail ("Agent is working…", then the reply), and `/model` not opening the picker. Hub side on branch fix/0.4.1-hub (no UI or Android changes; Android is fixed on fix/0.4.1). All additions; every 0.4.0 frame keeps its bytes. Contract: docs/LIVE-EVENTS.md ("Step detail", "Model picker"), docs/API-ERRORS.md, contract/openapi.json.
 
