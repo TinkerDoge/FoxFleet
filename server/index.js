@@ -846,8 +846,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const b = await readJson(req, 2048);
             if (parts[5] === 'hidden') {
-              if (!inTranscript(b.message_id)) throw fault(404, 'Message not found', 'message_not_found');
-              await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT'); try { L.hide(m.name, sid, b.message_id, req.method === 'PUT', messages.find((x) => String(x.id) === b.message_id)?.content ?? ''); } catch { /* best effort */ }
+              if (typeof b.message_id !== 'string' || !b.message_id || b.message_id.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
+              // 0.4.1: the agent's own id or the message's hub id, like reactions
+              const hr = L.resolve(m.name, sid, b.message_id), known = inTranscript(b.message_id);
+              if (!hr && !known) throw fault(404, 'Message not found', 'message_not_found');
+              const u = hr?.u ?? (known ? b.message_id : null), keys = [...new Set([u, hr?.hub_id].filter(Boolean))];
+              await ctx.reg.reactions.hide(m.name, sid, keys, req.method === 'PUT');
+              try { const copy = u != null ? messages.find((x) => x.id != null && String(x.id) === u) : null; L.hide(m.name, sid, hr?.hub_id ?? b.message_id, req.method === 'PUT', copy ? copy.content ?? '' : undefined); } catch { /* best effort */ }
             } else {
               if (typeof b.message_id !== 'string' || !b.message_id || b.message_id.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
               // 0.4.1: the agent's own id (as before) or the hub id of a message this chat has (live v2, history)
@@ -863,7 +868,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           // PUT/DELETE: the message this call targeted is always in the answer, [] when it has no reactions left ("removed" vs "never had any")
           if (ref) view.by_hub_id[ref.hub_id] ??= [];
           if (ref?.u ? ids.has(ref.u) : false) view.messages[ref.u] ??= []; else if (!ref && changed !== undefined && inTranscript(target)) view.messages[target] ??= [];
-          return sendJson(res, 200, { actor, messages: view.messages, by_hub_id: view.by_hub_id, hidden: ctx.reg.reactions.hidden(m.name, sid).filter(id => ids.has(id)), ...(changed === undefined ? {} : { changed }) });
+          // hidden: upstream ids still in the transcript (as before; a hub-id entry counts once its upstream id is known); hidden_hub_ids (0.4.1): every hidden message by hub id
+          const hiddenUp = new Set(), hiddenHub = new Set();
+          for (const id of ctx.reg.reactions.hidden(m.name, sid)) { const hr = L.resolve(m.name, sid, id); const u = hr?.u ?? id; if (ids.has(u)) hiddenUp.add(u); if (hr) hiddenHub.add(hr.hub_id); }
+          return sendJson(res, 200, { actor, messages: view.messages, by_hub_id: view.by_hub_id, hidden: [...hiddenUp], hidden_hub_ids: [...hiddenHub], ...(changed === undefined ? {} : { changed }) });
         }
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
         if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned

@@ -91,14 +91,16 @@ export async function reactionStore(file, { now = () => Date.now(), retentionMs 
     },
     /** "Delete for me": hide (present) or show again one message in this account's view. Idempotent. */
     hide(agent, session, message, present) {
-      if (typeof message !== 'string' || !message || message.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
+      // 0.4.1: like set(), one id or every id of the same message (upstream id, hub id); stored under the first
+      const keys = Array.isArray(message) ? message : [message];
+      if (!keys.length || keys.some((k) => typeof k !== 'string' || !k || k.length > 200)) throw fault(400, 'Invalid message ID', 'invalid_message_id');
       return mutate((_, next) => {
-        const i = next.findIndex(h => h.agent === agent && h.session === session && h.message === message);
-        if (!present) { if (i >= 0) next.splice(i, 1); return; }
+        const mine = (h) => h.agent === agent && h.session === session && keys.includes(h.message), i = next.findIndex(mine);
+        if (!present) { for (let k = next.length - 1; k >= 0; k--) if (mine(next[k])) next.splice(k, 1); return; }
         if (i >= 0) return;
         if (next.filter(h => h.agent === agent && h.session === session).length >= hiddenPerSession) throw fault(409, 'Hidden message limit reached');
         while (next.length >= hiddenLimit) { let o = 0; for (let k = 1; k < next.length; k++) if (next[k].at < next[o].at) o = k; next.splice(o, 1); } // the global cap evicts the oldest hidden ids rather than refusing new ones
-        next.push({ agent, session, message, at: now() });
+        next.push({ agent, session, message: keys[0], at: now() });
       });
     },
     hidden(agent, session) { return hidden.filter(h => h.agent === agent && h.session === session).map(h => h.message); },

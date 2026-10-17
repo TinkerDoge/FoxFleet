@@ -159,3 +159,29 @@ test('PUT/DELETE answers always list the targeted message: [] when it has none (
   c.opts.messages = [{ id: 'u1', role: 'user', content: 'thanks a lot' }, { id: 'a1', role: 'assistant', content: 'Sure.' }];
   const byUp = await del(call, 'a1', '🎉'); assert.deepEqual(byUp.body.messages.a1, []); assert.deepEqual(byUp.body.by_hub_id[answer.hub_id], []);
 });
+
+test('hidden ("delete for me") takes the hub id too: message.deleted, hidden_hub_ids, then hidden by upstream id once known; codes', async (t) => {
+  const c = await chat(t, 'Here you go'); const { call, s, answer } = c; const H = '/api/agents/atlas/sessions/sess-1/hidden';
+  assert.equal(answer.upstream_id, null);
+  const h = await call(H, { message_id: answer.hub_id }, { method: 'PUT' }); assert.equal(h.status, 200, JSON.stringify(h.body));
+  assert.deepEqual(h.body.hidden_hub_ids, [answer.hub_id]); assert.deepEqual(h.body.hidden, [], 'no upstream id yet');
+  const del1 = await s.wait((f) => f.event === 'message.deleted'); assert.deepEqual(del1.data.hub_ids, [answer.hub_id]); assert.equal(del1.data.scope, 'me');
+  assert.equal((await call('/api/chats')).body.chats[0].unread_count, 0, 'a hidden reply is not unread');
+  assert.equal((await call(H, { message_id: answer.hub_id }, { method: 'PUT' })).status, 200, 'idempotent'); assert.equal(s.frames.filter((f) => f.event === 'message.deleted').length, 1);
+  for (const [b, status, code] of [[{ message_id: '' }, 400, 'invalid_message_id'], [{}, 400, 'invalid_message_id'], [{ message_id: answer.hub_id.replace(/\.\d+$/, '.77') }, 404, 'message_not_found']]) {
+    const r = await call(H, b, { method: 'PUT' }); assert.equal(r.status, status); assert.equal(r.body.code, code);
+  }
+  c.opts.messages = [{ id: 'u1', role: 'user', content: 'thanks a lot' }, { id: 'a1', role: 'assistant', content: 'Here you go' }];
+  const snap = (await call(R)).body; assert.deepEqual(snap.hidden, ['a1'], 'by upstream id once known');
+  await sleep(100); assert.ok(!s.frames.some((f) => f.event === 'message.edited' && f.data.message.hub_id === answer.hub_id), 'binding the id does not bring a hidden message back'); assert.deepEqual(snap.hidden_hub_ids, [answer.hub_id]);
+  const shown = await call(H, { message_id: 'a1' }, { method: 'DELETE' }); assert.deepEqual(shown.body.hidden, []); assert.deepEqual(shown.body.hidden_hub_ids, [], 'cleared under both ids');
+  const back = await s.wait((f) => f.event === 'message.edited' && f.data.message.hub_id === answer.hub_id && f.data.message.text === 'Here you go'); assert.equal(back.data.message.upstream_id, 'a1');
+});
+
+test('hidden: a live-only message shown again sends no blank message.edited (it has no copy yet)', async (t) => {
+  const c = await chat(t, 'Short'); const { call, s, answer } = c; const H = '/api/agents/atlas/sessions/sess-1/hidden';
+  await call(H, { message_id: answer.hub_id }, { method: 'PUT' }); await s.wait((f) => f.event === 'message.deleted');
+  const before = s.frames.filter((f) => f.event === 'message.edited').length;
+  const r = await call(H, { message_id: answer.hub_id }, { method: 'DELETE' }); assert.deepEqual(r.body.hidden_hub_ids, []);
+  await sleep(150); assert.equal(s.frames.filter((f) => f.event === 'message.edited').length, before);
+});

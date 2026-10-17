@@ -132,7 +132,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       const u = String(m.id), p = previewOf(m.content ?? '', PREVIEW_MAX);
       const open = s.msgs.filter((e) => !e.u && e.r === m.role && e.n > anchor);
       const e = open.find((x) => x.p === p) ?? open[0];
-      if (e) { e.u = u; bindId(s, u, e.n); anchor = e.n; bound++; event('message.edited', { agent, chat, message: view(agent, chat, e, m.content, m) }); continue; }
+      if (e) { e.u = u; bindId(s, u, e.n); anchor = e.n; bound++; if (!e.hid) event('message.edited', { agent, chat, message: view(agent, chat, e, m.content, m) }); continue; } // a hidden one stays hidden (0.4.1: it can be hidden by hub id before its upstream id is known)
       const n = ++s.last, at = Number.isFinite(m.ts) ? m.ts : now(), ne = markOnly({ n, r: m.role, at, p, src: 'external', u }, m.content);
       bindId(s, u, n); pushEntry(s, ne); s.at = Math.max(s.at, at); anchor = n; added++;
       const a = agentOf(agent); if (m.role === 'assistant' && a.archived && !muted(agent)) a.archived = false;
@@ -210,11 +210,11 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
     setManualUnread(agent, on) { const a = agentOf(agent); if (a.manual !== on) { a.manual = on; touch(agent); save(); changed(agent); } return a; },
     /** "Delete for me" on an upstream message id: message.deleted (or message.edited when shown again, with its text). */
     hide(agent, chat, upstreamId, present, text) {
-      const s = sessOf(agent, chat), n = s?.ids[String(upstreamId)]; if (!n) return false;
+      const s = sessOf(agent, chat), n = s?.ids[String(upstreamId)] ?? this.resolve(agent, chat, String(upstreamId))?.n; if (!n) return false; // 0.4.1: a hub id works too
       const e = entryOf(s, n); if (e) { if (Boolean(e.hid) === present) return false; if (present) e.hid = 1; else delete e.hid; }
       touch(agent); save();
       if (present) event('message.deleted', { agent, chat, hub_ids: [hubIdOf(agent, chat, n)], scope: 'me' });
-      else event('message.edited', { agent, chat, message: view(agent, chat, e ?? { n, r: 'assistant', at: now(), u: String(upstreamId) }, text) });
+      else if (typeof text === 'string') event('message.edited', { agent, chat, message: view(agent, chat, e ?? { n, r: 'assistant', at: now(), u: String(upstreamId) }, text) }); // no text (live-only message): it comes back with the next history read
       changed(agent); return true;
     },
     removeSession(agent, chat) { const a = db.agents[agent]; if (a?.sessions?.[chat]) { delete a.sessions[chat]; touch(agent); save(); changed(agent); } if (db.models[`${agent}\0${chat}`]) { delete db.models[`${agent}\0${chat}`]; save(); } },
