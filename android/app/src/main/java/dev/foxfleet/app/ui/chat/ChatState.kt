@@ -297,6 +297,7 @@ class ChatState {
 
     /** Reattach to a reply that was still being written (or just finished) while the app was away. */
     suspend fun resume(api: HubApi, agent: String, run: String, userText: String?) {
+        if (run in finishedRuns) return // its whole reply is shown already (the hub can still list it as active for a moment)
         if (userText != null && messages.lastOrNull()?.content != userText) push(UiMessage(role = "user", content = userText))
         pendingUser = userText; runId = run
         stream { cb -> api.follow(agent, run, 0, cb) }
@@ -310,6 +311,7 @@ class ChatState {
             if (g != gen) return // another chat is open now: this stream's end changes nothing
             toolLabel = null
             commitReply(text)
+            runId?.let(::rememberFinished)
             resetStream(); finishRun()
         } catch (e: CancellationException) {
             // The app left the screen or the process is going away. The hub keeps the run alive, so keep what we have and
@@ -371,6 +373,15 @@ class ChatState {
 
     fun finishRun() { runId = null; pendingUser = null; persist(SavedChat(sessionId, null, null)) }
 
+    /**
+     * Runs whose stream this chat followed to the end and committed (0.4.2). The hub can still report such a run as the queue's
+     * active run for a moment after its stream closed; following it again replayed the whole reply and committed it a second time
+     * (the "second reply shows twice until reopen" bug). Bounded: run ids are unique, only the newest few can still be reported.
+     */
+    private val finishedRuns = LinkedHashSet<String>()
+    private fun rememberFinished(run: String) { finishedRuns.remove(run); finishedRuns.add(run); while (finishedRuns.size > 16) finishedRuns.remove(finishedRuns.first()) }
+    internal fun finishedRun(run: String) = run in finishedRuns
+
     // ---- sending while the agent works ----
 
     /** The hub stores the message first; the mode decides what happens if the agent is busy. A rejected send returns its text so nothing is lost. */
@@ -399,7 +410,7 @@ class ChatState {
         val gone = queue.filter { (it.state == "guidance_accepted" || (it.state == "queued" && it.ack == "queued")) && q.items.none { i -> i.id == it.id } }
         if (gone.isNotEmpty()) messages = messages + gone.map { UiMessage(role = "user", content = it.text) }
         if (submitting == 0) { queue = q.items.filter { it.id !in dismissed && it !== running && it.state != "sending" && it.state != "running" }; halted = q.halted; canCancel = q.canCancel; requests = q.openRequests }
-        if (q.activeRun != null && !streaming && runId == null) { resume(api, agent, q.activeRun, running?.text); syncQueue(api, agent); return }
+        if (q.activeRun != null && !streaming && runId == null && q.activeRun !in finishedRuns) { resume(api, agent, q.activeRun, running?.text); syncQueue(api, agent); return }
         if (q.activeRun == null && !q.halted && attempts < 12 && q.items.any { it.state == "queued" || it.state == "awaiting_stop" }) { delay(300); syncQueue(api, agent, attempts + 1) }
     }
     private val dismissed = mutableSetOf<String>()

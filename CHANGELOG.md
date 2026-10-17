@@ -16,7 +16,10 @@ Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone who
   - On an older hub, opening the menu on a new message asks the hub for its id. The quick row appears once the id is known.
   - Bot agents still have no reactions and get no hint.
 - Fix (Android): the long-press and double-tap detector on a message kept the first copy of the message it drew. After the message's id arrived (same row), a double tap acted on the old copy. It now uses the current message.
-- 0.4.1 hubs (`reactionEvents`): unchanged.
+- 0.4.1 hubs (`reactionEvents`): unchanged. A message that has no ids yet (the reply still streaming, a message you just sent) shows no reaction UI and no hint, as in 0.4.1. QA blocker on 008acf6: such a message said "Update your hub for reactions" on an up-to-date hub.
+- Fix (Android, since 0.4.0): in a reopened chat, the second reply sometimes showed twice until the chat was reopened.
+  - Cause: the reply's stream closed and the reply was committed, but the next queue sync still found that run as the hub's active run, because the hub finishes it a moment later. The app followed it again from the start and committed the same reply a second time.
+  - Now the app remembers the runs it already followed to the end and doesn't reattach to them. A run cut off mid-stream (the app was away) still reattaches.
 
 ## Unreleased (0.4.1-alpha)
 
