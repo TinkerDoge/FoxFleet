@@ -76,7 +76,7 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
 
     suspend fun chats(agent: String, limit: Int = 30): List<SessionInfo> = list.chats(owner, agent, limit).map { SessionInfo(it.chatId, it.title, it.updated, it.preview, it.messages) }
     suspend fun saveChats(agent: String, first: List<SessionInfo>) = list.replaceChats(owner, agent, first.map { ChatRow(owner, agent, it.id, it.title, it.updated, it.preview, it.messages) })
-    suspend fun forgetChat(agent: String, chatId: String) = db.withTransaction { list.deleteChat(owner, agent, chatId); msgs.deleteChat(owner, agent, chatId); msgs.deleteMeta(owner, agent, chatId) }
+    suspend fun forgetChat(agent: String, chatId: String) = db.withTransaction { list.deleteChat(owner, agent, chatId); msgs.deleteChat(owner, agent, chatId); msgs.deleteMeta(owner, agent, chatId); live.deleteReactions(owner, agent, chatId) }
 
     // ---- messages ----
     /** The newest [limit] cached messages of a conversation, or null when nothing is cached. */
@@ -174,6 +174,19 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
     suspend fun maxN(agent: String, chatId: String): Int? = live.maxN(owner, agent, chatId)
     suspend fun numbered(agent: String, chatId: String): Boolean = msgs.count(owner, agent, chatId) > 0 && live.unnumbered(owner, agent, chatId) == 0
     suspend fun dropChatMessages(agent: String, chatId: String) = db.withTransaction { msgs.deleteChat(owner, agent, chatId); msgs.deleteMeta(owner, agent, chatId) }
+
+    // ---- reactions (v4) ----
+    /** The conversation's last reaction snapshot from the hub, or null. */
+    suspend fun reactions(agent: String, chatId: String): dev.foxfleet.app.data.ReactionSnapshot? = live.reactions(owner, agent, chatId)?.let { r ->
+        runCatching { dev.foxfleet.app.data.HubApi.parseReactions(kotlinx.serialization.json.Json.parseToJsonElement(r.snapshot).jsonObject) }.getOrNull()
+    }
+    suspend fun saveReactions(agent: String, chatId: String, snap: dev.foxfleet.app.data.ReactionSnapshot) =
+        live.upsertReactions(ReactionRow(owner, agent, chatId, dev.foxfleet.app.data.HubApi.reactionsJson(snap), now()))
+    /** `message.reaction`: one message's full set replaces its entry in the stored snapshot (nothing stored yet: nothing to edit). */
+    suspend fun replaceReactions(agent: String, chatId: String, hubId: String, upstreamId: String?, groups: List<dev.foxfleet.app.data.ReactionGroup>) = db.withTransaction {
+        val snap = reactions(agent, chatId) ?: return@withTransaction
+        saveReactions(agent, chatId, snap.replace(hubId, upstreamId, groups))
+    }
 
     /**
      * One message from the stream (new or edited), by `hub_id`. Returns false when it could not be placed: the chat is not

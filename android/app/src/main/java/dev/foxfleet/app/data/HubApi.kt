@@ -296,7 +296,8 @@ class HubApi(private val store: SettingsStore) {
         // phase 1 (readReceipts): additive fields, absent on older hubs
         val hubId = m.str("hub_id")?.takeIf { it.isNotEmpty() }; val n = m["n"]?.jsonPrimitive?.longOrNull?.toInt()
         val status = m.str("status")?.takeIf { role == "user" && it in dev.foxfleet.app.data.live.MessageStatus.ALL }
-        return UiMessage(role = role, content = content, id = id, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls, hubId = hubId, n = n, status = status)
+        return UiMessage(role = role, content = content, id = id, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls, hubId = hubId, n = n, status = status,
+            reactionOnly = role == "assistant" && m.bool("reaction_only") == true)
     }
 
     private fun contentToString(value: kotlinx.serialization.json.JsonElement?): String {
@@ -699,16 +700,38 @@ class HubApi(private val store: SettingsStore) {
         fun parseReactions(o: JsonObject): ReactionSnapshot {
             fun actor(v: JsonObject?): ReactionActor? { val id = v?.str("id") ?: return null; return ReactionActor(id, v.str("name") ?: id, if (v.str("kind") == "agent") "agent" else "human") }
             val me = actor(runCatching { o["actor"]?.jsonObject }.getOrNull()) ?: ReactionActor("", "You", "human")
-            val msgs = runCatching { o["messages"]?.jsonObject }.getOrNull().orEmpty().mapValues { (_, groups) ->
-                runCatching { groups.jsonArray }.getOrNull().orEmpty().mapNotNull { g ->
-                    val go = runCatching { g.jsonObject }.getOrNull() ?: return@mapNotNull null
-                    val emoji = go.str("emoji") ?: return@mapNotNull null
-                    ReactionGroup(emoji, runCatching { go["actors"]!!.jsonArray }.getOrNull().orEmpty().mapNotNull { actor(runCatching { it.jsonObject }.getOrNull()) }).takeIf { it.actors.isNotEmpty() }
-                }
-            }.filterValues { it.isNotEmpty() }
+            val msgs = runCatching { o["messages"]?.jsonObject }.getOrNull().orEmpty().mapValues { (_, groups) -> parseGroups(groups) }.filterValues { it.isNotEmpty() }
             // null = a hub older than 0.3.9 (no "hidden" field): Delete for me is not offered
             val hidden = runCatching { o["hidden"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.content }.getOrNull() }?.toSet()
-            return ReactionSnapshot(me, msgs, hidden)
+            // 0.4.1 (`reactionEvents`): the same reactions keyed by hub id; null on older hubs
+            val byHub = runCatching { o["by_hub_id"]?.jsonObject }.getOrNull()?.mapValues { (_, groups) -> parseGroups(groups) }?.filterValues { it.isNotEmpty() }
+            return ReactionSnapshot(me, msgs, hidden, byHub)
+        }
+        private fun reactionActor(v: JsonObject?): ReactionActor? { val id = v?.str("id") ?: return null; return ReactionActor(id, v.str("name") ?: id, if (v.str("kind") == "agent") "agent" else "human") }
+        /** `ReactionGroup[]` (snapshot, `message.reaction`, a message's `reactions`); malformed groups and actor-less groups are dropped. */
+        fun parseGroups(groups: kotlinx.serialization.json.JsonElement?): List<ReactionGroup> =
+            runCatching { groups!!.jsonArray }.getOrNull().orEmpty().mapNotNull { g ->
+                val go = runCatching { g.jsonObject }.getOrNull() ?: return@mapNotNull null
+                val emoji = go.str("emoji") ?: return@mapNotNull null
+                ReactionGroup(emoji, runCatching { go["actors"]!!.jsonArray }.getOrNull().orEmpty().mapNotNull { reactionActor(runCatching { it.jsonObject }.getOrNull()) }).takeIf { it.actors.isNotEmpty() }
+            }
+        /** The snapshot in the hub's own JSON shape (the device cache stores it so; [parseReactions] reads it back). */
+        fun reactionsJson(s: ReactionSnapshot): String {
+            fun actor(a: ReactionActor) = buildJsonObject { put("id", a.id); put("name", a.name); put("kind", a.kind) }
+            fun groups(gs: List<ReactionGroup>) = kotlinx.serialization.json.buildJsonArray { gs.forEach { g -> add(buildJsonObject { put("emoji", g.emoji); put("actors", kotlinx.serialization.json.buildJsonArray { g.actors.forEach { add(actor(it)) } }) }) } }
+            return buildJsonObject {
+                put("actor", actor(s.actor))
+                put("messages", buildJsonObject { s.messages.forEach { (k, v) -> put(k, groups(v)) } })
+                s.hidden?.let { h -> put("hidden", kotlinx.serialization.json.buildJsonArray { h.forEach { add(kotlinx.serialization.json.JsonPrimitive(it)) } }) }
+                s.byHub?.let { b -> put("by_hub_id", buildJsonObject { b.forEach { (k, v) -> put(k, groups(v)) } }) }
+            }.toString()
+        }
+        /** A short line for a reaction the hub refused (SHAPES.md error codes); null for anything else (generic text). */
+        fun reactionErrorText(e: Throwable): String = when ((e as? HubApiException)?.code) {
+            "invalid_emoji" -> "That emoji can't be used as a reaction."
+            "invalid_message_id", "message_not_found" -> "That message can't take reactions yet."
+            "reaction_limit" -> "This message has too many reactions."
+            else -> "Couldn't update the reaction. Try again."
         }
         /** Only clarify and approval become cards; any other kind is ignored (the hub already declined it upstream, so nothing waits). */
         internal fun parseRequest(o: JsonObject): OpenRequest? {

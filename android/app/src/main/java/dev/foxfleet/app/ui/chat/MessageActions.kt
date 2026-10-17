@@ -42,6 +42,7 @@ object MessageActions {
 
     /** A finished reply that is only a REACT: line (or nothing) draws no row; its reaction shows on the user's message. */
     fun emptyReply(m: UiMessage): Boolean {
+        if (m.role == "assistant" && m.reactionOnly) return true // the hub says so (0.4.1 `reaction_only`)
         if (m.role != "assistant" || m.reasoning.isNotBlank() || m.imageUrls.isNotEmpty()) return false
         val p = MediaTags.parse(m.content); return p.text.isBlank() && p.media.isEmpty()
     }
@@ -74,6 +75,9 @@ object MessageActions {
     }
 
     /** Picking an emoji adds it, or takes yours back when you already reacted with it (like a pill). Returns the `present` value to send. */
+    /** A message can take a reaction once the hub can address it: by its provider id, or by its hub id (0.4.1 hubs; older ones resolve it first). */
+    fun canReact(m: UiMessage) = m.id != null || m.hubId != null
+
     fun nextReaction(groups: List<ReactionGroup>, me: String, emoji: String) = groups.none { g -> g.emoji == emoji && g.actors.any { it.id == me } }
 
     /** Double-tap: add a heart, or take yours back. Returns the `present` value to send. */

@@ -41,5 +41,19 @@ fun ReactionSnapshot.apply(message: String, emoji: String, present: Boolean): Re
     return copy(messages = messages + (message to groups.filter { it.actors.isNotEmpty() }))
 }
 
+/** Your reaction on [m], added or taken back, under every key the snapshot shows it by (hub id and provider id). Optimistic UI. */
+fun ReactionSnapshot.apply(m: dev.foxfleet.app.data.UiMessage, emoji: String, present: Boolean): ReactionSnapshot {
+    fun edit(groups: List<ReactionGroup>): List<ReactionGroup> {
+        val out = groups.map { g -> g.copy(actors = g.actors.filter { it.id != actor.id || g.emoji != emoji }) }.toMutableList()
+        if (present) { val at = out.indexOfFirst { it.emoji == emoji }; if (at >= 0) out[at] = out[at].copy(actors = out[at].actors + actor) else out += ReactionGroup(emoji, listOf(actor)) }
+        return out.filter { it.actors.isNotEmpty() }
+    }
+    val next = edit(groupsFor(m)); val h = m.hubId; val id = m.id
+    return copy(
+        messages = if (id == null) messages else messages + (id to next),
+        byHub = if (h == null || (byHub == null && id != null)) byHub else byHub.orEmpty() + (h to next),
+    )
+}
+
 /** Quick reactions, in menu order (the smiley-plus button opens the full picker). Same list as the web app. */
 val QUICK_REACTIONS = listOf("👍", "👎", "❤️", "🎉", "😮")

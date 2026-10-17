@@ -14,6 +14,7 @@ import dev.foxfleet.app.data.HubAddress
 import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.data.HubApiException
 import dev.foxfleet.app.data.SessionInfo
+import dev.foxfleet.app.data.UiMessage
 import dev.foxfleet.app.data.SettingsStore
 import dev.foxfleet.app.data.scrubAddresses
 import dev.foxfleet.app.ui.AgentList
@@ -100,7 +101,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     /** Show the saved copy of [sid] while the hub answers. True when something was shown. */
     private suspend fun showCachedChat(state: ChatState, agent: String, sid: String): Boolean {
         val c = fromCache { open(agent, sid) } ?: return false
-        return state.showCached(c.messages, sid, c.hasOlder)
+        val shown = state.showCached(c.messages, sid, c.hasOlder)
+        // the chips and "delete for me" saved with it (v4): there at once, and offline
+        if (shown && agent(agent)?.capabilities?.reactions == true) fromCache { reactions(agent, sid) }?.let { state.showCachedReactions(sid, it) }
+        return shown
     }
 
     fun refreshMediaUsage() { viewModelScope.launch { mediaCacheBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { mediaRepository.usageBytes() } } }
@@ -340,7 +344,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         else -> { navigate(Route.Fleet); true }
     }
 
-    fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState().also { s -> s.persist = { c -> settings.saveChat(agent, c) } } }
+    fun chatFor(agent: String): ChatState = chats.getOrPut(agent) { ChatState().also { s ->
+        s.persist = { c -> settings.saveChat(agent, c) }
+        s.onReactionsSaved = { sid, snap -> viewModelScope.launch { cached { saveReactions(agent, sid, snap) } } }
+    } }.also { it.hubIdReactions = features.reactionEvents }
 
     fun agent(name: String): AgentStatus? = agents.firstOrNull { it.name == name }
 
@@ -453,7 +460,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (state.sessionId != sid || state.streaming || state.loading) return
         when (val plan = dev.foxfleet.app.data.LiveCatchUp.plan(state.messages, page.messages)) {
             dev.foxfleet.app.data.CatchUp.None -> {}
-            is dev.foxfleet.app.data.CatchUp.Append -> { state.appendLive(plan.messages); if (openChatAgent() != agent) state.markUnread() }
+            is dev.foxfleet.app.data.CatchUp.Append -> { state.appendLive(plan.messages); if (openChatAgent() != agent && plan.messages.any { !dev.foxfleet.app.ui.chat.MessageActions.emptyReply(it) }) state.markUnread() }
             dev.foxfleet.app.data.CatchUp.Replace -> state.load(page.messages, sid, page.hasMore)
             dev.foxfleet.app.data.CatchUp.Reconcile -> state.reconcile(api, agent)
         }
@@ -697,21 +704,44 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** After a reply or on open: give live messages their hub ids, then read the reactions (no-op for agents without them). */
+    private val reactionSyncs = HashMap<String, Job>()
+
+    /**
+     * After a reply or on open: give live messages their provider ids, then read the reactions (no-op for agents without them).
+     * Hermes stores a turn after its stream closed, so right after a run the newest messages may not be in its transcript yet:
+     * without `reactionEvents` (no live event brings the agent's REACT: or the ids), try again a few times, 1.5 s to 12 s apart.
+     */
     fun syncReactions(agent: String) {
         if (agent(agent)?.capabilities?.reactions != true) return
         val state = chatFor(agent)
-        viewModelScope.launch {
-            try { state.reconcile(api, agent); state.refreshReactions(api, agent) }
+        reactionSyncs[agent]?.cancel()
+        reactionSyncs[agent] = viewModelScope.launch {
+            try {
+                for ((i, wait) in REACTION_RETRY_MS.withIndex()) {
+                    if (wait > 0) delay(wait)
+                    if (state.streaming) return@launch
+                    state.reconcile(api, agent); state.refreshReactions(api, agent)
+                    if (features.reactionEvents || !dev.foxfleet.app.ui.chat.MessageMerge.needsIds(state.messages) || i == REACTION_RETRY_MS.lastIndex) return@launch
+                }
+            }
             catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
         }
     }
 
-    fun react(agent: String, messageId: String, emoji: String, present: Boolean) {
+    /** Pills: [present] is what the chip shows you gave. */
+    fun react(agent: String, messageId: String, emoji: String, present: Boolean) = reactWith(agent) { s -> s.react(api, agent, messageId, emoji, present) }
+    fun react(agent: String, m: UiMessage, emoji: String, present: Boolean) = reactWith(agent) { s -> s.react(api, agent, m, emoji, present) }
+    /** Quick row, picker, double tap: add the emoji, or take yours back. */
+    fun toggleReaction(agent: String, m: UiMessage, emoji: String) = reactWith(agent) { s -> s.toggleReaction(api, agent, m, emoji) }
+
+    private fun reactWith(agent: String, block: suspend (ChatState) -> Unit) {
+        if (agent(agent)?.capabilities?.reactions != true) return // bot agents: no reactions at all
         val state = chatFor(agent)
         viewModelScope.launch {
-            try { state.react(api, agent, messageId, emoji, present) }
+            try { block(state) }
             catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            // a refused or failed change rolled back: say why, briefly
+            state.reactionError?.let { msg -> state.reactionError = null; android.widget.Toast.makeText(getApplication(), msg, android.widget.Toast.LENGTH_SHORT).show() }
         }
     }
 
@@ -867,9 +897,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                     // the merged copy keeps the streamed thinking and steps: store that, not the text-only event
                     state.messages.firstOrNull { it.hubId == f.message.hubId }?.takeIf { it.role == "assistant" && (it.reasoning.isNotEmpty() || it.steps.isNotEmpty()) }?.let { m -> viewModelScope.launch { cached { upsertLive(f.agent, f.chat, m) } } }
                     if (open == f.agent && foreground) sendRead(f.agent, f.chat, f.message.n)
-                    else if (f.message.role == "assistant" && !f.edited) state.markUnread()
+                    else if (f.message.role == "assistant" && !f.edited && !f.message.reactionOnly) state.markUnread() // a reaction is not a reply
                 }
             }
+            is dev.foxfleet.app.data.live.LiveEffect.Reactions -> chats.peek(f.agent)?.takeIf { it.sessionId == f.chat }?.applyReactionEvent(f.hubId, f.upstreamId, f.groups)
             is dev.foxfleet.app.data.live.LiveEffect.Deleted -> chats.peek(f.agent)?.takeIf { it.sessionId == f.chat }?.applyDeleted(f.hubIds)
             is dev.foxfleet.app.data.live.LiveEffect.Status -> chats.peek(f.agent)?.takeIf { it.sessionId == f.chat }?.applyStatus(f.hubIds, f.status)
             is dev.foxfleet.app.data.live.LiveEffect.FetchAfter -> fetchAfter(f.agent, f.chat, f.afterN)
@@ -1049,6 +1080,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         const val OFFLINE_NOTICE = "Offline. Showing saved messages."
         /** Open-chat newest-page check: every 20 s without the live stream, every 60 s with it (covers messages that never pass through the hub). */
         const val POLL_MS = 20_000L
+        /** syncReactions: now, then again while the newest messages still wait for their provider ids (hubs without reactionEvents). */
+        val REACTION_RETRY_MS = longArrayOf(0L, 1_500L, 3_000L, 6_000L, 12_000L)
         const val POLL_LIVE_MS = 60_000L
     }
 }

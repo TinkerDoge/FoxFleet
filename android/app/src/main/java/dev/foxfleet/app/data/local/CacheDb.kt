@@ -141,6 +141,20 @@ data class SyncRow(
     @ColumnInfo(name = "owed_resync") val owedResync: String? = null,
 )
 
+/**
+ * v4 (0.4.1): the hub's reaction snapshot of one conversation, in the hub's own JSON (`actor`, `messages`, `by_hub_id`, `hidden`),
+ * so chips and "delete for me" show at once on a cache-first open and offline. Replaced by every snapshot; `message.reaction`
+ * edits one message in it.
+ */
+@Entity(tableName = "reactions", primaryKeys = ["owner", "agent", "chat_id"])
+data class ReactionRow(
+    val owner: String,
+    val agent: String,
+    @ColumnInfo(name = "chat_id") val chatId: String,
+    val snapshot: String,
+    @ColumnInfo(name = "synced_at") val syncedAt: Long,
+)
+
 /** Paging state of one cached conversation: where the hub's next older page starts and whether it has one. */
 @Entity(tableName = "chat_meta", primaryKeys = ["owner", "agent", "chat_id"])
 data class ChatMetaRow(
@@ -251,6 +265,12 @@ interface LiveDao {
     /** Cached conversations and their newest number: what `after_n` resync walks after a gap. */
     @Query("SELECT agent, chat_id AS chatId, MAX(n) AS maxN FROM messages WHERE owner = :owner GROUP BY agent, chat_id")
     suspend fun cachedChats(owner: String): List<CachedChatRef>
+
+    @Query("SELECT * FROM reactions WHERE owner = :owner AND agent = :agent AND chat_id = :chatId")
+    suspend fun reactions(owner: String, agent: String, chatId: String): ReactionRow?
+    @Upsert suspend fun upsertReactions(row: ReactionRow)
+    @Query("DELETE FROM reactions WHERE owner = :owner AND agent = :agent AND chat_id = :chatId")
+    suspend fun deleteReactions(owner: String, agent: String, chatId: String)
 }
 
 data class CachedChatRef(val agent: String, val chatId: String, val maxN: Int?)
@@ -263,8 +283,9 @@ interface CacheAdminDao {
     @Query("DELETE FROM chat_meta") suspend fun wipeMeta()
     @Query("DELETE FROM chat_rows") suspend fun wipeChatRows()
     @Query("DELETE FROM sync_state") suspend fun wipeSync()
+    @Query("DELETE FROM reactions") suspend fun wipeReactions()
     @Transaction
-    suspend fun wipeAll() { wipeAgents(); wipeChats(); wipeMessages(); wipeMeta(); wipeChatRows(); wipeSync() }
+    suspend fun wipeAll() { wipeAgents(); wipeChats(); wipeMessages(); wipeMeta(); wipeChatRows(); wipeSync(); wipeReactions() }
 }
 
 /**
@@ -273,13 +294,14 @@ interface CacheAdminDao {
  * - 2 (phase 1, 0.4.0): messages gain live_id / n / status (+ index owner,live_id); new chat_rows and sync_state. [MIGRATION_1_2]
  *   keeps every cached message (the new columns start empty and fill from the next page or event).
  * - 3 (0.4.0 QA A1): sync_state gains owed_resync. [MIGRATION_2_3]
+ * - 4 (0.4.1): new table reactions (one reaction snapshot per conversation). [MIGRATION_3_4]
  *
  * Migration strategy: each schema change bumps [VERSION] and ships either an `@AutoMigration` (added columns/tables) or a
  * hand-written [androidx.room.migration.Migration] in [MIGRATIONS], each covered by CacheMigrationTest against the exported
  * JSON. Because this is a cache of hub data, a missing path is not data loss: [build] falls back to a destructive rebuild
  * (the next sync refills it) instead of crashing; a downgrade does the same.
  */
-@Database(entities = [AgentRow::class, ChatRow::class, MessageRow::class, ChatMetaRow::class, ChatListRow::class, SyncRow::class], version = CacheDb.VERSION, exportSchema = true)
+@Database(entities = [AgentRow::class, ChatRow::class, MessageRow::class, ChatMetaRow::class, ChatListRow::class, SyncRow::class, ReactionRow::class], version = CacheDb.VERSION, exportSchema = true)
 abstract class CacheDb : RoomDatabase() {
     abstract fun chatList(): ChatListDao
     abstract fun messages(): MessageDao
@@ -287,7 +309,7 @@ abstract class CacheDb : RoomDatabase() {
     abstract fun live(): LiveDao
 
     companion object {
-        const val VERSION = 3
+        const val VERSION = 4
         const val NAME = "foxfleet-cache.db"
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
@@ -307,7 +329,12 @@ abstract class CacheDb : RoomDatabase() {
         val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) { db.execSQL("ALTER TABLE `sync_state` ADD COLUMN `owed_resync` TEXT") }
         }
-        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
+        /** Copied from schemas/…/4.json (createSql); CacheMigrationTest proves the result equals a fresh v4 database. */
+        internal const val MIGRATION_3_4_SQL = "CREATE TABLE IF NOT EXISTS `reactions` (`owner` TEXT NOT NULL, `agent` TEXT NOT NULL, `chat_id` TEXT NOT NULL, `snapshot` TEXT NOT NULL, `synced_at` INTEGER NOT NULL, PRIMARY KEY(`owner`, `agent`, `chat_id`))"
+        val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) { db.execSQL(MIGRATION_3_4_SQL) }
+        }
+        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
 
         @Volatile private var instance: CacheDb? = null
         fun get(context: Context): CacheDb = instance ?: synchronized(this) { instance ?: build(context.applicationContext).also { instance = it } }

@@ -25,6 +25,20 @@ object MessageMerge {
     }
 
     /**
+     * Provider ids (what reactions and "delete for me" address) for shown messages that only have a hub id: a message that arrived
+     * over live v2 before the provider stored it. Matched by hub id alone, so it is safe whatever the text looks like (the hub's
+     * stored reply joins an agent's steps with blank lines, the streamed copy does not). Returns [shown] itself when nothing changed.
+     */
+    fun bindIds(shown: List<UiMessage>, page: List<UiMessage>): List<UiMessage> {
+        val byHub = page.filter { it.hubId != null && it.id != null }.associateBy { it.hubId }
+        if (byHub.isEmpty() || shown.none { it.id == null && it.hubId in byHub }) return shown
+        return shown.map { m -> if (m.id != null || m.hubId == null) m else byHub[m.hubId]?.let { p -> m.copy(id = p.id, n = m.n ?: p.n) } ?: m }
+    }
+
+    /** True when one of the newest [tail] messages still waits for its provider id (it cannot be reacted to by id yet). */
+    fun needsIds(messages: List<UiMessage>, tail: Int = 4): Boolean = messages.takeLast(tail).any { it.id == null && (it.hubId != null || it === messages.last()) }
+
+    /**
      * A page from the hub replaces the list (load, reconcile, catch-up): its agent messages that carry no thinking or steps get the
      * ones the shown copy had (matched by hub id, provider id, run id, then same text).
      */

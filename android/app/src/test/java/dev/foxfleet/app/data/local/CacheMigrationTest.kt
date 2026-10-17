@@ -77,6 +77,26 @@ class CacheMigrationTest {
         } finally { db.close() }
     }
 
+    /** v4 (0.4.1) adds the reactions table: v3 messages and the cursor stay, and a snapshot round-trips through the new table. */
+    @Test fun v3MessagesSurviveTheMoveToV4AndReactionsAreStored() = runBlocking {
+        createFromSchema("keep4.db", 3)
+        SQLiteDatabase.openDatabase(context.getDatabasePath("keep4.db").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("INSERT INTO messages (owner, agent, chat_id, msg_key, hub_id, ord, ts, role, content, reasoning, steps, images, kind, live_id, n) VALUES ('o','nova','c','h:h1','m1',0,5,'user','kept','','','','user','h1',1)")
+            db.execSQL("INSERT INTO sync_state (owner, cursor, total_unread, total_unread_all, synced_at) VALUES ('o','s1:9',0,0,1)")
+        }
+        assertEquals(CacheDb.MIGRATION_3_4_SQL, schema(4)["entities"]!!.jsonArray.map { it.jsonObject }.first { it["tableName"]!!.jsonPrimitive.content == "reactions" }["createSql"]!!.jsonPrimitive.content.replace("\${TABLE_NAME}", "reactions"))
+        val db = CacheDb.build(context, "keep4.db", destructive = false)
+        try {
+            val cache = ChatCache(db, "o")
+            assertEquals(listOf("kept"), cache.open("nova", "c")!!.messages.map { it.content }); assertEquals("s1:9", cache.sync()!!.cursor)
+            assertEquals(null, cache.reactions("nova", "c"))
+            val me = dev.foxfleet.app.data.ReactionActor("user:o", "o", "human"); val agent = dev.foxfleet.app.data.ReactionActor("agent:nova", "Nova", "agent")
+            val snap = dev.foxfleet.app.data.ReactionSnapshot(me, mapOf("m1" to listOf(dev.foxfleet.app.data.ReactionGroup("❤️", listOf(agent)))), setOf("m9"), mapOf("h1" to listOf(dev.foxfleet.app.data.ReactionGroup("❤️", listOf(agent)))))
+            cache.saveReactions("nova", "c", snap)
+            assertEquals(snap, cache.reactions("nova", "c"))
+        } finally { db.close() }
+    }
+
     @Test fun everyShippedVersionMigratesToCurrentAndValidates() = runBlocking {
         for (v in 1..CacheDb.VERSION) {
             val name = "migrate-$v.db"; createFromSchema(name, v)

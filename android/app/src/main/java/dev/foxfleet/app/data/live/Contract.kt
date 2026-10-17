@@ -19,9 +19,10 @@ import kotlinx.serialization.json.longOrNull
  */
 
 /** What `hub.features` turned on. Feature names, never version numbers. */
-data class HubFeatures(val live: Boolean, val live2: Boolean, val chats: Boolean, val readReceipts: Boolean, val notifyReply: Boolean) {
+data class HubFeatures(val live: Boolean, val live2: Boolean, val chats: Boolean, val readReceipts: Boolean, val notifyReply: Boolean, val reactionEvents: Boolean = false) {
     companion object {
-        fun of(list: List<String>) = HubFeatures("live" in list, "live2" in list, "chats" in list, "readReceipts" in list, "notifyReply" in list)
+        /** [reactionEvents] (0.4.1 hubs): hub ids as reaction targets, `by_hub_id`, the `message.reaction` live event, `reaction_only` replies. */
+        fun of(list: List<String>) = HubFeatures("live" in list, "live2" in list, "chats" in list, "readReceipts" in list, "notifyReply" in list, "reactionEvents" in list)
         val NONE = HubFeatures(false, false, false, false, false)
     }
 }
@@ -46,9 +47,11 @@ data class HubMessage(
     val source: String, val status: String?, val replyTo: String?, val editedAt: Long?, val runId: String?, val images: List<String>,
     /** 0.4.1 hubs, agent messages: the reply's thinking and the tools it used (same shape as history). Empty on older hubs. */
     val reasoning: String = "", val tools: List<dev.foxfleet.app.data.ToolStep> = emptyList(),
+    /** 0.4.1 hubs (`reactionEvents`): the message's current reactions (null = not sent: unknown, not "none"), and on a reply that is only its REACT: line, `reaction_only`. */
+    val reactions: List<dev.foxfleet.app.data.ReactionGroup>? = null, val reactionOnly: Boolean = false,
 ) {
     fun toUi() = UiMessage(role = role, content = text, id = upstreamId, ts = at, imageUrls = images, hubId = hubId, n = n, status = status.takeIf { role == "user" },
-        reasoning = if (role == "assistant") reasoning else "", steps = if (role == "assistant") tools else emptyList(), runId = runId)
+        reasoning = if (role == "assistant") reasoning else "", steps = if (role == "assistant") tools else emptyList(), runId = runId, reactionOnly = role == "assistant" && reactionOnly)
 }
 
 data class LastMessage(val hubId: String?, val role: String?, val sender: String?, val preview: String, val at: Long?, val status: String?)
@@ -79,6 +82,8 @@ sealed interface V2Event {
     data class ChatRemoved(override val seq: Long, override val agent: String) : V2Event { override val chat: String? get() = null }
     data class RunStarted(override val seq: Long, override val agent: String, override val chat: String?, val runId: String) : V2Event
     data class RunFinished(override val seq: Long, override val agent: String, override val chat: String?, val runId: String?, val state: String?) : V2Event
+    /** `message.reaction` (0.4.1, `reactionEvents`): [reactions] is the FULL set on that message now; replace, never merge ([] = none). */
+    data class MessageReaction(override val seq: Long, override val agent: String, override val chat: String, val hubId: String, val upstreamId: String?, val reactions: List<dev.foxfleet.app.data.ReactionGroup>) : V2Event
     data class Approval(override val seq: Long, override val agent: String, override val chat: String?, val requestId: String?, val kind: String?) : V2Event
     /** A type this app does not know (or a known one it cannot read): ignored, but its id still moves the cursor. */
     data class Unknown(override val seq: Long, val type: String, override val agent: String?, override val chat: String?) : V2Event
@@ -113,6 +118,8 @@ object Contract {
             images = (o["images"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.s("url") }.orEmpty(),
             reasoning = if (role == "assistant") o.s("reasoning").orEmpty() else "",
             tools = if (role == "assistant") tools(o["tools"]) else emptyList(),
+            reactions = (o["reactions"] as? JsonArray)?.let { dev.foxfleet.app.data.HubApi.parseGroups(it) },
+            reactionOnly = role == "assistant" && o.b("reaction_only") == true,
         )
     }
 
@@ -166,6 +173,8 @@ object Contract {
             "run.started" -> o.s("run_id")?.let { V2Event.RunStarted(seq, agent!!, chat, it) }
             "run.finished" -> V2Event.RunFinished(seq, agent!!, chat, o.s("run_id"), o.s("state"))
             "approval" -> V2Event.Approval(seq, agent!!, chat, o.s("request_id"), o.s("kind"))
+            // the set is required: an event without a readable `reactions` array is ignored (never read as "none")
+            "message.reaction" -> o.s("hub_id")?.takeIf { it.isNotEmpty() && o["reactions"] is JsonArray }?.let { h -> chat?.let { V2Event.MessageReaction(seq, agent!!, it, h, o.s("upstream_id"), dev.foxfleet.app.data.HubApi.parseGroups(o["reactions"])) } }
             else -> null
         } ?: unknown()
     }

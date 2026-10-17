@@ -107,6 +107,8 @@ data class UiMessage(
     val status: String? = null,
     /** The hub run that wrote this reply (0.4.1): the live reply's message.new is merged into the streamed bubble by it. */
     val runId: String? = null,
+    /** 0.4.1 hubs (`reaction_only`): an agent reply that is only its REACT: line. Its reaction shows on your message; it draws no bubble. */
+    val reactionOnly: Boolean = false,
 )
 
 /** A downscaled JPEG kept in the app cache; [dataUrl] is what goes to the hub. */
@@ -122,5 +124,24 @@ data class ToolEvent(
 /** Who reacted: the signed-in person ("user:…") or an agent ("agent:…"), bound by the hub, never by the client. */
 data class ReactionActor(val id: String, val name: String, val kind: String)
 data class ReactionGroup(val emoji: String, val actors: List<ReactionActor>)
-/** The hub's reactions for one conversation: who "you" are, the reactions on each stable message id, and what you hid ("delete for me"). */
-data class ReactionSnapshot(val actor: ReactionActor, val messages: Map<String, List<ReactionGroup>>, val hidden: Set<String>? = null)
+/**
+ * The hub's reactions for one conversation: who "you" are, the reactions on each provider message id, and what you hid ("delete for me").
+ * [byHub] (0.4.1 hubs, `by_hub_id`): the same reactions keyed by hub id, for every message the hub numbered, so a message that only
+ * arrived live has them too. Null on older hubs. A key with an empty list means "none" (it overrides [messages]).
+ */
+data class ReactionSnapshot(val actor: ReactionActor, val messages: Map<String, List<ReactionGroup>>, val hidden: Set<String>? = null, val byHub: Map<String, List<ReactionGroup>>? = null) {
+    /** The reactions shown under [m]: by hub id when the hub keys them so, else by provider id. */
+    fun groupsFor(m: UiMessage): List<ReactionGroup> {
+        val h = m.hubId; val b = byHub
+        if (h != null && b != null && b.containsKey(h)) return b[h].orEmpty()
+        return m.id?.let { messages[it] }.orEmpty()
+    }
+    /** `message.reaction` (and a message's own `reactions`): the full set on one message REPLACES what was there ([] = none). */
+    fun replace(hubId: String?, upstreamId: String?, groups: List<ReactionGroup>): ReactionSnapshot {
+        val clean = groups.filter { it.actors.isNotEmpty() }
+        return copy(
+            messages = if (upstreamId == null) messages else if (clean.isEmpty()) messages - upstreamId else messages + (upstreamId to clean),
+            byHub = if (hubId == null) byHub else (byHub.orEmpty()) + (hubId to clean),
+        )
+    }
+}

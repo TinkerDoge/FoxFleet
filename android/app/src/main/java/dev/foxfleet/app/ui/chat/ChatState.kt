@@ -418,15 +418,30 @@ class ChatState {
     // ---- stable ids and reactions ----
 
     /**
-     * A live turn has no hub ids yet. Once it ended, swap the newest page for the stored one (which carries them), but only when the
-     * stored copy already ends with the same message: a provider may persist after the stream closes.
+     * The hub takes a message's hub id as a reaction target and keys its snapshot by hub id too (`reactionEvents`, 0.4.1).
+     * Off (older hubs): reactions address the provider id, which a message that arrived live only gets later.
+     */
+    var hubIdReactions by mutableStateOf(false)
+    /** Called with each snapshot the hub confirmed (the ViewModel keeps it in the device cache). */
+    var onReactionsSaved: ((sessionId: String, snapshot: dev.foxfleet.app.data.ReactionSnapshot) -> Unit)? = null
+    private fun confirmed(s: String, snap: dev.foxfleet.app.data.ReactionSnapshot) { reactions = snap; onReactionsSaved?.invoke(s, snap) }
+
+    /**
+     * A live turn has no provider ids yet. Once it ended, read the newest page and give shown messages the ids the hub knows for their
+     * hub ids (whatever their text). Without hub ids (older hubs), swap the newest page for the stored one, but only when the stored
+     * copy already ends with the same message: a provider may persist after the stream closes.
      */
     suspend fun reconcile(api: HubApi, agent: String) {
         val s = sessionId ?: return; val start = messages
-        if (streaming || loading || start.isEmpty() || start.last().id != null) return
+        if (streaming || loading || start.isEmpty() || !MessageMerge.needsIds(start)) return
         val page = try { api.messages(agent, s, limit = PAGE) } catch (e: CancellationException) { throw e } catch (_: Exception) { return }
-        if (s != sessionId || streaming || messages !== start || page.messages.isEmpty()) return
-        // The stored page must end with the same exchange (last two messages), not merely a repeated answer.
+        if (s != sessionId || streaming || page.messages.isEmpty()) return
+        // 1) by hub id: safe even if the list changed meanwhile (0.4.0 needed the exact text, and a reply whose stored copy joins its
+        //    steps with a blank line never got its id, so it could not be reacted to)
+        val now = messages; val bound = MessageMerge.bindIds(now, page.messages)
+        if (bound !== now) { messages = bound; return }
+        // 2) no hub ids: the stored page must end with the same exchange (last two messages), not merely a repeated answer.
+        if (now !== start) return
         fun same(a: UiMessage?, b: UiMessage?) = a == null || (b != null && a.role == b.role && a.content.trim() == b.content.trim())
         if (!same(start.last(), page.messages.last()) || !same(start.getOrNull(start.size - 2), page.messages.getOrNull(page.messages.size - 2))) return
         val first = page.messages.first().id; val boundary = if (first != null) start.indexOfFirst { it.id == first } else -1
@@ -438,21 +453,57 @@ class ChatState {
         val s = sessionId ?: return
         if (reacting > 0) return
         val snap = try { api.reactions(agent, s) } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (_: Exception) { return }
-        if (s == sessionId && reacting == 0) reactions = snap
+        if (s == sessionId && reacting == 0) confirmed(s, snap)
     }
 
-    /** Optimistic: shows at once, rolls back and re-reads the hub when the change fails. */
-    suspend fun react(api: HubApi, agent: String, messageId: String, emoji: String, present: Boolean) {
+    /** The device cache's snapshot while the hub's is not in yet (cache-first open, offline). Never over a fresher one. */
+    fun showCachedReactions(sessionId: String, snap: dev.foxfleet.app.data.ReactionSnapshot) {
+        if (sessionId == this.sessionId && reactions == null) reactions = snap
+    }
+
+    /** `message.reaction` (live v2, replayed after a reconnect): the full set on one message replaces what was shown. */
+    fun applyReactionEvent(hubId: String, upstreamId: String?, groups: List<dev.foxfleet.app.data.ReactionGroup>) {
+        val snap = reactions ?: return
+        val id = upstreamId ?: messages.firstOrNull { it.hubId == hubId }?.id
+        reactions = snap.replace(hubId, id, groups)
+    }
+
+    /** Where a reaction on [m] goes: its hub id on 0.4.1 hubs, else its provider id (null: not known yet). */
+    fun reactionTarget(m: UiMessage): String? = if (hubIdReactions && m.hubId != null) m.hubId else m.id
+
+    /** Quick row, picker and double tap: add [emoji], or take yours back when you already gave it. */
+    suspend fun toggleReaction(api: HubApi, agent: String, m: UiMessage, emoji: String) {
+        val snap = reactions ?: run { refreshReactions(api, agent); reactions } ?: run { reactionError = "Couldn't load reactions. Try again."; return }
+        react(api, agent, m, emoji, MessageActions.nextReaction(snap.groupsFor(current(m)), snap.actor.id, emoji))
+    }
+
+    /** The shown copy of [m] (its ids may have arrived since the menu opened). */
+    private fun current(m: UiMessage): UiMessage = m.hubId?.let { h -> messages.firstOrNull { it.hubId == h } } ?: m.id?.let { id -> messages.firstOrNull { it.id == id } } ?: m
+
+    /** Optimistic: shows at once, rolls back (with a short reason) and re-reads the hub when the change fails. */
+    suspend fun react(api: HubApi, agent: String, message: UiMessage, emoji: String, present: Boolean) {
         val s = sessionId ?: return; val before = reactions ?: return
-        reactions = before.apply(messageId, emoji, present); reactionError = null; reacting++
+        var m = current(message)
+        reactions = before.apply(m, emoji, present); reactionError = null; reacting++
         var failed = false
         try {
-            val snap = api.react(agent, s, messageId, emoji, present)
-            if (s == sessionId && reacting == 1) reactions = snap
-        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (_: Exception) {
-            failed = true; if (s == sessionId) { reactions = before; reactionError = "Couldn't update the reaction. Try again." }
+            var target = reactionTarget(m)
+            if (target == null) { // an older hub and a message that only arrived live: learn its provider id first
+                reconcile(api, agent); m = current(m); target = m.id
+                if (target == null) throw HubApiException(404, "Message not found", code = "message_not_found")
+            }
+            val snap = api.react(agent, s, target, emoji, present)
+            if (s == sessionId && reacting == 1) confirmed(s, snap)
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { if (s == sessionId) reactions = before; throw e } catch (e: Exception) {
+            failed = true; if (s == sessionId) { reactions = before; reactionError = HubApi.reactionErrorText(e) }
         } finally { reacting-- }
         if (failed) refreshReactions(api, agent)
+    }
+
+    /** Pills and older callers that only know a provider id. */
+    suspend fun react(api: HubApi, agent: String, messageId: String, emoji: String, present: Boolean) {
+        val m = messages.firstOrNull { it.id == messageId } ?: UiMessage("user", "", id = messageId)
+        react(api, agent, m, emoji, present)
     }
 
     /** Optimistic delete-for-me: hides at once, rolls back and re-reads the hub when the change fails. */

@@ -1,6 +1,7 @@
 package dev.foxfleet.app.ui.screens
 
 import dev.foxfleet.app.data.MessageKeys
+import dev.foxfleet.app.ui.components.messagePress
 import dev.foxfleet.app.data.MessageKinds
 import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.AnimatedContent
@@ -170,6 +171,7 @@ import androidx.compose.ui.semantics.customActions
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import dev.foxfleet.app.ui.chat.HEART
@@ -245,7 +247,10 @@ fun ChatScreen(
     initialFiles: List<FileRef> = emptyList(),
     /** Reactions (agents whose hub keeps them): re-read after replies and every 30 s while the chat is on screen. */
     onSyncReactions: () -> Unit = {},
-    onReact: (messageId: String, emoji: String, present: Boolean) -> Unit = { _, _, _ -> },
+    /** A chip under a message: [present] = what tapping it makes (add yours, or take it back). */
+    onReact: (message: UiMessage, emoji: String, present: Boolean) -> Unit = { _, _, _ -> },
+    /** Quick row, picker, double tap: add the emoji, or take yours back when you already gave it. */
+    onToggleReaction: (message: UiMessage, emoji: String) -> Unit = { m, e -> state.reactions?.let { s -> onReact(m, e, MessageActions.nextReaction(s.groupsFor(m), s.actor.id, e)) } },
     /** Delete for me (hub hidden list); null hides the action. */
     onHide: ((messageId: String, present: Boolean) -> Unit)? = null,
     /** Edit (Hermes only): run /undo on [target]'s exchange, then call the given function to put its text back. */
@@ -258,7 +263,7 @@ fun ChatScreen(
 ) {
     val c = LocalHubColors.current
     var viewing by remember { mutableStateOf(initialViewing) }
-    var reactingTo by remember { mutableStateOf<String?>(null) }
+    var reactingTo by remember { mutableStateOf<UiMessage?>(null) }
     var menuFor by remember { mutableStateOf<UiMessage?>(null) }
     var selecting by remember { mutableStateOf<String?>(null) }
     var reply by remember(state.sessionId) { mutableStateOf(initialReply) }
@@ -268,8 +273,9 @@ fun ChatScreen(
     // The Undo row stays 5 s; a newer hide restarts it, a failed hide or another chat clears it (ChatState).
     LaunchedEffect(state.hiddenUndo) { state.hiddenUndo?.let { id -> withContext(Dispatchers.Default) { delay(5_000) }; state.expireUndo(id) } }
     val replyTo = { m: UiMessage -> reply = ReplyTarget(if (m.role == "user") "You" else agent.label ?: agent.name, MessageActions.excerpt(m)) }
-    // Quick row and picker toggle like the pills: an emoji you already gave is taken back.
-    val toggle = { id: String, e: String -> state.reactions?.let { s -> onReact(id, e, MessageActions.nextReaction(s.messages[id].orEmpty(), s.actor.id, e)) }; Unit }
+    // Quick row and picker toggle like the pills: an emoji you already gave is taken back. Bot agents have no reactions at all.
+    val reactionsOn = agent.capabilities.reactions
+    val toggle = { m: UiMessage, e: String -> onToggleReaction(m, e) }
     fun act(m: UiMessage, a: MessageAction) {
         menuFor = null
         when (a) {
@@ -287,15 +293,16 @@ fun ChatScreen(
     }
     val gestures = MessageGestures(
         onMenu = { menuFor = it },
-        onHeart = { id -> toggle(id, HEART) },
+        onHeart = { m -> toggle(m, HEART) },
         onReply = replyTo,
         onUndoHide = { id -> onHide?.invoke(id, false) },
     )
     val lifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current.lifecycle
     LaunchedEffect(state.sessionId, state.streaming, state.loading, state.messages.lastOrNull()?.id) { if (!state.streaming && !state.loading && state.sessionId != null) onSyncReactions() }
-    LaunchedEffect(state.sessionId, lifecycle) {
+    LaunchedEffect(state.sessionId, lifecycle, state.hubIdReactions) {
         // Wall-clock wait off the frame clock: the poll never keeps the UI (or a UI test) busy.
-        if (state.sessionId != null) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (true) { withContext(Dispatchers.Default) { delay(30_000) }; if (!state.streaming) onSyncReactions() } }
+        // hubs with `reactionEvents` push every change (message.reaction); the poll stays for older hubs only
+        if (state.sessionId != null && !state.hubIdReactions) lifecycle.repeatOnLifecycle(androidx.lifecycle.Lifecycle.State.RESUMED) { while (true) { withContext(Dispatchers.Default) { delay(30_000) }; if (!state.streaming) onSyncReactions() } }
     }
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
@@ -349,7 +356,7 @@ fun ChatScreen(
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
-                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
@@ -379,7 +386,7 @@ fun ChatScreen(
     // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away (or was hidden) closes it.
     val menuMsg = menuFor?.let { mf ->
         val hidden = state.reactions?.hidden.orEmpty()
-        (state.messages.firstOrNull { it === mf } ?: mf.id?.let { id -> state.messages.firstOrNull { it.id == id } })?.takeIf { it.id == null || it.id !in hidden }
+        (state.messages.firstOrNull { it === mf } ?: mf.hubId?.let { h -> state.messages.firstOrNull { it.hubId == h } } ?: mf.id?.let { id -> state.messages.firstOrNull { it.id == id } })?.takeIf { it.id == null || it.id !in hidden }
     }
     LaunchedEffect(menuFor, menuMsg) { if (menuFor != null && menuMsg == null) menuFor = null }
     menuMsg?.let { m ->
@@ -387,13 +394,14 @@ fun ChatScreen(
         val busy = state.streaming || state.queuePending
         MessageMenuSheet(
             actions = MessageActions.actions(m, newestAssistant = m === newest.assistant, newestUser = m === newest.user, busy = busy, hermes = agent.isHermes && onEditLast != null, canHide = onHide != null && state.reactions?.hidden != null),
-            canReact = m.id != null && state.reactions != null,
-            onReact = { e -> menuFor = null; m.id?.let { toggle(it, e) } },
-            onMoreReactions = { menuFor = null; reactingTo = m.id },
+            // a message that only arrived live (hub id, no provider id yet) can be reacted to as well (0.4.0 offered no row for it)
+            canReact = reactionsOn && MessageActions.canReact(m),
+            onReact = { e -> menuFor = null; toggle(m, e) },
+            onMoreReactions = { menuFor = null; reactingTo = m },
             onAction = { act(m, it) }, onDismiss = { menuFor = null },
         )
     }
-    reactingTo?.let { id -> dev.foxfleet.app.ui.components.EmojiPickerSheet(onPick = { e -> reactingTo = null; toggle(id, e) }, onDismiss = { reactingTo = null }) }
+    reactingTo?.let { m -> dev.foxfleet.app.ui.components.EmojiPickerSheet(onPick = { e -> reactingTo = null; toggle(m, e) }, onDismiss = { reactingTo = null }) }
     selecting?.let { SelectTextDialog(it) { selecting = null } }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     if (bgSheet) ChatBackgroundSheet(bgState) { bgSheet = false }
@@ -405,7 +413,7 @@ fun ChatScreen(
 
 
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, onReact: (String, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (String) -> Unit = {}, gestures: MessageGestures? = null, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, reactionsOn: Boolean = true, onReact: (UiMessage, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (UiMessage) -> Unit = {}, gestures: MessageGestures? = null, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -510,8 +518,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         items(rev.size, key = { msgKeys.getOrElse(rev[it].index) { "i:${state.keyBase + rev[it].index}" } }, contentType = { MessageKinds.of(rev[it].value) }) { i ->
             // only messages that arrive after the history has been shown animate in (never old ones scrolled back into view)
             val (index, m) = rev[i]; val b = baseline; val isNew = b != null && state.keyBase + index >= b
-            val snap = state.reactions; val id = m.id
-            val reactions = if (id != null && snap != null) MessageReactions(snap.messages[id].orEmpty(), snap.actor.id, { e, on -> onReact(id, e, on) }, { onPickReaction(id) }) else null
+            // chips by hub id when the hub keys them so (0.4.1), else by provider id; none for agents without reactions (bots)
+            val snap = state.reactions
+            val reactions = if (reactionsOn && snap != null && MessageActions.canReact(m)) MessageReactions(snap.groupsFor(m), snap.actor.id, { e, on -> onReact(m, e, on) }, { onPickReaction(m) }) else null
             // animateItem stays on the item's root: the swipe wrapper when there is one
             val itemMod = Modifier.animateItem().messageEnter(isNew)
             if (gestures != null) SwipeToReply({ gestures.onReply(m) }, itemMod) { MessageRow(agentName, m, Modifier, onOpen, state.sessionId.orEmpty(), reactions, gestures) }
@@ -539,17 +548,19 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
     val c = LocalHubColors.current
     val haptic = rememberHaptic()
     // One frame per message: everything it carries (pictures, files, text, time) sits inside, so it is clear what a reaction is on.
-    // Long-press the frame (or the TalkBack action) for the message menu; double tap hearts it (needs a hub id and loaded reactions).
+    // Long-press the frame (or the TalkBack action) for the message menu; double tap hearts it (needs a hub or provider id and loaded reactions).
     // Only the frame listens: pictures, links and buttons inside it keep their own taps. The frame lights up while pressed.
     val press = remember { MutableInteractionSource() }
     val pressed by press.collectIsPressedAsState()
     var pop by remember { mutableIntStateOf(0) }
-    val heart: (() -> Unit)? = if (gestures != null && reactions != null && m.id != null) ({ haptic(HapticFeedbackType.LongPress); gestures.onHeart(m.id); pop++ }) else null
+    val heart: (() -> Unit)? = if (gestures != null && reactions != null) ({ haptic(HapticFeedbackType.LongPress); gestures.onHeart(m); pop++ }) else null
     val menu: (() -> Unit)? = gestures?.let { g -> { haptic(HapticFeedbackType.LongPress); g.onMenu(m) } }
     val reactable = if (gestures == null) Modifier else Modifier
         // TalkBack: activating the frame opens the menu (outermost, so it wins over the empty touch tap below)
-        .semantics { onClick(label = "Message actions") { gestures.onMenu(m); true } }
-        .combinedClickable(interactionSource = press, indication = null, onClick = {}, onDoubleClick = heart, onLongClick = menu, onLongClickLabel = "Message actions")
+        .semantics(mergeDescendants = true) { onClick(label = "Message actions") { gestures.onMenu(m); true } }
+        .semantics { onLongClick(label = "Message actions") { gestures.onMenu(m); true } }
+        // anywhere in the frame, links and pictures included (a link inside a reply used to take both gestures for itself)
+        .messagePress(press, onLongPress = menu, onDoubleTap = heart)
     val edge = if (pressed) c.accent else c.hairline
     val lift = if (reactions?.groups?.isNotEmpty() == true) 10.dp else 0.dp // room inside the frame for the pills hanging on its edge
     // Reactions hang on the frame's bottom edge (Messenger / iMessage), not loose under it.
@@ -563,13 +574,13 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 Modifier.widthIn(max = 300.dp).clip(shape).background(if (LocalChatBgActive.current) androidx.compose.ui.graphics.lerp(c.surface, c.accent, c.userBubble.alpha) else c.userBubble).border(1.dp, if (pressed) c.accent else Color.Transparent, shape).then(reactable).padding(start = 6.dp, end = 6.dp, top = 6.dp, bottom = 6.dp + lift),
                 horizontalAlignment = Alignment.End,
             ) {
-                m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = "Message actions") }
+                m.imageUrls.forEach { u -> dev.foxfleet.app.ui.components.ChatImage(u, "Attached image", Modifier.padding(bottom = 4.dp).size(220.dp).clip(RoundedCornerShape(14.dp)), onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = null) }
                 if (m.images.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.padding(bottom = 4.dp)) {
                     m.images.forEach { img ->
                         // The cached file can be gone (cache cleared, other app id): fall back to the data URL we sent, then to a tile with Retry.
                         val src = dev.foxfleet.app.media.attachmentSource(img.localPath, img.dataUrl)
                         dev.foxfleet.app.ui.components.ChatImage(src, "Attached image", Modifier.size(if (m.images.size == 1) 220.dp else 104.dp).clip(RoundedCornerShape(14.dp)),
-                            onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = "Message actions")
+                            onClick = { onOpen(MediaRef(src, MediaRef.Kind.Image)) }, onLongClick = null)
                     }
                 }
                 files.forEach { (path, size) -> FileChip(path.substringAfterLast('/').substringAfter('-'), size, Modifier.padding(bottom = 4.dp)) }
@@ -598,10 +609,10 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                     if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
                     if (m.steps.isNotEmpty()) { val log = remember(m.steps) { dev.foxfleet.app.ui.chat.StepLog.of(m.steps) }; dev.foxfleet.app.ui.components.StepsPanel(log, live = false, stateKey = "s:" + (m.hubId ?: m.runId ?: "${m.ts}:${m.content.hashCode()}")) }
                     m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
-                        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).combinedClickable(onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = if (menu != null) "Message actions" else null)) }
+                        modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).clickable { onOpen(MediaRef(u, MediaRef.Kind.Image)) }) }
                     AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
                     val media = remember(m.content) { extractMedia(MediaTags.parse(m.content).text) }
-                    media.forEach { ref -> MediaCard(ref, menu) { onOpen(ref) } }
+                    media.forEach { ref -> MediaCard(ref, null) { onOpen(ref) } }
                     if (m.ts > 0) Text(agoLabel(m.ts), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.align(Alignment.End).padding(top = 4.dp))
                 }
                 HeartPop(pop)
@@ -616,7 +627,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
 private class MessageReactions(val groups: List<dev.foxfleet.app.data.ReactionGroup>, val me: String, val onReact: (String, Boolean) -> Unit, val onPick: () -> Unit)
 
 /** What a message row does with the hand: long press opens the menu, double tap hearts, swipe right replies; plus the hidden-message Undo. */
-private class MessageGestures(val onMenu: (UiMessage) -> Unit, val onHeart: (String) -> Unit, val onReply: (UiMessage) -> Unit, val onUndoHide: (String) -> Unit)
+private class MessageGestures(val onMenu: (UiMessage) -> Unit, val onHeart: (UiMessage) -> Unit, val onReply: (UiMessage) -> Unit, val onUndoHide: (String) -> Unit)
 
 /** Screenshot tests: render the live step card opened. */
 internal val LocalStepsOpen = androidx.compose.runtime.staticCompositionLocalOf { false }

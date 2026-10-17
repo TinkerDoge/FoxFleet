@@ -17,6 +17,8 @@ sealed interface LiveEffect {
     data class Notice(val type: String, val agent: String, val chat: String?, val runId: String?, val state: String?) : LiveEffect
     /** The agent's own message ended its typing state in that chat. */
     data class StopTyping(val agent: String, val chat: String?) : LiveEffect
+    /** `message.reaction` (or a message that carries its reactions): the full set on one message, already written to the cache. */
+    data class Reactions(val agent: String, val chat: String, val hubId: String, val upstreamId: String?, val groups: List<dev.foxfleet.app.data.ReactionGroup>) : LiveEffect
 }
 
 /**
@@ -40,6 +42,7 @@ class LiveReducer(private val cache: ChatCache) {
         is V2Event.RunStarted -> listOf(LiveEffect.Notice("run_started", e.agent, e.chat, e.runId, null))
         is V2Event.RunFinished -> listOf(LiveEffect.Notice("run_finished", e.agent, e.chat, e.runId, e.state), LiveEffect.StopTyping(e.agent, e.chat))
         is V2Event.Approval -> listOf(LiveEffect.Notice("approval", e.agent, e.chat, null, null))
+        is V2Event.MessageReaction -> { cache.replaceReactions(e.agent, e.chat, e.hubId, e.upstreamId, e.reactions); listOf(LiveEffect.Reactions(e.agent, e.chat, e.hubId, e.upstreamId, e.reactions)) }
         is V2Event.Unknown -> emptyList()
     }
 
@@ -49,6 +52,7 @@ class LiveReducer(private val cache: ChatCache) {
         out += LiveEffect.Upserted(agent, chat, m, edited)
         if (!placed && cache.numbered(agent, chat)) out += LiveEffect.FetchAfter(agent, chat, cache.maxN(agent, chat))
         if (m.role == "assistant" && !edited) out += LiveEffect.StopTyping(agent, chat)
+        m.reactions?.let { g -> cache.replaceReactions(agent, chat, m.hubId, m.upstreamId, g); out += LiveEffect.Reactions(agent, chat, m.hubId, m.upstreamId, g) }
         return out
     }
 }
