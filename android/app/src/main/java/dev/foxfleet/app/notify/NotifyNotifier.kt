@@ -78,13 +78,14 @@ class AndroidNotifier(private val context: Context) : Notifier {
         val grant = n.reply?.takeIf { it.validAt(System.currentTimeMillis()) && !NoReplyAgents(context.getSharedPreferences(NoReplyAgents.PREFS, Context.MODE_PRIVATE)).has(n.hubId, n.agent) }
         if (grant != null && n.type != NotifyType.Error) {
             // Direct reply (messenger pattern): RemoteInput needs a mutable PendingIntent so Android can add the typed text.
+            // The intent inside is explicit (component + package), so nobody else can redirect it (lint MutableImplicitPendingIntent).
             val extras = Intent(context, NotifyActionReceiver::class.java).putExtra("agent", n.agent).putExtra("chat", n.chat).putExtra("hub", n.hubId)
                 .putExtra("token", grant.token).putExtra("expires", grant.expiresAt).putExtra("label", n.agentLabel)
             val input = androidx.core.app.RemoteInput.Builder(NotifyActionReceiver.KEY_TEXT).setLabel("Reply to ${n.agentLabel}").build()
-            val replyPi = PendingIntent.getBroadcast(context, code + 3, Intent(extras).setAction(NotifyActionReceiver.ACTION_REPLY), PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val replyPi = PendingIntent.getBroadcast(context, code + 3, Intent(context, NotifyActionReceiver::class.java).setPackage(context.packageName).setAction(NotifyActionReceiver.ACTION_REPLY).putExtras(extras), PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             b.addAction(NotificationCompat.Action.Builder(0, "Reply", replyPi).addRemoteInput(input).setAllowGeneratedReplies(false)
                 .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY).setShowsUserInterface(false).build())
-            val readPi = PendingIntent.getBroadcast(context, code + 4, Intent(extras).setAction(NotifyActionReceiver.ACTION_READ), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val readPi = PendingIntent.getBroadcast(context, code + 4, Intent(context, NotifyActionReceiver::class.java).setPackage(context.packageName).setAction(NotifyActionReceiver.ACTION_READ).putExtras(extras), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
             b.addAction(NotificationCompat.Action.Builder(0, "Mark read", readPi).setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ).setShowsUserInterface(false).build())
         } else b.addAction(0, "Open", open(target, code + 1))
         b.setNumber(badgeFor(n.agent))
