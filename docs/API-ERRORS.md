@@ -84,6 +84,12 @@ Feature `reactionEvents`; see `docs/LIVE-EVENTS.md` "Reactions (0.4.1)". The rou
 | 404 | `message_not_found` | neither an `upstream_id` in the agent's transcript nor a `hub_id` of this chat | drop the optimistic reaction, re-read the snapshot |
 | 409 | `reaction_limit` | 256 reactions on the message, or 50 000 for the account | "Couldn't add the reaction" |
 
+Also on `PUT|DELETE …/hidden` (0.4.1, `message_id` may be a `hub_id`): `invalid_message_id`, `message_not_found`.
+
+How to tell them apart: the four codes above are about the reaction itself (400 / 404 / 409, always with `code`). The agent codes
+come with 502 / 504 (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`): the hub could not read the chat, so retry later.
+A 404 **without** `code` is an unknown agent; 401 is only your own sign-in.
+
 ## Model picker (0.4.1-alpha): `GET /api/agents/{name}/models`, `POST /api/agents/{name}/sessions/{id}/model`
 
 See `docs/LIVE-EVENTS.md` "Model picker" and `capabilities.models`.

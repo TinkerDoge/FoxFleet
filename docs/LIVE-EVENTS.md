@@ -122,7 +122,7 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | field | type | notes |
 |---|---|---|
 | `hub_id` | string | stable id given by the hub, never changes. Key your cache on it |
-| `upstream_id` | string \| null | the agent's own message id once known (hide addresses this id; reactions take it or, since 0.4.1, the `hub_id`) |
+| `upstream_id` | string \| null | the agent's own message id once known (reactions and hide take it or, since 0.4.1, the `hub_id`) |
 | `n` | int | position in the chat: 1, 2, 3 … per chat, gap-free, never reused (a deleted message keeps its number) |
 | `role` | `user` \| `assistant` | |
 | `text` | string | full text, at most 64 KB; when longer, `truncated: true` and the client fetches the message from history |
@@ -135,8 +135,7 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | `images` | `{url, mime}[]` | short-lived media links, same rules as history. Not filled in 0.4.0-alpha: fetch the message from history for media |
 | `reasoning` | string | 0.4.1, assistant messages: the reply's reasoning (streamed deltas, or the agent's one-piece reasoning, or `<think>` blocks), at most 64 KiB UTF-8; `reasoning_truncated: true` when cut. Absent when none |
 | `tools` | `{name, args?, result?, ok?}[]` | 0.4.1, assistant messages: the tools the reply ran, same shape as history; at most 50, `args` / `result` at most 500 characters + `…` (previews, never the full result). From a live run: `args` is the arguments preview, `result` / `ok` when the agent reported the end. Chat-completions agents only report tool starts (`name`, `args` = Hermes' label). Absent when none |
-
-| `reactions` | `ReactionGroup[]` | 0.4.1 (`reactionEvents`): the message's current reactions, only when it has any (also on history messages). Live changes come as `message.reaction` |
+| `reactions` | `ReactionGroup[]` | 0.4.1 (`reactionEvents`): reactions the hub has stored for the message, only when it has any. On `message.new` / `message.edited` this is a hint, never a reason to clear chips (absent does not mean none); history and the snapshot also count `REACT:` lines read from the transcript. Live changes come as `message.reaction` |
 | `react` | string | 0.4.1, assistant messages: the emoji its `REACT:` line applied to the user's message (the line itself stays in `text`; apps hide it as before) |
 | `reaction_only` | `true` | 0.4.1, assistant messages: nothing to show besides the `REACT:` line. Draw no row; it is not unread and not the chat-list preview |
 
@@ -315,9 +314,23 @@ retried toggle would undo itself). Since 0.4.1:
 - `message_id` takes the message's `hub_id` as well as its `upstream_id`. A message that arrived live and has no `upstream_id` yet
   can be reacted to at once.
 - The snapshot gains `by_hub_id: {hub_id: ReactionGroup[]}` (same reactions keyed by `hub_id`; `messages` stays keyed by
-  `upstream_id`), and PUT/DELETE answers carry `changed: false` when nothing changed.
+  `upstream_id`). A message with no reactions is left out of a `GET`. A PUT/DELETE answer always lists the message it targeted,
+  as `[]` once it has none (under `by_hub_id`, and under `messages` when its upstream id is known), so "removed" and "never had
+  any" can be told apart.
+- PUT/DELETE answers carry `changed`: `false` means the reaction was already there (PUT) or already gone (DELETE), so no
+  `message.reaction` was sent. The snapshot in the answer is current either way: always apply it.
+- `GET …/reactions` (and history reads) sync the chat with the agent's transcript first. That can send `message.edited` (a message
+  the client has learns its `upstream_id`; a hidden message is not sent) and `message.new` (messages written elsewhere, `source:
+  "external"`), like a history read, and `message.reaction` for `REACT:` lines seen for the first time (below).
 - Errors carry codes: 400 `invalid_emoji`, 400 `invalid_message_id`, 404 `message_not_found`, 409 `reaction_limit`
-  (256 per message, 50 000 per account). See `docs/API-ERRORS.md`.
+  (256 per message, 50 000 per account). Anything else is about the agent or the agent name, not the reaction: 502/504 with
+  `agent_offline` / `timeout` / `auth_failed` / `upstream_error` (the hub could not read the chat), 404 without `code` (unknown
+  agent), 401 (your own sign-in). See `docs/API-ERRORS.md`.
+- Delete for me, `PUT|DELETE …/hidden` `{message_id}`, takes the `hub_id` as well (0.4.1), with the same `invalid_message_id` /
+  `message_not_found` codes. The snapshot's `hidden` stays a list of upstream ids still in the transcript; `hidden_hub_ids`
+  (0.4.1) lists every hidden message by `hub_id`, including ones with no upstream id yet. Hiding sends `message.deleted`
+  `{hub_ids, scope: "me"}`. Showing it again sends `message.edited` with its text when the hub has a copy from the transcript;
+  a message that only arrived live comes back with the next history read.
 
 `ReactionGroup` = `{emoji, actors: [{id, name, kind: "human"|"agent"}]}`.
 
@@ -332,9 +345,14 @@ retried toggle would undo itself). Since 0.4.1:
 
 - Sent only when something changed (a repeated PUT or DELETE sends nothing), to every device of the account that owns the chat
   and never to another account. Not on the v1 stream.
+- `upstream_id` is **left out** (not `null`) while the message has none, like every unset field of a live event: treat absent as null.
 - The agent's reaction: when a live reply is committed, the first valid `REACT: <emoji>` line in it is applied to the newest
   earlier user message of the chat (stored, actor `agent:<name>`), and the reply's `message.new` carries `react` (and
-  `reaction_only` when nothing else is in it). Reactions in transcripts written elsewhere are still derived on read, as before.
+  `reaction_only` when nothing else is in it). A `REACT:` line the hub did not see committed (a reply written elsewhere, or
+  before 0.4.1) is found the first time the chat is read (snapshot or history, at most 20 per read); it is then stored and sent
+  once as `message.reaction`. So every agent reaction is on the live log once, and a device that was offline gets it from the
+  replay. Stored reactions expire after 90 days; a `REACT:` line still in the transcript then counts again on read (and is sent
+  once more).
 - A client keeps the snapshot from `GET …/reactions` (on open, and after a `gap`) and applies `message.reaction` by `hub_id`.
   With `reactionEvents` it no longer needs to poll.
 

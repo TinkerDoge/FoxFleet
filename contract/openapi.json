@@ -4310,7 +4310,7 @@
     "/api/agents/{name}/sessions/{id}/reactions": {
       "get": {
         "operationId": "getReactions",
-        "summary": "Emoji reactions in one conversation (humans and agents). Only ids of messages still in the conversation are returned. Since 0.4.1 also keyed by hub_id (`by_hub_id`).",
+        "summary": "Emoji reactions in one conversation (humans and agents). Only ids of messages still in the conversation are returned. Since 0.4.1 also keyed by hub_id (`by_hub_id`). Syncs the chat with the agent's transcript first, which can send live v2 message.edited / message.new (like a history read) and message.reaction for REACT: lines seen for the first time.",
         "tags": [
           "agents"
         ],
@@ -4489,7 +4489,7 @@
     "/api/agents/{name}/sessions/{id}/hidden": {
       "put": {
         "operationId": "hideMessage",
-        "summary": "Delete for me: hide one message in this account (idempotent). The agent keeps it.",
+        "summary": "Delete for me: hide one message in this account (idempotent). The agent keeps it. Since 0.4.1 `message_id` may be a hub_id (codes invalid_message_id, message_not_found).",
         "tags": [
           "agents"
         ],
@@ -4504,7 +4504,8 @@
                 ],
                 "properties": {
                   "message_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The message: its `upstream_id`, or since 0.4.1 its `hub_id`."
                   }
                 },
                 "additionalProperties": false
@@ -4547,7 +4548,7 @@
       },
       "delete": {
         "operationId": "unhideMessage",
-        "summary": "Show a hidden message again (idempotent).",
+        "summary": "Show a hidden message again (idempotent). Since 0.4.1 `message_id` may be a hub_id (codes invalid_message_id, message_not_found).",
         "tags": [
           "agents"
         ],
@@ -4562,7 +4563,8 @@
                 ],
                 "properties": {
                   "message_id": {
-                    "type": "string"
+                    "type": "string",
+                    "description": "The message: its `upstream_id`, or since 0.4.1 its `hub_id`."
                   }
                 },
                 "additionalProperties": false
@@ -7503,11 +7505,11 @@
             "items": {
               "type": "string"
             },
-            "description": "Ids of messages this account hid (delete for me). Absent on hubs before 0.3.9."
+            "description": "Ids of messages this account hid (delete for me). Absent on hubs before 0.3.9. Since 0.4.1 a message hidden by hub id is listed here once its upstream id is known."
           },
           "by_hub_id": {
             "type": "object",
-            "description": "0.4.1 (feature `reactionEvents`): the same reactions keyed by the hub's stable message id (`hub_id`, live v2 and history), for every message the hub has numbered, including messages that have no upstream id yet.",
+            "description": "0.4.1 (feature `reactionEvents`): the same reactions keyed by the hub's stable message id (`hub_id`, live v2 and history), for every message the hub has numbered, including messages that have no upstream id yet. A GET leaves out messages with no reactions; a PUT/DELETE answer always lists the message it targeted, as [] once it has none (also under `messages` when its upstream id is known).",
             "additionalProperties": {
               "type": "array",
               "items": {
@@ -7517,7 +7519,14 @@
           },
           "changed": {
             "type": "boolean",
-            "description": "0.4.1, PUT/DELETE only: false when the call changed nothing (the reaction was already there / already gone); no `message.reaction` event is sent then."
+            "description": "0.4.1, PUT/DELETE only: false when the reaction was already there (PUT) or already gone (DELETE); no `message.reaction` is sent then. The snapshot in the answer is current either way."
+          },
+          "hidden_hub_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "0.4.1: every hidden message by hub_id, including messages with no upstream id yet."
           }
         }
       },
@@ -7943,7 +7952,7 @@
               "string",
               "null"
             ],
-            "description": "message.reaction: the agent's id of that message when known."
+            "description": "message.reaction: the agent's id of that message; left out (not null) while unknown."
           },
           "reactions": {
             "type": "array",
