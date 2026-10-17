@@ -169,6 +169,22 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     catch { /* a full store keeps the reply; the reaction is still derived from the transcript */ }
   }
   /** The chat's reactions as the snapshot shows them: stored (by upstream or hub id) plus REACT: lines in the transcript. */
+  /**
+   * REACT: lines the hub did not see being committed (a reply written elsewhere, or before 0.4.1) are found when a chat is read
+   * (reactions snapshot, history). The first time, each is stored for the agent and sent once as message.reaction, so every device
+   * learns it from the live log and not only from its next snapshot. At most 20 per read; nothing when they are known already.
+   */
+  async function announceDerived(reg, m, sid, transcript) {
+    const derived = agentReactions(transcript, agentActor(m)); if (!derived.length) return;
+    const rows = reg.reactions.list(m.name, sid); let left = 20;
+    for (const d of derived) {
+      const ref = reg.ledger.resolve(m.name, sid, d.message); if (!ref) continue;
+      const keys = [ref.u, ref.hub_id].filter(Boolean);
+      if (keys.some((k) => rows[k]?.some((g) => g.emoji === d.emoji && g.actors.some((a) => a.id === d.actor.id)))) continue;
+      if (left-- <= 0) break;
+      try { if (await reg.reactions.set(m.name, sid, keys, d.emoji, d.actor, true)) reactionEvent(reg, m.name, sid, ref, storedReactions(reg, m.name, sid, ref), { emoji: d.emoji, present: true, actor: d.actor }); } catch { /* full store: still derived on read */ }
+    }
+  }
   /** History messages gain `reactions` (when any) and, on replies, `react` / `reaction_only` (0.4.1). */
   function withReactions(reg, m, sid, list) {
     let v; try { v = reactionsOf(reg, m, sid, list); } catch { return list; }
@@ -863,6 +879,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
               if (changed) change = { emoji: b.emoji, present: req.method === 'PUT', actor };
             }
           } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
+          await announceDerived(ctx.reg, m, sid, messages);
           const ids = new Set(messages.map(x => String(x.id))), view = reactionsOf(ctx.reg, m, sid, messages);
           if (change && ref) reactionEvent(ctx.reg, m.name, sid, ref, view.by_hub_id[ref.hub_id] ?? [], change);
           // PUT/DELETE: the message this call targeted is always in the answer, [] when it has no reactions left ("removed" vs "never had any")
@@ -1087,6 +1104,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             L.reconcile(m.name, sid, full); L.annotate(m.name, sid, full);
             const after = full.filter((x) => Number.isInteger(x.n) && x.n > Number(rawAfter)), page = after.slice(0, limit);
             for (const x of page) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content);
+            await announceDerived(ctx.reg, m, sid, full);
             return sendJson(res, 200, agentData(m, route, { messages: withReactions(ctx.reg, m, sid, page), offset: 0, limit, has_more: after.length > limit }, originalConnections));
           }
           const raw = (await upstream.messages(m, sid, { limit, offset })).messages;
@@ -1094,6 +1112,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (L.annotate(m.name, sid, msgs) > 0 && (offset === 0 && raw.length < limit ? true : L.mayResync(m.name, sid))) { // some messages are not numbered yet: number the chat (this page if it is the whole chat, else read it once)
             try { const full = offset === 0 && raw.length < limit ? msgs : normalizeTranscript((await upstream.messages(m, sid)).messages); L.reconcile(m.name, sid, full); L.annotate(m.name, sid, msgs); } catch { /* the page is still served */ }
           }
+          await announceDerived(ctx.reg, m, sid, msgs);
           return sendJson(res, 200, agentData(m, route, { messages: withReactions(ctx.reg, m, sid, msgs), offset, limit, has_more: raw.length >= limit }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }

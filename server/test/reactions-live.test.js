@@ -185,3 +185,22 @@ test('hidden: a live-only message shown again sends no blank message.edited (it 
   const r = await call(H, { message_id: answer.hub_id }, { method: 'DELETE' }); assert.deepEqual(r.body.hidden_hub_ids, []);
   await sleep(150); assert.equal(s.frames.filter((f) => f.event === 'message.edited').length, before);
 });
+
+test('REACT: lines found on sync (a reply written elsewhere) are sent once as message.reaction; a committed one is not sent again', async (t) => {
+  const { mock, opts } = await hermes(t, { messages: [{ id: 'u1', role: 'user', content: 'from the terminal' }, { id: 'a1', role: 'assistant', content: 'Nice\nREACT: 🦊' }] });
+  const x = await hub(t); await x.call('/api/connections', { ...mock.connection, name: 'atlas' });
+  const s = sse(t, `${x.base}/api/live/stream?v=2`); await s.wait((f) => f.event === 'foxfleet.ready');
+  const h = (await x.call('/api/agents/atlas/sessions/sess-1/messages')).body.messages; assert.equal(h[0].reactions[0].emoji, '🦊');
+  const ev = await s.wait((f) => f.event === 'message.reaction'); assert.equal(ev.data.hub_id, h[0].hub_id); assert.equal(ev.data.upstream_id, 'u1');
+  assert.deepEqual(ev.data.change, { emoji: '🦊', present: true, actor: { id: 'agent:atlas', name: 'atlas', kind: 'agent' } });
+  await x.call('/api/agents/atlas/sessions/sess-1/messages'); await x.call(R); await x.call('/api/agents/atlas/sessions/sess-1/messages?after_n=0'); await sleep(150);
+  assert.equal(s.frames.filter((f) => f.event === 'message.reaction').length, 1, 'once');
+  assert.deepEqual((await x.call(R)).body.messages.u1, [{ emoji: '🦊', actors: [{ id: 'agent:atlas', name: 'atlas', kind: 'agent' }] }], 'stored and derived count once');
+  opts.messages = [...opts.messages, { id: 'u2', role: 'user', content: 'again' }, { id: 'a2', role: 'assistant', content: 'REACT: 👍' }];
+  await x.call(R); const ev2 = await s.wait((f) => f.event === 'message.reaction' && f.data.upstream_id === 'u2'); assert.equal(ev2.data.change.emoji, '👍');
+
+  const c = await chat(t, 'REACT: ❤️'); await c.s.wait((f) => f.event === 'message.reaction');
+  c.opts.messages = [{ id: 'u1', role: 'user', content: 'thanks a lot' }, { id: 'a1', role: 'assistant', content: 'REACT: ❤️' }];
+  await c.call(R); await c.call('/api/agents/atlas/sessions/sess-1/messages'); await sleep(150);
+  assert.equal(c.s.frames.filter((f) => f.event === 'message.reaction').length, 1, 'the commit already announced it');
+});
