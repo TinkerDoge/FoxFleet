@@ -62,7 +62,7 @@ Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these codes is a 401. `POS
 | 400 | `invalid_cursor` | `GET /api/live/events` | `since` cannot be parsed (the stream answers a gap with reason `invalid` instead; a v1 `<epoch>:<n>` id parses, and is a gap `reset` / 410) | resync from `GET /api/chats` |
 | 410 | `cursor_expired` | `GET /api/live/events` | the cursor is older than retention (5000 events / 7 days / 32 MiB by default) or from another hub store; body has `cursor` to restart from | silent resync, no message |
 | 429 | `too_many_streams` | `GET /api/live/stream` (v1 and v2) | 8 streams per account already open | retry with backoff; no message |
-| 404 | `chat_not_found` | `/api/chats/{agent}…`, `/api/notify/reply`, `/api/notify/read` | unknown agent, or a session this account doesn't have | drop the row / notification |
+| 404 | `chat_not_found` | `/api/chats/{agent}…`, `/api/notify/reply`, `/api/notify/read` | unknown agent, a session this account doesn't have, or one the agent itself doesn't know (both history paths answer 404) | drop the row / notification |
 | 400 | `invalid_read_position` | `POST /api/chats/{agent}/read`, `POST /api/notify/read` | `up_to` isn't a positive integer, or neither `chat`+`up_to` nor `all` given | client bug |
 | 400 | `invalid_idempotency_key` | `POST /api/notify/reply` | missing, malformed, or body and header disagree | client bug |
 | 409 | `idempotency_conflict` | `POST /api/notify/reply` | the key was already used with a different agent/chat/text in the last 24 h | client bug; generate a new key per reply |

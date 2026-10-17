@@ -58,11 +58,11 @@ v1 and v2 are separate cursors: never send a v1 id to v2 or the reverse (a forei
 - Resume with `Last-Event-ID: <store>:<seq>` (what EventSource sends) or `?since=<store>:<seq>` (alias `after`, as in v1; the query wins over the header). The hub replays every retained event with a larger `seq`, in order, then goes live.
 - No cursor: the stream starts at "now" (nothing replayed). Take a snapshot first (`GET /api/chats` returns `cursor`) and connect with `since=<that cursor>`: then nothing that happened between the snapshot and the connect is lost.
 - Retention: the newest **5000** events per account (`FOXFLEET_LIVE_RETAIN_EVENTS`, 100–100000), at most **7 days** (`FOXFLEET_LIVE_RETAIN_DAYS`, 1–90), and at most 32 MiB of event data (UTF-8 bytes). Events are persisted (one file per account, mode 0600, like the notification log). Age is checked when a cursor is used, so a cursor older than 7 days is `expired` even if nothing happened since.
-- After an unclean hub stop (crash, power loss, `kill -9`) the last few milliseconds of events may not be on disk, so every cursor from before the stop is answered with an `expired` gap (a clean stop or restart keeps them).
+- After an unclean hub stop (crash, power loss, `kill -9`) the last few milliseconds of events may not be on disk, so every cursor from before the stop is answered with an `expired` gap (a clean stop or restart keeps them: SIGTERM or SIGINT ends open streams and the hub exits within about 5 s, inside Docker's 10 s grace).
 
 ### Gap
 
-`event: foxfleet.gap` · `data: {"reason": "expired" | "reset" | "invalid", "cursor": "<store>:<seq>"}`, sent before `foxfleet.ready`.
+`event: foxfleet.gap` · `data: {"reason": "expired" | "reset" | "invalid", "cursor": "<store>:<seq>"}`, always before `foxfleet.ready`. Usually it is the first frame, but it can also follow some replayed events: when retention drops events while a slow client is still reading the replay, the hub sends `expired` at that point instead of skipping them. Events before the gap are valid; resync anyway.
 
 | reason | when |
 |---|---|
@@ -72,7 +72,7 @@ v1 and v2 are separate cursors: never send a v1 id to v2 or the reverse (a forei
 
 A v1 `<epoch>:<n>` id has the same shape as a v2 cursor from another store, so it is answered as `reset`.
 
-After a gap the stream continues live from `cursor`. The client must resync: `GET /api/chats`, then for each cached chat `GET …/messages?after_n=<last n>` (or drop the cache for that chat). Store `cursor` as the new resume point.
+After a gap the stream continues from `cursor`: events after it follow, then `foxfleet.ready`. The client must resync: `GET /api/chats`, then for each cached chat `GET …/messages?after_n=<last n>` (or drop the cache for that chat). Store `cursor` as the new resume point.
 
 ## Frames
 
