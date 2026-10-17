@@ -2,7 +2,7 @@
 
 > **Template, not legal advice.** This text is a starting point for a self-hosted open-source project. The project owner should have qualified counsel review it before wide distribution, especially if you serve users in the EU/UK (GDPR), California (CCPA) or other regulated places. Items in [square brackets] must be filled in; see `LEGAL-CHECKLIST.md`.
 
-**Version:** 1.0 · **Effective date:** [EFFECTIVE DATE]
+**Version:** 1.1 · **Effective date:** [EFFECTIVE DATE]
 
 ## In one paragraph
 
@@ -65,6 +65,8 @@ Data moves only between your device, the hub and the providers you choose; where
 ## 10. Changes
 
 We update this policy by changing this file and the version number. The apps ask for acceptance of the new version where they require it. Older versions are in the repository history.
+
+**Changes in 1.1 (Foxfleet 0.4.0-alpha):** section 3 now says that a hub keeps, per account, the full text of recent messages for up to 7 days in its live event log (`live-events.jsonl`, also limited to 5000 events or 32 MiB), and short previews of recent messages with their read and delivery state in the chat list (`chats.json`), so your apps stay in sync. Nothing else changed.
 
 ## 11. Contact
 

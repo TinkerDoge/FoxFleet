@@ -17,6 +17,7 @@ Phase 1 of the chat-list work (contract at 48eb160: docs/LIVE-EVENTS.md, docs/AP
 - Hub (from QA): idempotency keys of notification replies are really kept 24 h (the cap is a full day at the rate limit, was 500 keys). A reply that is refused (bot agent 409, unknown chat 404, agent error) no longer uses a rate-limit slot.
 - Hub: v1 live stream (`/api/live/stream` without `v`) unchanged byte for byte; its 429 body gains `code: too_many_streams`.
 - Contract: the eight 0.4.0 routes are `x-foxfleet-status: implemented`; `ChatRow.last_message.hub_id` may be null (preview from the agent's own session list before the hub numbered a message). New site env vars documented.
+- Privacy policy 1.1 (PRIVACY.md): the hub keeps the text of recent messages up to 7 days in `live-events.jsonl` and chat previews with read state in `chats.json`. The terms version users accept (`TERMS_VERSION` 1.0) is unchanged.
 - Version 0.4.0-alpha (hub, web, site, contract). Android: versionName 0.4.0-alpha, versionCode 28 on feat/tg-phase1-android (658afb2); the hub branch alone leaves `android/` at versionCode 27 until the branches merge.
 
 ## 0.3.14-alpha (not tagged; Android versionCode 27)
