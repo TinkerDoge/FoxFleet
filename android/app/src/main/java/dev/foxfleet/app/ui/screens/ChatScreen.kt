@@ -1,5 +1,7 @@
 package dev.foxfleet.app.ui.screens
 
+import dev.foxfleet.app.data.MessageKeys
+import dev.foxfleet.app.data.MessageKinds
 import dev.foxfleet.app.ui.FoxIcons
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.animateContentSize
@@ -409,9 +411,12 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             val r = follow.scroll(off + i * 150f); if (r.pinned != ui.pinned || r.far != ui.far || r.unread != ui.unread) ui = r
         }
     }
-    LaunchedEffect(state.messages.size, state.streaming, state.loading, state.keyBase, state.streamText.length > 0) {
+    // Rows from the device cache count as shown: the first draw pins to the newest one, and the hub's page that follows is
+    // an ordinary update (it never yanks a reader who already scrolled up; new rows feed the "new messages" pill).
+    val settled = !state.loading || state.fromCache
+    LaunchedEffect(state.messages.size, state.streaming, settled, state.keyBase, state.streamText.length > 0) {
         val prepending = state.keyBase < lastKeyBase; lastKeyBase = state.keyBase
-        val r = follow.content(state.messages.size, state.streaming, state.messages.lastOrNull()?.role, prepending, state.loading)
+        val r = follow.content(state.messages.size, state.streaming, state.messages.lastOrNull()?.role, prepending, !settled)
         ui = r
         if (r.scroll) list.scrollToItem(0)
     }
@@ -433,17 +438,18 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
     // Hidden messages and reaction-only replies draw no row; parsed once per change, not on every recomposition or reaction sync.
     val hiddenIds = state.reactions?.hidden.orEmpty()
     val visible = remember(state.messages, hiddenIds) { MessageActions.visible(state.messages, hiddenIds) }
-    androidx.compose.runtime.LaunchedEffect(state.loading, state.messages.isNotEmpty()) { if (!state.loading && baseline == null) { kotlinx.coroutines.delay(700); baseline = state.keyBase + state.messages.size } }
+    val msgKeys = remember(state.messages) { MessageKeys.keys(state.messages) }
+    androidx.compose.runtime.LaunchedEffect(state.loading, state.fromCache, state.messages.isNotEmpty()) { if ((!state.loading || state.fromCache) && baseline == null) { kotlinx.coroutines.delay(700); baseline = state.keyBase + state.messages.size } }
     Box(modifier.fillMaxWidth()) {
     LazyColumn(
         state = list, reverseLayout = true, modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp, Alignment.Bottom),
     ) {
-        itemsIndexed(state.notices.reversed(), key = { i, _ -> "notice-$i" }) { _, n ->
+        itemsIndexed(state.notices.reversed(), key = { i, _ -> "notice-$i" }, contentType = { _, _ -> "notice" }) { _, n ->
             Text(n, style = MaterialTheme.typography.bodySmall, color = c.textMuted, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp).wrapContentWidth().bgChip())
         }
-        state.hiddenUndo?.let { id -> item(key = "hide-undo") {
+        state.hiddenUndo?.let { id -> item(key = "hide-undo", contentType = "notice") {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Text("Message hidden", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 Box(Modifier.defaultMinSize(minWidth = 48.dp, minHeight = 48.dp).clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button) { gestures?.onUndoHide?.invoke(id) }.padding(horizontal = 10.dp), contentAlignment = Alignment.Center) {
@@ -451,24 +457,24 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
                 }
             }
         } }
-        state.reactionError?.let { e -> item(key = "react-error") { Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.fillMaxWidth().padding(4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
+        state.reactionError?.let { e -> item(key = "react-error", contentType = "notice") { Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.fillMaxWidth().padding(4.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center) } }
         state.error?.let { e ->
-            item(key = "error") {
+            item(key = "error", contentType = "notice") {
                 Text(e, style = MaterialTheme.typography.bodySmall, color = c.textMuted,
                     modifier = Modifier.animateItem().clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).padding(12.dp))
             }
         }
         // Newest at the bottom: what the hub still holds for this chat sits under the reply that is streaming.
-        if (state.halted && state.queue.any { it.state == "queued" }) item(key = "q-paused") {
+        if (state.halted && state.queue.any { it.state == "queued" }) item(key = "q-paused", contentType = "notice") {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
                 Text("Queue paused", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 Text("Resume queue", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { onResumeQueue() }.padding(10.dp))
             }
         }
         // cards for what the agent is waiting on sit at the very bottom, where the eye is
-        if (onAnswerRequest != null && state.requests.isNotEmpty()) items(state.requests.size, key = { "req-" + state.requests[it].id }) { i -> RequestCard(state.requests[i], agentName, onAnswerRequest) }
+        if (onAnswerRequest != null && state.requests.isNotEmpty()) items(state.requests.size, key = { "req-" + state.requests[it].id }, contentType = { "request" }) { i -> RequestCard(state.requests[i], agentName, onAnswerRequest) }
         val waiting = state.queue.asReversed()
-        items(waiting.size, key = { "q-" + waiting[it].id }) { i ->
+        items(waiting.size, key = { "q-" + waiting[it].id }, contentType = { "queued" }) { i ->
             val q = waiting[i]
             Column(Modifier.fillMaxWidth().padding(start = 48.dp), horizontalAlignment = Alignment.End) {
                 Text(q.text, style = MaterialTheme.typography.bodyLarge, color = c.text,
@@ -482,13 +488,15 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
                 }
             }
         }
-        if (state.streaming) item(key = "stream") {
+        if (state.streaming) item(key = "stream", contentType = "stream") {
             StreamingMessage(agentName, state, Modifier.animateItem(), onOpen)
         }
-        if (state.loading) item(key = "loading") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
-        // keys keep the full-list index so they stay stable when a row is hidden
+        if (state.loading) item(key = "loading", contentType = "status") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
+        // Keys are the message's own identity (hub id, or a content hash), never a list position:
+        // a cache page swapped for the hub's page, an older page added at the far end, or a hidden
+        // row leaves every other row's key alone, so LazyColumn keeps the reader's anchor in place.
         val rev = visible.asReversed()
-        items(rev.size, key = { state.keyBase + rev[it].index }) { i ->
+        items(rev.size, key = { msgKeys.getOrElse(rev[it].index) { "i:${state.keyBase + rev[it].index}" } }, contentType = { MessageKinds.of(rev[it].value) }) { i ->
             // only messages that arrive after the history has been shown animate in (never old ones scrolled back into view)
             val (index, m) = rev[i]; val b = baseline; val isNew = b != null && state.keyBase + index >= b
             val snap = state.reactions; val id = m.id
@@ -498,7 +506,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             if (gestures != null) SwipeToReply({ gestures.onReply(m) }, itemMod) { MessageRow(agentName, m, Modifier, onOpen, state.sessionId.orEmpty(), reactions, gestures) }
             else MessageRow(agentName, m, itemMod, onOpen, state.sessionId.orEmpty(), reactions)
         }
-        if (state.loadingOlder) item(key = "older") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
+        if (state.loadingOlder) item(key = "older", contentType = "status") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
     }
     val kind = if (ui.pinned) "none" else if (ui.unread > 0) "pill" else if (ui.far) "arrow" else "none"
     AnimatedVisibility(kind != "none", modifier = Modifier.align(Alignment.BottomEnd).padding(end = 16.dp, bottom = 12.dp),
