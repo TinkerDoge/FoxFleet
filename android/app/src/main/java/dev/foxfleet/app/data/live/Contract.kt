@@ -9,6 +9,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 
 /*
@@ -88,7 +89,7 @@ object Contract {
 
     private fun JsonObject.p(k: String) = this[k] as? JsonPrimitive
     private fun JsonObject.s(k: String) = p(k)?.takeIf { it.isString }?.contentOrNull
-    private fun JsonObject.l(k: String) = p(k)?.takeIf { it !is JsonNull && !it.isString }?.longOrNull
+    private fun JsonObject.l(k: String) = p(k)?.takeIf { it !is JsonNull && !it.isString }?.let { it.longOrNull ?: it.doubleOrNull?.takeIf { d -> d.isFinite() }?.toLong() }
     private fun JsonObject.b(k: String) = p(k)?.takeIf { !it.isString }?.booleanOrNull
     private fun JsonObject.o(k: String) = this[k] as? JsonObject
     private fun JsonObject.strings(k: String) = (this[k] as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }.orEmpty()

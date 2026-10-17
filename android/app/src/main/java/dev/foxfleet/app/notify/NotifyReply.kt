@@ -11,7 +11,7 @@ import kotlinx.serialization.json.booleanOrNull
 sealed interface ReplyOutcome {
     data class Sent(val duplicate: Boolean) : ReplyOutcome
     /** [keepKey]: the key stays stored, so the user's next try with the same text is recognised by the hub if this one did arrive. */
-    data class Failed(val message: String, val keepKey: Boolean) : ReplyOutcome
+    data class Failed(val message: String, val keepKey: Boolean, val directReplyUnavailable: Boolean = false) : ReplyOutcome
 }
 
 /** The two routes the actions use (NotifyApi in the app; a fake in tests). Errors are [NotifyHttpException] with the hub's `code`. */
@@ -62,7 +62,9 @@ class ReplySender(private val http: ReplyHttp, private val keys: ReplyKeys, priv
                         keys.done(scope, body); return ReplyOutcome.Failed("This notification expired. Open FoxFleet to reply.", keepKey = false)
                     }
                     e.status == 401 -> return ReplyOutcome.Failed("Open FoxFleet to sign in again, then reply.", keepKey = true)
-                    e.status == 409 -> { keys.done(scope, body); return ReplyOutcome.Failed("Not sent: it clashed with an earlier reply. Open the chat.", keepKey = false) }
+                    // 409 with idempotency_conflict: this key was used for other text. 409 without a code: a bot agent (no hub history), direct reply is not available.
+                    e.status == 409 && e.code == "idempotency_conflict" -> { keys.done(scope, body); return ReplyOutcome.Failed("Not sent: it clashed with an earlier reply. Open the chat.", keepKey = false) }
+                    e.status == 409 -> { keys.done(scope, body); return ReplyOutcome.Failed("Direct reply isn't available for this agent. Open the chat to reply.", keepKey = false, directReplyUnavailable = true) }
                     e.status == 413 -> { keys.done(scope, body); return ReplyOutcome.Failed("Too long for a notification reply. Open the chat to send it.", keepKey = false) }
                     e.status == 404 -> { keys.done(scope, body); return ReplyOutcome.Failed("Your hub can't take replies from notifications. Open the chat.", keepKey = false) }
                     e.network || e.status >= 500 || e.status == 429 || e.status == 408 -> {
@@ -94,4 +96,12 @@ class ReplySender(private val http: ReplyHttp, private val keys: ReplyKeys, priv
         const val BASE_WAIT_MS = 600L
         const val MAX_WAIT_MS = 3_000L
     }
+}
+
+/** Agents whose hub answered a direct reply with 409 without a code (bot agents): their notifications offer Open again, not Reply. */
+class NoReplyAgents(private val prefs: SharedPreferences) {
+    private fun k(hub: String, agent: String) = "$hub\u001f$agent"
+    fun mark(hub: String, agent: String) = prefs.edit().putBoolean(k(hub, agent), true).apply()
+    fun has(hub: String, agent: String) = prefs.getBoolean(k(hub, agent), false)
+    companion object { const val PREFS = "foxfleet_no_reply" }
 }

@@ -75,7 +75,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
             .setWhen(n.at).setShowWhen(true).setGroup(GROUP).setPublicVersion(public).setContentIntent(open(target, code))
             .setPriority(if (channel == NotifyChannel.Approvals) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
         if (n.type == NotifyType.Approval) b.setCategory(NotificationCompat.CATEGORY_MESSAGE).setOnlyAlertOnce(false)
-        val grant = n.reply?.takeIf { it.validAt(System.currentTimeMillis()) }
+        val grant = n.reply?.takeIf { it.validAt(System.currentTimeMillis()) && !NoReplyAgents(context.getSharedPreferences(NoReplyAgents.PREFS, Context.MODE_PRIVATE)).has(n.hubId, n.agent) }
         if (grant != null && n.type != NotifyType.Error) {
             // Direct reply (messenger pattern): RemoteInput needs a mutable PendingIntent so Android can add the typed text.
             val extras = Intent(context, NotifyActionReceiver::class.java).putExtra("agent", n.agent).putExtra("chat", n.chat).putExtra("hub", n.hubId)

@@ -69,4 +69,22 @@ class ReplySenderTest {
         assertTrue(ReplySender(http, keys).read("nova", "c", "tok"))
         assertEquals(listOf("tok", null), http.calls.map { it.second })
     }
+
+    @Test fun botAgent409WithoutCodeMeansNoDirectReplyAndIsNotRetried() = runBlocking {
+        val http = Http(ArrayDeque(listOf(fail(409))))
+        val out = ReplySender(http, keys, sleep = {}).send("h", "bot1", "c", "hello", "tok") as ReplyOutcome.Failed
+        assertTrue(out.directReplyUnavailable); assertEquals(1, http.calls.size)
+        val again = Http(ArrayDeque(listOf(ok())))
+        ReplySender(again, keys, sleep = {}).send("h", "bot1", "c", "hello", "tok")
+        assertTrue("the key was dropped: a later send is new", again.calls.single().first != http.calls.single().first)
+        val conflict = ReplySender(Http(ArrayDeque(listOf(fail(409, "idempotency_conflict")))), keys, sleep = {}).send("h", "a", "c", "y", null) as ReplyOutcome.Failed
+        assertTrue(!conflict.directReplyUnavailable)
+    }
+
+    @Test fun a403NeverSignsOutAndRetryReusesTheKey() = runBlocking {
+        val http = Http(ArrayDeque(listOf(fail(0, network = true), fail(403, "reply_token_invalid"), ok())))
+        assertEquals(ReplyOutcome.Sent(false), ReplySender(http, keys, sleep = {}).send("h", "nova", "c", "ok", "tok"))
+        assertEquals(1, http.calls.map { it.first }.toSet().size)
+        assertEquals(listOf("tok", "tok", null), http.calls.map { it.second })
+    }
 }

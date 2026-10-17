@@ -116,4 +116,47 @@ class LiveV2RunnerTest {
         assertEquals(LiveCursor("a:b", 7), LiveCursor.parse("a:b:7"))
         assertEquals(null, LiveCursor.parse("7")); assertEquals(null, LiveCursor.parse("s:x")); assertEquals(null, LiveCursor.parse(null))
     }
+
+    // ---- contract update 70a0140 ----
+
+    @Test fun v1CursorGetsResetGapAndTheNewStoreCursorIsUsedNextTime() = runBlocking {
+        val store = Store("1790000000:42"); val sink = Sink(); val seen = ArrayList<String?>()
+        LiveV2Runner(transport(stream(gap("reset", "st9:7") + ready("st9:7")), stream(ready("st9:7")), seen = seen), store, sink, sleep = {}).run()
+        assertEquals("1790000000:42", seen[0])
+        assertEquals("st9:7", seen[1])
+        assertEquals(listOf("st9:7"), store.saved)
+        assertEquals(1, sink.log.count { it == "resync:reset" })
+        assertTrue(sink.log.indexOf("resync:reset") < sink.log.indexOf("link:Live"))
+    }
+
+    @Test fun readyCursorIsStoredAsTheResumePoint() = runBlocking {
+        val store = Store("s1:5")
+        LiveV2Runner(transport(stream(ready("s1:9"))), store, Sink(), sleep = {}).run()
+        assertEquals("s1:9", store.c)
+    }
+
+    @Test fun gapAfterReadyResyncsAtOnce() = runBlocking {
+        val store = Store("s1:5"); val sink = Sink()
+        LiveV2Runner(transport(stream(ready("s1:5") + ev(6) + gap("expired", "s1:500") + ev(501))), store, sink, sleep = {}).run()
+        val g = sink.log.indexOf("resync:expired")
+        assertTrue(sink.log.toString(), g > sink.log.indexOf("event:6") && g < sink.log.indexOf("event:501"))
+        assertEquals("s1:501", store.c)
+    }
+
+    @Test fun http410TakesTheBodyCursorAndResyncsWithAfterNOnceLive() = runBlocking {
+        val store = Store("s1:3"); val sink = Sink(); val seen = ArrayList<String?>()
+        val expired = LiveOpen(410, "application/json", StringReader("{\"error\":\"expired\",\"code\":\"cursor_expired\",\"cursor\":\"s1:800\"}"))
+        LiveV2Runner(transport(expired, stream(ready("s1:800") + ev(801)), seen = seen), store, sink, sleep = {}).run()
+        assertEquals(listOf("s1:3", "s1:800"), seen.take(2))
+        assertTrue(sink.log.toString(), sink.log.indexOf("resync:expired") in 0 until sink.log.indexOf("link:Live"))
+        assertEquals("s1:801", store.c)
+    }
+
+    @Test fun http410WithoutCursorStartsAtNowAndStoresTheReadyCursor() = runBlocking {
+        val store = Store("s1:3"); val sink = Sink(); val seen = ArrayList<String?>()
+        LiveV2Runner(transport(LiveOpen(410, "application/json", StringReader("{}")), stream(ready("s1:950")), seen = seen), store, sink, sleep = {}).run()
+        assertEquals(null, seen[1])
+        assertEquals("s1:950", store.c)
+        assertEquals(1, sink.log.count { it.startsWith("resync:") })
+    }
 }

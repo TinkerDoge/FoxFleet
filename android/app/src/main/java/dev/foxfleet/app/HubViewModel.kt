@@ -387,7 +387,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun stopLive() {
-        v2Runner?.close(); v2Runner = null; link = null; typing.clearAll(); typingTick++
+        v2Runner?.close(); v2Runner = null; link = null; typing.clearAll(); typingTick++; runs.clear()
         liveRunner?.close(); liveRunner = null; liveJob?.cancel(); liveJob = null; pollJob?.cancel(); pollJob = null; liveConnected = false
         catchUps.values.forEach { it.cancel() }; catchUps.clear()
     }
@@ -462,6 +462,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun send(agent: String, text: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList(), mode: String? = null) {
         val state = chatFor(agent)
         if (text.isBlank() && images.isEmpty()) return
+        readOnSend(agent) // the hub reads the chat on any send (it pushes `read` too)
         val m = mode ?: agents.firstOrNull { it.name == agent }?.let { sendMode(it) } ?: "interrupt"
         if (state.streaming || state.queue.isNotEmpty()) { // busy: the hub takes it (queue / steer / interrupt) and the reply keeps streaming
             viewModelScope.launch {
@@ -771,6 +772,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         typingJob = viewModelScope.launch { delay(next + 50); bumpTyping() }
     }
 
+    private val runs = dev.foxfleet.app.data.live.RunTracker()
+
     private fun startLiveV2() {
         val c = cache ?: return; val gen = authGeneration
         val reducer = dev.foxfleet.app.data.live.LiveReducer(c)
@@ -784,7 +787,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) effects.forEach { onEffect(it) } }
             }
             override fun onTyping(t: dev.foxfleet.app.data.live.Typing) { viewModelScope.launch { if (gen == authGeneration && typing.on(t)) bumpTyping() } }
-            override suspend fun onResync(reason: String) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) resync(reason) }
+            override suspend fun onResync(reason: String) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) resyncNow(reason) }
         }
         val cursors = object : dev.foxfleet.app.data.live.CursorStore {
             override suspend fun load() = withContext(kotlinx.coroutines.Dispatchers.IO) { c.sync()?.cursor }
@@ -824,7 +827,14 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 if (f.state.agentUnread == 0) dev.foxfleet.app.notify.NotifyController.onChatOpened(getApplication(), f.agent, null)
                 if (f.state.agentUnread == 0) chats.peek(f.agent)?.markRead()
             }
-            is dev.foxfleet.app.data.live.LiveEffect.Notice -> onLiveEvent(dev.foxfleet.app.data.LiveEvent("", f.type, f.agent, f.chat, f.runId, f.state))
+            is dev.foxfleet.app.data.live.LiveEffect.Notice -> {
+                // Keyed on run_id: a repeat (replay) or a start after its finish is not followed twice.
+                when (f.type) {
+                    "run_started" -> if (f.runId != null && !runs.started(f.runId, f.agent, f.chat)) return
+                    "run_finished" -> runs.finished(f.runId, f.agent, f.chat)?.chat?.let { c -> if (typing.clear(f.agent, c)) bumpTyping() }
+                }
+                onLiveEvent(dev.foxfleet.app.data.LiveEvent("", f.type, f.agent, f.chat, f.runId, f.state))
+            }
             is dev.foxfleet.app.data.live.LiveEffect.StopTyping -> if (typing.clear(f.agent, f.chat)) bumpTyping()
         }
     }
@@ -853,8 +863,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** After a gap (or the first connect): the list, then every cached chat by `after_n`, then the open chat's newest page. */
-    private fun resync(reason: String) {
-        viewModelScope.launch {
+    private suspend fun resyncNow(@Suppress("UNUSED_PARAMETER") reason: String) {
+        run {
             if (features.chats) loadChats()
             val refs = fromCache { cachedChats() }.orEmpty()
             refs.forEachIndexed { i, r ->
@@ -930,6 +940,16 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         else rowAction(agent, { it.copy(manualUnread = false, unread = 0) }, {
             if (features.readReceipts) { api.markChatRead(agent, null, null); null } else api.markChatUnread(agent, false)
         }, "Couldn't mark as read")
+    }
+
+    /** Sending reads the chat on the hub (it pushes `read`): clear the row's badge now instead of waiting for the event. */
+    private fun readOnSend(agent: String) {
+        if (!features.chats) return
+        val before = chatRows[agent] ?: return
+        val after = dev.foxfleet.app.ui.ChatRows.afterSend(before); if (after == before) return
+        chatRows = chatRows + (agent to after); archivedRows = chatRows.values.filter { it.archived }
+        totalUnread = dev.foxfleet.app.ui.ChatRows.badgeTotal(chatRows.values.filter { !it.archived }, System.currentTimeMillis())
+        viewModelScope.launch { cached { saveChatRow(after) }; publishBadge() }
     }
 
     /** Read receipts: the open chat is read up to its newest numbered message (monotonic; one request per new position). */

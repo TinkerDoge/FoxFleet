@@ -39,7 +39,10 @@ class NotifyActionReceiver : BroadcastReceiver() {
                         val sender = ReplySender(NotifyApiReplyHttp(api), ReplyKeys(app.getSharedPreferences("foxfleet_reply_keys", Context.MODE_PRIVATE)))
                         when (val out = sender.send(hub, agent, chat, text, token)) {
                             is ReplyOutcome.Sent -> notifier.replied(hub, agent, chat, text.trim(), ok = true, note = null)
-                            is ReplyOutcome.Failed -> notifier.replied(hub, agent, chat, text, ok = false, note = out.message)
+                            is ReplyOutcome.Failed -> {
+                                if (out.directReplyUnavailable) NoReplyAgents(app.getSharedPreferences(NoReplyAgents.PREFS, Context.MODE_PRIVATE)).mark(hub, agent)
+                                notifier.replied(hub, agent, chat, text, ok = false, note = out.message)
+                            }
                         }
                     } finally { pending.finish() }
                 }

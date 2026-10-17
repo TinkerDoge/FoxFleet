@@ -102,6 +102,8 @@ class LiveV2Runner(
     @Volatile private var current: LiveOpen? = null
     @Volatile private var connecting: LiveCancel? = null
     @Volatile var cursor: String? = null; private set
+    /** A resync owed from an earlier connection (a 410 `cursor_expired`): done at the next `ready`. */
+    private var owedResync: String? = null
 
     fun nudge() { nudged = true; wake.trySend(Unit) }
     fun close() { connecting?.cancel(); current?.close() }
@@ -125,6 +127,8 @@ class LiveV2Runner(
                         o.status == 401 -> return V2End.SignedOut
                         o.status == 404 || o.status == 400 -> return V2End.Unsupported
                         o.status == 429 -> { minWait = 10_000L; failures++ }
+                        // 410 cursor_expired: restart from the body's cursor (or from now) and resync with after_n once live.
+                        o.status == 410 -> expired(o.body)
                         o.status != 200 || o.body == null || o.contentType?.contains("text/event-stream") != true -> failures++
                         else -> {
                             sink.onLink(LinkState.Updating)
@@ -146,7 +150,7 @@ class LiveV2Runner(
     private suspend fun read(reader: Reader, onLive: () -> Unit): Boolean {
         val pending = ArrayList<V2Frame>()
         val parser = SseParser({ e -> V2Frames.decode(e.event, e.data, e.id)?.let { pending.add(it) }; true })
-        var gap: String? = null; val firstEver = cursor == null
+        var gap: String? = null; val firstEver = cursor == null; var live = false
         val buf = CharArray(4096)
         while (true) {
             currentCoroutineContext().ensureActive()
@@ -155,14 +159,19 @@ class LiveV2Runner(
             val batch = pending.toList(); pending.clear()
             for (f in batch) when (f) {
                 V2Frame.Auth -> return true
-                is V2Frame.Gap -> { gap = f.reason; f.cursor?.takeIf { LiveCursor.parse(it) != null }?.let { setCursor(it) } }
+                is V2Frame.Gap -> {
+                    f.cursor?.takeIf { LiveCursor.parse(it) != null }?.let { setCursor(it) }
+                    // Before ready: resync at ready. After ready (the hub skipped us forward mid-stream): resync now.
+                    if (live) { sink.onLink(LinkState.Updating); sink.onResync(f.reason); sink.onLink(LinkState.Live) } else gap = f.reason
+                }
                 is V2Frame.TypingFrame -> sink.onTyping(f.typing)
                 is V2Frame.Event -> apply(f)
                 is V2Frame.Ready -> {
-                    if (cursor == null) f.cursor?.takeIf { LiveCursor.parse(it) != null }?.let { setCursor(it) }
-                    val why = gap ?: if (firstEver) "start" else null
+                    // The ready cursor is where the stream stands after the replay: store it as the resume point.
+                    f.cursor?.takeIf { LiveCursor.parse(it) != null && it != cursor }?.let { setCursor(it) }
+                    val why = gap ?: owedResync ?: if (firstEver) "start" else null
                     if (why != null) { sink.onLink(LinkState.Updating); sink.onResync(why) }
-                    gap = null; onLive(); sink.onLink(LinkState.Live)
+                    gap = null; owedResync = null; live = true; onLive(); sink.onLink(LinkState.Live)
                 }
             }
             if (n < 0) return false
@@ -177,6 +186,13 @@ class LiveV2Runner(
     }
 
     private suspend fun setCursor(c: String) { cursor = c; cursors.save(c) }
+
+    private suspend fun expired(body: Reader?) {
+        val text = runCatching { body?.let { b -> val buf = CharArray(8192); val n = b.read(buf); if (n > 0) String(buf, 0, n) else null } }.getOrNull()
+        val next = text?.let { Contract.obj(it) }?.let { (it["cursor"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { p -> p.isString }?.content }?.takeIf { LiveCursor.parse(it) != null }
+        if (next != null) setCursor(next) else cursor = null // no cursor: start at now; ready stores the new one
+        owedResync = "expired"
+    }
 
     companion object {
         /** Consecutive failed attempts before the indicator says Offline instead of Connecting. */

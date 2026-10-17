@@ -51,4 +51,12 @@ class ReplyNotificationTest {
         assertEquals(4, posted().number)
         assertEquals(7, nm.activeNotifications.first { it.tag == AndroidNotifier.SUMMARY_TAG }.notification.number)
     }
+
+    @Test fun afterABot409TheAgentsNotificationsOfferOpenAgain() {
+        NotifyChannels.create(ctx)
+        NoReplyAgents(ctx.getSharedPreferences(NoReplyAgents.PREFS, Context.MODE_PRIVATE)).mark("hub1", "nova")
+        AndroidNotifier(ctx).post(notice(ReplyGrant("secret", System.currentTimeMillis() + 3_600_000)))
+        assertEquals(listOf("Open", "Mute 1 h"), posted().actions.map { it.title.toString() })
+        ctx.getSharedPreferences(NoReplyAgents.PREFS, Context.MODE_PRIVATE).edit().clear().commit()
+    }
 }

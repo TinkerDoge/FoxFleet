@@ -86,3 +86,33 @@ class TypingTracker(private val clock: () -> Long = { System.currentTimeMillis()
         }
     }
 }
+
+/**
+ * Runs keyed on `run_id`, not on the message order: `run.started` can arrive before the `message.new` of the user message that
+ * started it (a new chat learns its session id at launch), and a replay after a reconnect repeats both. A run is followed once;
+ * a `run.started` replayed after its `run.finished` is ignored.
+ */
+class RunTracker(private val cap: Int = 128) {
+    data class Run(val agent: String, val chat: String?)
+    private val live = LinkedHashMap<String, Run>()
+    private val done = LinkedHashSet<String>()
+    /** True the first time this run is seen (start following it). */
+    fun started(runId: String, agent: String, chat: String?): Boolean {
+        if (runId in done) return false
+        val old = live[runId]
+        if (old != null) { if (old.chat == null && chat != null) live[runId] = old.copy(chat = chat); return false }
+        live[runId] = Run(agent, chat); trim(); return true
+    }
+    /** The finished run (with the chat it started in when [chat] is null), or null if it was never started here. */
+    fun finished(runId: String?, agent: String, chat: String?): Run? {
+        if (runId == null) return null
+        done += runId; trim()
+        return live.remove(runId)?.let { if (it.chat == null) it.copy(chat = chat) else it }
+    }
+    fun running(agent: String): Boolean = live.values.any { it.agent == agent }
+    fun clear() { live.clear(); done.clear() }
+    private fun trim() {
+        while (live.size > cap) live.remove(live.keys.first())
+        while (done.size > cap) done.remove(done.first())
+    }
+}

@@ -32,4 +32,6 @@ object ChatRows {
         LinkState.Updating -> "Updating…"
         LinkState.Offline -> "Offline"
     }
+    /** The row after you sent a message in it: the hub reads the chat up to your message, so no badge and no manual unread. */
+    fun afterSend(r: HubChat): HubChat = if (r.unread == 0 && !r.manualUnread) r else r.copy(unread = 0, manualUnread = false)
 }
