@@ -8,10 +8,11 @@ export const CONNECTOR = path.join(import.meta.dirname, '..', '..', 'connector',
 
 // Layout copied from hermes-agent: root = default profile, <root>/profiles/<id> named ones, a marker file makes it a profile,
 // <root>/profiles/.deleted/<id> is a tombstone. Secrets live in each profile's own .env, exactly where Hermes keeps them.
-export async function fakeHermesHome(t, mock, { profiles = ['coder', 'research'], extra = {} } = {}) {
-  const root = await mkdtemp(path.join(os.tmpdir(), 'ff-hermes-')), env = (ports = mock.connection) => `API_SERVER_PORT=${ports.apiServerPort}\nAPI_SERVER_KEY=api-secret\nHERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=dashboard-secret\n`;
-  await writeFile(path.join(root, '.env'), env()); await writeFile(path.join(root, 'config.yaml'), 'model: x\n');
-  for (const n of profiles) { await mkdir(path.join(root, 'profiles', n), { recursive: true }); await writeFile(path.join(root, 'profiles', n, '.env'), extra[n] ?? env()); }
+// `keys` gives a profile its own API_SERVER_KEY (fake), as Hermes requires for a named /p/<profile> prefix since July 2026.
+export async function fakeHermesHome(t, mock, { profiles = ['coder', 'research'], extra = {}, keys = {} } = {}) {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'ff-hermes-')), env = (ports = mock.connection, key = 'api-secret') => `API_SERVER_PORT=${ports.apiServerPort}\nAPI_SERVER_KEY=${key}\nHERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin\nHERMES_DASHBOARD_BASIC_AUTH_PASSWORD=dashboard-secret\n`;
+  await writeFile(path.join(root, '.env'), env(mock.connection, keys.default)); await writeFile(path.join(root, 'config.yaml'), 'model: x\n');
+  for (const n of profiles) { await mkdir(path.join(root, 'profiles', n), { recursive: true }); await writeFile(path.join(root, 'profiles', n, '.env'), extra[n] ?? env(mock.connection, keys[n])); }
   await mkdir(path.join(root, 'profiles', 'ghost'), { recursive: true });                       // no marker: not a profile
   await mkdir(path.join(root, 'profiles', 'Bad_Name'), { recursive: true }); await writeFile(path.join(root, 'profiles', 'Bad_Name', '.env'), 'x=1\n'); // invalid id
   await mkdir(path.join(root, 'profiles', 'old'), { recursive: true }); await writeFile(path.join(root, 'profiles', 'old', '.env'), 'x=1\n');

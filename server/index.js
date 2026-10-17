@@ -85,6 +85,10 @@ async function readJson(req, limit = BODY_LIMIT) {
 }
 const pageInt = (v, lo, hi, d) => { const n = Number(v ?? d); return Number.isInteger(n) ? Math.min(Math.max(n, lo), hi) : d; };
 const validSessionId = (s) => /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(String(s ?? ''));
+/** A new chat's id, minted by the hub in Hermes's own shape (YYYYMMDD_HHMMSS_hex, UTC) so it reads like the agent's other sessions. */
+const newChatId = (d = new Date()) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getUTCFullYear()}${p(d.getUTCMonth() + 1)}${p(d.getUTCDate())}_${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}_${randomBytes(4).toString('hex')}`; };
+/** The chat a run belongs to: Hermes's answer when it names a usable one, else the id the hub sent. */
+const chatIdOf = (r, sent) => { const up = r.headers.get('x-hermes-session-id'); return validSessionId(up) ? up : sent; };
 function sessionId(value) { if (typeof value !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/.test(value)) throw fault(400, 'Invalid session ID'); return value; }
 async function serveStatic(url, res, avatarBase = DEFAULT_AVATAR_DIR) {
   let name; try { name = decodeURIComponent(url.pathname); } catch { throw fault(400, 'Invalid path'); }
@@ -474,17 +478,23 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     const inner = async (item, { rebuild }) => {
       reg.activity.touch(m.name, { role: 'user', text: item.text, session: item.session || undefined });
       const link = {}, mo = item.session ? reg.ledger.modelOf(m.name, item.session) : null; // per-chat model override (models: 'request')
+      // A new chat gets its id from the hub, sent to Hermes (session_id on /v1/runs, X-Hermes-Session-Id on chat completions), so the
+      // client, the live events and the ledger all know the chat before the first byte. Hermes's own id still wins when it answers with one.
+      // Before, a new chat only had an id when Hermes echoed one back: POST /v1/runs answers { run_id, status } and header-less chat
+      // completions may echo nothing, so run.started/run.finished carried no chat, message.new was never written and the reply only
+      // showed up when the chat was reopened from history.
+      const sid = item.session || newChatId();
       if (native?.runs) {
         const content = item.message.content, input = typeof content === 'string' ? content : [{ role: 'user', content }];
         const ctrl = nativeControl({ api: reg.upstream.api, m, link }); link.steer = ctrl.steer; link.stop = ctrl.stop;
         return runs.start({ scope, agent: m.name, session: item.session || undefined, link, timeoutMs, onFinish: undefined,
-          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: item.session || undefined, idempotencyKey: item.id, link, signal, model: mo?.model, provider: mo?.provider }),
-          check: (r) => ({ ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }) });
+          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: sid, idempotencyKey: item.id, link, signal, model: mo?.model, provider: mo?.provider }),
+          check: (r) => ({ 'X-Hermes-Session-Id': chatIdOf(r, sid) }) });
       }
       const messages = rebuild || !item.body ? [item.message] : item.body.messages; // older Hermes keeps its own transcript by session id
       return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,
-        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: mo?.model || item.body?.model || 'hermes-agent', ...(mo?.provider ? { provider: mo.provider } : {}), messages, stream: true }) }),
-        check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }; } });
+        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', 'X-Hermes-Session-Id': sid }, body: JSON.stringify({ model: mo?.model || item.body?.model || 'hermes-agent', ...(mo?.provider ? { provider: mo.provider } : {}), messages, stream: true }) }),
+        check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { 'X-Hermes-Session-Id': chatIdOf(r, sid) }; } });
     };
     return { async launch(item, opts) {
       let run;

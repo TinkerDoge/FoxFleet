@@ -2149,7 +2149,7 @@
     "/api/agents/{name}/chat": {
       "post": {
         "operationId": "chat",
-        "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `foxfleet.tool` ({type: tool.start|tool.progress|tool.end, turn_id, tool_id, name}; per-call lifecycle, from native agents), `[DONE]`. Session id in X-Hermes-Session-Id.",
+        "summary": "OpenAI-style chat, streamed as Server-Sent Events (text/event-stream). Events: data chunks with choices[].delta.content / reasoning_content, `hermes.tool.progress`, `foxfleet.tool` ({type: tool.start|tool.progress|tool.end, turn_id, tool_id, name}; per-call lifecycle, from native agents), `[DONE]`. Session id in X-Hermes-Session-Id, always set: for a new chat on a Hermes agent reached over HTTP the hub names the chat and sends that id to Hermes (Hermes's own id wins when it returns one), so live events and message.new carry the same chat (0.4.1).",
         "tags": [
           "agents"
         ],

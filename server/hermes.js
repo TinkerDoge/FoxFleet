@@ -112,6 +112,8 @@ export function hermesClient(timeoutMs = 5000, { probeTimeoutMs = 2500 } = {}) {
     const apiCheck = async () => {
       try {
         const response = await api(m, '/v1/capabilities', { signal: quick() });
+        // Hermes binds a /p/<profile> prefix to that profile's OWN key (the default key is refused there since July 2026): say so.
+        if (response.status === 401 && m.profile && m.profile !== 'default') { await response.body?.cancel(); return { ok: false, message: `Chat API refused the key for profile ${m.profile}: Hermes needs that profile's own API_SERVER_KEY (in its profiles/${m.profile}/.env) for /p/${m.profile}/` }; }
         if ([404, 405].includes(response.status)) {
           await response.body?.cancel(); const models = await upstreamJson(await api(m, '/v1/models', { signal: quick() }));
           if (models?.object !== 'list' || !Array.isArray(models.data) || !models.data.length || !models.data.every((model) => typeof model?.id === 'string' && model.id.length > 0)) throw new Error();
