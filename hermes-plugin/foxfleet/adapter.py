@@ -761,8 +761,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         source = self.build_source(chat_id=stop.chat_id, chat_name=stop.user_name or stop.chat_id,
                                    chat_type="dm", user_id=stop.user_id, user_name=stop.user_name)
         return MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source,
-                            user_id=stop.user_id, user_name=stop.user_name, reply_expected=False,
-                            metadata={"foxfleet_stop_id": stop.stop_id})
+                            user_id=stop.user_id, user_name=stop.user_name, reply_expected=False)
 
     async def _answer_stop(self, conn: _Conn, stop_id: str, outcome: str) -> None:
         if self._conn is not conn or outcome not in protocol.STOP_OUTCOMES:
@@ -1258,11 +1257,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
         source = self.build_source(chat_id=msg.chat_id, chat_name=msg.user_name or msg.chat_id,
                                    chat_type="dm", user_id=msg.user_id, user_name=msg.user_name,
                                    message_id=msg.message_id)
+        # Hermes 0.22+ native admission only allows WhatsApp metadata keys; any other
+        # key (including a foxfleet event id) refuses the message as invalid_params.
         return MessageEvent(
             text=msg.text, message_type=MessageType.TEXT, source=source, user_id=msg.user_id,
             user_name=msg.user_name, message_id=msg.message_id, reply_to_message_id=msg.reply_to,
             reply_to_is_own_message=bool(msg.reply_to and msg.reply_to in self._recent_sent),
-            metadata={"foxfleet_event_id": msg.event_id}, reply_expected=True)
+            reply_expected=True)
 
     async def _advance(self, conn: _Conn, event_id: int) -> None:
         """Persist the contiguous admitted floor, then ack it on the socket that delivered it."""
