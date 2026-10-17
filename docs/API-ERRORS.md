@@ -1,4 +1,4 @@
-# Hub API: error codes and agent staleness (0.3.13-alpha)
+# Hub API: error codes and agent staleness (0.3.13-alpha; 0.4.0-alpha phase 1 codes below)
 
 This page is for client UI work. The machine-readable source is `contract/openapi.json`, in the `Error` and `Agent` schemas.
 
@@ -51,3 +51,23 @@ Suggested UI: when `stale` is true, show the status dimmed with "checking…" or
 
 - **Web:** the agent list refreshes every 12 s only while the tab is visible, and immediately when it becomes visible again. The Machines page refreshes every 30 s (previously 8 s). Pairing checks every 2 s only while a pairing code is shown.
 - **Android:** the fleet list refreshes every 12 s and the reaction sync every 30 s, only while the app is in the foreground (lifecycle RESUMED).
+
+## Phase 1 (0.4.0-alpha, planned): live v2, chat list, read receipts, notification reply
+
+Contract: `docs/LIVE-EVENTS.md` (v2 section). None of these is ever a 401; only a 401 means the user's own login expired.
+
+| status | `code` | routes | meaning | suggested UI |
+|---|---|---|---|---|
+| 400 | `unsupported_version` | `GET /api/live/stream` | `v` is not `1` or `2` | client bug; fall back to v1 |
+| 400 | `invalid_cursor` | `GET /api/live/events` | `since` cannot be parsed (the stream answers a gap with reason `invalid` instead) | resync from `GET /api/chats` |
+| 410 | `cursor_expired` | `GET /api/live/events` | the cursor is older than retention (5000 events / 7 days) or from another hub store; body has `cursor` to restart from | silent resync, no message |
+| 429 | `too_many_streams` | `GET /api/live/stream` (v1 and v2) | 8 streams per account already open | retry with backoff; no message |
+| 404 | `chat_not_found` | `/api/chats/{agent}…`, `/api/notify/reply`, `/api/notify/read` | unknown agent, or a session this account doesn't have | drop the row / notification |
+| 400 | `invalid_read_position` | `POST /api/chats/{agent}/read`, `POST /api/notify/read` | `up_to` isn't a positive integer, or neither `chat`+`up_to` nor `all` given | client bug |
+| 400 | `invalid_idempotency_key` | `POST /api/notify/reply` | missing, malformed, or body and header disagree | client bug |
+| 409 | `idempotency_conflict` | `POST /api/notify/reply` | the key was already used with a different agent/chat/text in the last 24 h | client bug; generate a new key per reply |
+| 403 | `reply_token_invalid` | `POST /api/notify/reply`, `POST /api/notify/read` | the reply token is bad, expired (24 h), revoked, or for another chat; no device sign-in was sent either | open the chat in the app instead; never sign out |
+| 413 | `text_too_long` | `POST /api/notify/reply` | more than 32 000 characters | "Too long to send from here; open the chat" |
+| 429 | `rate_limited` | `POST /api/notify/reply` | more than 30 replies a minute; `Retry-After` in seconds | keep the notification, retry later |
+
+`POST /api/notify/reply` also passes through the agent codes above (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`) when the hub could not hand the text to the agent. A `202` whose `message.status` is `failed` (with `error`) means the hub stored the text but the agent refused it; show it in the chat as failed, like any other send.
