@@ -6,7 +6,7 @@ import dev.foxfleet.app.data.UiMessage
 
 const val HEART = "❤️"
 
-/** Reactions on one message: [Ready] (quick row, picker, pills, double tap), [Pending] (the hub needs the message's provider id first), [HubTooOld] (the hub has no reactions), [Off] (bots). */
+/** Reactions on one message: [Ready] (quick row, picker, pills, double tap), [Pending] (an older hub needs the message's provider id first), [HubTooOld] (the hub has no reactions), [Off] (bots; on a current hub, a message with no ids yet). */
 enum class ReactState { Ready, Pending, HubTooOld, Off }
 
 /** Who wrote the quoted message and a one-line excerpt of it. */
@@ -88,7 +88,13 @@ object MessageActions {
      * now a message they cannot take a reaction on yet says why.
      */
     fun reactState(caps: dev.foxfleet.app.data.Capabilities, hubIds: Boolean, m: UiMessage): ReactState = when {
-        caps.reactions -> if (canReact(m, hubIds)) ReactState.Ready else ReactState.Pending
+        caps.reactions -> when {
+            canReact(m, hubIds) -> ReactState.Ready
+            // a current hub (hub-id targets): a message without ids yet is one still streaming or just sent; its hub id comes
+            // with message.new. Nothing to say there (as in 0.4.1): no hint, no double-tap toast, no id request.
+            hubIds -> ReactState.Off
+            else -> ReactState.Pending // an older hub: it needs the provider id, which comes once the turn is saved
+        }
         caps.bot -> ReactState.Off // bot agents have no reactions on any hub
         else -> ReactState.HubTooOld
     }

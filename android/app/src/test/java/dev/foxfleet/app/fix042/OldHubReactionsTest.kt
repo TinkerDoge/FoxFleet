@@ -65,6 +65,7 @@ class OldHubReactionsTest {
         assertEquals(ReactState.Ready, MessageActions.reactState(on, hubIds = true, m = live))   // 0.4.1 hub: hub id is enough
         assertEquals(ReactState.Pending, MessageActions.reactState(on, hubIds = false, m = live)) // 0.4.0: needs the provider id
         assertEquals(ReactState.Pending, MessageActions.reactState(on, hubIds = false, m = bare)) // 0.3.x: no ids at all yet
+        assertEquals(ReactState.Off, MessageActions.reactState(on, hubIds = true, m = bare))     // current hub, streaming / just sent: silent (QA blocker)
         assertEquals(ReactState.Ready, MessageActions.reactState(on, hubIds = false, m = saved))
         assertEquals(ReactState.HubTooOld, MessageActions.reactState(old, hubIds = false, m = saved)) // hub before reactions (< 0.3.7)
         assertEquals(ReactState.Off, MessageActions.reactState(bot, hubIds = false, m = saved))
@@ -138,5 +139,29 @@ class OldHubReactionsTest {
         compose.onAllNodesWithText(MessageActions.HUB_HINT).assertCountEquals(0)
         compose.onNodeWithContentDescription("React 👍").performClick(); compose.waitForIdle()
         assertEquals(listOf("h.4 👍"), toggles)
+    }
+
+    // Soran QA blocker (008acf6, probes/QaNewHubIdlessTest.kt): on a current hub (reactionEvents) a message with no ids yet (streaming,
+    // just sent) said "Update your hub for reactions", toasted it on double tap and asked the hub for ids each time. Now: nothing, as in 0.4.1.
+    @Test fun currentHubIdlessMessageShowsNoHintNoToastAndRequestsNothing() {
+        show(listOf(UiMessage("assistant", "Streaming answer")), hubIds = true)
+        val opened = syncs // the screen's usual sync on open
+        longPress("Streaming answer")
+        assertEquals(0, quickRows())
+        compose.onAllNodesWithText(MessageActions.HUB_HINT).assertCountEquals(0)
+        compose.onAllNodesWithText(MessageActions.HUB_HINT_PENDING).assertCountEquals(0)
+        compose.onAllNodesWithText("Copy").assertCountEquals(1) // the menu itself still opens
+        androidx.test.espresso.Espresso.pressBack(); compose.waitForIdle()
+        doubleTap("Streaming answer")
+        assertEquals(emptyList<String>(), toggles)
+        assertNull(ShadowToast.getTextOfLatestToast())
+        assertEquals(opened, syncs) // neither the menu nor the double tap asked the hub for ids
+    }
+    // ...and the same message once its message.new brought the hub id: the quick row, as in 0.4.1.
+    @Test fun currentHubMessageGetsTheQuickRowOnceItsHubIdArrives() {
+        val state = show(listOf(UiMessage("assistant", "Streaming answer")), hubIds = true)
+        state.load(listOf(UiMessage("assistant", "Streaming answer", hubId = "h.9", n = 9)), "s1"); compose.waitForIdle()
+        longPress("Streaming answer"); assertEquals(1, quickRows())
+        compose.onAllNodesWithText(MessageActions.HUB_HINT).assertCountEquals(0)
     }
 }

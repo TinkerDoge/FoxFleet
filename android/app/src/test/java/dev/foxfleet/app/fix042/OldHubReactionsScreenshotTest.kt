@@ -51,8 +51,8 @@ class OldHubReactionsScreenshotTest {
     private val newSnap = ReactionSnapshot(me, mapOf("1" to listOf(ReactionGroup("❤️", listOf(bot))), "2" to listOf(ReactionGroup("🎉", listOf(me, sumin, bot)))), emptySet(),
         mapOf("h.1" to listOf(ReactionGroup("❤️", listOf(bot))), "h.2" to listOf(ReactionGroup("🎉", listOf(me, sumin, bot))), "h.3" to listOf(ReactionGroup("❤️", listOf(bot))), "h.4" to listOf(ReactionGroup("👍", listOf(me, sumin)), ReactionGroup("🔥", listOf(sumin)))))
 
-    private fun shot(name: String, reactions: Boolean, hubIds: Boolean, newHub: Boolean, snap: ReactionSnapshot?, press: String? = null) {
-        val state = ChatState().apply { load(shown(hubIds), "s1"); snap?.let { simulateReactions(it) }; hubIdReactions = newHub }
+    private fun shot(name: String, reactions: Boolean, hubIds: Boolean, newHub: Boolean, snap: ReactionSnapshot?, press: String? = null, extra: List<UiMessage> = emptyList()) {
+        val state = ChatState().apply { load(shown(hubIds) + extra, "s1"); snap?.let { simulateReactions(it) }; hubIdReactions = newHub }
         val a = atlas(reactions)
         compose.mainClock.autoAdvance = true
         compose.setContent { FoxfleetTheme(AppPrefs(theme = ThemeMode.Light)) { Box(Modifier.fillMaxSize()) { ChatScreen(a, listOf(a), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {}) } } }
@@ -76,4 +76,7 @@ class OldHubReactionsScreenshotTest {
     @Test fun newHubQuickPick() = shot("05-newhub-quick-pick-unchanged", reactions = true, hubIds = true, newHub = true, snap = newSnap, press = "links the changelog")
     /** A 0.4.1 hub: chips by hub id on every message, the agent's ❤️ on your message. */
     @Test fun newHubChips() = shot("06-newhub-chips-unchanged", reactions = true, hubIds = true, newHub = true, snap = newSnap)
+    /** A 0.4.1 hub, a message you just sent (no ids until its message.new): the menu without a quick row and without any hint, as in 0.4.1 (QA blocker on 008acf6). */
+    @Test fun newHubJustSentNoHint() = shot("07-newhub-just-sent-no-hint", reactions = true, hubIds = true, newHub = true, snap = newSnap, press = "Ship it tonight",
+        extra = listOf(UiMessage("user", "Ship it tonight?", ts = now - 1_000, status = "sending")))
 }
