@@ -52,7 +52,7 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
-private val OUT = System.getProperty("foxfleet.shots") ?: "/workspace/projects/foxfleet-tg-phase1/screens"
+private val OUT = System.getProperty("foxfleet.shots") ?: "build/outputs/roborazzi"
 
 /** Phase 1 renders: chat list (badges, muted, archived), a chat with ticks/typing/pill, link states, the reply notification. */
 @RunWith(RobolectricTestRunner::class)
