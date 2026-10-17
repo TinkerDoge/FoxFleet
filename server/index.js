@@ -842,7 +842,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const L = ctx.reg.ledger, inTranscript = (id) => messages.some(x => x.id != null && String(x.id) === id);
           try { L.reconcile(m.name, sid, messages); } catch { /* the snapshot is still served */ } // binds upstream ids to hub ids (message.edited for the apps)
           const actor = { id: 'user:' + scopeOf(ctx), name: auth?.user?.username || 'You', kind: 'human' };
-          let changed, change = null, ref = null;
+          let changed, change = null, ref = null, target = null;
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const b = await readJson(req, 2048);
             if (parts[5] === 'hidden') {
@@ -851,7 +851,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             } else {
               if (typeof b.message_id !== 'string' || !b.message_id || b.message_id.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
               // 0.4.1: the agent's own id (as before) or the hub id of a message this chat has (live v2, history)
-              ref = L.resolve(m.name, sid, b.message_id); const known = inTranscript(b.message_id);
+              ref = L.resolve(m.name, sid, b.message_id); target = b.message_id; const known = inTranscript(b.message_id);
               if (!ref && !known) throw fault(404, 'Message not found', 'message_not_found');
               const keys = [...new Set([ref?.u ?? (known ? b.message_id : null), ref?.hub_id].filter(Boolean))];
               changed = await ctx.reg.reactions.set(m.name, sid, keys, b.emoji, actor, req.method === 'PUT');
@@ -860,6 +860,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
           const ids = new Set(messages.map(x => String(x.id))), view = reactionsOf(ctx.reg, m, sid, messages);
           if (change && ref) reactionEvent(ctx.reg, m.name, sid, ref, view.by_hub_id[ref.hub_id] ?? [], change);
+          // PUT/DELETE: the message this call targeted is always in the answer, [] when it has no reactions left ("removed" vs "never had any")
+          if (ref) view.by_hub_id[ref.hub_id] ??= [];
+          if (ref?.u ? ids.has(ref.u) : false) view.messages[ref.u] ??= []; else if (!ref && changed !== undefined && inTranscript(target)) view.messages[target] ??= [];
           return sendJson(res, 200, { actor, messages: view.messages, by_hub_id: view.by_hub_id, hidden: ctx.reg.reactions.hidden(m.name, sid).filter(id => ids.has(id)), ...(changed === undefined ? {} : { changed }) });
         }
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');

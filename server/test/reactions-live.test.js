@@ -78,7 +78,8 @@ test('user reactions by hub_id on a live message: set, repeat, remove; changed; 
   const edited = await s.wait((f) => f.event === 'message.edited' && f.data.message.hub_id === user.hub_id);
   assert.equal(edited.data.message.upstream_id, 'u1'); assert.deepEqual(edited.data.message.reactions, [{ emoji: '❤️', actors: [ME] }], 'message.edited carries the reactions');
   assert.equal((await put(call, 'u1', '❤️')).body.changed, false, 'same message by its other id');
-  const gone = await del(call, 'u1', '❤️'); assert.equal(gone.body.changed, true); assert.equal(gone.body.messages.u1, undefined);
+  const gone = await del(call, 'u1', '❤️'); assert.equal(gone.body.changed, true); assert.deepEqual(gone.body.messages.u1, [], 'emptied in this call: [] (0.4.1 answers)'); assert.deepEqual(gone.body.by_hub_id[user.hub_id], []);
+  const quiet = (await call(R)).body; assert.equal(quiet.messages.u1, undefined, 'a plain GET leaves empty messages out'); assert.equal(quiet.by_hub_id[user.hub_id], undefined);
   const ev4 = await until(() => s.frames.filter((f) => f.event === 'message.reaction')[4]); assert.equal(ev4.data.upstream_id, 'u1'); assert.equal(ev4.data.hub_id, user.hub_id); assert.deepEqual(ev4.data.reactions, []);
 });
 
@@ -149,4 +150,12 @@ test('compat: the v1 stream gets no reaction frames; 0.4.0 message.new keys are 
   await put(x.call, u.data.message.hub_id, '👍'); await v2.wait((f) => f.event === 'message.reaction'); await sleep(100);
   assert.deepEqual(v1.frames.filter((f) => f.id).map((f) => f.data.type), ['run_started', 'run_finished'], 'v1: only its own types');
   assert.ok(!v1.frames.some((f) => f.raw.includes('reaction')));
+});
+
+test('PUT/DELETE answers always list the targeted message: [] when it has none (by hub id, by upstream id, and on a no-op)', async (t) => {
+  const c = await chat(t); const { call, user, answer } = c;
+  const none = await del(call, user.hub_id, '👍'); assert.equal(none.body.changed, false); assert.deepEqual(none.body.by_hub_id, { [user.hub_id]: [] }, 'a no-op DELETE still lists it');
+  await put(call, answer.hub_id, '🎉'); const off = await del(call, answer.hub_id, '🎉'); assert.deepEqual(off.body.by_hub_id[answer.hub_id], []); assert.equal(off.body.by_hub_id[user.hub_id], undefined, 'only the targeted message');
+  c.opts.messages = [{ id: 'u1', role: 'user', content: 'thanks a lot' }, { id: 'a1', role: 'assistant', content: 'Sure.' }];
+  const byUp = await del(call, 'a1', '🎉'); assert.deepEqual(byUp.body.messages.a1, []); assert.deepEqual(byUp.body.by_hub_id[answer.hub_id], []);
 });
