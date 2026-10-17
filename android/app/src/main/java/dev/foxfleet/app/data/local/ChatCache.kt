@@ -212,7 +212,7 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
 
 internal fun UiMessage.toRow(owner: String, agent: String, chatId: String, key: String, ord: Long) = MessageRow(
     owner = owner, agent = agent, chatId = chatId, msgKey = key, hubId = id, ord = ord, ts = ts, role = role, content = content, reasoning = reasoning,
-    steps = if (steps.isEmpty()) "" else JsonArray(steps.map { s -> JsonObject(mapOf("name" to JsonPrimitive(s.name), "args" to JsonPrimitive(s.args), "result" to JsonPrimitive(s.result), "ok" to JsonPrimitive(s.ok))) }).toString(),
+    steps = if (steps.isEmpty()) "" else JsonArray(steps.map { s -> JsonObject(mapOf("name" to JsonPrimitive(s.name), "args" to JsonPrimitive(s.args), "result" to JsonPrimitive(s.result), "ok" to (s.ok?.let { JsonPrimitive(it) } ?: kotlinx.serialization.json.JsonNull))) }).toString(),
     images = if (imageUrls.isEmpty()) "" else JsonArray(imageUrls.map { JsonPrimitive(it) }).toString(),
     kind = MessageKinds.of(this),
     liveId = hubId, n = n, status = status?.takeIf { role == "user" },
@@ -222,7 +222,7 @@ internal fun MessageRow.toUi(): UiMessage {
     val st = if (steps.isEmpty()) emptyList() else runCatching {
         Json.parseToJsonElement(steps).jsonArray.map { e ->
             val o = e.jsonObject
-            ToolStep(o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["args"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["result"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["ok"]?.jsonPrimitive?.booleanOrNull != false)
+            ToolStep(o["name"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["args"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["result"]?.jsonPrimitive?.contentOrNull.orEmpty(), o["ok"]?.let { v -> runCatching { v.jsonPrimitive.booleanOrNull }.getOrNull() })
         }
     }.getOrDefault(emptyList())
     val urls = if (images.isEmpty()) emptyList() else runCatching { Json.parseToJsonElement(images).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull } }.getOrDefault(emptyList())

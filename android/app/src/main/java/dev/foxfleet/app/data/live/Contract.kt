@@ -119,7 +119,7 @@ object Contract {
     /** `tools: [{name, args?, result?, ok?}]` of a reply (lenient: bad entries are skipped). */
     fun tools(e: JsonElement?): List<dev.foxfleet.app.data.ToolStep> = (e as? JsonArray)?.mapNotNull { t ->
         val o = t as? JsonObject ?: return@mapNotNull null; val name = o.s("name")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-        dev.foxfleet.app.data.ToolStep(name.take(80), o.s("args").orEmpty().take(500), o.s("result").orEmpty().take(500), o.b("ok") != false)
+        dev.foxfleet.app.data.ToolStep(name.take(80), o.s("args").orEmpty().take(500), o.s("result").orEmpty().take(500), o.b("ok"))
     }?.take(50).orEmpty()
 
     fun runStep(o: JsonObject): RunStep? {

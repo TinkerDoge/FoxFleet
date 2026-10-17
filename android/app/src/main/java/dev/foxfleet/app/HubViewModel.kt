@@ -407,7 +407,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             "run_started" -> if (run != null && !state.streaming && !state.loading && jobs[open]?.isActive != true && state.sessionId != null) {
                 followRun(open, run)
             } else if (run != null && !state.streaming && state.loading) state.missedRun = run // 0.4.0 dropped it for good: follow it once the page is in
-            "run_finished" -> { if (run != null && state.missedRun == run) state.missedRun = null; catchUp(open) }
+            "run_finished" -> { if (run != null && state.missedRun == run) state.missedRun = null; state.runEnded(run, e.state); catchUp(open) }
             "approval" -> viewModelScope.launch { runCatching { state.syncQueue(api, open) } }
             else -> catchUp(open)
         }

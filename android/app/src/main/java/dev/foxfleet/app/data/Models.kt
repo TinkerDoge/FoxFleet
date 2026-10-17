@@ -76,7 +76,8 @@ data class SessionPage(val sessions: List<SessionInfo>, val total: Int)
 data class HistoryPage(val messages: List<UiMessage>, val hasMore: Boolean)
 
 /** One tool call folded into an assistant turn (name, short args, short result). */
-data class ToolStep(val name: String, val args: String = "", val result: String = "", val ok: Boolean = true)
+/** One tool call of a finished reply. [ok] is null when the agent never reported an outcome (shown neutral, not as a success). */
+data class ToolStep(val name: String, val args: String = "", val result: String = "", val ok: Boolean? = true)
 
 /** A chat run on the hub (an agent reply that outlives the app's connection). state: running | done | error | stopped. */
 data class RunInfo(val id: String, val sessionId: String?, val state: String, val started: Long)

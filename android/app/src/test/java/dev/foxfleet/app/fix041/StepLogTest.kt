@@ -40,7 +40,7 @@ class StepLogTest {
 
     @Test fun legacyOnlyHubsStillGetAStepList() {
         val log = StepLog().legacyTool("terminal", now = 0).legacyTool("terminal", now = 50).legacyTool("read_file", now = 900)
-        assertEquals(listOf("terminal", "read_file"), log.steps.map { it.name }); assertEquals("ok", log.steps[0].state); assertEquals(900L, log.steps[0].durationMs)
+        assertEquals(listOf("terminal", "read_file"), log.steps.map { it.name }); assertEquals("an announced call ended, outcome unknown", "done", log.steps[0].state); assertEquals(900L, log.steps[0].durationMs)
         assertEquals("running", log.steps[1].state)
     }
 

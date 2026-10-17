@@ -81,7 +81,7 @@ fun StepsPanel(log: StepLog, live: Boolean, stateKey: String, modifier: Modifier
                 .padding(horizontal = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            StepGlyph(if (current?.running == true) "running" else if (live) "running" else if (log.steps.any { it.state == "failed" }) "failed" else "ok", 16.dp)
+            StepGlyph(if (live) "running" else if (log.steps.any { it.state == "failed" }) "failed" else if (log.steps.any { it.isTool && it.state != "ok" }) "done" else "ok", 16.dp)
             Spacer(Modifier.width(8.dp))
             Text(stepsSummary(log, live), style = MaterialTheme.typography.labelLarge, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
             if (live && log.toolCount > 0) Text("${log.toolCount}", style = MaterialTheme.typography.labelMedium, color = c.textFaint, modifier = Modifier.padding(start = 8.dp))
@@ -110,12 +110,12 @@ private fun StepRow(s: LiveStep) {
     }
 }
 
-/** Our own glyphs (drawn, not icon assets): a turning arc while running, a check when done, a cross when it failed, a dot for a note. */
+/** Our own glyphs (drawn, not icon assets): a turning arc while running, a check on success, a cross when it failed, a ring when it ended without an outcome, a dot for a note. */
 @Composable
 fun StepGlyph(state: String, size: Dp) {
     val c = LocalHubColors.current
     val err = MaterialTheme.colorScheme.error
-    val label = when (state) { "running" -> "Running"; "ok" -> "Done"; "failed" -> "Failed"; "warn" -> "Warning"; else -> "Note" }
+    val label = when (state) { "running" -> "Running"; "ok" -> "Succeeded"; "done" -> "Finished"; "failed" -> "Failed"; "warn" -> "Warning"; else -> "Note" }
     if (state == "running") {
         val t = rememberInfiniteTransition(label = "step")
         val turn by t.animateFloat(0f, 360f, infiniteRepeatable(tween(900, easing = LinearEasing), RepeatMode.Restart), label = "turn")
@@ -126,13 +126,14 @@ fun StepGlyph(state: String, size: Dp) {
         }
         return
     }
-    val tint: Color = when (state) { "ok" -> c.onlineText; "failed" -> err; "warn" -> c.accent; else -> c.textFaint }
+    val tint: Color = when (state) { "ok" -> c.onlineText; "failed" -> err; "warn" -> c.accent; "done" -> c.textMuted; else -> c.textFaint }
     Canvas(Modifier.size(size).semantics { contentDescription = label }) {
         val s = this.size.minDimension; val w = s * 0.13f
         when (state) {
             "ok" -> { drawLine(tint, Offset(s * 0.2f, s * 0.53f), Offset(s * 0.42f, s * 0.74f), w, StrokeCap.Round); drawLine(tint, Offset(s * 0.42f, s * 0.74f), Offset(s * 0.8f, s * 0.3f), w, StrokeCap.Round) }
             "failed" -> { drawLine(tint, Offset(s * 0.28f, s * 0.28f), Offset(s * 0.72f, s * 0.72f), w, StrokeCap.Round); drawLine(tint, Offset(s * 0.72f, s * 0.28f), Offset(s * 0.28f, s * 0.72f), w, StrokeCap.Round) }
             "warn" -> { drawLine(tint, Offset(s * 0.5f, s * 0.22f), Offset(s * 0.5f, s * 0.58f), w, StrokeCap.Round); drawCircle(tint, w * 0.7f, Offset(s * 0.5f, s * 0.78f)) }
+            "done" -> drawCircle(tint, s * 0.3f, Offset(s / 2, s / 2), style = Stroke(w)) // neutral: it ended, outcome unknown
             else -> drawCircle(tint, s * 0.14f, Offset(s / 2, s / 2))
         }
     }

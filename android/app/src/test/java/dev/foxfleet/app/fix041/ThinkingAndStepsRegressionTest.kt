@@ -120,7 +120,7 @@ class ThinkingAndStepsRegressionTest {
     @Test fun messageNewCarriesReasoningAndToolsFromNewHubsAndIsLenient() {
         val m = Contract.message(Contract.obj("""{"hub_id":"h.4","n":4,"role":"assistant","text":"ok","reasoning":"r","reasoning_truncated":true,"tools":[{"name":"terminal","args":"ls","result":"a b","ok":false},{"bad":1},"x",{"name":"read_file"}],"status":"read"}"""))!!
         val ui = m.toUi()
-        assertEquals("r", ui.reasoning); assertEquals(listOf(ToolStep("terminal", "ls", "a b", false), ToolStep("read_file")), ui.steps); assertNull(ui.status)
+        assertEquals("r", ui.reasoning); assertEquals(listOf(ToolStep("terminal", "ls", "a b", false), ToolStep("read_file", ok = null)), ui.steps); assertNull(ui.status)
         val user = Contract.message(Contract.obj("""{"hub_id":"h.3","n":3,"role":"user","text":"hi","reasoning":"no","tools":[{"name":"x"}],"status":"read"}"""))!!.toUi()
         assertEquals("", user.reasoning); assertTrue(user.steps.isEmpty()); assertEquals("read", user.status)
     }

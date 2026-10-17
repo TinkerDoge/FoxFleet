@@ -288,7 +288,7 @@ class HubApi(private val store: SettingsStore) {
         val content = m.str("content").orEmpty(); val reasoning = m.str("reasoning").orEmpty()
         val steps = runCatching { m["tools"]?.jsonArray }.getOrNull()?.mapNotNull { t ->
             val o = runCatching { t.jsonObject }.getOrNull() ?: return@mapNotNull null
-            ToolStep(o.str("name") ?: return@mapNotNull null, o.str("args").orEmpty(), o.str("result").orEmpty(), o.bool("ok") != false)
+            ToolStep(o.str("name") ?: return@mapNotNull null, o.str("args").orEmpty(), o.str("result").orEmpty(), o.bool("ok"))
         }.orEmpty()
         val urls = runCatching { m["images"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }.orEmpty()
         if (content.isEmpty() && reasoning.isEmpty() && urls.isEmpty()) return null // a tool-only step is diagnostics, not a message
@@ -412,6 +412,7 @@ class HubApi(private val store: SettingsStore) {
         onToolEvent: (ToolEvent) -> Unit = {},
         onReplace: (String) -> Unit = {},
         onStep: (String, String, String?) -> Unit = { _, _, _ -> },
+        onRunState: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -421,7 +422,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace, onStep = onStep), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace, onStep = onStep, onRunState = onRunState), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -689,7 +690,9 @@ class HubApi(private val store: SettingsStore) {
             val type = s("type")?.takeIf { it in TOOL_EVENTS } ?: return null; val name = s("name") ?: return null
             val ok = (v["ok"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
             val ms = (v["duration_ms"] as? JsonPrimitive)?.takeIf { !it.isString }?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }?.takeIf { it >= 0 }
-            return ToolEvent(type, s("turn_id"), s("tool_id"), name, s("preview"), ok, ms, s("result_preview"))
+            // an end's preview is its result (as on run.step): it never replaces the start's arguments
+            return if (type == "tool.end") ToolEvent(type, s("turn_id"), s("tool_id"), name, null, ok, ms, s("result_preview") ?: s("preview"))
+            else ToolEvent(type, s("turn_id"), s("tool_id"), name, s("preview"), ok, ms, s("result_preview"))
         }
 
         /** The hub's reaction snapshot; anything malformed is skipped rather than failing the chat. */

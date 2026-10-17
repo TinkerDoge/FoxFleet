@@ -49,7 +49,7 @@ class HistoryTest {
             assertTrue(page.hasMore); assertEquals(2, page.messages.size)
             val (u, a) = page.messages
             assertEquals("user", u.role); assertEquals(1790000001500L, u.ts); assertTrue(u.imageUrls.single().startsWith("data:image/png"))
-            assertEquals("Fox. Answer briefly.", a.reasoning); assertEquals(2, a.steps.size); assertFalse(a.steps[1].ok); assertEquals("vision_analyze", a.steps[0].name)
+            assertEquals("Fox. Answer briefly.", a.reasoning); assertEquals(2, a.steps.size); assertEquals(false, a.steps[1].ok); assertEquals("vision_analyze", a.steps[0].name)
             assertTrue(a.content.contains("| trait | value |")); assertFalse(page.messages.any { it.content.contains("\"raw\"") })
             assertTrue("query goes in the query string", s.seen.single().contains("/sessions/s1/messages?limit=40&offset=80") || s.seen.single().contains("offset=80"))
         }

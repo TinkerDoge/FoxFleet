@@ -34,6 +34,12 @@ Regression fixes on Android after Doge's 0.4.0 test (main 8d1aa85). The hub's ru
   - Steps are merged by `tool_id` across sources, so there are no doubles, and late or replayed events are ignored.
   - The finished message keeps the list, closed, as "Used N tools".
   - FoxFleet's own design and drawings (no third-party code or assets).
+- Android (hub 0.4.1 client notes):
+  - A sub-agent line (`subagent` on the run stream, `status` on live v2) is one row, drawn the same way.
+  - `run.step` `preview` on `tool.end` is shown as the result and never replaces the arguments.
+  - Calls that are never reported back (chat-completions agents send starts only) stop spinning when the next call starts or the run ends (stream close, `run.finished`, the reply's `message.new`). They show a neutral "finished" ring instead of a success check, or a cross when the run failed. A tool without a reported `ok` (live, `message.new` or history) is neutral, not a success.
+  - The native gateway's own `hermes.tool.progress` ticks and the commentary it also sends in that frame add no rows next to `foxfleet.tool` / `run.step`.
+  - The run stream and live v2 edit the step list under one lock, so concurrent events are not lost.
 - Android: `message.new` / `message.edited` `reasoning`, `reasoning_truncated` and `tools` from 0.4.1 hubs are shown and cached. Parsing is lenient.
 - Android: read ticks are shown and stored only for your own messages, never on agent or thinking bubbles.
 - Tests: regression tests for the three bugs (fix041: stream + message.new ordering against a scripted hub, cache, step merging, /model modes, caps parsing) and before/after screenshots.

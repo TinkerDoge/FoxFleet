@@ -80,10 +80,13 @@ class ChatState {
     var tools by mutableStateOf(ToolActivity())
         private set
     /** 0.4.1: the reply's live step list (tool calls with preview, outcome and time; commentary and status lines). */
+    private val stepsLock = Any()
     var steps by mutableStateOf(StepLog())
         private set
     /** The agent's message.new for the reply still streaming (hub id, number, the hub's reasoning/tools): merged into the bubble when it commits. */
     private var pendingReply: UiMessage? = null
+    /** The run reported failure (`foxfleet.run` / `run.finished` state): calls without an end are settled as failed, not done. */
+    private var runFailed = false
     /** A run that started in this chat while it was loading (0.4.0 dropped it): the ViewModel follows it once the page is in. */
     var missedRun: String? = null
     /** Reactions for this conversation once loaded (null: not loaded, or the hub has none for this agent). */
@@ -107,8 +110,8 @@ class ChatState {
     internal fun simulateReactions(snapshot: dev.foxfleet.app.data.ReactionSnapshot) { reactions = snapshot }
 
     /** Previews/screenshot tests: put the live overlays into a mid-stream state. */
-    internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null, steps: StepLog = StepLog()) {
-        streaming = true; streamText = text; streamReasoning = reasoning; toolLabel = tool; this.steps = steps
+    internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null, steps: StepLog = StepLog(), run: String? = null) {
+        streaming = true; streamText = text; streamReasoning = reasoning; toolLabel = tool; this.steps = steps; runId = run
     }
 
     /** Previews/screenshot tests: what a native session shows (cards, the queue as Hermes holds it, tools used). */
@@ -144,7 +147,7 @@ class ChatState {
     fun appendLive(fresh: List<UiMessage>) { if (fresh.isEmpty()) return; messages = messages + fresh; olderOffset += fresh.size }
 
     private fun resetStream() {
-        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); steps = StepLog(); requests = emptyList(); pendingReply = null
+        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); editSteps { StepLog() }; requests = emptyList(); pendingReply = null
     }
 
     fun adopt(sessionId: String?) {
@@ -184,7 +187,7 @@ class ChatState {
         if (i >= 0) { messages = messages.toMutableList().also { it[i] = mergeLive(it[i], m) }; return true }
         if (edited || loading) return false // an edit of a message not shown, or a page about to land that includes it
         // The reply that is streaming right now: keep its ids for the commit (0.4.0 dropped them, and the bubble then lost its thinking on the next swap).
-        if (m.role == "assistant" && streaming && (m.runId == null || runId == null || m.runId == runId)) { pendingReply = m; return false }
+        if (m.role == "assistant" && streaming && (m.runId == null || runId == null || m.runId == runId)) { pendingReply = m; editSteps { it.settle(runFailed) }; return false } // the final reply: no call is still running
         val j = if (m.role == "user") messages.indexOfLast { it.role == "user" && it.hubId == null && it.content.trim() == m.content.trim() }.takeIf { it >= messages.size - 3 }
         else { if (streaming) return false; MessageMerge.replyIndex(messages, m) }
         if (j != null && j >= 0) { messages = messages.toMutableList().also { it[j] = mergeLive(it[j], m) }; return true }
@@ -246,9 +249,10 @@ class ChatState {
 
     private fun callbacks(g: Int) = HubApi.StreamCallbacks(
         onReconnecting = { if (g == gen) reconnecting = true },
-        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { if (tools.active.isEmpty() && tools.ended.isEmpty()) toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12); steps = steps.legacyTool(it) } },
-        onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null; steps = steps.tool(e) } }, // per-call events replace the legacy label
-        onStep = { k, t, l -> if (g == gen) steps = steps.note(k, t, l) },
+        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { if (tools.active.isEmpty() && tools.ended.isEmpty()) toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12); toolTick(it) } },
+        onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null; editSteps { it.tool(e) } } }, // per-call events replace the legacy label
+        onStep = { k, t, l -> if (g == gen) editSteps { it.note(k, t, l) } },
+        onRunState = { st -> if (g == gen && st in FAILED_RUN) runFailed = true },
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -264,7 +268,7 @@ class ChatState {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
         val sentAt = System.currentTimeMillis(); val before = messages
-        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace, onStep = cb.onStep) } }
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace, onStep = cb.onStep, onRunState = cb.onRunState) } }
         catch (e: dev.foxfleet.app.data.HubApiException) {
             if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
         }
@@ -300,7 +304,7 @@ class ChatState {
 
     private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
         val g = ++gen
-        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; tools = ToolActivity(); steps = StepLog(); pendingReply = null
+        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; tools = ToolActivity(); editSteps { StepLog() }; pendingReply = null; runFailed = false
         try {
             val text = block(callbacks(g))
             if (g != gen) return // another chat is open now: this stream's end changes nothing
@@ -329,7 +333,7 @@ class ChatState {
      * already came (it usually does: the hub announces the reply before the run stream closes). Merged by run_id.
      */
     private fun commitReply(text: String) {
-        val log = steps.settle(); val pending = pendingReply?.takeIf { p -> p.runId == null || runId == null || p.runId == runId }
+        val log = synchronized(stepsLock) { steps.settle(runFailed) }; val pending = pendingReply?.takeIf { p -> p.runId == null || runId == null || p.runId == runId }
         if (text.isEmpty() && streamReasoning.isEmpty() && pending == null) return
         val local = UiMessage(role = "assistant", content = text, reasoning = streamReasoning, reasoningMs = reasoningDuration(), steps = log.toToolSteps(), runId = runId)
         val m = if (pending != null && messages.none { it.hubId == pending.hubId }) MessageMerge.merge(local, pending).copy(content = text.ifEmpty { pending.content }) else local
@@ -341,12 +345,28 @@ class ChatState {
     /** `run.step` from live v2 for the reply streaming here: same rows as the run stream's own events (deduped by tool_id). */
     fun applyRunStep(s: dev.foxfleet.app.data.live.RunStep) {
         if (!streaming || (s.runId != null && runId != null && s.runId != runId)) return
-        steps = when (s.kind) {
+        editSteps { steps -> when (s.kind) {
             // run.step `preview` is the arguments on tool.start and the result on tool.end (LIVE-EVENTS.md, RunStep)
             "tool.start", "tool.progress" -> s.name?.let { steps.tool(s.kind, s.toolId, it, s.preview, s.ok, s.durationMs) } ?: steps
             "tool.end" -> s.name?.let { steps.tool(s.kind, s.toolId, it, null, s.ok, s.durationMs, result = s.preview) } ?: steps
             else -> s.text?.let { steps.note(s.kind, it) } ?: steps
-        }
+        } }
+    }
+
+    /** The run stream's `hermes.tool.progress` (see [StepLog.legacyTool]). */
+    internal fun toolTick(name: String) = editSteps { it.legacyTool(name) }
+
+    /**
+     * Every change to the step list is one read-modify-write under a lock: the run stream's callbacks run on an IO thread
+     * while live v2's run.step and run.finished arrive on the main thread, often for the same call at the same moment.
+     */
+    private fun editSteps(f: (StepLog) -> StepLog) { synchronized(stepsLock) { steps = f(steps) } }
+
+    /** live v2 `run.finished` for the reply streaming here: its calls are settled even if the run stream is slow to close. */
+    fun runEnded(run: String?, state: String?) {
+        if (!streaming || (run != null && runId != null && run != runId)) return
+        if (state in FAILED_RUN) runFailed = true
+        editSteps { it.settle(runFailed) }
     }
 
     fun finishRun() { runId = null; pendingUser = null; persist(SavedChat(sessionId, null, null)) }
@@ -451,3 +471,6 @@ class ChatState {
         if (failed) refreshReactions(api, agent)
     }
 }
+
+/** Run states that mean the run failed (calls without an end are then shown as failed). */
+private val FAILED_RUN = setOf("failed", "error")
