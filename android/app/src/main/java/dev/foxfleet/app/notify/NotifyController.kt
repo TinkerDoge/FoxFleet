@@ -132,6 +132,16 @@ object NotifyController {
         return outcome
     }
 
+    /** Launcher badge: the unread total (and per chat) the app knows from the hub's chat rows. */
+    fun setBadge(context: Context, total: Int, perAgent: Map<String, Int>) { runCatching { AndroidNotifier(context.applicationContext).setBadge(total, perAgent) } }
+
+    /** The hub entry and NotifyApi a notification action may use: only the hub this device is signed in to. */
+    internal fun actionApi(context: Context, hub: String): NotifyApi? {
+        val b = store(context).binding; val hubEntry = SettingsStore(context).hubs.firstOrNull { it.id == hub }
+        if (b == null || b.hubId != hub || hubEntry == null) return null
+        return NotifyApi(hubEntry.url, HubTokens(context.getSharedPreferences("foxfleet", Context.MODE_PRIVATE), hub))
+    }
+
     /** The permission was revoked while the service ran: stop it (the switch stays on; the status line says "Permission missing", and it resumes when the app opens with permission). */
     fun onPermissionLost(context: Context) { stop(context); AndroidNotifier(context).clearAll(); setLink(NotifyLink.Off) }
 

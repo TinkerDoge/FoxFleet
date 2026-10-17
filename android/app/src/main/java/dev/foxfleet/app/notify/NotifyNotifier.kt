@@ -24,6 +24,8 @@ data class ChatNotice(
     val at: Long,
     val requestId: String? = null,
     val detail: String? = null,
+    /** Reply token from the event (phase 1): with one, the notification offers Reply and Mark read. */
+    val reply: ReplyGrant? = null,
 )
 
 /** Posts and clears notifications. The builder is separate from the dispatcher so it can be tested with Robolectric. */
@@ -32,6 +34,8 @@ interface Notifier {
     fun postTest()
     fun clearChat(agent: String, chat: String?)
     fun clearAll()
+    /** After a direct reply: your line joins the conversation ([ok]) or a "Not sent" line says why. */
+    fun replied(hubId: String, agent: String, chat: String, text: String, ok: Boolean, note: String?) {}
 }
 
 class AndroidNotifier(private val context: Context) : Notifier {
@@ -71,10 +75,43 @@ class AndroidNotifier(private val context: Context) : Notifier {
             .setWhen(n.at).setShowWhen(true).setGroup(GROUP).setPublicVersion(public).setContentIntent(open(target, code))
             .setPriority(if (channel == NotifyChannel.Approvals) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_DEFAULT)
         if (n.type == NotifyType.Approval) b.setCategory(NotificationCompat.CATEGORY_MESSAGE).setOnlyAlertOnce(false)
-        b.addAction(0, "Open", open(target, code + 1))
+        val grant = n.reply?.takeIf { it.validAt(System.currentTimeMillis()) }
+        if (grant != null && n.type != NotifyType.Error) {
+            // Direct reply (messenger pattern): RemoteInput needs a mutable PendingIntent so Android can add the typed text.
+            val extras = Intent(context, NotifyActionReceiver::class.java).putExtra("agent", n.agent).putExtra("chat", n.chat).putExtra("hub", n.hubId)
+                .putExtra("token", grant.token).putExtra("expires", grant.expiresAt).putExtra("label", n.agentLabel)
+            val input = androidx.core.app.RemoteInput.Builder(NotifyActionReceiver.KEY_TEXT).setLabel("Reply to ${n.agentLabel}").build()
+            val replyPi = PendingIntent.getBroadcast(context, code + 3, Intent(extras).setAction(NotifyActionReceiver.ACTION_REPLY), PendingIntent.FLAG_MUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(NotificationCompat.Action.Builder(0, "Reply", replyPi).addRemoteInput(input).setAllowGeneratedReplies(false)
+                .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY).setShowsUserInterface(false).build())
+            val readPi = PendingIntent.getBroadcast(context, code + 4, Intent(extras).setAction(NotifyActionReceiver.ACTION_READ), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            b.addAction(NotificationCompat.Action.Builder(0, "Mark read", readPi).setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ).setShowsUserInterface(false).build())
+        } else b.addAction(0, "Open", open(target, code + 1))
+        b.setNumber(badgeFor(n.agent))
         b.addAction(0, "Mute 1 h", PendingIntent.getBroadcast(context, code + 2, Intent(context, NotifyActionReceiver::class.java).setAction(NotifyActionReceiver.ACTION_MUTE).putExtra("agent", n.agent).putExtra("chat", n.chat).putExtra("hub", n.hubId), PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT))
         nm.notify(tag, CHAT_ID, b.build())
         summary()
+    }
+
+    private val badgePrefs get() = context.getSharedPreferences("foxfleet_badge", Context.MODE_PRIVATE)
+    /** The chat's unread count for launchers that show numbers (1 when the app does not know it yet). */
+    private fun badgeFor(agent: String) = badgePrefs.getInt("agent_$agent", 1).coerceAtLeast(1)
+
+    /** The app's unread total (`total_unread`: not muted, not archived) on the summary, and per chat for the next posts. */
+    fun setBadge(total: Int, perAgent: Map<String, Int>) {
+        badgePrefs.edit().clear().putInt("total", total).apply { perAgent.forEach { (a, n) -> putInt("agent_$a", n) } }.apply()
+        if (activeChats().isNotEmpty()) summary()
+    }
+
+    override fun replied(hubId: String, agent: String, chat: String, text: String, ok: Boolean, note: String?) {
+        if (!nm.areNotificationsEnabled()) return
+        val tag = tagOf(hubId, agent, chat)
+        val old = nm.activeNotifications.firstOrNull { it.tag == tag && it.id == CHAT_ID }?.notification ?: return
+        val style = NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(old) ?: NotificationCompat.MessagingStyle(Person.Builder().setName("You").build())
+        val line = if (ok) text else "Not sent: ${note ?: "try again"}"
+        // null person = the user (MessagingStyle's own convention), so the line shows as yours
+        style.addMessage(NotificationCompat.MessagingStyle.Message(line, System.currentTimeMillis(), null as Person?))
+        nm.notify(tag, CHAT_ID, NotificationCompat.Builder(context, old).setStyle(style).setOnlyAlertOnce(true).setSilent(true).build())
     }
 
     private fun activeChats() = nm.activeNotifications.filter { it.id == CHAT_ID && it.tag?.let { t -> t.startsWith("chat$SEP") || t.startsWith("approval$SEP") } == true }
@@ -88,7 +125,7 @@ class AndroidNotifier(private val context: Context) : Notifier {
         val inbox = NotificationCompat.InboxStyle().setBigContentTitle("FoxFleet")
         chats.take(6).forEach { inbox.addLine(it.notification.extras.getCharSequence(Notification.EXTRA_TITLE).toString()) }
         val s = base(NotifyChannel.Replies).setContentTitle("FoxFleet").setContentText(if (chats.size == 1) "1 chat with news" else "${chats.size} chats with news")
-            .setStyle(inbox).setGroup(GROUP).setGroupSummary(true).setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            .setStyle(inbox).setGroup(GROUP).setGroupSummary(true).setNumber(badgePrefs.getInt("total", 0)).setOnlyAlertOnce(true).setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setContentIntent(open(null, SUMMARY_ID)).build()
         nm.notify(SUMMARY_TAG, SUMMARY_ID, s)
     }

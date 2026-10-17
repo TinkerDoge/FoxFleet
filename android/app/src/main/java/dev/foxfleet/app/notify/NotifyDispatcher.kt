@@ -68,13 +68,13 @@ class NotifyDispatcher(
         val notice = when (e.type) {
             NotifyType.ReplyFinished -> {
                 val reply = fetch { content.lastReply(agent, chat) }
-                ChatNotice(hubId, agent, label, chat, e.type, reply?.text, reply?.at ?: e.at)
+                ChatNotice(hubId, agent, label, chat, e.type, reply?.text, reply?.at ?: e.at, reply = e.reply)
             }
             NotifyType.Approval -> {
                 val id = e.requestId ?: return
                 val look = try { content.openRequest(agent, chat, id) } catch (ex: CancellationException) { throw ex } catch (ex: AuthRequiredException) { throw ex } catch (_: Exception) { RequestLookup.Unknown }
                 if (look is RequestLookup.Gone) return
-                ChatNotice(hubId, agent, label, chat, e.type, (look as? RequestLookup.Found)?.text, e.at, requestId = id)
+                ChatNotice(hubId, agent, label, chat, e.type, (look as? RequestLookup.Found)?.text, e.at, requestId = id, reply = e.reply)
             }
             NotifyType.Error -> ChatNotice(hubId, agent, label, chat, e.type, e.message ?: "The agent turn failed", e.at)
             else -> return

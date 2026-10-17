@@ -27,12 +27,22 @@ data class NotifyEvent(
     val requestId: String? = null,
     val kind: String? = null,
     val message: String? = null,
+    /** Phase 1 (`notifyReply`, stream opened with `?reply=1`): a 24 h token for direct reply / mark read on this event's chat. Never logged. */
+    val reply: ReplyGrant? = null,
 ) {
     /** The (agent, chat) pair that one notification belongs to; null for test events. */
     val chatKey: String? get() = if (agent != null && chat != null) chatKeyOf(agent, chat) else null
 }
 
 fun chatKeyOf(agent: String, chat: String) = "$agent\u0000$chat"
+
+/** A reply token from a `notify` event. [toString] hides the token so it can never reach a log line. */
+class ReplyGrant(val token: String, val expiresAt: Long) {
+    fun validAt(now: Long) = token.isNotBlank() && expiresAt > now
+    override fun toString() = "ReplyGrant(expiresAt=$expiresAt)"
+    override fun equals(other: Any?) = other is ReplyGrant && other.token == token && other.expiresAt == expiresAt
+    override fun hashCode() = token.hashCode() * 31 + expiresAt.hashCode()
+}
 
 /** What the stream says, after the SSE framing is decoded. */
 sealed interface NotifyFrame {
@@ -62,6 +72,10 @@ object NotifyFrames {
             id = id, type = type, agent = str("agent"), chat = str("chat"), high = str("priority") == "high",
             at = (o["at"] as? JsonPrimitive)?.longOrNull ?: 0L, muted = (o["muted"] as? JsonPrimitive)?.booleanOrNull ?: false,
             runId = str("run_id"), requestId = str("request_id"), kind = str("kind"), message = str("message"),
+            reply = (o["reply"] as? JsonObject)?.let { r ->
+                val t = (r["token"] as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull; val exp = (r["expires_at"] as? JsonPrimitive)?.longOrNull
+                if (t != null && exp != null) ReplyGrant(t, exp) else null
+            },
         )
     }
 

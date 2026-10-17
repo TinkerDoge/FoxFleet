@@ -34,12 +34,13 @@ interface TokenSource {
 /** Stream heartbeat is 15 s; the contract says treat 45 s of silence as a dead link. */
 const val HEARTBEAT_TIMEOUT_SEC = 45L
 
-class NotifyHttpException(val status: Int, message: String, val retryAfterSec: Int? = null, val network: Boolean = false) : Exception(message)
+class NotifyHttpException(val status: Int, message: String, val retryAfterSec: Int? = null, val network: Boolean = false, val code: String? = null) : Exception(message)
 
 /** OkHttp transport for the stream: bearer token, `Last-Event-ID`, a 45 s read timeout (the heartbeat rule) and the rotated token header. */
 class OkHttpNotifyTransport(private val baseUrl: String, private val tokens: TokenSource, private val client: OkHttpClient = defaultClient()) : NotifyTransport {
     override fun open(lastId: Long?): NotifyOpen {
-        val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder().encodedPath("/api/notify/stream").build()
+        // reply=1 (phase 1, `notifyReply`): reply_finished / approval events carry a reply token for this device. Older hubs ignore the parameter.
+        val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder().encodedPath("/api/notify/stream").addQueryParameter("reply", "1").build()
         val b = Request.Builder().url(url).header("Accept", "text/event-stream").header("Cache-Control", "no-cache")
         tokens.get()?.let { b.header("Authorization", "Bearer $it") }
         if (lastId != null) b.header("Last-Event-ID", lastId.toString())
@@ -57,16 +58,17 @@ class NotifyApi(private val baseUrl: String, private val tokens: TokenSource, pr
     private val json = Json { ignoreUnknownKeys = true }
     private val media = "application/json; charset=utf-8".toMediaType()
 
-    private suspend fun call(method: String, path: String, body: JsonObject? = null, query: Map<String, String> = emptyMap()): JsonObject = withContext(Dispatchers.IO) {
+    private suspend fun call(method: String, path: String, body: JsonObject? = null, query: Map<String, String> = emptyMap(), replyToken: String? = null, bearer: Boolean = true): JsonObject = withContext(Dispatchers.IO) {
         val url = baseUrl.trimEnd('/').toHttpUrl().newBuilder().encodedPath(path).apply { query.forEach { (k, v) -> addQueryParameter(k, v) } }.build()
         val b = Request.Builder().url(url).method(method, body?.toString()?.toRequestBody(media) ?: if (method == "GET") null else "{}".toRequestBody(media))
-        tokens.get()?.let { b.header("Authorization", "Bearer $it") }
+        if (bearer) tokens.get()?.let { b.header("Authorization", "Bearer $it") }
+        if (replyToken != null) b.header("X-Foxfleet-Reply-Token", replyToken)
         val res = await(client.newCall(b.build()))
         res.use {
             it.header("X-Session-Token")?.takeIf { t -> t.isNotBlank() && tokens.get() != null }?.let(tokens::set)
             val text = it.body?.string().orEmpty()
             val obj = runCatching { json.parseToJsonElement(text).jsonObject }.getOrNull()
-            if (!it.isSuccessful) throw NotifyHttpException(it.code, (obj?.get("error") as? JsonPrimitive)?.contentOrNull?.take(200) ?: "HTTP ${it.code}", NotifyRetryAfter.parse(it.header("Retry-After")))
+            if (!it.isSuccessful) throw NotifyHttpException(it.code, (obj?.get("error") as? JsonPrimitive)?.contentOrNull?.take(200) ?: "HTTP ${it.code}", NotifyRetryAfter.parse(it.header("Retry-After")), code = (obj?.get("code") as? JsonPrimitive)?.contentOrNull?.take(40))
             obj ?: throw NotifyHttpException(it.code, "Invalid response")
         }
     }
@@ -89,5 +91,12 @@ class NotifyApi(private val baseUrl: String, private val tokens: TokenSource, pr
         val o = call("POST", "/api/notify/test", buildJsonObject { })
         return NotifyFrames.parseEvent(o["event"]?.jsonObject ?: throw NotifyHttpException(200, "Invalid response")) ?: throw NotifyHttpException(200, "Invalid response")
     }
+    /** Phase 1 direct reply. Auth: the bearer and/or [replyToken]; [key] makes a retry safe (same key + same body = the first result). */
+    suspend fun reply(agent: String, chat: String, text: String, key: String, replyToken: String?, bearer: Boolean): JsonObject =
+        call("POST", "/api/notify/reply", buildJsonObject { put("agent", agent); put("chat", chat); put("text", text); put("idempotency_key", key); put("mark_read", true) }, replyToken = replyToken, bearer = bearer)
+    /** The Mark-read action (newest message when [upTo] is null). */
+    suspend fun read(agent: String, chat: String, upTo: Int?, replyToken: String?, bearer: Boolean): JsonObject =
+        call("POST", "/api/notify/read", buildJsonObject { put("agent", agent); put("chat", chat); if (upTo != null) put("up_to", upTo) }, replyToken = replyToken, bearer = bearer)
+    fun hasBearer() = tokens.get() != null
     suspend fun events(since: Long, limit: Int = 100): JsonObject = call("GET", "/api/notify/events", query = mapOf("since" to since.toString(), "limit" to limit.toString()))
 }
