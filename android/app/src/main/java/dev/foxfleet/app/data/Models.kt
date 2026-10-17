@@ -95,6 +95,10 @@ data class UiMessage(
     val imageUrls: List<String> = emptyList(),
     /** Images the user attached: local cache file path + ready-to-send data URL. */
     val images: List<ImageAttachment> = emptyList(),
+    /** Phase 1 (0.4.0, `readReceipts`/`live2`): the hub's own id (never changes; the cache key), its gap-free number in the chat, and for your own messages sent/delivered/read/failed. */
+    val hubId: String? = null,
+    val n: Int? = null,
+    val status: String? = null,
 )
 
 /** A downscaled JPEG kept in the app cache; [dataUrl] is what goes to the hub. */

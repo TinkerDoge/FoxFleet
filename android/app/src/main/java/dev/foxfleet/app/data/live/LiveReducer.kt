@@ -1,0 +1,88 @@
+package dev.foxfleet.app.data.live
+
+import dev.foxfleet.app.data.local.ChatCache
+
+/** What the screens must do after an event was written to the cache. */
+sealed interface LiveEffect {
+    /** A message of [chat] was added or replaced (the open chat shows it; others only change their list row). */
+    data class Upserted(val agent: String, val chat: String, val message: HubMessage, val edited: Boolean) : LiveEffect
+    data class Deleted(val agent: String, val chat: String, val hubIds: List<String>) : LiveEffect
+    data class Status(val agent: String, val chat: String, val hubIds: List<String>, val status: String) : LiveEffect
+    /** The cache cannot place this message (newer than its newest + 1, or the chat is cached without numbers): fetch `after_n`. */
+    data class FetchAfter(val agent: String, val chat: String, val afterN: Int?) : LiveEffect
+    /** Chat-list rows or totals changed: redraw the list and the badge. */
+    data object ListChanged : LiveEffect
+    data class Read(val agent: String, val chat: String?, val state: ReadState) : LiveEffect
+    /** v1 notices that v2 carries too (runs, approvals): handled by the existing run-follow code. */
+    data class Notice(val type: String, val agent: String, val chat: String?, val runId: String?, val state: String?) : LiveEffect
+    /** The agent's own message ended its typing state in that chat. */
+    data class StopTyping(val agent: String, val chat: String?) : LiveEffect
+}
+
+/**
+ * Applies v2 events to the Room cache, idempotently: the same event twice (a crash between apply and the cursor save, a
+ * replay) leaves the same rows. The hub is the source of truth, so a row event replaces the row and a message event upserts
+ * by `hub_id`; nothing is merged field by field except message status, which only moves forward.
+ */
+class LiveReducer(private val cache: ChatCache) {
+    suspend fun apply(e: V2Event): List<LiveEffect> = when (e) {
+        is V2Event.MessageNew -> message(e.agent, e.chat, e.message, edited = false)
+        is V2Event.MessageEdited -> message(e.agent, e.chat, e.message, edited = true)
+        is V2Event.MessageDeleted -> { cache.deleteLive(e.hubIds); listOf(LiveEffect.Deleted(e.agent, e.chat, e.hubIds)) }
+        is V2Event.MessageStatusChanged -> { cache.statusLive(e.hubIds, e.status); listOf(LiveEffect.Status(e.agent, e.chat, e.hubIds, e.status)) }
+        is V2Event.Read -> {
+            cache.chatRow(e.agent)?.let { r -> cache.saveChatRow(r.copy(unread = e.state.agentUnread, readUpTo = maxOf(r.readUpTo, e.state.readUpTo), manualUnread = false)) }
+            cache.saveTotals(e.state.totalUnread)
+            listOf(LiveEffect.Read(e.agent, e.chat, e.state), LiveEffect.ListChanged)
+        }
+        is V2Event.ChatUpdated -> { cache.saveChatRow(e.row); listOf(LiveEffect.ListChanged) }
+        is V2Event.ChatRemoved -> { cache.removeAgent(e.agent); listOf(LiveEffect.ListChanged) }
+        is V2Event.RunStarted -> listOf(LiveEffect.Notice("run_started", e.agent, e.chat, e.runId, null))
+        is V2Event.RunFinished -> listOf(LiveEffect.Notice("run_finished", e.agent, e.chat, e.runId, e.state), LiveEffect.StopTyping(e.agent, e.chat))
+        is V2Event.Approval -> listOf(LiveEffect.Notice("approval", e.agent, e.chat, null, null))
+        is V2Event.Unknown -> emptyList()
+    }
+
+    private suspend fun message(agent: String, chat: String, m: HubMessage, edited: Boolean): List<LiveEffect> {
+        val placed = cache.upsertLive(agent, chat, m.toUi())
+        val out = ArrayList<LiveEffect>(3)
+        out += LiveEffect.Upserted(agent, chat, m, edited)
+        if (!placed && cache.numbered(agent, chat)) out += LiveEffect.FetchAfter(agent, chat, cache.maxN(agent, chat))
+        if (m.role == "assistant" && !edited) out += LiveEffect.StopTyping(agent, chat)
+        return out
+    }
+}
+
+/** Typing state per (agent, chat), JVM-testable. Clears after `ttl_ms` without a repeat, on `idle`, on run end, on the agent's message. */
+class TypingTracker(private val clock: () -> Long = { System.currentTimeMillis() }) {
+    private data class Entry(val t: Typing, val until: Long)
+    private val map = HashMap<String, Entry>()
+    private fun key(agent: String, chat: String) = "$agent\u0000$chat"
+
+    /** True when what a header shows may have changed. */
+    fun on(t: Typing): Boolean {
+        val k = key(t.agent, t.chat)
+        if (t.state == "idle") return map.remove(k) != null
+        val old = map[k]; map[k] = Entry(t, clock() + t.ttlMs)
+        return old?.t?.state != t.state || old.t.tool != t.tool
+    }
+    fun clear(agent: String, chat: String?): Boolean =
+        if (chat != null) map.remove(key(agent, chat)) != null else map.keys.removeAll { it.startsWith("$agent\u0000") }
+    fun clearAll() = map.clear()
+    fun get(agent: String, chat: String?): Typing? {
+        val now = clock(); map.entries.removeAll { it.value.until <= now }
+        return if (chat != null) map[key(agent, chat)]?.t else map.values.firstOrNull { it.t.agent == agent }?.t
+    }
+    /** Ms until the next entry expires (to schedule a redraw), or null. */
+    fun nextExpiryIn(): Long? = map.values.minOfOrNull { it.until }?.let { (it - clock()).coerceAtLeast(0) }
+
+    companion object {
+        /** The header line: "thinking…", "typing…", "running bash…". */
+        fun label(t: Typing?): String? = when (t?.state) {
+            null, "idle" -> null
+            "thinking" -> "thinking…"
+            "tool" -> t.tool?.takeIf { it.isNotBlank() }?.let { "running $it…" } ?: "using a tool…"
+            else -> "typing…"
+        }
+    }
+}

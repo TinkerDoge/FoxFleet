@@ -292,7 +292,10 @@ class HubApi(private val store: SettingsStore) {
         val urls = runCatching { m["images"]?.jsonArray }.getOrNull()?.mapNotNull { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }.orEmpty()
         if (content.isEmpty() && reasoning.isEmpty() && urls.isEmpty()) return null // a tool-only step is diagnostics, not a message
         val id = runCatching { m["id"]?.jsonPrimitive?.takeIf { it !is JsonNull }?.content }.getOrNull()?.takeIf { it.isNotEmpty() }
-        return UiMessage(role = role, content = content, id = id, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls)
+        // phase 1 (readReceipts): additive fields, absent on older hubs
+        val hubId = m.str("hub_id")?.takeIf { it.isNotEmpty() }; val n = m["n"]?.jsonPrimitive?.longOrNull?.toInt()
+        val status = m.str("status")?.takeIf { role == "user" && it in dev.foxfleet.app.data.live.MessageStatus.ALL }
+        return UiMessage(role = role, content = content, id = id, reasoning = reasoning, steps = steps, ts = m["ts"]?.jsonPrimitive?.longOrNull ?: 0L, imageUrls = urls, hubId = hubId, n = n, status = status)
     }
 
     private fun contentToString(value: kotlinx.serialization.json.JsonElement?): String {
@@ -453,6 +456,48 @@ class HubApi(private val store: SettingsStore) {
         val r = call.execute()
         if (r.code == 401) { r.close(); return@LiveTransport LiveOpen(401, null, null) }
         LiveOpen(r.code, r.header("Content-Type"), r.body?.byteStream()?.let { java.io.InputStreamReader(it, Charsets.UTF_8) }) { call.cancel(); r.close() }
+    }
+
+    /** v2 stream (`live2`): `?v=2&since=<cursor>` plus `Last-Event-ID` (the query wins on the hub; both say the same). */
+    val liveV2Transport: (String?, LiveCancel) -> LiveOpen = { cursor, cancel ->
+        val url = base().newBuilder().encodedPath("/api/live/stream").addQueryParameter("v", "2").apply { if (!cursor.isNullOrBlank()) addQueryParameter("since", cursor) }.build()
+        val req = Request.Builder().url(url).get().header("Accept", "text/event-stream").apply { if (!cursor.isNullOrBlank()) header("Last-Event-ID", cursor) }.build()
+        val call = liveClient.newCall(req)
+        cancel.onCancel { call.cancel() }
+        val r = call.execute()
+        if (r.code == 401) { r.close(); LiveOpen(401, null, null) }
+        else LiveOpen(r.code, r.header("Content-Type"), r.body?.byteStream()?.let { java.io.InputStreamReader(it, Charsets.UTF_8) }) { call.cancel(); r.close() }
+    }
+
+    // ---- phase 1 (0.4.0): chat list, read receipts (routes answer 404 until hub.features lists them) ----
+
+    private fun chatPath(agent: String) = "/api/chats/" + enc(agent)
+    /** `GET /api/chats?archived=0|1`: rows + the v2 cursor this snapshot matches. */
+    suspend fun chats(archived: Boolean = false): dev.foxfleet.app.data.live.ChatsSnapshot = withContext(Dispatchers.IO) {
+        dev.foxfleet.app.data.live.Contract.snapshot(request("/api/chats", query = mapOf("archived" to if (archived) "1" else "0"), timeoutSec = 20))
+    }
+    suspend fun archiveChat(agent: String, archived: Boolean): dev.foxfleet.app.data.live.HubChat = withContext(Dispatchers.IO) {
+        dev.foxfleet.app.data.live.Contract.chat(request(chatPath(agent) + "/archive", "PUT", buildJsonObject { put("archived", archived) }.toString(), timeoutSec = 15))
+            ?: throw HubApiException(0, "Invalid response from the relay")
+    }
+    suspend fun markChatUnread(agent: String, unread: Boolean): dev.foxfleet.app.data.live.HubChat = withContext(Dispatchers.IO) {
+        dev.foxfleet.app.data.live.Contract.chat(request(chatPath(agent) + "/unread", "PUT", buildJsonObject { put("unread", unread) }.toString(), timeoutSec = 15))
+            ?: throw HubApiException(0, "Invalid response from the relay")
+    }
+    /** Read receipts: `{chat, up_to}` or every session (`all`). Idempotent and monotonic on the hub. */
+    suspend fun markChatRead(agent: String, chat: String?, upTo: Int?): dev.foxfleet.app.data.live.ReadState = withContext(Dispatchers.IO) {
+        val body = buildJsonObject { if (chat == null) put("all", true) else { put("chat", chat); if (upTo != null) put("up_to", upTo) } }
+        dev.foxfleet.app.data.live.Contract.read(request(chatPath(agent) + "/read", "POST", body.toString(), timeoutSec = 15))
+    }
+    /** Cache catch-up: messages after number [afterN], oldest first. */
+    suspend fun messagesAfter(agent: String, sessionId: String, afterN: Int, limit: Int = 80): HistoryPage = withContext(Dispatchers.IO) {
+        val obj = request(agentPath(agent) + "/sessions/" + enc(sessionId) + "/messages", query = mapOf("after_n" to "$afterN", "limit" to "$limit"), timeoutSec = 60)
+        val arr = obj["messages"]?.jsonArray ?: throw HubApiException(0, "Invalid response from the relay")
+        HistoryPage(arr.mapNotNull { historyMessage(it) }, obj["has_more"]?.jsonPrimitive?.booleanOrNull == true)
+    }
+    /** `PUT /api/notify/mute` for a whole agent (the chat list's mute). [forMs] null = until unmuted. */
+    suspend fun muteAgent(agent: String, muted: Boolean, forMs: Long? = null): Unit = withContext(Dispatchers.IO) {
+        request("/api/notify/mute", "PUT", buildJsonObject { put("agent", agent); put("muted", muted); if (muted && forMs != null) put("for_ms", forMs) }.toString(), timeoutSec = 15); Unit
     }
 
     private suspend fun openEvents(agent: String, run: String, after: Int): Response {

@@ -1,5 +1,11 @@
 package dev.foxfleet.app.data.local
 
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import dev.foxfleet.app.data.live.ChatsSnapshot
+import dev.foxfleet.app.data.live.HubChat
+import dev.foxfleet.app.data.live.LastMessage
+import dev.foxfleet.app.data.live.MessageStatus
 import android.content.Context
 import androidx.room.withTransaction
 import dev.foxfleet.app.data.AgentStatus
@@ -11,7 +17,6 @@ import dev.foxfleet.app.data.SessionInfo
 import dev.foxfleet.app.data.ToolStep
 import dev.foxfleet.app.data.UiMessage
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -63,7 +68,7 @@ data class CachedPage(val messages: List<UiMessage>, val moreOnDevice: Boolean, 
  * chat) replaces both: `ord` becomes `n` and `after_n` fills gaps.
  */
 class ChatCache(private val db: CacheDb, val owner: String, private val now: () -> Long = { System.currentTimeMillis() }) {
-    private val list = db.chatList(); private val msgs = db.messages()
+    private val list = db.chatList(); private val msgs = db.messages(); private val live = db.live()
 
     // ---- chat list ----
     suspend fun agents(): List<AgentStatus> = list.agents(owner).map { it.toAgent() }
@@ -101,17 +106,21 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
     suspend fun saveNewest(agent: String, chatId: String, page: List<UiMessage>, hasMore: Boolean, pageSize: Int = CACHE_PAGE) {
         if (page.isEmpty()) return
         val keys = MessageKeys.keys(page)
+        // A hub with `readReceipts` numbers every message (n, gap-free per chat): then ord = n, and pages and live events join exactly.
+        val numbered = page.all { it.n != null }
         db.withTransaction {
-            val anchor = msgs.ordOf(owner, agent, chatId, keys[0]); val meta = msgs.meta(owner, agent, chatId)
+            val mixed = numbered && live.unnumbered(owner, agent, chatId) > 0 // cached before the hub numbered messages: start over
+            val anchor = if (mixed) null else msgs.ordOf(owner, agent, chatId, keys[0]); val meta = msgs.meta(owner, agent, chatId)
             if (anchor != null && meta != null) {
-                val removed = msgs.countFrom(owner, agent, chatId, anchor)
-                msgs.deleteFrom(owner, agent, chatId, anchor)
-                msgs.insert(page.mapIndexed { i, m -> m.toRow(owner, agent, chatId, keys[i], anchor + i) })
+                val from = if (numbered) minOf(anchor, page[0].n!!.toLong()) else anchor
+                val removed = msgs.countFrom(owner, agent, chatId, from)
+                msgs.deleteFrom(owner, agent, chatId, from)
+                msgs.insert(page.mapIndexed { i, m -> m.toRow(owner, agent, chatId, keys[i], if (numbered) m.n!!.toLong() else anchor + i) })
                 val grown = (page.size - removed).coerceAtLeast(0) // newer messages push the hub's next older page further back
                 msgs.upsertMeta(meta.copy(olderOffset = meta.olderOffset + grown, syncedAt = now()))
             } else {
                 msgs.deleteChat(owner, agent, chatId)
-                msgs.insert(page.mapIndexed { i, m -> m.toRow(owner, agent, chatId, keys[i], i.toLong()) })
+                msgs.insert(page.mapIndexed { i, m -> m.toRow(owner, agent, chatId, keys[i], if (numbered) m.n!!.toLong() else i.toLong()) })
                 msgs.upsertMeta(ChatMetaRow(owner, agent, chatId, pageSize, hasMore, now()))
             }
         }
@@ -125,9 +134,58 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
             val keys = MessageKeys.keys(page)
             val fresh = page.indices.filter { keys[it] !in have }
             val min = msgs.minOrd(owner, agent, chatId) ?: 0L
-            msgs.insert(fresh.mapIndexed { j, i -> page[i].toRow(owner, agent, chatId, keys[i], min - fresh.size + j) })
+            val numbered = page.all { it.n != null } && live.unnumbered(owner, agent, chatId) == 0
+            msgs.insert(fresh.mapIndexed { j, i -> page[i].toRow(owner, agent, chatId, keys[i], if (numbered) page[i].n!!.toLong() else min - fresh.size + j) })
             msgs.upsertMeta(ChatMetaRow(owner, agent, chatId, offset + pageSize, hasMore, now()))
         }
+    }
+
+    // ---- v2 live layer (phase 1) ----
+
+    suspend fun chatRows(archived: Boolean): List<HubChat> = live.chatRows(owner, archived).map { it.toHub() }
+    fun observeChatRows(): Flow<List<HubChat>> = live.observeChatRows(owner).map { rows -> rows.map { it.toHub() } }
+    suspend fun chatRow(agent: String): HubChat? = live.chatRow(owner, agent)?.toHub()
+    /** A `GET /api/chats?archived=` snapshot replaces that list; the totals and (when given) the cursor go to the sync row. */
+    suspend fun saveSnapshot(archived: Boolean, snap: ChatsSnapshot, takeCursor: Boolean) = db.withTransaction {
+        live.replaceChatRows(owner, archived, snap.chats.map { it.toRow(owner) })
+        val old = live.sync(owner)
+        live.upsertSync(SyncRow(owner, if (takeCursor && snap.cursor != null) snap.cursor else old?.cursor, snap.totalUnread, snap.totalUnreadAll, now()))
+    }
+    suspend fun saveChatRow(row: HubChat) = live.upsertChatRows(listOf(row.toRow(owner)))
+    /** `chat.removed`: the row goes now; the agent row and its cached chats go with the next fleet refresh. */
+    suspend fun removeAgent(agent: String) = live.deleteChatRow(owner, agent)
+    suspend fun sync(): SyncRow? = live.sync(owner)
+    fun observeSync(): Flow<SyncRow?> = live.observeSync(owner)
+    suspend fun saveCursor(cursor: String) { val old = live.sync(owner); live.upsertSync((old ?: SyncRow(owner, null, 0, 0, now())).copy(cursor = cursor, syncedAt = now())) }
+    suspend fun saveTotals(total: Int) { val old = live.sync(owner); live.upsertSync((old ?: SyncRow(owner, null, 0, 0, now())).copy(totalUnread = total)) }
+    suspend fun cachedChats(): List<CachedChatRef> = live.cachedChats(owner)
+    suspend fun maxN(agent: String, chatId: String): Int? = live.maxN(owner, agent, chatId)
+    suspend fun numbered(agent: String, chatId: String): Boolean = msgs.count(owner, agent, chatId) > 0 && live.unnumbered(owner, agent, chatId) == 0
+    suspend fun dropChatMessages(agent: String, chatId: String) = db.withTransaction { msgs.deleteChat(owner, agent, chatId); msgs.deleteMeta(owner, agent, chatId) }
+
+    /**
+     * One message from the stream (new or edited), by `hub_id`. Returns false when it could not be placed: the chat is not
+     * cached in numbered form, or it is newer than the cache's newest + 1 (a gap the caller fills with `after_n`).
+     */
+    suspend fun upsertLive(agent: String, chatId: String, m: UiMessage): Boolean = db.withTransaction {
+        val hubId = m.hubId ?: return@withTransaction false; val n = m.n ?: return@withTransaction false
+        val existing = live.byLiveId(owner, hubId)
+        if (existing != null) {
+            val keep = existing.copy(content = m.content, ts = if (m.ts > 0) m.ts else existing.ts, hubId = m.id ?: existing.hubId,
+                status = MessageStatus.advance(existing.status, m.status), images = m.toRow(owner, agent, chatId, existing.msgKey, existing.ord).images,
+                kind = MessageKinds.of(m))
+            live.upsertMessage(keep); return@withTransaction true
+        }
+        if (!numbered(agent, chatId)) return@withTransaction false
+        val max = live.maxN(owner, agent, chatId) ?: return@withTransaction false
+        if (n > max + 1) return@withTransaction false
+        msgs.insert(listOf(m.toRow(owner, agent, chatId, MessageKeys.base(m), n.toLong())))
+        msgs.meta(owner, agent, chatId)?.let { if (n > max) msgs.upsertMeta(it.copy(olderOffset = it.olderOffset + 1, syncedAt = now())) }
+        true
+    }
+    suspend fun deleteLive(ids: List<String>) { if (ids.isNotEmpty()) live.deleteByLiveIds(owner, ids) }
+    suspend fun statusLive(ids: List<String>, status: String) = db.withTransaction {
+        if (ids.isNotEmpty()) live.byLiveIds(owner, ids).forEach { r -> val s = MessageStatus.advance(r.status, status); if (s != r.status) live.setStatus(r.rowId, s) }
     }
 
     companion object {
@@ -142,6 +200,7 @@ internal fun UiMessage.toRow(owner: String, agent: String, chatId: String, key: 
     steps = if (steps.isEmpty()) "" else JsonArray(steps.map { s -> JsonObject(mapOf("name" to JsonPrimitive(s.name), "args" to JsonPrimitive(s.args), "result" to JsonPrimitive(s.result), "ok" to JsonPrimitive(s.ok))) }).toString(),
     images = if (imageUrls.isEmpty()) "" else JsonArray(imageUrls.map { JsonPrimitive(it) }).toString(),
     kind = MessageKinds.of(this),
+    liveId = hubId, n = n, status = status,
 )
 
 internal fun MessageRow.toUi(): UiMessage {
@@ -152,7 +211,7 @@ internal fun MessageRow.toUi(): UiMessage {
         }
     }.getOrDefault(emptyList())
     val urls = if (images.isEmpty()) emptyList() else runCatching { Json.parseToJsonElement(images).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull } }.getOrDefault(emptyList())
-    return UiMessage(role = role, content = content, id = hubId, reasoning = reasoning, steps = st, ts = ts, imageUrls = urls)
+    return UiMessage(role = role, content = content, id = hubId, reasoning = reasoning, steps = st, ts = ts, imageUrls = urls, hubId = liveId, n = n, status = status)
 }
 
 /** Capabilities as "flag,flag;busy=queue|interrupt": small and readable in a database dump. */
@@ -176,3 +235,10 @@ internal fun AgentStatus.toRow(owner: String, position: Int) = AgentRow(owner, n
 internal fun AgentRow.toAgent() = AgentStatus(name = name, online = online, chatReady = chatReady, managementReady = managementReady, activeSessions = activeSessions, kind = kind,
     label = label, description = description, capabilities = CapsCodec.decode(caps), order = registryOrder, lastActivityAt = lastActivityAt, lastSessionTitle = lastSessionTitle,
     lastMessagePreview = lastMessagePreview, lastRole = lastRole, pinOrder = pinOrder, working = working, needsInput = needsInput)
+
+internal fun HubChat.toRow(owner: String) = ChatListRow(owner, agent, label, kind, chat, last?.hubId, last?.role, last?.sender, last?.preview.orEmpty(), last?.at, last?.status,
+    unread, readUpTo, archived, muted, mutedUntil, pinned, pinOrder, working, needsInput, manualUnread, updatedAt)
+
+internal fun ChatListRow.toHub() = HubChat(agent, label, kind, chat,
+    if (lastHubId == null && lastPreview.isEmpty() && lastAt == null) null else LastMessage(lastHubId, lastRole, lastSender, lastPreview, lastAt, lastStatus),
+    unread, readUpTo, archived, muted, mutedUntil, pinned, pinOrder, working, needsInput, manualUnread, updatedAt)

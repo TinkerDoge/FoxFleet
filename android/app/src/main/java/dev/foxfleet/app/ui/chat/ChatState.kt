@@ -163,6 +163,42 @@ class ChatState {
     }
     fun olderFailed() { loadingOlder = false }
 
+    // ---- phase 1 live v2: events for this chat edit the list in place (by hub_id) ----
+
+    /**
+     * `message.new` / `message.edited` for this chat. Matches by `hub_id`; a new user message replaces the optimistic copy you
+     * just sent (same text, no hub id yet); an agent message while its reply is still streaming is left to the run's stream
+     * (its commit and reconcile give it the ids). Returns true when the list changed.
+     */
+    fun applyLive(m: UiMessage, edited: Boolean): Boolean {
+        val hub = m.hubId ?: return false
+        val i = messages.indexOfFirst { it.hubId == hub }
+        if (i >= 0) { messages = messages.toMutableList().also { it[i] = mergeLive(it[i], m) }; return true }
+        if (edited || loading) return false // an edit of a message not shown, or a page about to land that includes it
+        val j = if (m.role == "user") messages.indexOfLast { it.role == "user" && it.hubId == null && it.content.trim() == m.content.trim() }.takeIf { it >= messages.size - 3 }
+        else { if (streaming) return false; messages.lastIndex.takeIf { it >= 0 && messages[it].role == "assistant" && messages[it].hubId == null && messages[it].content.trim() == m.content.trim() } }
+        if (j != null && j >= 0) { messages = messages.toMutableList().also { it[j] = mergeLive(it[j], m) }; return true }
+        appendLive(listOf(m)); return true
+    }
+
+    private fun mergeLive(old: UiMessage, new: UiMessage) = new.copy(
+        reasoning = new.reasoning.ifEmpty { old.reasoning }, reasoningMs = old.reasoningMs, tools = old.tools, steps = new.steps.ifEmpty { old.steps },
+        images = old.images, imageUrls = new.imageUrls.ifEmpty { old.imageUrls }, id = new.id ?: old.id, ts = if (new.ts > 0) new.ts else old.ts,
+        status = dev.foxfleet.app.data.live.MessageStatus.advance(old.status, new.status),
+    )
+
+    /** `message.status`: ticks on your messages only move forward. */
+    fun applyStatus(ids: Collection<String>, status: String) {
+        if (ids.isEmpty() || messages.none { it.hubId in ids }) return
+        messages = messages.map { if (it.hubId in ids) it.copy(status = dev.foxfleet.app.data.live.MessageStatus.advance(it.status, status)) else it }
+    }
+
+    /** `message.deleted` (delete for me, on any device). */
+    fun applyDeleted(ids: Collection<String>) {
+        if (ids.isEmpty() || messages.none { it.hubId in ids }) return
+        messages = messages.filterNot { it.hubId in ids }
+    }
+
     /** The rows on screen came from the device cache and the hub has not confirmed them yet. */
     var fromCache by mutableStateOf(false)
         private set

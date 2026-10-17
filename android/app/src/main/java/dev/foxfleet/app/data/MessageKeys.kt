@@ -2,11 +2,11 @@ package dev.foxfleet.app.data
 
 /**
  * Stable identity for message rows, independent of their position: the LazyColumn key and the cache key.
- * The hub id when there is one; otherwise role + time + a content hash, made unique by counting repeats from the
+ * The hub's own id (phase 1 `hub_id`) or the message id when there is one; otherwise role + time + a content hash, made unique by counting repeats from the
  * NEWEST end (so prepending older pages never changes the key of a message already on screen).
  */
 object MessageKeys {
-    fun base(m: UiMessage): String = m.id?.let { "id:$it" } ?: "c:${m.role}:${m.ts}:${hash(m.content + "\u0000" + m.reasoning)}"
+    fun base(m: UiMessage): String = m.hubId?.let { "h:$it" } ?: m.id?.let { "id:$it" } ?: "c:${m.role}:${m.ts}:${hash(m.content + "\u0000" + m.reasoning)}"
 
     /** Keys for a chronological list, in the same order. */
     fun keys(messages: List<UiMessage>): List<String> {

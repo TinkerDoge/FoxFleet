@@ -51,6 +51,20 @@ class CacheMigrationTest {
         assertEquals(CacheDb.VERSION, schema(CacheDb.VERSION)["version"]!!.jsonPrimitive.content.toInt())
     }
 
+    @Test fun v1MessagesSurviveTheMoveToV2() = runBlocking {
+        createFromSchema("keep.db", 1)
+        SQLiteDatabase.openDatabase(context.getDatabasePath("keep.db").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("INSERT INTO messages (owner, agent, chat_id, msg_key, hub_id, ord, ts, role, content, reasoning, steps, images, kind) VALUES ('o','nova','c','id:m1','m1',0,5,'user','kept','','','','user')")
+            db.execSQL("INSERT INTO chat_meta (owner, agent, chat_id, older_offset, has_older, synced_at) VALUES ('o','nova','c',80,1,1)")
+        }
+        val db = CacheDb.build(context, "keep.db", destructive = false)
+        try {
+            val c = ChatCache(db, "o").open("nova", "c")!!
+            assertEquals(listOf("kept"), c.messages.map { it.content }); assertEquals(null, c.messages[0].n)
+            assertTrue(db.live().chatRows("o", false).isEmpty())
+        } finally { db.close() }
+    }
+
     @Test fun everyShippedVersionMigratesToCurrentAndValidates() = runBlocking {
         for (v in 1..CacheDb.VERSION) {
             val name = "migrate-$v.db"; createFromSchema(name, v)
