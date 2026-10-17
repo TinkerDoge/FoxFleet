@@ -287,8 +287,8 @@ private fun AgentRow(
                         if (row != null && count > 0) {
                             Spacer(Modifier.width(8.dp))
                             val label = ChatRows.badgeText(count)
-                            Text(label, style = MaterialTheme.typography.labelMedium, color = if (muted) androidx.compose.ui.graphics.Color.White else c.onAccent, maxLines = 1,
-                                modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(if (muted) c.textFaint else c.accent).padding(horizontal = 7.dp, vertical = 2.dp)
+                            Text(label, style = MaterialTheme.typography.labelMedium, color = if (muted) c.onBadgeMuted else c.onAccent, maxLines = 1,
+                                modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(if (muted) c.badgeMuted else c.accent).padding(horizontal = 7.dp, vertical = 2.dp)
                                     .semantics { contentDescription = if (row.unread > 0) "$label unread" + if (muted) ", muted" else "" else "Marked unread" },
                                 textAlign = androidx.compose.ui.text.style.TextAlign.Center)
                         } else if (row == null && unread) {
@@ -331,8 +331,8 @@ private fun ArchivedEntry(count: Int, unread: Int, modifier: Modifier, onClick: 
             Text("Archived chats", style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
             Text(if (count == 1) "1 chat" else "$count chats", style = MaterialTheme.typography.bodyMedium, color = c.textMuted, maxLines = 1)
         }
-        if (unread > 0) Text(ChatRows.badgeText(unread), style = MaterialTheme.typography.labelMedium, color = androidx.compose.ui.graphics.Color.White,
-            modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(c.textFaint).padding(horizontal = 7.dp, vertical = 2.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+        if (unread > 0) Text(ChatRows.badgeText(unread), style = MaterialTheme.typography.labelMedium, color = c.onBadgeMuted,
+            modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(c.badgeMuted).padding(horizontal = 7.dp, vertical = 2.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
     }
 }
 

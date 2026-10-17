@@ -41,6 +41,9 @@ data class HubColors(
     val idleText: Color,
     val offline: Color,
     val dark: Boolean,
+    /** Quiet count badge (muted chat, archived entry) and its text: at least 4.5:1 in both themes (WCAG AA for labelMedium). */
+    val badgeMuted: Color = textFaint,
+    val onBadgeMuted: Color = if (dark) Tokens.Dark.bg else Color.White,
 )
 
 fun hubColors(dark: Boolean, accentIndex: Int): HubColors {
