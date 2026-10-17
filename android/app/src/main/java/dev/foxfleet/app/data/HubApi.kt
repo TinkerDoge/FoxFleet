@@ -10,6 +10,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
@@ -386,6 +387,8 @@ class HubApi(private val store: SettingsStore) {
         /** Per-call tool lifecycle (start/progress/end with turn and call ids) from hubs that send it; [onTool] stays for older ones. */
         val onToolEvent: (ToolEvent) -> Unit = {},
         val onReplace: (String) -> Unit = {},
+        /** 0.4.1 hubs: `foxfleet.step` commentary / status / sub-agent lines (kind, text, level). */
+        val onStep: (String, String, String?) -> Unit = { _, _, _ -> },
     )
 
     /**
@@ -408,6 +411,7 @@ class HubApi(private val store: SettingsStore) {
         onReconnecting: () -> Unit = {},
         onToolEvent: (ToolEvent) -> Unit = {},
         onReplace: (String) -> Unit = {},
+        onStep: (String, String, String?) -> Unit = { _, _, _ -> },
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -417,7 +421,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace, onStep = onStep), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -576,6 +580,18 @@ class HubApi(private val store: SettingsStore) {
             ModelProvider(slug, o.str("name") ?: slug, o["models"]?.jsonArray?.mapNotNull { m -> m.jsonPrimitive.contentOrNull } ?: emptyList(), o.bool("current") ?: false)
         } ?: emptyList()
     }
+    /** 0.4.1 hubs, any Hermes agent: `GET /api/agents/{name}/models` ({mode, providers, override?}). */
+    suspend fun agentModels(agent: String, session: String?): List<ModelProvider> = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/models", query = if (session != null) mapOf("session_id" to session) else emptyMap(), timeoutSec = 30)["providers"]?.let { runCatching { it.jsonArray }.getOrNull() }?.mapNotNull { e ->
+            val o = e as? JsonObject ?: return@mapNotNull null; val slug = o.str("slug") ?: return@mapNotNull null
+            ModelProvider(slug, o.str("name") ?: slug, (o["models"] as? kotlinx.serialization.json.JsonArray)?.mapNotNull { m -> (m as? JsonPrimitive)?.contentOrNull } ?: emptyList(), o.bool("current") ?: false)
+        } ?: emptyList()
+    }
+    /** `models: request`: the hub keeps this chat's model and sends it with each new run. */
+    suspend fun setChatModel(agent: String, session: String, model: String, provider: String?): String = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/sessions/" + enc(session) + "/model", "POST", buildJsonObject { put("model", model); if (!provider.isNullOrBlank()) put("provider", provider) }.toString(), timeoutSec = 20)
+        "Model for this chat: $model"
+    }
     /** Session-scoped: this conversation only. The profile default is never touched from here. */
     /** Hermes did NOT switch: the model is guarded (e.g. very expensive) and needs the user's confirmation, sent by calling [setModel] again with confirm = true. */
     class ModelConfirmRequired(val reason: String) : Exception(reason)
@@ -620,7 +636,8 @@ class HubApi(private val store: SettingsStore) {
                         e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
                         e.event == "foxfleet.request" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::parseRequest)?.let(cb.onRequest); true }
                         e.event == "foxfleet.request_closed" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> v.str("request_id")?.let { id -> cb.onRequestClosed(id, v.str("reason") ?: "closed") } }; true }
-                        e.event == "foxfleet.tool" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val type = v.str("type"); val name = v.str("name"); if (type in TOOL_EVENTS && name != null) cb.onToolEvent(ToolEvent(type!!, v.str("turn_id"), v.str("tool_id"), name)) }; true }
+                        e.event == "foxfleet.tool" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::toolEvent)?.let(cb.onToolEvent); true }
+                        e.event == "foxfleet.step" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val k = v.str("kind"); val t = v.str("text"); if (k != null && t != null) cb.onStep(k, t, v.str("level")) }; true }
                         e.event == "foxfleet.ack" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let { v -> val a = v.str("ack"); if (a != null && a in ACKS) cb.onAck(v.str("message_id").orEmpty(), a) }; true }
                         e.event == "error" -> throw HubApiException(0, "The agent reply failed. Check the agent and try again.")
                         else -> {
@@ -666,6 +683,14 @@ class HubApi(private val store: SettingsStore) {
 
         internal val ACKS = setOf("streaming", "queued", "steered", "redirected", "rejected")
         internal val TOOL_EVENTS = setOf("tool.start", "tool.progress", "tool.end")
+        /** `foxfleet.tool` (lenient: unknown fields ignored, wrong types dropped). */
+        internal fun toolEvent(v: JsonObject): ToolEvent? {
+            fun s(k: String) = (v[k] as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val type = s("type")?.takeIf { it in TOOL_EVENTS } ?: return null; val name = s("name") ?: return null
+            val ok = (v["ok"] as? JsonPrimitive)?.takeIf { !it.isString }?.booleanOrNull
+            val ms = (v["duration_ms"] as? JsonPrimitive)?.takeIf { !it.isString }?.let { it.longOrNull ?: it.doubleOrNull?.toLong() }?.takeIf { it >= 0 }
+            return ToolEvent(type, s("turn_id"), s("tool_id"), name, s("preview"), ok, ms, s("result_preview"))
+        }
 
         /** The hub's reaction snapshot; anything malformed is skipped rather than failing the chat. */
         fun parseReactions(o: JsonObject): ReactionSnapshot {
@@ -718,6 +743,7 @@ class HubApi(private val store: SettingsStore) {
                     sessions = caps.bool("sessions") ?: false,
                     nativeUi = caps.bool("nativeUi") ?: false,
                     bot = caps.bool("bot") ?: false,
+                    models = caps.str("models")?.takeIf { it in Capabilities.MODEL_MODES },
                     reactions = caps.bool("reactions") ?: false, agentReactions = caps.bool("agentReactions") ?: false,
                     busy = runCatching { caps["busy"]!!.jsonArray.map { it.jsonPrimitive.content }.filter { it in listOf("queue", "steer", "interrupt") } }.getOrNull()?.ifEmpty { null } ?: listOf("queue"),
                 ) else Capabilities.forKind(kind).copy(bot = caps?.bool("bot") ?: false),

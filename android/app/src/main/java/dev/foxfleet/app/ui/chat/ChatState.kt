@@ -79,6 +79,13 @@ class ChatState {
     /** Calls running right now (hubs that send per-call events); each disappears when its end arrives, all clear when the reply ends. */
     var tools by mutableStateOf(ToolActivity())
         private set
+    /** 0.4.1: the reply's live step list (tool calls with preview, outcome and time; commentary and status lines). */
+    var steps by mutableStateOf(StepLog())
+        private set
+    /** The agent's message.new for the reply still streaming (hub id, number, the hub's reasoning/tools): merged into the bubble when it commits. */
+    private var pendingReply: UiMessage? = null
+    /** A run that started in this chat while it was loading (0.4.0 dropped it): the ViewModel follows it once the page is in. */
+    var missedRun: String? = null
     /** Reactions for this conversation once loaded (null: not loaded, or the hub has none for this agent). */
     var reactions by mutableStateOf<dev.foxfleet.app.data.ReactionSnapshot?>(null)
         private set
@@ -100,8 +107,8 @@ class ChatState {
     internal fun simulateReactions(snapshot: dev.foxfleet.app.data.ReactionSnapshot) { reactions = snapshot }
 
     /** Previews/screenshot tests: put the live overlays into a mid-stream state. */
-    internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null) {
-        streaming = true; streamText = text; streamReasoning = reasoning; toolLabel = tool
+    internal fun simulateStream(text: String, reasoning: String = "", tool: String? = null, steps: StepLog = StepLog()) {
+        streaming = true; streamText = text; streamReasoning = reasoning; toolLabel = tool; this.steps = steps
     }
 
     /** Previews/screenshot tests: what a native session shows (cards, the queue as Hermes holds it, tools used). */
@@ -137,7 +144,7 @@ class ChatState {
     fun appendLive(fresh: List<UiMessage>) { if (fresh.isEmpty()) return; messages = messages + fresh; olderOffset += fresh.size }
 
     private fun resetStream() {
-        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); requests = emptyList()
+        streaming = false; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; toolLog = emptyList(); tools = ToolActivity(); steps = StepLog(); requests = emptyList(); pendingReply = null
     }
 
     fun adopt(sessionId: String?) {
@@ -146,8 +153,9 @@ class ChatState {
 
     fun load(messages: List<UiMessage>, sessionId: String?, hasMore: Boolean = false) {
         if (sessionId != this.sessionId) { reactions = null; reactionError = null; hiddenUndo = null }
+        val carried = if (sessionId == this.sessionId) MessageMerge.carry(this.messages, messages) else messages
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
-        this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
+        this.messages = carried; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
         if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
         loading = false; fromCache = false
@@ -175,17 +183,15 @@ class ChatState {
         val i = messages.indexOfFirst { it.hubId == hub }
         if (i >= 0) { messages = messages.toMutableList().also { it[i] = mergeLive(it[i], m) }; return true }
         if (edited || loading) return false // an edit of a message not shown, or a page about to land that includes it
+        // The reply that is streaming right now: keep its ids for the commit (0.4.0 dropped them, and the bubble then lost its thinking on the next swap).
+        if (m.role == "assistant" && streaming && (m.runId == null || runId == null || m.runId == runId)) { pendingReply = m; return false }
         val j = if (m.role == "user") messages.indexOfLast { it.role == "user" && it.hubId == null && it.content.trim() == m.content.trim() }.takeIf { it >= messages.size - 3 }
-        else { if (streaming) return false; messages.lastIndex.takeIf { it >= 0 && messages[it].role == "assistant" && messages[it].hubId == null && messages[it].content.trim() == m.content.trim() } }
+        else { if (streaming) return false; MessageMerge.replyIndex(messages, m) }
         if (j != null && j >= 0) { messages = messages.toMutableList().also { it[j] = mergeLive(it[j], m) }; return true }
         appendLive(listOf(m)); return true
     }
 
-    private fun mergeLive(old: UiMessage, new: UiMessage) = new.copy(
-        reasoning = new.reasoning.ifEmpty { old.reasoning }, reasoningMs = old.reasoningMs, tools = old.tools, steps = new.steps.ifEmpty { old.steps },
-        images = old.images, imageUrls = new.imageUrls.ifEmpty { old.imageUrls }, id = new.id ?: old.id, ts = if (new.ts > 0) new.ts else old.ts,
-        status = dev.foxfleet.app.data.live.MessageStatus.advance(old.status, new.status),
-    )
+    private fun mergeLive(old: UiMessage, new: UiMessage) = MessageMerge.merge(old, new)
 
     /** `message.status`: ticks on your messages only move forward. */
     fun applyStatus(ids: Collection<String>, status: String) {
@@ -240,8 +246,9 @@ class ChatState {
 
     private fun callbacks(g: Int) = HubApi.StreamCallbacks(
         onReconnecting = { if (g == gen) reconnecting = true },
-        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { if (tools.active.isEmpty() && tools.ended.isEmpty()) toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12) } },
-        onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null } }, // per-call events replace the legacy label
+        onContent = { if (g == gen) { reconnecting = false; if (reasoningStart > 0 && reasoningMs == 0L) reasoningMs = System.currentTimeMillis() - reasoningStart; streamText += it } }, onReasoning = { if (g == gen) { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning += it } }, onTool = { if (g == gen) { if (tools.active.isEmpty() && tools.ended.isEmpty()) toolLabel = it; if (toolLog.lastOrNull() != it) toolLog = (toolLog + it).takeLast(12); steps = steps.legacyTool(it) } },
+        onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null; steps = steps.tool(e) } }, // per-call events replace the legacy label
+        onStep = { k, t, l -> if (g == gen) steps = steps.note(k, t, l) },
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -257,7 +264,7 @@ class ChatState {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
         val sentAt = System.currentTimeMillis(); val before = messages
-        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace) } }
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace, onStep = cb.onStep) } }
         catch (e: dev.foxfleet.app.data.HubApiException) {
             if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
         }
@@ -293,12 +300,12 @@ class ChatState {
 
     private suspend fun stream(block: suspend (HubApi.StreamCallbacks) -> String) {
         val g = ++gen
-        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; tools = ToolActivity()
+        streaming = true; error = null; streamText = ""; streamReasoning = ""; reasoningStart = 0L; reasoningMs = 0L; toolLabel = null; tools = ToolActivity(); steps = StepLog(); pendingReply = null
         try {
             val text = block(callbacks(g))
             if (g != gen) return // another chat is open now: this stream's end changes nothing
             toolLabel = null
-            if (text.isNotEmpty() || streamReasoning.isNotEmpty()) push(UiMessage(role = "assistant", content = text, reasoning = streamReasoning, reasoningMs = reasoningDuration()))
+            commitReply(text)
             resetStream(); finishRun()
         } catch (e: CancellationException) {
             // The app left the screen or the process is going away. The hub keeps the run alive, so keep what we have and
@@ -306,7 +313,7 @@ class ChatState {
             val partial = streamText; val thinking = streamReasoning; val took = reasoningDuration()
             if (g != gen) throw e
             resetStream()
-            if (partial.isNotBlank() || thinking.isNotBlank()) push(UiMessage(role = "assistant", content = partial, reasoning = thinking, reasoningMs = took))
+            if (partial.isNotBlank() || thinking.isNotBlank()) push(UiMessage(role = "assistant", content = partial, reasoning = thinking, reasoningMs = took, runId = runId))
             throw e
         } catch (e: AuthRequiredException) {
             if (g == gen) resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) }; throw e
@@ -314,6 +321,31 @@ class ChatState {
             if (g != gen) throw e
             resetStream(); error = e.message?.let { dev.foxfleet.app.data.scrubAddresses(it) } ?: "Chat failed"
             throw e
+        }
+    }
+
+    /**
+     * The streamed reply becomes a message: its thinking, timing and steps, plus the hub's ids from its message.new when that
+     * already came (it usually does: the hub announces the reply before the run stream closes). Merged by run_id.
+     */
+    private fun commitReply(text: String) {
+        val log = steps.settle(); val pending = pendingReply?.takeIf { p -> p.runId == null || runId == null || p.runId == runId }
+        if (text.isEmpty() && streamReasoning.isEmpty() && pending == null) return
+        val local = UiMessage(role = "assistant", content = text, reasoning = streamReasoning, reasoningMs = reasoningDuration(), steps = log.toToolSteps(), runId = runId)
+        val m = if (pending != null && messages.none { it.hubId == pending.hubId }) MessageMerge.merge(local, pending).copy(content = text.ifEmpty { pending.content }) else local
+        push(m)
+    }
+    /** The reply just committed, when it has a hub id (the ViewModel stores its thinking and steps in the device cache). */
+    val lastCommitted: UiMessage? get() = messages.lastOrNull()?.takeIf { it.role == "assistant" && it.hubId != null }
+
+    /** `run.step` from live v2 for the reply streaming here: same rows as the run stream's own events (deduped by tool_id). */
+    fun applyRunStep(s: dev.foxfleet.app.data.live.RunStep) {
+        if (!streaming || (s.runId != null && runId != null && s.runId != runId)) return
+        steps = when (s.kind) {
+            // run.step `preview` is the arguments on tool.start and the result on tool.end (LIVE-EVENTS.md, RunStep)
+            "tool.start", "tool.progress" -> s.name?.let { steps.tool(s.kind, s.toolId, it, s.preview, s.ok, s.durationMs) } ?: steps
+            "tool.end" -> s.name?.let { steps.tool(s.kind, s.toolId, it, null, s.ok, s.durationMs, result = s.preview) } ?: steps
+            else -> s.text?.let { steps.note(s.kind, it) } ?: steps
         }
     }
 
@@ -378,7 +410,7 @@ class ChatState {
         fun same(a: UiMessage?, b: UiMessage?) = a == null || (b != null && a.role == b.role && a.content.trim() == b.content.trim())
         if (!same(start.last(), page.messages.last()) || !same(start.getOrNull(start.size - 2), page.messages.getOrNull(page.messages.size - 2))) return
         val first = page.messages.first().id; val boundary = if (first != null) start.indexOfFirst { it.id == first } else -1
-        messages = (if (boundary >= 0) start.take(boundary) else emptyList()) + page.messages
+        messages = MessageMerge.carry(start, (if (boundary >= 0) start.take(boundary) else emptyList()) + page.messages)
         if (boundary < 0) { hasOlder = page.hasMore; olderOffset = PAGE } // the stored page replaced everything we had
     }
 

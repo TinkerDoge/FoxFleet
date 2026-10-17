@@ -110,6 +110,8 @@ class RunTracker(private val cap: Int = 128) {
         return live.remove(runId)?.let { if (it.chat == null) it.copy(chat = chat) else it }
     }
     fun running(agent: String): Boolean = live.values.any { it.agent == agent }
+    /** Started and not finished yet (as far as this stream knows). */
+    fun isLive(runId: String): Boolean = runId in live
     fun clear() { live.clear(); done.clear() }
     private fun trim() {
         while (live.size > cap) live.remove(live.keys.first())

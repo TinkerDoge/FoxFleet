@@ -405,14 +405,36 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         when (e.type) {
             // A reply started elsewhere (web, another phone) in the chat you are looking at: follow it live, as if you had sent it.
             "run_started" -> if (run != null && !state.streaming && !state.loading && jobs[open]?.isActive != true && state.sessionId != null) {
-                jobs[open] = viewModelScope.launch {
-                    try { catchUpNow(open); state.resume(api, open, run, null) }
-                    catch (x: CancellationException) { throw x } catch (x: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
-                }
-            }
+                followRun(open, run)
+            } else if (run != null && !state.streaming && state.loading) state.missedRun = run // 0.4.0 dropped it for good: follow it once the page is in
+            "run_finished" -> { if (run != null && state.missedRun == run) state.missedRun = null; catchUp(open) }
             "approval" -> viewModelScope.launch { runCatching { state.syncQueue(api, open) } }
             else -> catchUp(open)
         }
+    }
+
+    /** Follow a reply that runs in [agent]'s open chat (started elsewhere, or missed while the chat loaded): live thinking and steps, then the commit. */
+    private fun followRun(agent: String, run: String) {
+        val state = chatFor(agent)
+        jobs[agent] = viewModelScope.launch {
+            try { catchUpNow(agent); state.resume(api, agent, run, null); storeReply(agent) }
+            catch (x: CancellationException) { throw x } catch (x: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+        }
+    }
+
+    /** A run that started while [agent]'s chat was loading: follow it now, unless something else already did. */
+    private fun followMissed(agent: String) {
+        val state = chatFor(agent); val run = state.missedRun ?: return
+        if (state.streaming || state.loading || jobs[agent]?.isActive == true || state.sessionId == null) return
+        state.missedRun = null
+        if (state.messages.any { it.runId == run }) return
+        followRun(agent, run)
+    }
+
+    /** The reply just committed keeps its thinking and steps in the device cache (the hub's message.new may carry neither). */
+    private fun storeReply(agent: String) {
+        val state = chatFor(agent); val sid = state.sessionId ?: return; val m = state.lastCommitted ?: return
+        viewModelScope.launch { cached { upsertLive(agent, sid, m) } }
     }
 
     /** Fetch the newest page of [agent]'s open chat and add what is new (no spinner, no error: the next event or poll retries). */
@@ -477,6 +499,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         jobs[agent] = viewModelScope.launch {
             try {
                 state.send(api, agent, text.trim(), images)
+                storeReply(agent)
                 state.messages.lastOrNull()?.takeIf { it.role == "assistant" }?.let { settings.rememberLast(agent, "assistant", it.content) }
                 if ((route as? Route.Chat)?.agent != agent) state.markUnread()
                 state.syncQueue(api, agent)
@@ -565,6 +588,16 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         confirmModel = { m, p -> api.setModel(agent, chatFor(agent).sessionId ?: error("No conversation yet"), m, p, confirm = true) },
         busy = { api.profileBusy(agent) }, setBusy = { api.setProfileBusy(agent, it) },
     )
+    /** What /model talks to (0.4.1): the native gateway, the hub's per-chat model ("request"), or nothing. */
+    fun modelControls(agent: dev.foxfleet.app.data.AgentStatus): dev.foxfleet.app.ui.screens.NativeControls? = when (agent.capabilities.modelsMode) {
+        "native" -> nativeControls(agent.name)
+        "request" -> dev.foxfleet.app.ui.screens.NativeControls(
+            models = { api.agentModels(agent.name, chatFor(agent.name).sessionId) },
+            setModel = { m, p -> api.setChatModel(agent.name, chatFor(agent.name).sessionId ?: error("No conversation yet"), m, p) },
+            busy = { "" }, setBusy = { error("Not available for this agent") },
+        )
+        else -> null
+    }
     suspend fun answerRequest(agent: String, id: String, result: kotlinx.serialization.json.JsonObject): String? = chatFor(agent).answerRequest(api, agent, id, result)
 
     fun newChat(agent: String) { detach(agent); chatFor(agent).newConversation() }
@@ -599,8 +632,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 page.let { state.load(it.messages, session, it.hasMore) }
                 val run = runCatching { api.runs(agent, session).maxByOrNull { it.started } }.getOrNull()
                 val endsWithReply = state.messages.lastOrNull()?.role == "assistant"
-                if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); return@launch }
-                state.resume(api, agent, run.id, saved.user)
+                if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); state.missedRun = null; return@launch }
+                state.missedRun = null; state.resume(api, agent, run.id, saved.user); storeReply(agent)
             } catch (e: CancellationException) {
             } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
             } catch (e: Exception) { if (state.sessionId == null) state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load") }
@@ -727,6 +760,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 showCachedChat(state, agent, id)
                 newestPage(agent, id).let { if (state.sessionId == id || !state.fromCache) state.load(it.messages, id, it.hasMore) }
+                followMissed(agent)
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) {
                 deactivateMedia(purge = true)
                 authed = false
@@ -789,6 +823,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) effects.forEach { onEffect(it) } }
             }
             override fun onTyping(t: dev.foxfleet.app.data.live.Typing) { viewModelScope.launch { if (gen == authGeneration && typing.on(t)) bumpTyping() } }
+            override fun onStep(s: dev.foxfleet.app.data.live.RunStep) { viewModelScope.launch { if (gen == authGeneration) onRunStep(s) } }
             override suspend fun onResync(reason: String) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) resyncNow(reason) }
         }
         val cursors = object : dev.foxfleet.app.data.live.CursorStore {
@@ -812,6 +847,16 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /** `run.step` (0.4.1 hubs): a step of the reply streaming in that chat; a run of the open chat that nobody follows yet is followed now. */
+    internal fun onRunStep(s: dev.foxfleet.app.data.live.RunStep) {
+        val state = chats.peek(s.agent)?.takeIf { it.sessionId == s.chat } ?: return
+        if (state.streaming) { state.applyRunStep(s); return }
+        val run = s.runId ?: return
+        if (openChatAgent() != s.agent || !runs.isLive(run)) return
+        if (state.loading) { state.missedRun = run; return }
+        if (jobs[s.agent]?.isActive != true && state.messages.none { it.runId == run }) followRun(s.agent, run)
+    }
+
     /** One reducer effect on the screens (main thread). */
     internal fun onEffect(f: dev.foxfleet.app.data.live.LiveEffect) {
         val open = openChatAgent()
@@ -819,6 +864,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             is dev.foxfleet.app.data.live.LiveEffect.Upserted -> {
                 val state = chats.peek(f.agent)
                 if (state != null && state.sessionId == f.chat && state.applyLive(f.message.toUi(), f.edited)) {
+                    // the merged copy keeps the streamed thinking and steps: store that, not the text-only event
+                    state.messages.firstOrNull { it.hubId == f.message.hubId }?.takeIf { it.role == "assistant" && (it.reasoning.isNotEmpty() || it.steps.isNotEmpty()) }?.let { m -> viewModelScope.launch { cached { upsertLive(f.agent, f.chat, m) } } }
                     if (open == f.agent && foreground) sendRead(f.agent, f.chat, f.message.n)
                     else if (f.message.role == "assistant" && !f.edited) state.markUnread()
                 }

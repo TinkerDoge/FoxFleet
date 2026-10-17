@@ -353,7 +353,7 @@ fun ChatScreen(
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
-                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, models = agent.capabilities.modelsMode, modelsKnown = agent.capabilities.models != null, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 agentCommands = agent.capabilities.skills,
                 reply = reply, onClearReply = { reply = null }, disabled = state.loading,
@@ -596,6 +596,7 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
                 Box(contentAlignment = Alignment.Center) {
                 Column(Modifier.clip(shape).background(c.surface).border(1.dp, edge, shape).then(reactable).padding(start = 14.dp, end = 14.dp, top = 10.dp, bottom = 10.dp + lift)) {
                     if (m.reasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(m.reasoning).text, live = false, stateKey = "r:" + m.ts + ":" + m.reasoning.take(32).hashCode(), durationMs = m.reasoningMs)
+                    if (m.steps.isNotEmpty()) { val log = remember(m.steps) { dev.foxfleet.app.ui.chat.StepLog.of(m.steps) }; dev.foxfleet.app.ui.components.StepsPanel(log, live = false, stateKey = "s:" + (m.hubId ?: m.runId ?: "${m.ts}:${m.content.hashCode()}")) }
                     m.imageUrls.forEach { u -> AsyncImage(model = u, contentDescription = "Image from the conversation", contentScale = ContentScale.Fit,
                         modifier = Modifier.padding(bottom = 6.dp).widthIn(max = 280.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).combinedClickable(onClick = { onOpen(MediaRef(u, MediaRef.Kind.Image)) }, onLongClick = menu, onLongClickLabel = if (menu != null) "Message actions" else null)) }
                     AssistantBody(agentName, m.content, instance = sessionId + ":" + (m.id ?: "${m.ts}:${m.content.hashCode()}"), onOpen = onOpen) { RichText(it) }
@@ -617,8 +618,11 @@ private class MessageReactions(val groups: List<dev.foxfleet.app.data.ReactionGr
 /** What a message row does with the hand: long press opens the menu, double tap hearts, swipe right replies; plus the hidden-message Undo. */
 private class MessageGestures(val onMenu: (UiMessage) -> Unit, val onHeart: (String) -> Unit, val onReply: (UiMessage) -> Unit, val onUndoHide: (String) -> Unit)
 
+/** Screenshot tests: render the live step card opened. */
+internal val LocalStepsOpen = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 @Composable
-private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit) {
+private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit, stepsStartOpen: Boolean = LocalStepsOpen.current) {
     val c = LocalHubColors.current
     val reduce = reduceMotion()
     Row(modifier.fillMaxWidth()) {
@@ -628,11 +632,14 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
             val parsedStream = remember(state.streamText) { MediaTags.parseStreaming(state.streamText) }
             val text = parsedStream.text
             val active = state.tools.active
-            val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty()) null else statusLine(agentName, state.toolLabel, state.streamReasoning.isNotBlank(), text.isNotBlank())
+            val steps = state.steps
+            // the step card carries what runs now; the chip below only speaks while there is nothing else to show
+            val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty() || steps.running.isNotEmpty()) null else statusLine(agentName, if (steps.isEmpty) state.toolLabel else null, state.streamReasoning.isNotBlank(), text.isNotBlank())
             // The reply being written already sits in the frame it will keep; activity and status stay outside it.
             val shape = RoundedCornerShape(6.dp, 18.dp, 18.dp, 18.dp)
-            if (state.streamReasoning.isNotBlank() || text.isNotBlank() || parsedStream.media.isNotEmpty()) Column(Modifier.clip(shape).background(c.surface).border(1.dp, c.hairline, shape).padding(horizontal = 14.dp, vertical = 10.dp)) {
-            if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
+            if (state.streamReasoning.isNotBlank() || text.isNotBlank() || parsedStream.media.isNotEmpty() || !steps.isEmpty) Column(Modifier.clip(shape).background(c.surface).border(1.dp, c.hairline, shape).padding(horizontal = 14.dp, vertical = 10.dp)) {
+            if (state.streamReasoning.isNotBlank()) dev.foxfleet.app.ui.components.ReasoningBlock(MediaTags.parseStreaming(state.streamReasoning).text, live = state.streamText.isEmpty() && steps.running.isEmpty(), stateKey = "live", durationMs = state.reasoningMs)
+            dev.foxfleet.app.ui.components.StepsPanel(steps, live = true, stateKey = "live-steps", startOpen = stepsStartOpen)
             if (text.isNotBlank()) {
                 val fadeFrom = if (reduce) text.length else maxOf(0, text.length - STREAM_FADE_CHARS)
                 Text(
@@ -647,7 +654,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
             }
             AgentMediaCards(agentName, parsedStream.media, onOpen)
             }
-            ToolActivityStrip(active)
+            if (steps.isEmpty) ToolActivityStrip(active)
             androidx.compose.animation.Crossfade(status, animationSpec = androidx.compose.animation.core.tween(dev.foxfleet.app.ui.Tokens.motionStatusMs), label = "status") { st ->
                 if (st != null) Row(Modifier.padding(top = 4.dp).heightIn(min = 24.dp).bgChip(), verticalAlignment = Alignment.CenterVertically) { ShimmerStatusText(st); TypingDots(c.textMuted) }
             }
@@ -724,6 +731,9 @@ private fun Composer(
     agentCommands: Boolean = true,
     modes: List<String> = listOf("queue"),
     native: Boolean = false,
+    /** How /model works for this agent (0.4.1): "native", "request" or "none"; [modelsKnown] false on hubs that do not say. */
+    models: String = if (native) "native" else "none",
+    modelsKnown: Boolean = false,
     onModel: (String) -> Unit = {},
     onChoices: (String, List<String>) -> Unit = { _, _ -> },
     defs: List<CommandDef>? = null,
@@ -804,7 +814,11 @@ private fun Composer(
         if (attachments.isEmpty() && files.isEmpty()) {
             if (agentCommands && opensCommandBrowser(input)) { input = ""; browser = true; browserQuery = ""; showHidden = false; return }
             parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
-            if (native) Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m -> input = ""; onModel(m.groupValues[1].trim()); return }
+            Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m ->
+                // the picker whenever the hub has a model list for this agent (native gateway or the hub's request path)
+                if (models != "none") { input = ""; onModel(m.groupValues[1].trim()); return }
+                if (modelsKnown) { input = ""; note = "This agent offers no model list, so /model cannot change it from here."; return }
+            }
             if (native) Regex("^/([A-Za-z0-9_-]+)$").find(input.trim())?.let { m ->
                 (defs ?: HermesCatalog.defs).firstOrNull { it.name == m.groupValues[1].lowercase() || m.groupValues[1].lowercase() in it.aliases }
                     ?.takeIf { it.executable && it.subcommands.size > 1 && !it.handler.startsWith("hub:") }?.let { d -> input = ""; onChoices(d.name, d.subcommands); return }

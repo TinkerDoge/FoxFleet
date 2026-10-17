@@ -109,6 +109,7 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
         // A hub with `readReceipts` numbers every message (n, gap-free per chat): then ord = n, and pages and live events join exactly.
         val numbered = page.all { it.n != null }
         db.withTransaction {
+            val page = keepExtras(page) // a history page without thinking/tools must not wipe what the live reply stored (0.4.1)
             val mixed = numbered && live.unnumbered(owner, agent, chatId) > 0 // cached before the hub numbered messages: start over
             val anchor = if (mixed) null else msgs.ordOf(owner, agent, chatId, keys[0]); val meta = msgs.meta(owner, agent, chatId)
             if (anchor != null && meta != null) {
@@ -124,6 +125,13 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
                 msgs.upsertMeta(ChatMetaRow(owner, agent, chatId, pageSize, hasMore, now()))
             }
         }
+    }
+
+    /** Agent messages of [page] that carry no reasoning or tools get the ones this device already stored for the same hub id. */
+    private suspend fun keepExtras(page: List<UiMessage>): List<UiMessage> = page.map { m ->
+        val id = m.hubId
+        if (m.role != "assistant" || id == null || (m.reasoning.isNotEmpty() && m.steps.isNotEmpty())) m
+        else live.byLiveId(owner, id)?.toUi()?.let { old -> m.copy(reasoning = m.reasoning.ifEmpty { old.reasoning }, steps = m.steps.ifEmpty { old.steps }) } ?: m
     }
 
     /** An older page fetched from the hub at [offset]: goes before the oldest cached message (keys already stored are skipped). */
@@ -175,9 +183,12 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
         val hubId = m.hubId ?: return@withTransaction false; val n = m.n ?: return@withTransaction false
         val existing = live.byLiveId(owner, hubId)
         if (existing != null) {
+            val row = m.toRow(owner, agent, chatId, existing.msgKey, existing.ord)
+            // reasoning and tools only ever arrive or stay: a text-only copy (older hub, an edit) keeps what the live reply stored
             val keep = existing.copy(content = m.content, ts = if (m.ts > 0) m.ts else existing.ts, hubId = m.id ?: existing.hubId,
-                status = MessageStatus.advance(existing.status, m.status), images = m.toRow(owner, agent, chatId, existing.msgKey, existing.ord).images,
-                kind = MessageKinds.of(m))
+                status = if (m.role == "user") MessageStatus.advance(existing.status, m.status) else null, images = row.images,
+                reasoning = m.reasoning.ifEmpty { existing.reasoning }, steps = if (m.steps.isNotEmpty()) row.steps else existing.steps,
+                kind = MessageKinds.of(m.copy(reasoning = m.reasoning.ifEmpty { existing.reasoning })))
             live.upsertMessage(keep); return@withTransaction true
         }
         if (!numbered(agent, chatId)) return@withTransaction false
@@ -204,7 +215,7 @@ internal fun UiMessage.toRow(owner: String, agent: String, chatId: String, key: 
     steps = if (steps.isEmpty()) "" else JsonArray(steps.map { s -> JsonObject(mapOf("name" to JsonPrimitive(s.name), "args" to JsonPrimitive(s.args), "result" to JsonPrimitive(s.result), "ok" to JsonPrimitive(s.ok))) }).toString(),
     images = if (imageUrls.isEmpty()) "" else JsonArray(imageUrls.map { JsonPrimitive(it) }).toString(),
     kind = MessageKinds.of(this),
-    liveId = hubId, n = n, status = status,
+    liveId = hubId, n = n, status = status?.takeIf { role == "user" },
 )
 
 internal fun MessageRow.toUi(): UiMessage {
@@ -215,7 +226,7 @@ internal fun MessageRow.toUi(): UiMessage {
         }
     }.getOrDefault(emptyList())
     val urls = if (images.isEmpty()) emptyList() else runCatching { Json.parseToJsonElement(images).jsonArray.mapNotNull { it.jsonPrimitive.contentOrNull } }.getOrDefault(emptyList())
-    return UiMessage(role = role, content = content, id = hubId, reasoning = reasoning, steps = st, ts = ts, imageUrls = urls, hubId = liveId, n = n, status = status)
+    return UiMessage(role = role, content = content, id = hubId, reasoning = reasoning, steps = st, ts = ts, imageUrls = urls, hubId = liveId, n = n, status = status?.takeIf { role == "user" })
 }
 
 /** Capabilities as "flag,flag;busy=queue|interrupt": small and readable in a database dump. */
@@ -223,13 +234,14 @@ object CapsCodec {
     private val names = listOf("chat", "images", "files", "screen", "voice", "skills", "sessions", "nativeUi", "reactions", "agentReactions", "bot")
     fun encode(c: Capabilities): String {
         val flags = listOf(c.chat, c.images, c.files, c.screen, c.voice, c.skills, c.sessions, c.nativeUi, c.reactions, c.agentReactions, c.bot)
-        return names.filterIndexed { i, _ -> flags[i] }.joinToString(",") + ";busy=" + c.busy.joinToString("|")
+        return names.filterIndexed { i, _ -> flags[i] }.joinToString(",") + ";busy=" + c.busy.joinToString("|") + (c.models?.let { ";models=$it" } ?: "")
     }
     fun decode(s: String): Capabilities {
-        val parts = s.split(";busy=", limit = 2); val on = parts[0].split(',').toSet()
+        val models = s.substringAfter(";models=", "").substringBefore(';').takeIf { it in Capabilities.MODEL_MODES }
+        val parts = s.substringBefore(";models=").split(";busy=", limit = 2); val on = parts[0].split(',').toSet()
         val busy = parts.getOrElse(1) { "queue" }.split('|').filter { it.isNotBlank() }.ifEmpty { listOf("queue") }
         return Capabilities(chat = "chat" in on, images = "images" in on, files = "files" in on, screen = "screen" in on, voice = "voice" in on, skills = "skills" in on,
-            sessions = "sessions" in on, busy = busy, nativeUi = "nativeUi" in on, reactions = "reactions" in on, agentReactions = "agentReactions" in on, bot = "bot" in on)
+            sessions = "sessions" in on, busy = busy, nativeUi = "nativeUi" in on, reactions = "reactions" in on, agentReactions = "agentReactions" in on, bot = "bot" in on, models = models)
     }
 }
 

@@ -19,10 +19,15 @@ data class Capabilities(
     val agentReactions: Boolean = false,
     /** Bot API transport; cards are available without the native Hermes controls. */
     val bot: Boolean = false,
+    /** How this agent changes models (hub 0.4.1): "native", "request" or "none". Null: an older hub that does not say. */
+    val models: String? = null,
 ) {
     val canAnswerRequests get() = nativeUi || bot
+    /** The model picker's path: the hub's own word, else (older hubs) only the native gateway has one. */
+    val modelsMode: String get() = models?.takeIf { it in MODEL_MODES } ?: if (nativeUi) "native" else "none"
 
     companion object {
+        val MODEL_MODES = setOf("native", "request", "none")
         /** Fallback for hubs older than 0.5 that don't send capabilities. */
         fun forKind(kind: String) = when (kind) {
             "hermes" -> Capabilities(images = true, files = true, screen = true, voice = true, skills = true, sessions = true, busy = listOf("queue", "interrupt"))
@@ -99,13 +104,19 @@ data class UiMessage(
     val hubId: String? = null,
     val n: Int? = null,
     val status: String? = null,
+    /** The hub run that wrote this reply (0.4.1): the live reply's message.new is merged into the streamed bubble by it. */
+    val runId: String? = null,
 )
 
 /** A downscaled JPEG kept in the app cache; [dataUrl] is what goes to the hub. */
 data class ImageAttachment(val localPath: String, val dataUrl: String, val bytes: Int)
 
 /** One tool lifecycle event from the hub stream (foxfleet.tool). [type] is tool.start, tool.progress or tool.end. */
-data class ToolEvent(val type: String, val turnId: String?, val toolId: String?, val name: String)
+data class ToolEvent(
+    val type: String, val turnId: String?, val toolId: String?, val name: String,
+    /** 0.4.1 hubs: short argument preview; on tool.end whether it worked, how long it took and a short result. */
+    val preview: String? = null, val ok: Boolean? = null, val durationMs: Long? = null, val resultPreview: String? = null,
+)
 
 /** Who reacted: the signed-in person ("user:…") or an agent ("agent:…"), bound by the hub, never by the client. */
 data class ReactionActor(val id: String, val name: String, val kind: String)

@@ -44,8 +44,11 @@ object MessageStatus {
 data class HubMessage(
     val hubId: String, val upstreamId: String?, val n: Int, val role: String, val text: String, val truncated: Boolean, val at: Long,
     val source: String, val status: String?, val replyTo: String?, val editedAt: Long?, val runId: String?, val images: List<String>,
+    /** 0.4.1 hubs, agent messages: the reply's thinking and the tools it used (same shape as history). Empty on older hubs. */
+    val reasoning: String = "", val tools: List<dev.foxfleet.app.data.ToolStep> = emptyList(),
 ) {
-    fun toUi() = UiMessage(role = role, content = text, id = upstreamId, ts = at, imageUrls = images, hubId = hubId, n = n, status = status.takeIf { role == "user" })
+    fun toUi() = UiMessage(role = role, content = text, id = upstreamId, ts = at, imageUrls = images, hubId = hubId, n = n, status = status.takeIf { role == "user" },
+        reasoning = if (role == "assistant") reasoning else "", steps = if (role == "assistant") tools else emptyList(), runId = runId)
 }
 
 data class LastMessage(val hubId: String?, val role: String?, val sender: String?, val preview: String, val at: Long?, val status: String?)
@@ -81,8 +84,14 @@ sealed interface V2Event {
     data class Unknown(override val seq: Long, val type: String, override val agent: String?, override val chat: String?) : V2Event
 }
 
-/** Ephemeral `event: typing` (no id, never replayed). */
-data class Typing(val agent: String, val chat: String, val state: String, val tool: String?, val ttlMs: Long)
+/** Ephemeral `event: typing` (no id, never replayed). [label] / [toolId]: 0.4.1 hubs (what the step is about). */
+data class Typing(val agent: String, val chat: String, val state: String, val tool: String?, val ttlMs: Long, val label: String? = null, val toolId: String? = null)
+
+/** Ephemeral `event: run.step` (0.4.1 hubs): one step of a reply that is running in [chat]; never stored or replayed. */
+data class RunStep(
+    val agent: String, val chat: String, val runId: String?, val kind: String, val toolId: String?, val name: String?,
+    val preview: String?, val ok: Boolean?, val durationMs: Long?, val text: String?, val at: Long,
+)
 
 object Contract {
     val json = Json { ignoreUnknownKeys = true }
@@ -102,7 +111,20 @@ object Contract {
             role = role, text = o.s("text").orEmpty(), truncated = o.b("truncated") == true, at = o.l("at") ?: 0L, source = o.s("source") ?: "agent",
             status = o.s("status")?.takeIf { it in MessageStatus.ALL }, replyTo = o.s("reply_to"), editedAt = o.l("edited_at"), runId = o.s("run_id"),
             images = (o["images"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.s("url") }.orEmpty(),
+            reasoning = if (role == "assistant") o.s("reasoning").orEmpty() else "",
+            tools = if (role == "assistant") tools(o["tools"]) else emptyList(),
         )
+    }
+
+    /** `tools: [{name, args?, result?, ok?}]` of a reply (lenient: bad entries are skipped). */
+    fun tools(e: JsonElement?): List<dev.foxfleet.app.data.ToolStep> = (e as? JsonArray)?.mapNotNull { t ->
+        val o = t as? JsonObject ?: return@mapNotNull null; val name = o.s("name")?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+        dev.foxfleet.app.data.ToolStep(name.take(80), o.s("args").orEmpty().take(500), o.s("result").orEmpty().take(500), o.b("ok") != false)
+    }?.take(50).orEmpty()
+
+    fun runStep(o: JsonObject): RunStep? {
+        val agent = o.s("agent") ?: return null; val chat = o.s("chat") ?: return null; val kind = o.s("kind") ?: return null
+        return RunStep(agent, chat, o.s("run_id"), kind, o.s("tool_id"), o.s("name"), o.s("preview"), o.b("ok"), o.l("duration_ms")?.takeIf { it >= 0 }, o.s("text"), o.l("at") ?: 0L)
     }
 
     fun chat(o: JsonObject?): HubChat? {
@@ -150,7 +172,7 @@ object Contract {
 
     fun typing(o: JsonObject): Typing? {
         val agent = o.s("agent") ?: return null; val chat = o.s("chat") ?: return null
-        return Typing(agent, chat, o.s("state") ?: "idle", o.s("tool")?.take(80), (o.l("ttl_ms") ?: 6000L).coerceIn(500L, 60_000L))
+        return Typing(agent, chat, o.s("state") ?: "idle", o.s("tool")?.take(80), (o.l("ttl_ms") ?: 6000L).coerceIn(500L, 60_000L), o.s("label")?.take(200)?.takeIf { it.isNotBlank() }, o.s("tool_id"))
     }
 
     fun obj(text: String): JsonObject? = runCatching { json.parseToJsonElement(text) as? JsonObject }.getOrNull()

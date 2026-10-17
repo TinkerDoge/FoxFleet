@@ -38,6 +38,7 @@ data class LiveCursor(val store: String, val seq: Long) {
 sealed interface V2Frame {
     data class Event(val id: String, val event: V2Event) : V2Frame
     data class TypingFrame(val typing: Typing) : V2Frame
+    data class StepFrame(val step: RunStep) : V2Frame
     data class Gap(val reason: String, val cursor: String?) : V2Frame
     data class Ready(val cursor: String?, val contract: String?) : V2Frame
     data object Auth : V2Frame
@@ -52,6 +53,7 @@ object V2Frames {
             "foxfleet.ready" -> V2Frame.Ready(s("cursor"), s("contract"))
             "foxfleet.auth" -> V2Frame.Auth
             "typing" -> Contract.typing(o)?.let { V2Frame.TypingFrame(it) }
+            "run.step" -> Contract.runStep(o)?.let { V2Frame.StepFrame(it) }
             else -> {
                 val e = Contract.event(o, event) ?: return null
                 // the SSE id is the cursor; an event without one (should not happen) is still applied, the cursor just stays
@@ -82,6 +84,8 @@ interface V2Sink {
     /** A persisted event, in seq order (replayed or live). Must be idempotent: after a crash between apply and save it comes again. */
     suspend fun onEvent(e: V2Event)
     fun onTyping(t: Typing)
+    /** Ephemeral `run.step` (0.4.1 hubs): a step of a running reply. */
+    fun onStep(s: RunStep) {}
     /**
      * The cache may have missed something: a gap ([reason] expired/reset/invalid), a 410, the first connect without a cursor,
      * or the stuck-cursor escape. The sink resyncs (chat list, then `after_n` for every cached chat) and returns only when it
@@ -192,6 +196,7 @@ class LiveV2Runner(
                     if (live) { sink.onLink(LinkState.Updating); resync(); sink.onLink(LinkState.Live) }
                 }
                 is V2Frame.TypingFrame -> sink.onTyping(f.typing)
+                is V2Frame.StepFrame -> sink.onStep(f.step)
                 is V2Frame.Event -> apply(f)
                 is V2Frame.Ready -> {
                     // The ready cursor is where the stream stands after the replay: store it as the resume point.
