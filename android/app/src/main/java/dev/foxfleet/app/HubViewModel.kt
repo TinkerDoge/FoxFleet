@@ -63,6 +63,44 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         mediaHost?.client?.dispatcher?.cancelAll()
         mediaHost = null
     }
+    // ---- device cache (0.4.0): Room, per account + hub; the hub stays the source of truth ----
+    private val cacheOwner = dev.foxfleet.app.data.local.CacheOwner(app)
+    /** Null until a sign-in (or an offline start) names the owner; every read and write goes through the owner's [ChatCache]. */
+    private var cache: dev.foxfleet.app.data.local.ChatCache? = null
+    /** Started from the device cache because the hub could not be reached; the boot keeps retrying in the background. */
+    var offline by mutableStateOf(false); private set
+
+    private suspend fun claimCache(key: String, account: String) = withContext(kotlinx.coroutines.Dispatchers.IO) {
+        val db = dev.foxfleet.app.data.local.CacheDb.get(getApplication())
+        if (cacheOwner.claim(key, account, settings.baseUrl)) db.admin().wipeAll()
+        cache = dev.foxfleet.app.data.local.ChatCache(db, key)
+    }
+    private fun wipeCache() {
+        cache = null; cacheOwner.forget()
+        val app = getApplication<Application>()
+        kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { runCatching { dev.foxfleet.app.data.local.CacheDb.get(app).admin().wipeAll() } }
+    }
+    /** Cache writes never fail a screen: the next hub page writes again. */
+    private suspend fun cached(block: suspend dev.foxfleet.app.data.local.ChatCache.() -> Unit) {
+        val c = cache ?: return
+        try { withContext(kotlinx.coroutines.Dispatchers.IO) { c.block() } } catch (e: CancellationException) { throw e } catch (_: Exception) {}
+    }
+    private suspend fun <T> fromCache(block: suspend dev.foxfleet.app.data.local.ChatCache.() -> T?): T? {
+        val c = cache ?: return null
+        return try { withContext(kotlinx.coroutines.Dispatchers.IO) { c.block() } } catch (e: CancellationException) { throw e } catch (_: Exception) { null }
+    }
+    /** The hub's newest page, written through to the cache. */
+    private suspend fun newestPage(agent: String, sid: String): dev.foxfleet.app.data.HistoryPage {
+        val p = api.messages(agent, sid)
+        cached { saveNewest(agent, sid, p.messages, p.hasMore) }
+        return p
+    }
+    /** Show the saved copy of [sid] while the hub answers. True when something was shown. */
+    private suspend fun showCachedChat(state: ChatState, agent: String, sid: String): Boolean {
+        val c = fromCache { open(agent, sid) } ?: return false
+        return state.showCached(c.messages, sid, c.hasOlder)
+    }
+
     fun refreshMediaUsage() { viewModelScope.launch { mediaCacheBytes = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { mediaRepository.usageBytes() } } }
     fun clearMediaCache() {
         if (clearingMedia) return
@@ -172,8 +210,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         deactivateMedia()
         bootError = null
         hubSetup = settings.baseUrl.isBlank()
-        if (hubSetup) { authed = false; return }
-        authed = null
+        if (hubSetup) { authed = false; offline = false; return }
+        if (!offline) authed = null // an offline start stays on its cached screens while the boot retries
         viewModelScope.launch {
             // A tunnel blip (502/503/504, timeout) while opening the app is not a sign-out: keep trying quietly before showing anything.
             var attempt = 0
@@ -183,12 +221,15 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                     val signedIn = !info.required || info.authenticated
                     // Only a real, signed-in session claims the backgrounds (a failed or cancelled sign-in never does); done before any chat can draw.
                     if (signedIn) withContext(kotlinx.coroutines.Dispatchers.IO) { dev.foxfleet.app.data.ChatBackgroundStore(getApplication()).claimOwner(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl)) }
+                    if (signedIn) claimCache(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl), username.ifBlank { "anonymous-hub" }) else cache = null
+                    offline = false
                     if (generation != authGeneration) return@launch
                     authed = signedIn; if (authed == true) activateMedia(username.ifBlank { "anonymous-hub" }); bootReconnecting = false; break
                 } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     val transient = (e as? dev.foxfleet.app.data.HubApiException)?.transient == true
                     if (transient && attempt < 7) { bootReconnecting = true; delay(dev.foxfleet.app.data.backoffMs(attempt++, 700, 8000)); continue }
                     bootReconnecting = false
+                    if (startOffline(generation, e)) return@launch
                     bootError = "Can't reach your hub — ${scrubAddresses(e.message ?: "network error")}"
                     authed = false; break
                 }
@@ -196,6 +237,33 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             if (authed == true) { dev.foxfleet.app.notify.NotifyController.onAuthed(getApplication(), settings.activeHubId, username); refreshFleet() }
             syncLive()
         }
+    }
+
+    /**
+     * The hub is out of reach but this device holds the last signed-in account's cache for this hub: open on it (fleet, chats,
+     * messages read-only until the hub answers) instead of the sign-in screen, and keep retrying the boot quietly.
+     * Never for an auth answer: only a network or gateway failure, and only with a saved session.
+     */
+    private suspend fun startOffline(generation: Long, e: Exception): Boolean {
+        if (e is AuthRequiredException || (e as? dev.foxfleet.app.data.HubApiException)?.transient != true) return false
+        if (settings.sessionToken.isNullOrBlank()) return false
+        val key = cacheOwner.offlineOwner(settings.baseUrl) ?: return false
+        val account = cacheOwner.account ?: return false
+        cache = dev.foxfleet.app.data.local.ChatCache.forOwner(getApplication(), key)
+        username = account.takeIf { it != "anonymous-hub" }.orEmpty()
+        offline = true; authed = true; activateMedia(account)
+        refreshFleet(silent = true)
+        viewModelScope.launch {
+            var n = 0
+            while (generation == authGeneration && offline) {
+                delay(dev.foxfleet.app.data.backoffMs(minOf(n++, 5), 2000, 30000))
+                if (generation != authGeneration) return@launch
+                try { api.authInfo() } catch (e: CancellationException) { throw e } catch (_: Exception) { continue }
+                if (generation == authGeneration) boot() // reachable again: the normal boot claims, refreshes and starts the live stream
+                return@launch
+            }
+        }
+        return true
     }
 
     fun updatePrefs(p: AppPrefs) { prefs = p; settings.appPrefs = p }
@@ -207,6 +275,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
         viewModelScope.launch { api.logout() }
+        wipeCache(); offline = false // the cache holds message text: it never outlives the sign-in
         settings.clearSession() // chat backgrounds stay: they are cleared only when a different account or hub signs in (see claimBackgroundOwner)
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
     }
@@ -216,16 +285,20 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (fleetLoading) return
         if (!silent) { fleetLoading = true; fleetError = null } else fleetLoading = false
         viewModelScope.launch {
+            if (agents.isEmpty()) fromCache { agents() }?.takeIf { it.isNotEmpty() && agents.isEmpty() }?.let { saved ->
+                agents = saved; fleetLoadedOnce = true; restoreLastChat() // the saved list draws at once; the hub's answer replaces it
+            }
             try {
                 val fresh = api.agents().map { dev.foxfleet.app.ui.LocalLast.merge(it, settings.lastLocal(it.name)) }
                 val open = (route as? Route.Chat)?.agent
                 fresh.forEach { a -> if (a.name == open) settings.markSeen(a.name, a.lastActivityAt) else if (settings.seenAt(a.name) == null) settings.markSeen(a.name, a.lastActivityAt) } // a new device starts out read
                 agents = AgentList.sort(fresh); fleetLoadedOnce = true; restoreLastChat()
+                val sorted = agents; cached { saveAgents(sorted) }
             } catch (e: AuthRequiredException) {
                 deactivateMedia(purge = true)
                 authed = false
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                if (!silent) fleetError = e.message?.let(::scrubAddresses) ?: "Fleet sync failed"
+                if (!silent && !(offline && agents.isNotEmpty())) fleetError = e.message?.let(::scrubAddresses) ?: "Fleet sync failed"
             } finally { if (!silent) fleetLoading = false }
         }
     }
@@ -347,7 +420,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun catchUpNow(agent: String) {
         val state = chatFor(agent); val sid = state.sessionId ?: return
-        val page = api.messages(agent, sid)
+        val page = newestPage(agent, sid)
         if (state.sessionId != sid || state.streaming || state.loading) return
         when (val plan = dev.foxfleet.app.data.LiveCatchUp.plan(state.messages, page.messages)) {
             dev.foxfleet.app.data.CatchUp.None -> {}
@@ -511,7 +584,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         state.beginLoad()
         jobs[agent] = viewModelScope.launch {
             try {
-                api.messages(agent, session).let { state.load(it.messages, session, it.hasMore) }
+                showCachedChat(state, agent, session)
+                val page = try { newestPage(agent, session) } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { throw e } catch (e: Exception) {
+                    if (state.fromCache && state.sessionId == session) { state.keepCached(OFFLINE_NOTICE); return@launch } else throw e
+                }
+                page.let { state.load(it.messages, session, it.hasMore) }
                 val run = runCatching { api.runs(agent, session).maxByOrNull { it.started } }.getOrNull()
                 val endsWithReply = state.messages.lastOrNull()?.role == "assistant"
                 if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); return@launch }
@@ -529,8 +606,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val have = if (more) sessions[agent].orEmpty() else emptyList()
+                if (!more && sessions[agent].isNullOrEmpty()) fromCache { chats(agent) }?.takeIf { it.isNotEmpty() }?.let { if (sessions[agent].isNullOrEmpty()) sessions[agent] = it }
                 val page = api.sessions(agent, offset = have.size)
                 sessions[agent] = have + page.sessions.filter { n -> have.none { it.id == n.id } }; sessionTotals[agent] = page.total
+                if (!more) cached { saveChats(agent, page.sessions) }
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (e: Exception) {
                 historyError = scrubAddresses(e.message ?: "Couldn't load history")
             } finally { sessionsLoading[agent] = false }
@@ -548,6 +627,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 api.deleteSession(agent, id); sessions[agent] = sessions[agent].orEmpty().filterNot { it.id == id }
+                cached { forgetChat(agent, id) }
                 sessionTotals[agent] = ((sessionTotals[agent] ?: 1) - 1).coerceAtLeast(0)
                 if (chatFor(agent).sessionId == id) newChat(agent)
             } catch (e: CancellationException) { throw e } catch (e: Exception) { historyError = scrubAddresses(e.message ?: "Couldn't delete") }
@@ -560,7 +640,18 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (!state.hasOlder || state.loadingOlder || state.loading) return
         state.beginOlder()
         viewModelScope.launch {
-            try { val p = api.messages(agent, id, offset = state.olderOffset); if (state.sessionId == id) state.prepend(p.messages, p.hasMore) else state.olderFailed() }
+            // Keyset over the device cache first (no network, works offline); the hub's offset paging once the device runs out.
+            val oldestKey = state.messages.firstOrNull()?.let { dev.foxfleet.app.data.MessageKeys.keys(state.messages).first() }
+            val local = oldestKey?.let { k -> fromCache { olderThan(agent, id, k) } }
+            if (local != null && local.messages.isNotEmpty()) {
+                if (state.sessionId == id) state.prependCached(local.messages, local.moreOnDevice || local.hubHasOlder, local.hubOffset) else state.olderFailed()
+                return@launch
+            }
+            try {
+                val offset = state.olderOffset; val p = api.messages(agent, id, offset = offset)
+                cached { saveOlder(agent, id, p.messages, p.hasMore, offset) }
+                if (state.sessionId == id) state.prepend(p.messages, p.hasMore) else state.olderFailed()
+            }
             catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; state.olderFailed() } catch (_: Exception) { state.olderFailed() }
         }
     }
@@ -606,7 +697,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 // The reload is a load: the composer waits (as on web), so no new turn can start before the page lands.
                 state.beginLoad()
                 // cancelled: whoever cancelled (another chat, a new chat) owns the loading flag now
-                val page = try { api.messages(agent, sid) } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                val page = try { newestPage(agent, sid) } catch (e: CancellationException) { throw e } catch (e: Exception) {
                     if (state.sessionId == sid) state.endLoad()
                     if (e is AuthRequiredException) throw e
                     state.addNotice("Couldn't take that message back."); return@launch
@@ -626,17 +717,20 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         state.beginLoad()
         viewModelScope.launch {
             try {
-                api.messages(agent, id).let { state.load(it.messages, id, it.hasMore) }
+                showCachedChat(state, agent, id)
+                newestPage(agent, id).let { if (state.sessionId == id || !state.fromCache) state.load(it.messages, id, it.hasMore) }
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) {
                 deactivateMedia(purge = true)
                 authed = false
             } catch (e: Exception) {
-                state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load")
+                if (state.fromCache && state.sessionId == id) state.keepCached(OFFLINE_NOTICE)
+                else state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load")
             }
         }
     }
 
     companion object {
+        const val OFFLINE_NOTICE = "Offline. Showing saved messages."
         /** Open-chat newest-page check: every 20 s without the live stream, every 60 s with it (covers messages that never pass through the hub). */
         const val POLL_MS = 20_000L
         const val POLL_LIVE_MS = 60_000L

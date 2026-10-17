@@ -150,7 +150,7 @@ class ChatState {
         this.messages = messages; keyBase = 0; hasOlder = hasMore; olderOffset = PAGE; loadingOlder = false
         this.sessionId = sessionId
         if (!sessionId.isNullOrBlank()) persist(SavedChat(sessionId, null, null))
-        loading = false
+        loading = false; fromCache = false
         resetStream(); error = null
     }
 
@@ -162,6 +162,36 @@ class ChatState {
         keyBase -= older.size; messages = older + messages; hasOlder = hasMore; olderOffset += PAGE; loadingOlder = false
     }
     fun olderFailed() { loadingOlder = false }
+
+    /** The rows on screen came from the device cache and the hub has not confirmed them yet. */
+    var fromCache by mutableStateOf(false)
+        private set
+
+    /**
+     * Cache first (0.4.0): show what this device saved for [sessionId] while the hub page loads. Only into an empty,
+     * idle chat, and [loading] stays on, so a send cannot start before the hub's page replaces these rows.
+     */
+    fun showCached(cached: List<UiMessage>, sessionId: String, hasOlder: Boolean): Boolean {
+        if (cached.isEmpty() || streaming || (messages.isNotEmpty() && sessionId == this.sessionId)) return false
+        if (sessionId != this.sessionId) { reactions = null; reactionError = null; hiddenUndo = null }
+        this.messages = cached; this.sessionId = sessionId; keyBase = 0; this.hasOlder = hasOlder; olderOffset = PAGE
+        loading = true; error = null; fromCache = true
+        return true
+    }
+
+    /** The hub could not be reached: keep the saved rows, end the load, and say so once. */
+    fun keepCached(notice: String) {
+        loading = false; fromCache = true
+        if (notice !in notices) notices = notices + notice
+    }
+
+    /**
+     * Older rows from the device cache (keyset, no network). [hubOffset] is where the hub's own paging continues
+     * once the device runs out; [hasMore] covers both.
+     */
+    fun prependCached(older: List<UiMessage>, hasMore: Boolean, hubOffset: Int) {
+        keyBase -= older.size; messages = older + messages; hasOlder = hasMore; olderOffset = hubOffset; loadingOlder = false
+    }
 
     fun newConversation() {
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()

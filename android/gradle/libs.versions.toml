@@ -17,6 +17,8 @@ markdown = "0.38.1"
 coil = "3.3.0"
 telephoto = "0.17.0"
 media3 = "1.8.0"
+room = "2.8.4"
+ksp = "2.3.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -52,9 +54,14 @@ exifinterface = { group = "androidx.exifinterface", name = "exifinterface", vers
 webkit = { group = "androidx.webkit", name = "webkit", version = "1.14.0" }
 media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
 rive-android = { group = "app.rive", name = "rive-android", version.ref = "rive" }
+room-runtime = { group = "androidx.room", name = "room-runtime", version.ref = "room" }
+room-ktx = { group = "androidx.room", name = "room-ktx", version.ref = "room" }
+room-compiler = { group = "androidx.room", name = "room-compiler", version.ref = "room" }
 
 [plugins]
 roborazzi = { id = "io.github.takahirom.roborazzi", version.ref = "roborazzi" }
 android-application = { id = "com.android.application", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+room = { id = "androidx.room", version.ref = "room" }
