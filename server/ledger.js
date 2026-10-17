@@ -14,7 +14,7 @@ import { createHash } from 'node:crypto';
 import { previewOf } from './activity.js';
 
 export const PREVIEW_MAX = 160, TEXT_MAX_BYTES = 64 * 1024, IDEM_TTL_MS = 24 * 3600_000;
-const MAX_ENTRIES = 300, MAX_IDS = 20_000, MAX_SESSIONS = 100, MAX_IDEM = 500, SAVE_MS = 250, RESYNC_MS = 30_000;
+const MAX_ENTRIES = 300, MAX_IDS = 20_000, MAX_SESSIONS = 100, IDEM_MAX = 30 * 60 * 24, SAVE_MS = 250, RESYNC_MS = 30_000;
 const RANK = { sent: 0, delivered: 1, read: 2 };
 
 export const hubIdOf = (agent, chat, n) => 'h' + createHash('sha256').update(`${agent}\0${chat}`).digest('base64url').slice(0, 12) + '.' + n;
@@ -25,7 +25,8 @@ export function clipText(text) {
   return { text: Buffer.from(t).subarray(0, TEXT_MAX_BYTES).toString('utf8').replace(/\uFFFD+$/, ''), truncated: true };
 }
 
-export async function chatLedger(file, { now = () => Date.now(), hooks = {} } = {}) {
+// Idempotency keys are kept 24 h. The default cap is a full day at the reply rate limit (30 a minute), so no key is evicted early.
+export async function chatLedger(file, { now = () => Date.now(), hooks = {}, idemMax = IDEM_MAX } = {}) {
   let db = { v: 1, agents: {}, idem: {} };
   try { const raw = JSON.parse(await readFile(file, 'utf8')); if (raw && typeof raw === 'object' && raw.agents && typeof raw.agents === 'object') db = { v: 1, agents: raw.agents, idem: raw.idem && typeof raw.idem === 'object' ? raw.idem : {} }; } catch { /* first run */ }
   let writing = Promise.resolve(), timer = null, closed = false;
@@ -196,7 +197,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {} } = 
       get(key) { const r = db.idem[key]; if (!r || now() - r.at > IDEM_TTL_MS) return null; return r; },
       put(key, hash, result) {
         const t = now(); for (const [k, r] of Object.entries(db.idem)) if (t - r.at > IDEM_TTL_MS) delete db.idem[k];
-        db.idem[key] = { h: hash, at: t, result }; const keys = Object.keys(db.idem); if (keys.length > MAX_IDEM) for (const k of keys.slice(0, keys.length - MAX_IDEM)) delete db.idem[k];
+        db.idem[key] = { h: hash, at: t, result }; const keys = Object.keys(db.idem); if (keys.length > idemMax) for (const k of keys.slice(0, keys.length - idemMax)) delete db.idem[k];
         save();
       },
     },

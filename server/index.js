@@ -134,7 +134,7 @@ async function streamResponse(req, res, getResponse, timeoutMs, headers, failure
   } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
 }
 
-export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, probeTtlMs = 10_000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {}, replyRatePerMin = 30 } = {}) {
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, probeTtlMs = 10_000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {}, replyRatePerMin = 30, liveClock } = {}) {
   if (!validHost(host)) throw fault(400, 'Invalid bind host');
   if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
   if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
@@ -177,8 +177,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
-      reg.live2 = await liveLog(path.join(dir, 'live-events'), retention);
-      reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { hooks: { event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
+      reg.live2 = await liveLog(path.join(dir, 'live-events'), { ...retention, now: liveClock });
+      reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { idemMax: Math.max(500, replyRatePerMin * 60 * 24), hooks: { event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
       reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live2.emit('approval', { agent: a?.name ?? s.agent, chat: s.stored ?? undefined, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); rowChanged(reg, userId, a?.name ?? s.agent); });
       return reg;
     })());
@@ -470,12 +470,13 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     while (replyFlight.has(ik)) await replyFlight.get(ik).catch(() => {}); // the same key in flight: wait for it, then answer as a replay
     const prior = reg.ledger.idem.get(key);
     if (prior) { if (prior.h !== hash) throw fault(409, 'This idempotency key was already used for a different reply', 'idempotency_conflict'); return sendJson(res, 200, { ...prior.result, message: prior.result.message ? { ...prior.result.message, text: clipText(b.text).text } : null, duplicate: true }); }
-    const t = Date.now(), win = (replyRate.get(scope) ?? []).filter((x) => x > t - 60_000);
-    if (win.length >= replyRatePerMin) throw Object.assign(fault(429, 'Too many replies; try again shortly', 'rate_limited'), { retryAfter: Math.max(1, Math.ceil((win[0] + 60_000 - t) / 1000)) });
-    win.push(t); replyRate.set(scope, win); if (replyRate.size > 5000) replyRate.delete(replyRate.keys().next().value);
     const p = (async () => {
       if (m.connection === 'bot') throw fault(409, 'Direct reply is not available for this agent; open the chat');
       await ensureOr404(reg, m, chat);
+      // The rate-limit slot is taken only by a reply that will really be sent (not a replay, a 409 or a 404).
+      const t = Date.now(), win = (replyRate.get(scope) ?? []).filter((x) => x > t - 60_000);
+      if (win.length >= replyRatePerMin) throw Object.assign(fault(429, 'Too many replies; try again shortly', 'rate_limited'), { retryAfter: Math.max(1, Math.ceil((win[0] + 60_000 - t) / 1000)) });
+      win.push(t); replyRate.set(scope, win); if (replyRate.size > 5000) replyRate.delete(replyRate.keys().next().value);
       if (b.mark_read !== false) reg.ledger.read(agent, chat, reg.ledger.lastN(agent, chat));
       const sent = await sendFromHub(ctx, m, chat, b.text, 'notification', key);
       const message = sent.message ?? { hub_id: null, upstream_id: null, n: 0, role: 'user', ...clipText(b.text), at: Date.now(), source: 'notification', status: 'sent', reply_to: null, edited_at: null, run_id: null };
@@ -681,7 +682,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         const lg = ctx.reg.live2, c = lg.parse(url.searchParams.get('since') ?? '');
         if (c.kind === 'none' || c.kind === 'invalid') throw fault(400, 'since must be a cursor from GET /api/chats or the live stream', 'invalid_cursor');
         if (c.kind !== 'ok') throw Object.assign(fault(410, 'That cursor is no longer available; resync the chat list and chats', 'cursor_expired'), { extra: { cursor: lg.cursor } });
-        const { entries, hasMore } = lg.since(c.seq, pageInt(url.searchParams.get('limit'), 1, PULL_MAX, PULL_DEFAULT));
+        const { entries, hasMore, expired } = lg.since(c.seq, pageInt(url.searchParams.get('limit'), 1, PULL_MAX, PULL_DEFAULT));
+        if (expired) throw Object.assign(fault(410, 'That cursor is no longer available; resync the chat list and chats', 'cursor_expired'), { extra: { cursor: lg.cursor } });
         return sendJson(res, 200, { events: entries.map((e) => JSON.parse(e.line)), cursor: hasMore && entries.length ? `${lg.store}:${entries.at(-1).seq}` : lg.cursor, has_more: hasMore });
       }
       if (parts[0] === 'api' && parts[1] === 'chats') { // chat list, archive, mark unread, read receipts (docs/LIVE-EVENTS.md)

@@ -38,16 +38,19 @@ test('log: cursor parsing gives none / invalid / reset (other store, future seq)
   assert.equal(log.parse(`${log.store}:2`).kind, 'expired'); assert.deepEqual(log.parse(`${log.store}:3`), { kind: 'ok', seq: 3 }); assert.deepEqual(log.parse(`${log.store}:6`), { kind: 'ok', seq: 6 });
 });
 
-test('log: a clean restart keeps store, events and the exact counter; a crash never reuses a seq; torn lines are skipped', async (t) => {
+test('log: a clean restart keeps store, events and the exact counter; after a crash no seq is reused and every older cursor is an expired gap; torn lines are skipped', async (t) => {
   const base = await tmp(t);
   const a = await liveLog(base); for (let i = 0; i < 3; i++) a.emit('chat.updated', { agent: 'a', i }); const store = a.store; await a.close();
   const b = await liveLog(base); assert.equal(b.store, store); assert.equal(b.seq, 3, 'clean shutdown: no jump'); assert.deepEqual(b.since(0).entries.map((e) => JSON.parse(e.line).i), [0, 1, 2]);
-  b.emit('chat.updated', { agent: 'a', i: 3 }); await b.flush(); // no close(): the process "crashes" here
+  assert.equal(b.parse(`${store}:1`).kind, 'ok', 'a clean restart resumes old cursors');
+  b.emit('chat.updated', { agent: 'a', i: 3 }); await b.flush(); b.emit('chat.updated', { agent: 'a', i: 4 }); // 5 never reaches disk: the process "crashes" here
   await appendFile(base + '.jsonl', '{"seq":99,"type":"chat.upd'); // torn last line
   const c = await liveLog(base); t.after(() => c.close());
-  assert.equal(c.store, store); assert.deepEqual(c.since(0).entries.map((e) => e.seq), [1, 2, 3, 4], 'everything written survives, the torn line is ignored');
-  assert.ok(c.seq >= 4 + 1000 - 1, `counter resumes above the reserved block (got ${c.seq})`);
-  assert.ok(c.emit('chat.updated', { agent: 'a' }).seq > 4); assert.equal(c.parse(`${store}:4`).kind, 'ok', 'an old cursor still resumes after the crash');
+  assert.equal(c.store, store, 'same store: a crash is not a data reset');
+  assert.ok(c.seq >= 4 + 1000 - 1, `counter resumes above the reserved block (got ${c.seq})`); assert.equal(c.floor, c.seq);
+  for (const n of [0, 1, 3, 4, 5]) assert.equal(c.parse(`${store}:${n}`).kind, 'expired', `cursor ${n}: unflushed events may be lost, so the client resyncs`);
+  assert.equal(c.parse(c.cursor).kind, 'ok');
+  const e = c.emit('chat.updated', { agent: 'a' }); assert.ok(e.seq > 5); assert.deepEqual(c.since(c.floor).entries.map((x) => x.seq), [e.seq]);
 });
 
 test('log: unreadable meta starts a new store (old cursors are a reset); retention by days; env bounds', async (t) => {

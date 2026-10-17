@@ -6,15 +6,21 @@
 //    most 32 MiB of event JSON. Anything dropped raises `floor`: a cursor below it is an `expired` gap.
 //  - Storage: `<base>.jsonl` (one event per line, appended in small batches, compacted when it grows) and `<base>.json` (store id,
 //    floor, and a reserved seq block: after a crash the counter resumes above anything that may have been handed out). Mode 0600.
+//    The file is compacted by line count and by size (UTF-8 bytes), and read line by line at start.
+//  - After an unclean stop (crash, kill -9) the last few ms of events may not be on disk: every older cursor becomes `expired`,
+//    so a client resyncs instead of silently missing them.
 //  - Typing is ephemeral: pushed to open streams only, never stored, no id.
 import { readFile, writeFile, appendFile, rename } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 
 export const LIVE2_CONTRACT = 'foxfleet.live/2';
 export const LIVE2_TYPES = ['message.new', 'message.edited', 'message.deleted', 'message.status', 'read', 'chat.updated', 'chat.removed', 'run.started', 'run.finished', 'approval'];
 export const RETAIN_EVENTS = 5000, RETAIN_DAYS = 7, RETAIN_BYTES = 32 * 1024 * 1024, PULL_MAX = 500, PULL_DEFAULT = 200;
-const BLOCK = 1000, RETRY_MS = 2000, HEARTBEAT_MS = 15_000, MAX_BACKLOG = 1024 * 1024, MAX_STREAMS = 8, FLUSH_MS = 25, DAY = 86_400_000;
+const BLOCK = 1000, RETRY_MS = 2000, HEARTBEAT_MS = 15_000, MAX_BACKLOG = 1024 * 1024, MAX_STREAMS = 8, FLUSH_MS = 25, DAY = 86_400_000, DRAIN_MS = 60_000;
+const bytesOf = (line) => Buffer.byteLength(line, 'utf8') + 1; // + the newline on disk
 const CURSOR = /^([A-Za-z0-9_-]{1,32}):(\d{1,16})$/;
 
 /** Retention from the environment, clamped to sane bounds (junk means the default). */
@@ -25,21 +31,24 @@ export function retentionFromEnv(env = { FOXFLEET_LIVE_RETAIN_EVENTS: process.en
 
 export async function liveLog(base, { now = () => Date.now(), retainEvents = RETAIN_EVENTS, retainDays = RETAIN_DAYS, maxBytes = RETAIN_BYTES, onError } = {}) {
   const metaFile = base + '.json', logFile = base + '.jsonl';
-  let store = null, seq = 0, floor = 0, reserved = 0, events = [], bytes = 0, diskLines = 0;
+  let store = null, seq = 0, floor = 0, reserved = 0, events = [], bytes = 0, diskLines = 0, diskBytes = 0;
   try {
     const meta = JSON.parse(await readFile(metaFile, 'utf8'));
     if (typeof meta?.store === 'string' && /^[A-Za-z0-9_-]{8,32}$/.test(meta.store)) {
       store = meta.store; floor = Number.isInteger(meta.floor) && meta.floor >= 0 ? meta.floor : 0;
-      let raw = ''; try { raw = await readFile(logFile, 'utf8'); } catch { /* no events yet */ }
       let last = floor;
-      for (const line of raw.split('\n')) {
-        if (!line) continue; diskLines++;
-        let e; try { e = JSON.parse(line); } catch { continue; } // a torn last line after a crash
-        if (!e || !Number.isInteger(e.seq) || e.seq <= last || !LIVE2_TYPES.includes(e.type)) continue;
-        last = e.seq; events.push({ seq: e.seq, type: e.type, at: Number(e.at) || 0, line }); bytes += line.length;
-      }
-      const counted = meta.clean === true && Number.isInteger(meta.seq) ? meta.seq : Number.isInteger(meta.reserved) ? meta.reserved : 0;
-      seq = Math.max(last, counted, floor);
+      try { // line by line: the file is bounded, but never held as one string
+        const rl = createInterface({ input: createReadStream(logFile, { encoding: 'utf8' }), crlfDelay: Infinity });
+        for await (const line of rl) {
+          if (!line) continue; diskLines++;
+          let e; try { e = JSON.parse(line); } catch { continue; } // a torn last line after a crash
+          if (!e || !Number.isInteger(e.seq) || e.seq <= last || !LIVE2_TYPES.includes(e.type)) continue;
+          last = e.seq; const b = bytesOf(line); events.push({ seq: e.seq, type: e.type, at: Number(e.at) || 0, line, bytes: b }); bytes += b;
+        }
+      } catch { /* no events yet */ }
+      const clean = meta.clean === true && Number.isInteger(meta.seq);
+      seq = Math.max(last, clean ? meta.seq : Number.isInteger(meta.reserved) ? meta.reserved : 0, floor);
+      if (!clean) { floor = seq; events = []; bytes = 0; } // unclean stop: what was handed out after the last write is unknown, so every older cursor is a gap
     }
   } catch { /* first run or unreadable meta: a new store (clients get a `reset` gap) */ }
   if (!store) { store = randomBytes(9).toString('base64url'); events = []; bytes = 0; seq = 0; floor = 0; diskLines = 0; }
@@ -53,15 +62,16 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
   const writeMeta = (clean = false) => atomic(metaFile, JSON.stringify({ v: 1, store, floor, seq, reserved: clean ? seq : reserved, clean }));
   const prune = (t = now()) => {
     let dropped = false;
-    while (events.length && (events.length > retainEvents || bytes > maxBytes || events[0].at < t - retainDays * DAY)) { const e = events.shift(); bytes -= e.line.length; floor = Math.max(floor, e.seq); dropped = true; }
+    while (events.length && (events.length > retainEvents || bytes > maxBytes || events[0].at < t - retainDays * DAY)) { const e = events.shift(); bytes -= e.bytes; floor = Math.max(floor, e.seq); dropped = true; }
     if (dropped) metaDirty = true;
   };
   const flush = () => { if (timer) { clearTimeout(timer); timer = null; } chain = chain.then(async () => {
     if (closed && !pending.length && !metaDirty) return;
     const lines = pending; pending = [];
     try {
-      if (diskLines + lines.length > retainEvents * 2 + 1000) { await atomic(logFile, events.map((e) => e.line + '\n').join('')); diskLines = events.length; } // compaction
-      else if (lines.length) { await appendFile(logFile, lines.map((l) => l + '\n').join(''), { mode: 0o600 }); diskLines += lines.length; }
+      const add = lines.reduce((n, l) => n + bytesOf(l), 0);
+      if (diskLines + lines.length > retainEvents * 2 + 1000 || diskBytes + add > maxBytes * 2) { await atomic(logFile, events.map((e) => e.line + '\n').join('')); diskLines = events.length; diskBytes = bytes; } // compaction (lines or bytes)
+      else if (lines.length) { await appendFile(logFile, lines.map((l) => l + '\n').join(''), { mode: 0o600 }); diskLines += lines.length; diskBytes += add; }
       if (metaDirty) { metaDirty = false; await writeMeta(); }
       health = { ok: true, error: null };
     } catch (e) { fail(e); }
@@ -69,7 +79,7 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
   const later = () => { if (!timer && !closed) { timer = setTimeout(flush, FLUSH_MS); timer.unref?.(); } };
 
   prune(); reserved = seq + BLOCK;
-  try { await writeMeta(); await atomic(logFile, events.map((e) => e.line + '\n').join('')); diskLines = events.length; } catch (e) { fail(e); }
+  try { await writeMeta(); await atomic(logFile, events.map((e) => e.line + '\n').join('')); diskLines = events.length; diskBytes = bytes; } catch (e) { fail(e); }
 
   const subs = new Set(); let streams = 0;
   const log = {
@@ -79,6 +89,8 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
     get cursor() { return `${store}:${seq}`; },
     get health() { return health; },
     get size() { return events.length; },
+    get bytes() { return bytes; },
+    get diskBytes() { return diskBytes; },
     get streams() { return streams; },
     set streams(n) { streams = n; },
     /** Append one event: { seq, type, at, ...fields }. Returns it. Never throws into the caller for storage trouble. */
@@ -87,8 +99,8 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
       const t = now(), ev = { seq: ++seq, type, at: t };
       for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null && !(k in ev)) ev[k] = v;
       if (seq > reserved) { reserved = seq + BLOCK; metaDirty = true; }
-      const line = JSON.stringify(ev), entry = { seq: ev.seq, type, at: t, line };
-      events.push(entry); bytes += line.length; prune(t); pending.push(line); later();
+      const line = JSON.stringify(ev), entry = { seq: ev.seq, type, at: t, line, bytes: bytesOf(line) };
+      events.push(entry); bytes += entry.bytes; prune(t); pending.push(line); later();
       for (const fn of [...subs]) { try { fn(entry); } catch { /* a broken viewer never breaks the emitter */ } }
       return ev;
     },
@@ -96,6 +108,7 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
     typing(data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ typing: true, line }); } catch { /* ignore */ } } },
     /** Parse a client cursor: none | invalid | reset | expired | ok (with seq). */
     parse(v) {
+      prune(); // age out first: on an idle hub nothing else has dropped old events yet
       if (v === undefined || v === null || v === '') return { kind: 'none' };
       const m = CURSOR.exec(String(v)); if (!m) return { kind: 'invalid' };
       const n = Number(m[2]);
@@ -103,11 +116,12 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
       if (n < floor) return { kind: 'expired' };
       return { kind: 'ok', seq: n };
     },
-    /** Events after `after` (oldest first), at most `limit`. */
+    /** Events after `after` (oldest first), at most `limit`. `expired`: events after `after` were already dropped. */
     since(after, limit = PULL_MAX) {
-      prune(); let i = 0; while (i < events.length && events[i].seq <= after) i++;
+      prune(); if (after < floor) return { entries: [], hasMore: false, expired: true };
+      let i = 0; while (i < events.length && events[i].seq <= after) i++;
       const out = events.slice(i, i + limit);
-      return { entries: out, hasMore: i + limit < events.length };
+      return { entries: out, hasMore: i + limit < events.length, expired: false };
     },
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     flush,
@@ -117,30 +131,50 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
   return log;
 }
 
-/** The v2 SSE stream. `counter` holds the account's stream count shared with v1 (8 in total). */
-export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HEARTBEAT_MS, alive = () => true, counter = log, maxStreams = MAX_STREAMS } = {}) {
+/** The v2 SSE stream. `counter` holds the account's stream count shared with v1 (8 in total).
+ *  The replay is sent page by page from the log and waits for the socket to drain, however large it is; events emitted meanwhile
+ *  are part of the log and follow in order. The 1 MiB backlog limit applies only once the stream is live (a viewer that stops reading is dropped). */
+export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HEARTBEAT_MS, alive = () => true, counter = log, maxStreams = MAX_STREAMS, drainMs = DRAIN_MS } = {}) {
   if (counter.streams >= maxStreams) throw fault(429, 'Too many live streams open for this account', 'too_many_streams');
   const c = log.parse(cursor);
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
   res.write(`retry: ${RETRY_MS}\n\n`);
   counter.streams++;
-  let last = log.seq, closed = false, ka, unsub = () => {};
+  let last = log.seq, closed = false, live = false, ka, wake = null;
   const end = (destroy = false, reason = null) => {
-    if (closed) return; closed = true; counter.streams--; clearInterval(ka); unsub();
+    if (closed) return; closed = true; counter.streams--; clearInterval(ka); unsub(); wake?.();
     if (reason && !res.destroyed) { res.write(`event: foxfleet.auth\ndata: ${JSON.stringify({ reason })}\n\n`); res.end(); } else if (destroy) res.destroy(); else res.end();
   };
-  const send = (entry) => {
+  const frame = (entry) => `id: ${log.store}:${entry.seq}\nevent: ${entry.type}\ndata: ${entry.line}\n\n`;
+  const send = (entry) => { // live phase only
     if (closed) return;
     if (entry.typing) res.write(`event: typing\ndata: ${entry.line}\n\n`);
-    else { if (entry.seq <= last) return; last = entry.seq; res.write(`id: ${log.store}:${entry.seq}\nevent: ${entry.type}\ndata: ${entry.line}\n\n`); }
-    if (res.writableLength > MAX_BACKLOG) end(true); // a viewer that stops reading is dropped; it resumes by id
+    else { if (entry.seq <= last) return; last = entry.seq; res.write(frame(entry)); }
+    if (res.writableLength > MAX_BACKLOG) end(true); // it resumes by id
   };
-  if (c.kind === 'invalid' || c.kind === 'reset' || c.kind === 'expired') res.write(`event: foxfleet.gap\ndata: ${JSON.stringify({ reason: c.kind, cursor: log.cursor })}\n\n`);
-  else if (c.kind === 'ok') { last = c.seq; let after = c.seq; for (;;) { const { entries, hasMore } = log.since(after, PULL_MAX); for (const e of entries) send(e); if (!hasMore || !entries.length || closed) break; after = entries.at(-1).seq; } }
-  if (closed) return { close: () => {} };
-  res.write(`event: foxfleet.ready\ndata: ${JSON.stringify({ contract: LIVE2_CONTRACT, cursor: `${log.store}:${last}`, store: log.store, heartbeat_ms: keepAliveMs })}\n\n`);
-  unsub = log.subscribe(send);
-  ka = setInterval(() => { if (closed) return; if (!alive()) return end(false, 'signed_out'); res.write(': keep-alive\n\n'); }, keepAliveMs); ka.unref?.();
+  const unsub = log.subscribe((entry) => { if (live) send(entry); }); // before going live everything comes from the log itself
+  const drained = () => new Promise((resolve) => { // wait for the client to read what was written (or give up on one that never does)
+    const done = () => { clearTimeout(t); res.off('drain', done); wake = null; resolve(); };
+    const t = setTimeout(() => { done(); end(true); }, drainMs); t.unref?.();
+    wake = done; res.on('drain', done);
+  });
+  const write = async (text) => { if (!res.write(text) && !closed) await drained(); };
   res.once('close', () => end(false)); req.once('aborted', () => end(true));
+  ka = setInterval(() => { if (closed) return; if (!alive()) return end(false, 'signed_out'); res.write(': keep-alive\n\n'); }, keepAliveMs); ka.unref?.();
+  const gap = async (reason) => { const at = log.seq; await write(`event: foxfleet.gap\ndata: ${JSON.stringify({ reason, cursor: `${log.store}:${at}` })}\n\n`); last = at; };
+  void (async () => {
+    if (c.kind === 'ok') last = c.seq; else if (c.kind !== 'none') await gap(c.kind);
+    // Replay page by page from the log until caught up. The last check and going live happen with no await in between,
+    // so nothing emitted meanwhile is missed or sent twice.
+    for (;;) {
+      if (closed) return;
+      const { entries, expired } = log.since(last, PULL_MAX);
+      if (expired) { await gap('expired'); continue; } // retention overtook a very slow replay: a gap, never a hole
+      if (!entries.length) break;
+      for (const e of entries) { if (closed) return; if (e.seq > last) { last = e.seq; await write(frame(e)); } }
+    }
+    live = true;
+    res.write(`event: foxfleet.ready\ndata: ${JSON.stringify({ contract: LIVE2_CONTRACT, cursor: `${log.store}:${last}`, store: log.store, heartbeat_ms: keepAliveMs })}\n\n`);
+  })().catch(() => end(true));
   return { close: () => end(false) };
 }
