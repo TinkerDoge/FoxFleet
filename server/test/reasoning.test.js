@@ -42,8 +42,17 @@ test('native gateway: reasoning.delta streams, reasoning.available does not repe
   normalise({ type: 'message.start', payload: {} }, s);
   ev = events([['reasoning.available', { text: 'whole block' }], ['message.complete', { text: 'ok' }]]); assert.deepEqual(ev.map((e) => e.type), ['reasoning', 'turn.end']);
   normalise({ type: 'message.start', payload: {} }, s);
-  ev = events([['message.complete', { text: 'ok', reasoning: 'only at the end' }]]); assert.equal(ev[0].reasoning, 'only at the end');
+  ev = events([['message.complete', { text: 'ok', reasoning: 'only at the end' }]]);  assert.equal(ev[0].reasoning, 'only at the end');
   assert.match(new TextDecoder().decode(toFrames(ev[0])[0]), /"reasoning_content":"only at the end"/);
+  assert.match(new TextDecoder().decode(toFrames(ev[0])[1]), /"content":"ok"/, 'complete text is the reply when nothing streamed');
+});
+
+test('turn.end without streamed deltas is the whole reply; with them it is not repeated', () => {
+  const dec = new TextDecoder();
+  const frames = (e) => toFrames(e).map((b) => dec.decode(b));
+  assert.deepEqual(frames({ type: 'turn.end', text: 'Done.', streamed: false }).map((s) => JSON.parse(s.replace(/^data: /, '').trim()).choices[0].delta), [{ content: 'Done.' }]);
+  assert.deepEqual(frames({ type: 'turn.end', text: 'Done.', streamed: true }), []);
+  assert.equal(frames({ type: 'turn.end', reasoning: 'hmm', text: 'Hi', streamed: false }).length, 2);
 });
 
 test('chunks keep their other fields (tool calls, usage, ids)', () => {

@@ -48,6 +48,7 @@ class MessageActionsTest {
     @Test fun reactOnlyRepliesAndHiddenIdsAreNotShown() {
         val msgs = listOf(UiMessage("user", "hi", id = "u"), UiMessage("assistant", "REACT: ❤️", id = "a"), UiMessage("assistant", "Hello", id = "b"))
         assertTrue(MessageActions.emptyReply(msgs[1])); assertFalse(MessageActions.emptyReply(msgs[2]))
+        assertFalse(MessageActions.emptyReply(UiMessage("assistant", "", steps = listOf(dev.foxfleet.app.data.ToolStep("terminal")))))
         assertEquals(listOf("u"), MessageActions.visible(msgs, setOf("b")).map { it.value.id })
         assertEquals(listOf(0), MessageActions.visible(msgs, setOf("b")).map { it.index }) // original index kept for stable list keys
     }

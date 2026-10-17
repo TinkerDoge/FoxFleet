@@ -364,7 +364,7 @@ fun ChatScreen(
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
-                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+                Transcript(agent.displayName, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,

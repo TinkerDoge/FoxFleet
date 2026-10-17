@@ -36,10 +36,11 @@ test('connector params: create and resume carry source=foxfleet; an old Hermes t
   const gw = new HermesGateway({ profile: 'p', home: '/x', launch: () => null, emit() {} });
   gw.ensure = async () => {}; gw.rpc = async (m, p) => { sent.push([m, { ...p }]); if (p.source && gw.reject) throw Object.assign(new Error('Extra inputs are not permitted: source'), { rpc: -32602 }); return { session_id: 'rt1', stored_session_id: 's1', message_count: 0 }; };
   await gw.call('create', {}); await gw.call('attach', { stored_session_id: 's2' });
-  assert.deepEqual(sent.map(([m, p]) => [m, p.source]), [['session.create', 'foxfleet'], ['session.resume', 'foxfleet']]);
+  const src = () => sent.filter(([m]) => m === 'session.create' || m === 'session.resume').map(([m, p]) => [m, p.source]);
+  assert.deepEqual(src(), [['session.create', 'foxfleet'], ['session.resume', 'foxfleet']]);
   sent.length = 0; gw.reject = true; gw.runtime.clear(); await gw.call('attach', { stored_session_id: 's3' });
-  assert.deepEqual(sent.map(([m, p]) => [m, p.source]), [['session.resume', 'foxfleet'], ['session.resume', undefined]]); assert.equal(gw.noSource, true);
-  sent.length = 0; await gw.call('create', {}); assert.deepEqual(sent.map(([, p]) => p.source), [undefined], 'remembered');
+  assert.deepEqual(src(), [['session.resume', 'foxfleet'], ['session.resume', undefined]]); assert.equal(gw.noSource, true);
+  sent.length = 0; await gw.call('create', {}); assert.deepEqual(src().map(([, s]) => s), [undefined], 'remembered');
 });
 
 test('fallback: a new chat carries the wrapped note once, on its first message only', async () => {

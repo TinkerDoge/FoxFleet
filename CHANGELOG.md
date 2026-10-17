@@ -4,6 +4,16 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased (0.4.2-alpha)
 
+Android versionCode 31. Hub + connector fixes for the live reply Doge still saw as a green tick (grokbot's 0.4.1 notes claimed these were done; the run stream still dropped `message.complete`).
+
+- Fix (hub, native gateway): the reply to a native session now shows in the open chat when Hermes does not stream tokens (`streaming.enabled: false`, or a provider that only sends `message.complete`).
+  - Cause: `native-facade` closed the run on `turn.end` *before* turning that event into SSE, and `toFrames` never put the complete text on the wire. The phone showed the working/step tick, then nothing; reopening the session loaded Hermes's transcript.
+  - Now `turn.end` flushes remaining reasoning and text (skipped when `message.delta` already streamed them), then the run ends. `message.new` gets the text, so reactions have a hub id.
+- Fix (connector): `/model` uses Hermes 0.22 `session.mutate operation=model`. `config.set key=model` is refused (`use_session_mutation_model`), so the picker set nothing. `--global` is still refused. Expensive-model confirm keeps the token from the refusal.
+- Fix (connector): a FoxFleet session turns `show_reasoning` on for that session only, so thinking reaches the phone even when the profile has `display.show_reasoning: false` for the CLI.
+- Fix (Android): the live status uses the agent's display name, not its id (`sumi is working…` → `SUMI is working…`). A finished reply that has steps but no text yet is still shown (not treated as a REACT-only empty row).
+- Tests: turn.end frames; fake gateway `session.mutate` + `show_reasoning`; emptyReply keeps steps. hub-tests.min 588.
+
 Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone whose hub was not redeployed (0.4.0 or older). The reactions he saw were missing or failed without a word. The app now explains instead. No hub, web or contract changes. Android versionCode 30.
 
 - Fix (Android reactions on older hubs): every reaction affordance depended on three gates. None of them told the user anything when it failed:
