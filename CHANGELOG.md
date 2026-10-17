@@ -15,6 +15,30 @@ Fixes from Doge's 0.4.0 test (main 8d1aa85): thinking that did not stream, no li
 - Hub (from QA, Soran's 0.4.1 check): step detail is redacted before it is clipped, and a cut end is re-checked: tool `preview` / `result_preview`, `foxfleet.step` and commentary lines, typing `label`, `run.step`, and `message.new` `tools` / `reasoning` (so also `live-events.jsonl` and the phone's cache) no longer carry `sk-` keys, `gh?_` tokens, `--password=x` / `--password x` or mysql-style `-p<password>`. The shared `redact()` learned the two command-line forms (no change for `cp -p`, `mkdir -p`, `find -print`, `ssh -p 22`, `mysql -p dbname`). Also masked now: each saved connection's own secrets (API server key, dashboard password and token, 8+ characters, also when a cut leaves the start of one) in steps, tools and `live-events.jsonl`; argv arrays (`["mysql", "-pX"]`, `["deploy", "--password", "X"]`, `["sshpass", "-p", "X"]`); and `sshpass -p X` with a space. sshpass's `-p` only counts before the command it runs, so `sshpass -f file ssh -p 22` keeps ssh's port.
 - Contract: `info.version` 0.4.1-alpha; new schemas `RunStepEvent`, `RunToolFrame`, `RunStepFrame`, `ModelList`, `ModelOverride`; `TypingEvent.label` / `tool_id`, `LiveMessage.reasoning` / `reasoning_truncated` / `tools`, `Capabilities.models`; two new routes `x-foxfleet-status: implemented (0.4.1-alpha)`. No new environment variables. Package versions stay 0.4.0-alpha on this branch (bumped at release); Android unchanged.
 
+Regression fixes on Android after Doge's 0.4.0 test (main 8d1aa85). The hub's run stream did not change in phase 1: all three bugs were in the client. The hub's 0.4.1 step and model data are on fix/0.4.1-hub; the app reads them when present and stays compatible with 0.4.0 hubs.
+
+- Fix (Android thinking): a finished reply keeps its collapsible Reasoning block again.
+  - Cause: the hub announces the reply (`message.new`) before its run stream closes. 0.4.0 dropped that event while streaming, so the committed bubble had no ids. Every later history page, catch-up or cache copy (all text only) then replaced it and lost the thinking.
+  - The reply is now matched by `run_id` and merged.
+  - Pages and the cache keep reasoning and tools they don't carry themselves.
+  - The streamed reply is written to the device cache, so it survives a reload.
+- Fix (Android): a reply that starts while a chat is still loading from the cache is now followed live. Before, it was missed until it finished.
+- Fix (Android /model): the picker opened only for native-gateway agents (`nativeUi`). Now `capabilities.models` decides:
+  - `native`: the native session model, as before.
+  - `request`: `GET /api/agents/{agent}/models` and a per-chat `POST /api/agents/{agent}/sessions/{id}/model`.
+  - `none`: a short note instead of sending "/model" to the agent.
+  - Hubs without the field behave as in 0.4.0.
+- Android: live progress in the reply bubble, replacing the single "… is working" line.
+  - A step list with the tool, a short preview, a spinner that turns into a check or a cross, the duration, failure output, and commentary / status lines.
+  - It reads the run stream (`foxfleet.tool` incl. `preview`, `ok`, `duration_ms`, `result_preview`; `foxfleet.step`; legacy `hermes.tool.progress`) and live v2 `run.step` and `typing` `label` / `tool_id`.
+  - Steps are merged by `tool_id` across sources, so there are no doubles, and late or replayed events are ignored.
+  - The finished message keeps the list, closed, as "Used N tools".
+  - FoxFleet's own design and drawings (no third-party code or assets).
+- Android: `message.new` / `message.edited` `reasoning`, `reasoning_truncated` and `tools` from 0.4.1 hubs are shown and cached. Parsing is lenient.
+- Android: read ticks are shown and stored only for your own messages, never on agent or thinking bubbles.
+- Tests: regression tests for the three bugs (fix041: stream + message.new ordering against a scripted hub, cache, step merging, /model modes, caps parsing) and before/after screenshots.
+- Version: Android versionName 0.4.1-alpha, versionCode 29.
+
 ## 0.4.0-alpha (not tagged)
 
 Phase 1 of the chat-list work (contract at 48eb160: docs/LIVE-EVENTS.md, docs/API-ERRORS.md, contract/openapi.json). The entries below are the hub side (branch feat/tg-phase1, no UI or Android changes); the Android client for it is on feat/tg-phase1-android.
@@ -32,6 +56,20 @@ Phase 1 of the chat-list work (contract at 48eb160: docs/LIVE-EVENTS.md, docs/AP
 - Contract: the eight 0.4.0 routes are `x-foxfleet-status: implemented`; `ChatRow.last_message.hub_id` may be null (preview from the agent's own session list before the hub numbered a message). New site env vars documented.
 - Privacy policy 1.1 (PRIVACY.md): the hub keeps the text of recent messages up to 7 days in `live-events.jsonl` and chat previews with read state in `chats.json`. The terms version users accept (`TERMS_VERSION` 1.0) is unchanged.
 - Version 0.4.0-alpha (hub, web, site, contract). Android: versionName 0.4.0-alpha, versionCode 28 on feat/tg-phase1-android (53507cf); the hub branch alone leaves `android/` at versionCode 27 until the branches merge.
+
+### Android (0.4.0-alpha, versionCode 28)
+
+- Android: Room cache for agents, chats and messages. The app shows the cache first, then the hub, and writes everything through to the cache. The cache is kept per account and hub, and wiped on sign-out or when a different owner signs in. The app can start offline on the cached fleet. The schema is exported, with a migration strategy and a JSON-based migration test (schema v3 after QA).
+- Android: keyed paging. The message list is keyed by message identity, with a contentType per kind. Older pages come from the device cache first (keyset), then the hub. Cached rows count as shown, so a hub page never yanks the reader.
+- Android: live v2 stream (`?v=2`), with an event reducer and a resumable stream runner. Cursors and `foxfleet.ready` / `foxfleet.gap` / 410 are handled with a resync, runs are keyed on `run_id`, and unknown events and fields are parsed leniently.
+- Android: the chat list has unread badges, plus archive, mute and pin, mark unread, and an archived view.
+- Android: in the chat, the agent's typing / thinking / tool state is shown. Your own messages get ticks (sent, delivered, read). The chat header has a live indicator (Connecting / Updating, and a static Offline label), and a new-messages pill appears when you are scrolled up.
+- Android: notifications have a direct reply (idempotency key and reply token) and a Mark read action. The launcher badge shows the unread count.
+- Android QA fixes:
+  - A1: the owed resync is stored with the cursor in Room and cleared only once it has finished. A failed or cancelled resync is retried with backoff, on resume and after process death. A resync refreshes every cached chat. Escape for a stuck cursor: after 5 failures at one cursor, the app restarts at `since=now` with a full resync.
+  - A2: the direct-reply and mark-read PendingIntents wrap an explicit intent. lintRelease has 0 errors.
+  - A3: the quiet badges (muted, archived) meet contrast: 6.05:1 dark and 5.95:1 light, covered by a test.
+  - Phase 1 screenshot tests write to build/outputs/roborazzi.
 
 ## 0.3.14-alpha (not tagged; Android versionCode 27)
 
