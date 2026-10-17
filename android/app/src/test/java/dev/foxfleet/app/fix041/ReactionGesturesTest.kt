@@ -1,5 +1,6 @@
 package dev.foxfleet.app.fix041
 
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -33,12 +34,13 @@ import org.robolectric.annotation.Config
 class ReactionGesturesTest {
     @get:Rule val compose = createComposeRule()
     private val me = ReactionActor("user:minh", "minh", "human"); private val atlas = ReactionActor("agent:atlas", "Atlas", "agent")
-    private fun agent(reactions: Boolean) = AgentStatus("atlas", online = true, chatReady = true, managementReady = true, label = "Atlas", capabilities = Capabilities(reactions = reactions, agentReactions = reactions))
+    private fun agent(reactions: Boolean, bot: Boolean = false) = AgentStatus("atlas", online = true, chatReady = true, managementReady = true, label = "Atlas", capabilities = Capabilities(reactions = reactions, agentReactions = reactions, bot = bot))
     private val toggles = mutableListOf<String>(); private val chips = mutableListOf<String>()
 
-    private fun show(messages: List<UiMessage>, reactions: Boolean = true, snap: ReactionSnapshot = ReactionSnapshot(me, emptyMap(), emptySet(), emptyMap())) {
-        val a = agent(reactions)
-        val state = ChatState().apply { load(messages, "s1"); simulateReactions(snap) }
+    private fun show(messages: List<UiMessage>, reactions: Boolean = true, snap: ReactionSnapshot = ReactionSnapshot(me, emptyMap(), emptySet(), emptyMap()), bot: Boolean = false) {
+        val a = agent(reactions, bot)
+        // a 0.4.1 hub (reactionEvents): hub ids are reaction targets
+        val state = ChatState().apply { load(messages, "s1"); simulateReactions(snap); hubIdReactions = true }
         compose.setContent { FoxfleetTheme(AppPrefs()) { ChatScreen(a, listOf(a), state, emptyList(), { false }, { _, _ -> }, {}, {}, {}, {}, {}, {},
             onReact = { m, e, on -> chips += "${m.hubId ?: m.id} $e $on" }, onToggleReaction = { m, e -> toggles += "${m.hubId ?: m.id} $e" }) } }
         compose.waitForIdle()
@@ -80,10 +82,12 @@ class ReactionGesturesTest {
 
     // Bot agents: capabilities.reactions is false, so there is no reaction UI at all.
     @Test fun botAgentsShowNoReactionUi() {
-        show(listOf(UiMessage("assistant", "Hello from the bot", id = "2", hubId = "h.2")), reactions = false, snap = ReactionSnapshot(me, mapOf("2" to listOf(ReactionGroup("👍", listOf(me))))))
+        show(listOf(UiMessage("assistant", "Hello from the bot", id = "2", hubId = "h.2")), reactions = false, snap = ReactionSnapshot(me, mapOf("2" to listOf(ReactionGroup("👍", listOf(me))))), bot = true)
         compose.onNodeWithContentDescription("👍 1", substring = true).assertDoesNotExist()
         compose.onAllNodesWithText("Hello from the bot").onFirst().performTouchInput { longClick() }; compose.waitForIdle()
         assertEquals(0, quickRows())
+        compose.onAllNodesWithText(dev.foxfleet.app.ui.chat.MessageActions.HUB_HINT).assertCountEquals(0) // no "update your hub" for bots
+        androidx.test.espresso.Espresso.pressBack(); compose.waitForIdle()
         compose.onAllNodesWithText("Hello from the bot").onFirst().performTouchInput { doubleClick() }; compose.mainClock.advanceTimeBy(600); compose.waitForIdle()
         assertEquals(emptyList<String>(), toggles)
     }

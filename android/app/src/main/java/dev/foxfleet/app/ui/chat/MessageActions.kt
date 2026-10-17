@@ -6,6 +6,9 @@ import dev.foxfleet.app.data.UiMessage
 
 const val HEART = "❤️"
 
+/** Reactions on one message: [Ready] (quick row, picker, pills, double tap), [Pending] (the hub needs the message's provider id first), [HubTooOld] (the hub has no reactions), [Off] (bots). */
+enum class ReactState { Ready, Pending, HubTooOld, Off }
+
 /** Who wrote the quoted message and a one-line excerpt of it. */
 data class ReplyTarget(val author: String, val excerpt: String)
 data class Quoted(val quote: String, val body: String)
@@ -74,9 +77,31 @@ object MessageActions {
         if (m.id != null && canHide) add(MessageAction.Delete)
     }
 
-    /** Picking an emoji adds it, or takes yours back when you already reacted with it (like a pill). Returns the `present` value to send. */
-    /** A message can take a reaction once the hub can address it: by its provider id, or by its hub id (0.4.1 hubs; older ones resolve it first). */
-    fun canReact(m: UiMessage) = m.id != null || m.hubId != null
+    /**
+     * A message can take a reaction once the hub can address it: by its provider id, or by its hub id when the hub takes hub ids as
+     * targets ([hubIds]: `hub.features.reactionEvents`, 0.4.1 hubs). Older hubs only know provider ids.
+     */
+    fun canReact(m: UiMessage, hubIds: Boolean = true) = m.id != null || (hubIds && m.hubId != null)
+
+    /**
+     * What a message offers for reactions (0.4.2). Older hubs used to drop the quick row, the pills and the double tap without a word:
+     * now a message they cannot take a reaction on yet says why.
+     */
+    fun reactState(caps: dev.foxfleet.app.data.Capabilities, hubIds: Boolean, m: UiMessage): ReactState = when {
+        caps.reactions -> if (canReact(m, hubIds)) ReactState.Ready else ReactState.Pending
+        caps.bot -> ReactState.Off // bot agents have no reactions on any hub
+        else -> ReactState.HubTooOld
+    }
+
+    /** The menu's line (and the double tap's toast) when [state] cannot react; null when it can, or never will (bots). */
+    fun reactHint(state: ReactState): String? = when (state) {
+        ReactState.HubTooOld -> HUB_HINT_OLD
+        ReactState.Pending -> HUB_HINT_PENDING
+        else -> null
+    }
+    const val HUB_HINT = "Update your hub for reactions"
+    const val HUB_HINT_OLD = "This hub doesn't support reactions yet."
+    const val HUB_HINT_PENDING = "On this hub, a new message takes reactions once it's saved. Try again in a moment, or update the hub."
 
     fun nextReaction(groups: List<ReactionGroup>, me: String, emoji: String) = groups.none { g -> g.emoji == emoji && g.actors.any { it.id == me } }
 

@@ -2,6 +2,22 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
+## Unreleased (0.4.2-alpha, Android only)
+
+Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone whose hub was not redeployed (0.4.0 or older). The reactions he saw were missing or failed without a word. The app now explains instead. No hub, web or contract changes. Android versionCode 30.
+
+- Fix (Android reactions on older hubs): every reaction affordance depended on three gates. None of them told the user anything when it failed:
+  - `capabilities.reactions`: false on hubs before 0.3.7, so there was no quick row, no pills and no double tap.
+  - A loaded reaction snapshot: an older hub builds `GET …/reactions` from the agent's full transcript. If that read failed, the pills and the double tap disappeared for the whole chat.
+  - A message the hub can address: older hubs only take the provider id. A reply that just arrived live has none yet, so on 0.3.x hubs the quick row was simply missing, and on 0.4.0 hubs every tap failed.
+- Now, per message:
+  - The quick row, picker, pills and double tap appear wherever the hub can take the reaction, including saved messages on 0.4.0 and 0.3.x hubs. The double tap no longer waits for the snapshot.
+  - Where the hub can't take it, the long-press menu (still with Reply, Copy, Select, Share) shows "Update your hub for reactions" with the reason, and a double tap shows the same as a toast.
+  - On an older hub, opening the menu on a new message asks the hub for its id. The quick row appears once the id is known.
+  - Bot agents still have no reactions and get no hint.
+- Fix (Android): the long-press and double-tap detector on a message kept the first copy of the message it drew. After the message's id arrived (same row), a double tap acted on the old copy. It now uses the current message.
+- 0.4.1 hubs (`reactionEvents`): unchanged.
+
 ## Unreleased (0.4.1-alpha)
 
 Fixes from Doge's 0.4.0 test (main 8d1aa85): thinking that did not stream, no live tool/step detail ("Agent is working…", then the reply), and `/model` not opening the picker. Hub side on branch fix/0.4.1-hub (no UI or Android changes; Android is fixed on fix/0.4.1). All additions; every 0.4.0 frame keeps its bytes. Contract: docs/LIVE-EVENTS.md ("Step detail", "Model picker"), docs/API-ERRORS.md, contract/openapi.json.

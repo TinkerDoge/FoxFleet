@@ -276,6 +276,14 @@ fun ChatScreen(
     // Quick row and picker toggle like the pills: an emoji you already gave is taken back. Bot agents have no reactions at all.
     val reactionsOn = agent.capabilities.reactions
     val toggle = { m: UiMessage, e: String -> onToggleReaction(m, e) }
+    // 0.4.2: per message, whether the hub can take a reaction on it now. An older hub (no reactions at all, or no hub-id targets for a
+    // message that only arrived live) gets a clear "Update your hub" line instead of a quick row, pills and double tap that silently were not there.
+    val hubIds = state.hubIdReactions
+    val reactStateOf = { m: UiMessage -> MessageActions.reactState(agent.capabilities, hubIds, m) }
+    val reactHintToast = { st: dev.foxfleet.app.ui.chat.ReactState ->
+        if (st == dev.foxfleet.app.ui.chat.ReactState.Pending) onSyncReactions() // an older hub learns the message's id from its transcript
+        android.widget.Toast.makeText(ctx, MessageActions.HUB_HINT, android.widget.Toast.LENGTH_SHORT).show()
+    }
     fun act(m: UiMessage, a: MessageAction) {
         menuFor = null
         when (a) {
@@ -293,7 +301,7 @@ fun ChatScreen(
     }
     val gestures = MessageGestures(
         onMenu = { menuFor = it },
-        onHeart = { m -> toggle(m, HEART) },
+        onHeart = { m -> when (val st = reactStateOf(m)) { dev.foxfleet.app.ui.chat.ReactState.Ready -> toggle(m, HEART); dev.foxfleet.app.ui.chat.ReactState.Off -> Unit; else -> reactHintToast(st) } },
         onReply = replyTo,
         onUndoHide = { id -> onHide?.invoke(id, false) },
     )
@@ -356,7 +364,7 @@ fun ChatScreen(
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
-                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
@@ -389,13 +397,17 @@ fun ChatScreen(
         (state.messages.firstOrNull { it === mf } ?: mf.hubId?.let { h -> state.messages.firstOrNull { it.hubId == h } } ?: mf.id?.let { id -> state.messages.firstOrNull { it.id == id } })?.takeIf { it.id == null || it.id !in hidden }
     }
     LaunchedEffect(menuFor, menuMsg) { if (menuFor != null && menuMsg == null) menuFor = null }
+    // an older hub: opening the menu on a message it cannot address yet asks for its id (the quick row appears once it is known)
+    val menuReact = menuMsg?.let(reactStateOf)
+    LaunchedEffect(menuFor, menuReact) { if (menuReact == dev.foxfleet.app.ui.chat.ReactState.Pending) onSyncReactions() }
     menuMsg?.let { m ->
         val newest = MessageActions.newestTargets(state.messages)
         val busy = state.streaming || state.queuePending
         MessageMenuSheet(
             actions = MessageActions.actions(m, newestAssistant = m === newest.assistant, newestUser = m === newest.user, busy = busy, hermes = agent.isHermes && onEditLast != null, canHide = onHide != null && state.reactions?.hidden != null),
             // a message that only arrived live (hub id, no provider id yet) can be reacted to as well (0.4.0 offered no row for it)
-            canReact = reactionsOn && MessageActions.canReact(m),
+            canReact = menuReact == dev.foxfleet.app.ui.chat.ReactState.Ready,
+            reactHint = menuReact?.let(MessageActions::reactHint),
             onReact = { e -> menuFor = null; toggle(m, e) },
             onMoreReactions = { menuFor = null; reactingTo = m },
             onAction = { act(m, it) }, onDismiss = { menuFor = null },
@@ -413,7 +425,7 @@ fun ChatScreen(
 
 
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, reactionsOn: Boolean = true, onReact: (UiMessage, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (UiMessage) -> Unit = {}, gestures: MessageGestures? = null, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, reactionsOn: Boolean = true, reactStateOf: (UiMessage) -> dev.foxfleet.app.ui.chat.ReactState = { if (reactionsOn) dev.foxfleet.app.ui.chat.ReactState.Ready else dev.foxfleet.app.ui.chat.ReactState.Off }, onReact: (UiMessage, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (UiMessage) -> Unit = {}, gestures: MessageGestures? = null, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -520,10 +532,13 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             val (index, m) = rev[i]; val b = baseline; val isNew = b != null && state.keyBase + index >= b
             // chips by hub id when the hub keys them so (0.4.1), else by provider id; none for agents without reactions (bots)
             val snap = state.reactions
-            val reactions = if (reactionsOn && snap != null && MessageActions.canReact(m)) MessageReactions(snap.groupsFor(m), snap.actor.id, { e, on -> onReact(m, e, on) }, { onPickReaction(m) }) else null
+            // 0.4.2: no snapshot yet (or the hub could not read it) no longer takes the double tap away: no pills to show, the tap still reacts
+            val st = reactStateOf(m)
+            val reactions = if (st == dev.foxfleet.app.ui.chat.ReactState.Ready) MessageReactions(snap?.groupsFor(m).orEmpty(), snap?.actor?.id.orEmpty(), { e, on -> onReact(m, e, on) }, { onPickReaction(m) }) else null
+            val canHeart = st != dev.foxfleet.app.ui.chat.ReactState.Off
             // animateItem stays on the item's root: the swipe wrapper when there is one
             val itemMod = Modifier.animateItem().messageEnter(isNew)
-            if (gestures != null) SwipeToReply({ gestures.onReply(m) }, itemMod) { MessageRow(agentName, m, Modifier, onOpen, state.sessionId.orEmpty(), reactions, gestures) }
+            if (gestures != null) SwipeToReply({ gestures.onReply(m) }, itemMod) { MessageRow(agentName, m, Modifier, onOpen, state.sessionId.orEmpty(), reactions, gestures, canHeart) }
             else MessageRow(agentName, m, itemMod, onOpen, state.sessionId.orEmpty(), reactions)
         }
         if (state.loadingOlder) item(key = "older", contentType = "status") { ShimmerStatusText("Loading earlier messages…", Modifier.padding(8.dp)) }
@@ -544,7 +559,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
 }
 
 @Composable
-private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOpen: (MediaRef) -> Unit, sessionId: String, reactions: MessageReactions? = null, gestures: MessageGestures? = null) {
+private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOpen: (MediaRef) -> Unit, sessionId: String, reactions: MessageReactions? = null, gestures: MessageGestures? = null, canHeart: Boolean = reactions != null) {
     val c = LocalHubColors.current
     val haptic = rememberHaptic()
     // One frame per message: everything it carries (pictures, files, text, time) sits inside, so it is clear what a reaction is on.
@@ -553,14 +568,18 @@ private fun MessageRow(agentName: String, m: UiMessage, modifier: Modifier, onOp
     val press = remember { MutableInteractionSource() }
     val pressed by press.collectIsPressedAsState()
     var pop by remember { mutableIntStateOf(0) }
-    val heart: (() -> Unit)? = if (gestures != null && reactions != null) ({ haptic(HapticFeedbackType.LongPress); gestures.onHeart(m); pop++ }) else null
+    // double tap: hearts a message that can take it; on an older hub that cannot, onHeart says "Update your hub" instead (no heart pop)
+    val heart: (() -> Unit)? = if (gestures != null && canHeart) ({ haptic(HapticFeedbackType.LongPress); gestures.onHeart(m); if (reactions != null) pop++ }) else null
     val menu: (() -> Unit)? = gestures?.let { g -> { haptic(HapticFeedbackType.LongPress); g.onMenu(m) } }
+    // The press detector keeps running across recompositions (keyed on which gestures exist, not on the lambdas): it must call the
+    // current ones, for the message as it is now (ids learned, edited), not the first copy this row drew.
+    val menuNow by androidx.compose.runtime.rememberUpdatedState(menu); val heartNow by androidx.compose.runtime.rememberUpdatedState(heart)
     val reactable = if (gestures == null) Modifier else Modifier
         // TalkBack: activating the frame opens the menu (outermost, so it wins over the empty touch tap below)
         .semantics(mergeDescendants = true) { onClick(label = "Message actions") { gestures.onMenu(m); true } }
         .semantics { onLongClick(label = "Message actions") { gestures.onMenu(m); true } }
         // anywhere in the frame, links and pictures included (a link inside a reply used to take both gestures for itself)
-        .messagePress(press, onLongPress = menu, onDoubleTap = heart)
+        .messagePress(press, onLongPress = menu?.let { { menuNow?.invoke() } }, onDoubleTap = heart?.let { { heartNow?.invoke() } })
     val edge = if (pressed) c.accent else c.hairline
     val lift = if (reactions?.groups?.isNotEmpty() == true) 10.dp else 0.dp // room inside the frame for the pills hanging on its edge
     // Reactions hang on the frame's bottom edge (Messenger / iMessage), not loose under it.

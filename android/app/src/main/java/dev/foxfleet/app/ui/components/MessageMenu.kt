@@ -70,17 +70,26 @@ import kotlinx.coroutines.launch
 /** Long-press sheet (Discord style): quick reactions, then the actions this message offers. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MessageMenuSheet(actions: List<MessageAction>, canReact: Boolean, onReact: (String) -> Unit, onMoreReactions: () -> Unit, onAction: (MessageAction) -> Unit, onDismiss: () -> Unit) {
+fun MessageMenuSheet(actions: List<MessageAction>, canReact: Boolean, onReact: (String) -> Unit, onMoreReactions: () -> Unit, onAction: (MessageAction) -> Unit, onDismiss: () -> Unit, reactHint: String? = null) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = LocalHubColors.current.surface) {
-        MessageMenuContent(actions, canReact, onReact, onMoreReactions, onAction)
+        MessageMenuContent(actions, canReact, onReact, onMoreReactions, onAction, reactHint)
     }
 }
 
 /** The sheet's body, separate so screenshot tests can draw it without a window. */
 @Composable
-fun MessageMenuContent(actions: List<MessageAction>, canReact: Boolean, onReact: (String) -> Unit, onMoreReactions: () -> Unit, onAction: (MessageAction) -> Unit) {
+fun MessageMenuContent(actions: List<MessageAction>, canReact: Boolean, onReact: (String) -> Unit, onMoreReactions: () -> Unit, onAction: (MessageAction) -> Unit, reactHint: String? = null) {
     val c = LocalHubColors.current
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 16.dp)) {
+        // 0.4.2: an older hub that cannot take a reaction on this message says so, where the quick row would be (it used to be silently missing)
+        if (!canReact && reactHint != null) Row(Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(12.dp)).background(c.surfaceAlt).semantics(mergeDescendants = true) {}.padding(horizontal = 12.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            Icon(FoxIcons.get("react"), null, tint = c.textMuted, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(12.dp))
+            Column {
+                Text(dev.foxfleet.app.ui.chat.MessageActions.HUB_HINT, style = MaterialTheme.typography.bodyLarge, color = c.text)
+                Text(reactHint, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            }
+        }
         if (canReact) Row(Modifier.fillMaxWidth().padding(bottom = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             QUICK_REACTIONS.forEach { e ->
                 Box(Modifier.size(48.dp).clip(CircleShape).background(c.surfaceAlt).semantics { contentDescription = "React $e" }.clickable(role = Role.Button) { onReact(e) }, contentAlignment = Alignment.Center) {
