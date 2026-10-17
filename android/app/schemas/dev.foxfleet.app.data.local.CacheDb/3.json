@@ -1,0 +1,614 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "61c18374aabf0be884d4030c1a698dc0",
+    "entities": [
+      {
+        "tableName": "agents",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`owner` TEXT NOT NULL, `name` TEXT NOT NULL, `position` INTEGER NOT NULL, `online` INTEGER NOT NULL, `chat_ready` INTEGER NOT NULL, `management_ready` INTEGER NOT NULL, `active_sessions` INTEGER, `kind` TEXT NOT NULL, `label` TEXT, `description` TEXT NOT NULL, `caps` TEXT NOT NULL, `registry_order` INTEGER NOT NULL, `last_activity_at` INTEGER, `last_session_title` TEXT, `last_message_preview` TEXT, `last_role` TEXT, `pin_order` INTEGER, `working` INTEGER NOT NULL, `needs_input` INTEGER NOT NULL, PRIMARY KEY(`owner`, `name`))",
+        "fields": [
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "position",
+            "columnName": "position",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "online",
+            "columnName": "online",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chatReady",
+            "columnName": "chat_ready",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "managementReady",
+            "columnName": "management_ready",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activeSessions",
+            "columnName": "active_sessions",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "description",
+            "columnName": "description",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "caps",
+            "columnName": "caps",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "registryOrder",
+            "columnName": "registry_order",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastActivityAt",
+            "columnName": "last_activity_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastSessionTitle",
+            "columnName": "last_session_title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastMessagePreview",
+            "columnName": "last_message_preview",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastRole",
+            "columnName": "last_role",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "pinOrder",
+            "columnName": "pin_order",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "working",
+            "columnName": "working",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "needsInput",
+            "columnName": "needs_input",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "owner",
+            "name"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_agents_owner_position",
+            "unique": false,
+            "columnNames": [
+              "owner",
+              "position"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_agents_owner_position` ON `${TABLE_NAME}` (`owner`, `position`)"
+          }
+        ]
+      },
+      {
+        "tableName": "chats",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`owner` TEXT NOT NULL, `agent` TEXT NOT NULL, `chat_id` TEXT NOT NULL, `title` TEXT, `updated` INTEGER NOT NULL, `preview` TEXT NOT NULL, `messages` INTEGER NOT NULL, PRIMARY KEY(`owner`, `agent`, `chat_id`))",
+        "fields": [
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "agent",
+            "columnName": "agent",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chatId",
+            "columnName": "chat_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "updated",
+            "columnName": "updated",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "preview",
+            "columnName": "preview",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "messages",
+            "columnName": "messages",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "owner",
+            "agent",
+            "chat_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_chats_owner_agent_updated",
+            "unique": false,
+            "columnNames": [
+              "owner",
+              "agent",
+              "updated"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_chats_owner_agent_updated` ON `${TABLE_NAME}` (`owner`, `agent`, `updated`)"
+          }
+        ]
+      },
+      {
+        "tableName": "messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `owner` TEXT NOT NULL, `agent` TEXT NOT NULL, `chat_id` TEXT NOT NULL, `msg_key` TEXT NOT NULL, `hub_id` TEXT, `ord` INTEGER NOT NULL, `ts` INTEGER NOT NULL, `role` TEXT NOT NULL, `content` TEXT NOT NULL, `reasoning` TEXT NOT NULL, `steps` TEXT NOT NULL, `images` TEXT NOT NULL, `kind` TEXT NOT NULL, `live_id` TEXT, `n` INTEGER, `status` TEXT)",
+        "fields": [
+          {
+            "fieldPath": "rowId",
+            "columnName": "rowId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "agent",
+            "columnName": "agent",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chatId",
+            "columnName": "chat_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "msgKey",
+            "columnName": "msg_key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hubId",
+            "columnName": "hub_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "ord",
+            "columnName": "ord",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ts",
+            "columnName": "ts",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "reasoning",
+            "columnName": "reasoning",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "steps",
+            "columnName": "steps",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "images",
+            "columnName": "images",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "liveId",
+            "columnName": "live_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "n",
+            "columnName": "n",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "rowId"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_messages_owner_agent_chat_id_msg_key",
+            "unique": true,
+            "columnNames": [
+              "owner",
+              "agent",
+              "chat_id",
+              "msg_key"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_messages_owner_agent_chat_id_msg_key` ON `${TABLE_NAME}` (`owner`, `agent`, `chat_id`, `msg_key`)"
+          },
+          {
+            "name": "index_messages_owner_agent_chat_id_ord",
+            "unique": false,
+            "columnNames": [
+              "owner",
+              "agent",
+              "chat_id",
+              "ord"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_owner_agent_chat_id_ord` ON `${TABLE_NAME}` (`owner`, `agent`, `chat_id`, `ord`)"
+          },
+          {
+            "name": "index_messages_chat_id_ts",
+            "unique": false,
+            "columnNames": [
+              "chat_id",
+              "ts"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_chat_id_ts` ON `${TABLE_NAME}` (`chat_id`, `ts`)"
+          },
+          {
+            "name": "index_messages_owner_live_id",
+            "unique": false,
+            "columnNames": [
+              "owner",
+              "live_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_owner_live_id` ON `${TABLE_NAME}` (`owner`, `live_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "chat_meta",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`owner` TEXT NOT NULL, `agent` TEXT NOT NULL, `chat_id` TEXT NOT NULL, `older_offset` INTEGER NOT NULL, `has_older` INTEGER NOT NULL, `synced_at` INTEGER NOT NULL, PRIMARY KEY(`owner`, `agent`, `chat_id`))",
+        "fields": [
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "agent",
+            "columnName": "agent",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chatId",
+            "columnName": "chat_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "olderOffset",
+            "columnName": "older_offset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hasOlder",
+            "columnName": "has_older",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "synced_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "owner",
+            "agent",
+            "chat_id"
+          ]
+        }
+      },
+      {
+        "tableName": "chat_rows",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`owner` TEXT NOT NULL, `agent` TEXT NOT NULL, `label` TEXT NOT NULL, `kind` TEXT NOT NULL, `chat` TEXT, `last_hub_id` TEXT, `last_role` TEXT, `last_sender` TEXT, `last_preview` TEXT NOT NULL, `last_at` INTEGER, `last_status` TEXT, `unread` INTEGER NOT NULL, `read_up_to` INTEGER NOT NULL, `archived` INTEGER NOT NULL, `muted` INTEGER NOT NULL, `muted_until` INTEGER, `pinned` INTEGER NOT NULL, `pin_order` INTEGER, `working` INTEGER NOT NULL, `needs_input` INTEGER NOT NULL, `manual_unread` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`owner`, `agent`))",
+        "fields": [
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "agent",
+            "columnName": "agent",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chat",
+            "columnName": "chat",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastHubId",
+            "columnName": "last_hub_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastRole",
+            "columnName": "last_role",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastSender",
+            "columnName": "last_sender",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastPreview",
+            "columnName": "last_preview",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastAt",
+            "columnName": "last_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastStatus",
+            "columnName": "last_status",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "unread",
+            "columnName": "unread",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "readUpTo",
+            "columnName": "read_up_to",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "archived",
+            "columnName": "archived",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "muted",
+            "columnName": "muted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "mutedUntil",
+            "columnName": "muted_until",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "pinned",
+            "columnName": "pinned",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pinOrder",
+            "columnName": "pin_order",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "working",
+            "columnName": "working",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "needsInput",
+            "columnName": "needs_input",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "manualUnread",
+            "columnName": "manual_unread",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "owner",
+            "agent"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_chat_rows_owner_archived",
+            "unique": false,
+            "columnNames": [
+              "owner",
+              "archived"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_chat_rows_owner_archived` ON `${TABLE_NAME}` (`owner`, `archived`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sync_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`owner` TEXT NOT NULL, `cursor` TEXT, `total_unread` INTEGER NOT NULL, `total_unread_all` INTEGER NOT NULL, `synced_at` INTEGER NOT NULL, `owed_resync` TEXT, PRIMARY KEY(`owner`))",
+        "fields": [
+          {
+            "fieldPath": "owner",
+            "columnName": "owner",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cursor",
+            "columnName": "cursor",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "totalUnread",
+            "columnName": "total_unread",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "totalUnreadAll",
+            "columnName": "total_unread_all",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "syncedAt",
+            "columnName": "synced_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "owedResync",
+            "columnName": "owed_resync",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "owner"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '61c18374aabf0be884d4030c1a698dc0')"
+    ]
+  }
+}

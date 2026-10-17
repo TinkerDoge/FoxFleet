@@ -126,7 +126,11 @@ data class ChatListRow(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )
 
-/** v2: the owner's resume cursor (`<store>:<seq>`) and the account's unread totals (the launcher badge). */
+/**
+ * v2: the owner's resume cursor (`<store>:<seq>`) and the account's unread totals (the launcher badge).
+ * v3: [owedResync] = a resync the live stream still owes (gap / 410 / first connect / stuck escape), written in the same row
+ * as the cursor that skipped ahead and cleared only after the resync finished, so a failed, cancelled or killed resync is redone.
+ */
 @Entity(tableName = "sync_state")
 data class SyncRow(
     @PrimaryKey val owner: String,
@@ -134,6 +138,7 @@ data class SyncRow(
     @ColumnInfo(name = "total_unread") val totalUnread: Int,
     @ColumnInfo(name = "total_unread_all") val totalUnreadAll: Int,
     @ColumnInfo(name = "synced_at") val syncedAt: Long,
+    @ColumnInfo(name = "owed_resync") val owedResync: String? = null,
 )
 
 /** Paging state of one cached conversation: where the hub's next older page starts and whether it has one. */
@@ -267,6 +272,7 @@ interface CacheAdminDao {
  * - 1: agents, chats, messages, chat_meta.
  * - 2 (phase 1, 0.4.0): messages gain live_id / n / status (+ index owner,live_id); new chat_rows and sync_state. [MIGRATION_1_2]
  *   keeps every cached message (the new columns start empty and fill from the next page or event).
+ * - 3 (0.4.0 QA A1): sync_state gains owed_resync. [MIGRATION_2_3]
  *
  * Migration strategy: each schema change bumps [VERSION] and ships either an `@AutoMigration` (added columns/tables) or a
  * hand-written [androidx.room.migration.Migration] in [MIGRATIONS], each covered by CacheMigrationTest against the exported
@@ -281,7 +287,7 @@ abstract class CacheDb : RoomDatabase() {
     abstract fun live(): LiveDao
 
     companion object {
-        const val VERSION = 2
+        const val VERSION = 3
         const val NAME = "foxfleet-cache.db"
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
@@ -298,7 +304,10 @@ abstract class CacheDb : RoomDatabase() {
             "CREATE INDEX IF NOT EXISTS `index_chat_rows_owner_archived` ON `chat_rows` (`owner`, `archived`)",
             "CREATE TABLE IF NOT EXISTS `sync_state` (`owner` TEXT NOT NULL, `cursor` TEXT, `total_unread` INTEGER NOT NULL, `total_unread_all` INTEGER NOT NULL, `synced_at` INTEGER NOT NULL, PRIMARY KEY(`owner`))",
         )
-        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2)
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) { db.execSQL("ALTER TABLE `sync_state` ADD COLUMN `owed_resync` TEXT") }
+        }
+        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3)
 
         @Volatile private var instance: CacheDb? = null
         fun get(context: Context): CacheDb = instance ?: synchronized(this) { instance ?: build(context.applicationContext).also { instance = it } }

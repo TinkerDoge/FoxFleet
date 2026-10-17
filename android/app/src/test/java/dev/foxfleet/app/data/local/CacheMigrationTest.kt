@@ -65,6 +65,18 @@ class CacheMigrationTest {
         } finally { db.close() }
     }
 
+    @Test fun v2CursorSurvivesTheMoveToV3WithNothingOwed() = runBlocking {
+        createFromSchema("keep3.db", 2)
+        SQLiteDatabase.openDatabase(context.getDatabasePath("keep3.db").path, null, SQLiteDatabase.OPEN_READWRITE).use { db ->
+            db.execSQL("INSERT INTO sync_state (owner, cursor, total_unread, total_unread_all, synced_at) VALUES ('o','s1:77',3,4,1)")
+        }
+        val db = CacheDb.build(context, "keep3.db", destructive = false)
+        try {
+            val row = ChatCache(db, "o").sync()!!
+            assertEquals("s1:77", row.cursor); assertEquals(3, row.totalUnread); assertEquals(null, row.owedResync)
+        } finally { db.close() }
+    }
+
     @Test fun everyShippedVersionMigratesToCurrentAndValidates() = runBlocking {
         for (v in 1..CacheDb.VERSION) {
             val name = "migrate-$v.db"; createFromSchema(name, v)

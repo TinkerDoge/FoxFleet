@@ -149,7 +149,7 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
     suspend fun saveSnapshot(archived: Boolean, snap: ChatsSnapshot, takeCursor: Boolean) = db.withTransaction {
         live.replaceChatRows(owner, archived, snap.chats.map { it.toRow(owner) })
         val old = live.sync(owner)
-        live.upsertSync(SyncRow(owner, if (takeCursor && snap.cursor != null) snap.cursor else old?.cursor, snap.totalUnread, snap.totalUnreadAll, now()))
+        live.upsertSync(SyncRow(owner, if (takeCursor && snap.cursor != null) snap.cursor else old?.cursor, snap.totalUnread, snap.totalUnreadAll, now(), old?.owedResync))
     }
     suspend fun saveChatRow(row: HubChat) = live.upsertChatRows(listOf(row.toRow(owner)))
     /** `chat.removed`: the row goes now; the agent row and its cached chats go with the next fleet refresh. */
@@ -157,6 +157,10 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
     suspend fun sync(): SyncRow? = live.sync(owner)
     fun observeSync(): Flow<SyncRow?> = live.observeSync(owner)
     suspend fun saveCursor(cursor: String) { val old = live.sync(owner); live.upsertSync((old ?: SyncRow(owner, null, 0, 0, now())).copy(cursor = cursor, syncedAt = now())) }
+    /** Cursor and owed resync in one write ([cursor] null = start at now next time). */
+    suspend fun saveOwed(cursor: String?, reason: String) { val old = live.sync(owner); live.upsertSync((old ?: SyncRow(owner, null, 0, 0, now())).copy(cursor = cursor, owedResync = reason, syncedAt = now())) }
+    /** The resync finished: nothing owed any more. */
+    suspend fun clearOwed() { val old = live.sync(owner) ?: return; if (old.owedResync != null) live.upsertSync(old.copy(owedResync = null)) }
     suspend fun saveTotals(total: Int) { val old = live.sync(owner); live.upsertSync((old ?: SyncRow(owner, null, 0, 0, now())).copy(totalUnread = total)) }
     suspend fun cachedChats(): List<CachedChatRef> = live.cachedChats(owner)
     suspend fun maxN(agent: String, chatId: String): Int? = live.maxN(owner, agent, chatId)

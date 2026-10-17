@@ -20,6 +20,8 @@ import dev.foxfleet.app.ui.AgentList
 import dev.foxfleet.app.ui.chat.ChatState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -792,6 +794,9 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val cursors = object : dev.foxfleet.app.data.live.CursorStore {
             override suspend fun load() = withContext(kotlinx.coroutines.Dispatchers.IO) { c.sync()?.cursor }
             override suspend fun save(cursor: String) = withContext(kotlinx.coroutines.Dispatchers.IO) { c.saveCursor(cursor) }
+            override suspend fun owed() = withContext(kotlinx.coroutines.Dispatchers.IO) { c.sync()?.owedResync }
+            override suspend fun markOwed(cursor: String?, reason: String) = withContext(kotlinx.coroutines.Dispatchers.IO) { c.saveOwed(cursor, reason) }
+            override suspend fun resynced() = withContext(kotlinx.coroutines.Dispatchers.IO) { c.clearOwed() }
         }
         val runner = dev.foxfleet.app.data.live.LiveV2Runner(api.liveV2Transport, cursors, sink)
         v2Runner = runner
@@ -839,53 +844,77 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Messages after [afterN] for a cached chat (a gap inside one chat, or resync); null = the chat is not numbered: drop its cache. */
+    /** Messages after [afterN] for a cached chat (a gap inside one chat); null = the chat is not numbered: drop its cache. Errors are retried by the next event. */
     private fun fetchAfter(agent: String, chat: String, afterN: Int?) {
         val key = "after:$agent\u0000$chat"
         if (catchUps[key]?.isActive == true) return
         catchUps[key] = viewModelScope.launch {
-            try {
-                if (afterN == null) { cached { dropChatMessages(agent, chat) }; return@launch }
-                var from: Int = afterN; var pages = 0
-                while (pages++ < 10) {
-                    val p = api.messagesAfter(agent, chat, from)
-                    for (m in p.messages) {
-                        cached { upsertLive(agent, chat, m) }
-                        chats.peek(agent)?.takeIf { it.sessionId == chat }?.applyLive(m, edited = false)
-                    }
-                    from = p.messages.mapNotNull { it.n }.maxOrNull() ?: break
-                    if (!p.hasMore) break
-                }
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
-            } catch (e: dev.foxfleet.app.data.HubApiException) { if (e.status == 404 || e.status == 400) cached { dropChatMessages(agent, chat) } // no after_n on this hub: the next open reloads
-            } catch (_: Exception) {}
+            try { fetchAfterNow(agent, chat, afterN) }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
         }
     }
 
-    /** After a gap (or the first connect): the list, then every cached chat by `after_n`, then the open chat's newest page. */
-    private suspend fun resyncNow(@Suppress("UNUSED_PARAMETER") reason: String) {
-        run {
-            if (features.chats) loadChats()
-            val refs = fromCache { cachedChats() }.orEmpty()
-            refs.forEachIndexed { i, r ->
-                val numbered = fromCache { numbered(r.agent, r.chatId) } == true
-                if (i < MAX_RESYNC_CHATS && numbered && r.maxN != null) fetchAfter(r.agent, r.chatId, r.maxN)
-                else if (chats.peek(r.agent)?.sessionId != r.chatId) cached { dropChatMessages(r.agent, r.chatId) }
+    /** [fetchAfter]'s work; throws on failure (the resync keeps itself owed). A hub without `after_n` (404/400) drops that chat's cache. */
+    private suspend fun fetchAfterNow(agent: String, chat: String, afterN: Int?) {
+        if (afterN == null) { cached { dropChatMessages(agent, chat) }; return }
+        var from: Int = afterN; var pages = 0
+        try {
+            while (pages++ < MAX_AFTER_PAGES) {
+                val p = api.messagesAfter(agent, chat, from)
+                for (m in p.messages) {
+                    cached { upsertLive(agent, chat, m) }
+                    chats.peek(agent)?.takeIf { it.sessionId == chat }?.applyLive(m, edited = false)
+                }
+                from = p.messages.mapNotNull { it.n }.maxOrNull() ?: return
+                if (!p.hasMore) return
             }
+            // Still more after MAX_AFTER_PAGES: too far behind to page in, start this chat over (the next open reloads it).
+            if (chats.peek(agent)?.sessionId != chat) cached { dropChatMessages(agent, chat) }
+        } catch (e: dev.foxfleet.app.data.HubApiException) {
+            if (e.status == 404 || e.status == 400) cached { dropChatMessages(agent, chat) } else throw e
+        }
+    }
+
+    /**
+     * After a gap, a 410, the first connect or the stuck escape: the list, then EVERY cached chat by `after_n` (4 at a time),
+     * then the open chat's newest page. Returns when all of it finished and throws when any part failed, so the runner keeps
+     * the resync owed (in Room, with the cursor) and redoes it: after a backoff, on the next connect, or after process death.
+     * Cancelled with the live job when the app goes to the background; still owed then too.
+     */
+    private suspend fun resyncNow(@Suppress("UNUSED_PARAMETER") reason: String) {
+        try {
+            if (features.chats) loadChats(strict = true)
+            val refs = fromCache { cachedChats() }.orEmpty()
+            val gate = kotlinx.coroutines.sync.Semaphore(RESYNC_PARALLEL)
+            val failures = kotlinx.coroutines.coroutineScope {
+                refs.map { r ->
+                    async {
+                        gate.acquire()
+                        try {
+                            val numbered = fromCache { numbered(r.agent, r.chatId) } == true
+                            if (numbered && r.maxN != null) fetchAfterNow(r.agent, r.chatId, r.maxN)
+                            else if (chats.peek(r.agent)?.sessionId != r.chatId) cached { dropChatMessages(r.agent, r.chatId) }
+                            null
+                        } catch (e: CancellationException) { throw e } catch (e: Exception) { e } finally { gate.release() }
+                    }
+                }.awaitAll().filterNotNull()
+            }
+            failures.firstOrNull { it is AuthRequiredException }?.let { throw it }
+            if (failures.isNotEmpty()) throw java.io.IOException("resync: ${failures.size} of ${refs.size} chats failed", failures.first())
             openChatAgent()?.let { catchUp(it) }
             fleetSoon()
-        }
+        } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; throw java.io.IOException("signed out during resync") }
     }
 
     /** `GET /api/chats` (main, and archived when that view is open): rows to the cache, then to the screen. */
-    private suspend fun loadChats(takeCursor: Boolean = false) {
+    private suspend fun loadChats(takeCursor: Boolean = false, strict: Boolean = false) {
         if (!features.chats) return
         try {
             val main = api.chats(archived = false)
             cached { saveSnapshot(false, main, takeCursor) }
             if (showArchived) { val arch = api.chats(archived = true); cached { saveSnapshot(true, arch, false) } }
             reloadRows()
-        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; if (strict) throw e } catch (e: Exception) { if (strict) throw e }
     }
 
     private var rowsJob: Job? = null
@@ -966,7 +995,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     companion object {
-        const val MAX_RESYNC_CHATS = 20
+        /** Chats refreshed at once during a resync (all cached chats are refreshed). */
+        const val RESYNC_PARALLEL = 4
+        /** after_n pages per chat before the chat is reloaded on open instead. */
+        const val MAX_AFTER_PAGES = 10
         const val OFFLINE_NOTICE = "Offline. Showing saved messages."
         /** Open-chat newest-page check: every 20 s without the live stream, every 60 s with it (covers messages that never pass through the hub). */
         const val POLL_MS = 20_000L

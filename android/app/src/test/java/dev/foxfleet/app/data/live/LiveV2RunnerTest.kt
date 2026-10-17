@@ -16,10 +16,13 @@ class LiveV2RunnerTest {
     private fun gap(reason: String, cursor: String) = "event: foxfleet.gap\ndata: {\"reason\":\"$reason\",\"cursor\":\"$cursor\"}\n\n"
     private fun stream(body: String) = LiveOpen(200, "text/event-stream", StringReader("retry: 2000\n\n$body"))
 
-    private class Store(var c: String?) : CursorStore {
+    private class Store(var c: String?, var owe: String? = null) : CursorStore {
         val saved = ArrayList<String>()
         override suspend fun load() = c
         override suspend fun save(cursor: String) { c = cursor; saved += cursor }
+        override suspend fun owed() = owe
+        override suspend fun markOwed(cursor: String?, reason: String) { c = cursor; owe = reason; cursor?.let { saved += it } }
+        override suspend fun resynced() { owe = null }
     }
     private class Sink : V2Sink {
         val log = ArrayList<String>()
