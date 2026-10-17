@@ -1,7 +1,7 @@
 // Hermes agents on the default and on a NON-default profile, end to end through the real connector, keyed by the agent name and the
 // chat the client holds (stream header, live v1/v2 run events, message.new, runs, history).
 // - Regression tests (fail on 53c5046): the HTTP cases against test/profile-hermes.js, a mock of one Hermes install with profiles shaped
-//   after the Hermes docs, where a new chat only gets an id if the hub names it.
+//   after the Hermes docs, where a new chat only gets an id if the hub names it, and where Hermes may file a run under its own session.
 // - Coverage only (passes before and after; the native gateway names its own chats): the native-gateway case below.
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -79,3 +79,46 @@ test('named profile whose key Hermes refuses on /p/<profile>: the agent check sa
   assert.notEqual(r.status, 401, 'an agent refusing the hub is not a sign-out'); await r.body?.cancel();
 });
 
+// 0.4.1 hardening: Hermes has the last word on which session a /v1/runs run belongs to. The hub names a new chat, but when POST /v1/runs
+// does not echo a session it asks GET /v1/runs/{id}; if Hermes filed the run under its own session, that session is the chat everywhere.
+async function chatTurn(x, s, name, text, sid) {
+  const before = s.frames.filter((f) => f.event === 'message.new' && f.data.agent === name && f.data.message.role === 'assistant').length, t0 = Date.now();
+  const r = await fetch(`${x.base}/api/agents/${name}/chat`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ messages: [{ role: 'user', content: text }], ...(sid ? { session_id: sid } : {}) }), signal: AbortSignal.timeout(15_000) });
+  const body = await r.text(), ms = Date.now() - t0, chat = r.headers.get('x-hermes-session-id'), run = r.headers.get('x-foxfleet-run');
+  assert.equal(r.status, 200, body); assert.match(body, /"content":"[^"]/, `${name}: the reply streamed`);
+  const reply = await s.wait((f) => f.event === 'message.new' && f.data.agent === name && f.data.message.role === 'assistant' && s.frames.filter((g) => g.event === 'message.new' && g.data.agent === name && g.data.message.role === 'assistant').indexOf(f) >= before, 8000);
+  const started = s.frames.find((f) => f.event === 'run.started' && f.data.run_id === run), finished = await s.wait((f) => f.event === 'run.finished' && f.data.run_id === run, 8000);
+  return { chat, run, ms, reply: reply.data, started: started?.data, finished: finished.data };
+}
+const runCreates = (hermes, profile) => hermes.requests.filter((q) => q.service === 'api' && q.profile === profile && q.route === '/v1/runs' && q.method === 'POST');
+const runStatusReads = (hermes, profile) => hermes.requests.filter((q) => q.service === 'api' && q.profile === profile && /^\/v1\/runs\/[^/]+$/.test(q.route) && q.method === 'GET');
+
+test('runs API, Hermes files a new chat under its own session (ignores the session_id sent): GET /v1/runs/{id} wins, so header, run events, message.new, chat row and history all use Hermes\'s session', async (t) => {
+  const hermes = await profileHermes(t, { runs: true, runsIgnoreSession: true }), x = await setup(t, { profiles: ['coder'], gateway: false, hermes });
+  assert.ok(await waitFor(async () => { const a = (await (await fetch(x.base + '/api/agents')).json()).agents ?? []; return a.length === 2 && a.every((q) => q.chatReady && q.capabilities.nativeRuns) ? a : null; }));
+  const s = sse(t, `${x.base}/api/live/stream?v=2`); await s.wait((f) => f.event === 'foxfleet.ready');
+  for (const name of ['coder', 'default']) {
+    const first = await chatTurn(x, s, name, `hello ${name} 1`), create = runCreates(hermes, name).at(-1);
+    assert.ok(create.sent && create.filed && create.sent !== create.filed, 'the hub sent its id and Hermes filed the run elsewhere');
+    for (const [what, v] of [['stream header', first.chat], ['run.started', first.started?.chat], ['run.finished', first.finished.chat], ['message.new', first.reply.chat]]) assert.equal(v, create.filed, `${name}: ${what} uses Hermes's session`);
+    assert.ok(!['default', 'coder'].some((p) => hermes.store.get(p).has(create.sent)), 'the id Hermes ignored names no session anywhere');
+    const second = await chatTurn(x, s, name, `hello ${name} 2`, first.chat);
+    assert.equal(runCreates(hermes, name).at(-1).sent, create.filed, 'the follow-up goes to the session Hermes has'); assert.equal(second.reply.chat, create.filed);
+    assert.equal(runStatusReads(hermes, name).length, 1, 'the run status is read once, for the new chat only');
+    const page = await (await fetch(`${x.base}/api/agents/${name}/sessions/${encodeURIComponent(create.filed)}/messages`)).json();
+    assert.deepEqual(page.messages.map((m) => m.role), ['user', 'assistant', 'user', 'assistant'], `${name}: history under Hermes's session has both turns`);
+    const row = await (await fetch(`${x.base}/api/chats/${name}`)).json(); assert.equal(row.chat, create.filed, 'the chat row points at it');
+  }
+});
+
+for (const status of ['none', 404, 500, 'hang']) test(`runs API, GET /v1/runs/{id} ${status === 'none' ? 'has no session_id' : status === 'hang' ? 'never answers' : `answers ${status}`}: the hub's id stands, the reply streams and lands live, the status read is bounded`, async (t) => {
+  const hermes = await profileHermes(t, { runs: true, runStatus: status }), x = await setup(t, { profiles: ['coder'], gateway: false, hermes });
+  assert.ok(await waitFor(async () => { const a = (await (await fetch(x.base + '/api/agents')).json()).agents ?? []; return a.length === 2 && a.every((q) => q.chatReady && q.capabilities.nativeRuns) ? a : null; }));
+  const s = sse(t, `${x.base}/api/live/stream?v=2`); await s.wait((f) => f.event === 'foxfleet.ready');
+  const turn = await chatTurn(x, s, 'coder', 'hello coder'), create = runCreates(hermes, 'coder').at(-1);
+  assert.equal(create.filed, create.sent, 'Hermes kept the id it was sent');
+  for (const v of [turn.chat, turn.started?.chat, turn.finished.chat, turn.reply.chat]) assert.equal(v, create.sent);
+  assert.equal(runStatusReads(hermes, 'coder').length, 1, 'the status was asked once');
+  assert.ok(turn.ms < 6000, `the stream was not held up by the status read (${turn.ms} ms)`);
+  const page = await (await fetch(`${x.base}/api/agents/coder/sessions/${encodeURIComponent(create.sent)}/messages`)).json(); assert.deepEqual(page.messages.map((m) => m.role), ['user', 'assistant']);
+});

@@ -488,8 +488,8 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         const content = item.message.content, input = typeof content === 'string' ? content : [{ role: 'user', content }];
         const ctrl = nativeControl({ api: reg.upstream.api, m, link }); link.steer = ctrl.steer; link.stop = ctrl.stop;
         return runs.start({ scope, agent: m.name, session: item.session || undefined, link, timeoutMs, onFinish: undefined,
-          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: sid, idempotencyKey: item.id, link, signal, model: mo?.model, provider: mo?.provider }),
-          check: (r) => ({ 'X-Hermes-Session-Id': chatIdOf(r, sid) }) });
+          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: sid, idempotencyKey: item.id, link, signal, model: mo?.model, provider: mo?.provider, verifySession: !item.session && native.status }),
+          check: (r) => { if (link.sessionAdopted) log('run.session', { agent: m.name, adopted: 'hermes' }); return { 'X-Hermes-Session-Id': chatIdOf(r, sid) }; } });
       }
       const messages = rebuild || !item.body ? [item.message] : item.body.messages; // older Hermes keeps its own transcript by session id
       return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,

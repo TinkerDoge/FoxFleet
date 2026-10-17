@@ -74,15 +74,37 @@ export function normalise(ev, name, link) {
 }
 const pendingOf = (d) => { const v = d.pending_steer ?? d.pendingSteer; return (Array.isArray(v) ? v : v ? [v] : []).map(asText).filter(Boolean).slice(0, 20); };
 
-/** One stream of normalised frames for a native run; `open` posts the run, then follows its events with cursor replay. */
-export function nativeRun({ api, m, input, sessionId, idempotencyKey, link, signal, fetchEvents, model, provider }) {
+const SESSION_ID = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$/;
+export const STATUS_WAIT_MS = 1500;
+/**
+ * The session Hermes really filed a run under, from GET /v1/runs/{id} (`session_id`), or null when it cannot say in time (not advertised,
+ * error, 404, no or invalid field, slower than `waitMs`). Bounded: the run's events are replayed from cursor 0, so waiting loses nothing.
+ */
+export async function sessionOfRun({ api, m, runId, signal, waitMs = STATUS_WAIT_MS }) {
+  try {
+    const r = await api(m, `/v1/runs/${encodeURIComponent(runId)}`, { signal: AbortSignal.any([signal, AbortSignal.timeout(waitMs)]) });
+    if (!r.ok) { await r.body?.cancel(); return null; }
+    const d = await r.json(); return typeof d?.session_id === 'string' && SESSION_ID.test(d.session_id) ? d.session_id : null;
+  } catch { return null; }
+}
+
+/**
+ * One stream of normalised frames for a native run; `open` posts the run, then follows its events with cursor replay.
+ * Which session the run belongs to: the `session_id` of the POST answer when Hermes gives one; otherwise, for a chat the hub just named
+ * (`verifySession`, and Hermes advertises run_status), what GET /v1/runs/{id} says, so a Hermes that ignored the id we sent and filed
+ * the run under its own session is followed there (live events, ledger and history agree with Hermes). If the GET fails, 404s, has no
+ * session or is slow, the id we sent stands (the docs say Hermes honours it). An existing chat always keeps its id.
+ */
+export function nativeRun({ api, m, input, sessionId, idempotencyKey, link, signal, fetchEvents, model, provider, verifySession = false, statusWaitMs }) {
   const headers = { 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) };
   return (async () => {
     const created = await api(m, '/v1/runs', { method: 'POST', signal, headers, body: JSON.stringify({ input, ...(sessionId ? { session_id: sessionId } : {}), ...(model ? { model } : {}), ...(model && provider ? { provider } : {}) }) });
     if (![200, 201, 202].includes(created.status)) { await created.body?.cancel(); throw fault([403, 404, 405, 409, 413].includes(created.status) ? created.status : 502, 'Agent request failed'); }
     let info; try { info = await created.json(); } catch { throw fault(502, 'Invalid agent response'); }
     const runId = info?.run_id ?? info?.id; if (typeof runId !== 'string' || !/^[\w.:-]{1,200}$/.test(runId)) throw fault(502, 'Invalid agent response');
-    link.runId = runId; if (typeof info.session_id === 'string') link.sessionId = info.session_id; link.sessionId ??= sessionId;
+    link.runId = runId; if (typeof info.session_id === 'string' && SESSION_ID.test(info.session_id)) link.sessionId = info.session_id;
+    else if (verifySession) { const real = await sessionOfRun({ api, m, runId, signal, waitMs: statusWaitMs }); if (real) { link.sessionId = real; if (real !== sessionId) link.sessionAdopted = true; } }
+    link.sessionId ??= sessionId;
     let cursor = 0, tries = 0;
     const body = new ReadableStream({
       async start(ctl) {

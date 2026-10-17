@@ -8,6 +8,8 @@
 //   runs          true: advertise the native run API (run_submission, run_events_sse, ...); false: chat completions only
 //   sessionHeader false: header-less chat completions get no X-Hermes-Session-Id back (Hermes only echoes the one you send)
 //   runSessionInEvents  true: run events carry session_id (the docs do not promise it)
+//   runsIgnoreSession  true: POST /v1/runs does not take a session_id it does not know yet: the run goes under a new session of its own
+//   runStatus     how GET /v1/runs/{id} answers: 'ok' (with session_id, default) | 'none' (no session_id) | 404 | 500 | 'hang'
 //   ids           (profile, n) => session id (default: Hermes style 20261017_101530_<hex>, the same shape for every profile)
 import http from 'node:http';
 
@@ -15,7 +17,7 @@ const json = (res, status, data, headers = {}) => { res.writeHead(status, { 'Con
 const body = async (req) => { let t = ''; for await (const c of req) t += c; try { return JSON.parse(t || '{}'); } catch { return {}; } };
 const listen = (s) => new Promise((r) => s.listen(0, '127.0.0.1', () => r(s.address().port)));
 
-export async function profileHermes(t, { profiles = ['default', 'coder'], keys = {}, runs = false, sessionHeader = true, runSessionInEvents = false, ids, replyDelayMs = 20, dashboardReject = [] } = {}) {
+export async function profileHermes(t, { profiles = ['default', 'coder'], keys = {}, runs = false, sessionHeader = true, runSessionInEvents = false, ids, replyDelayMs = 20, dashboardReject = [], runsIgnoreSession = false, runStatus = 'ok' } = {}) {
   const key = (p) => keys[p] ?? `${p}-key`, requests = [], store = new Map(), runTable = new Map(); let n = 0, rn = 0;
   for (const p of profiles) store.set(p, new Map());
   const newId = (p) => (ids ? ids(p, ++n) : `20261017_1015${String(30 + (++n % 30)).padStart(2, '0')}_${(n * 2654435761 >>> 0).toString(16).slice(0, 6)}`);
@@ -52,7 +54,8 @@ export async function profileHermes(t, { profiles = ['default', 'coder'], keys =
       s.push({ role: 'assistant', content: out.split(' ').map((w) => w + ' ').join('') }); return res.end('data: [DONE]\n\n');
     }
     if (runs && route === '/v1/runs' && req.method === 'POST') {
-      const b = await body(req), sid = b.session_id || newId(p), id = `run_${p}_${++rn}`, text = typeof b.input === 'string' ? b.input : lastUser(b.input);
+      const b = await body(req), sid = (b.session_id && (!runsIgnoreSession || store.get(p).has(b.session_id)) ? b.session_id : null) || newId(p), id = `run_${p}_${++rn}`, text = typeof b.input === 'string' ? b.input : lastUser(b.input);
+      Object.assign(requests.at(-1), { sent: b.session_id ?? null, filed: sid });
       const r = { id, profile: p, session: sid, events: [], waiters: new Set(), done: false }; runTable.set(id, r); sessionOf(p, sid).push({ role: 'user', content: text });
       const push = (type, data) => { r.events.push({ type, data: { run_id: id, ...(runSessionInEvents ? { session_id: sid } : {}), ...data } }); for (const w of [...r.waiters]) w(); };
       setTimeout(() => { push('run.started', {}); const out = reply(p, text); push('message.delta', { delta: out }); setTimeout(() => { sessionOf(p, sid).push({ role: 'assistant', content: out }); r.done = true; push('run.completed', { output: out }); }, replyDelayMs); }, 5);
@@ -61,7 +64,11 @@ export async function profileHermes(t, { profiles = ['default', 'coder'], keys =
     const rm = /^\/v1\/runs\/([^/]+)(\/events|\/stop|\/steer)?$/.exec(route);
     if (runs && rm) {
       const r = runTable.get(rm[1]); if (!r || r.profile !== p) return json(res, 404, { error: 'run not found' }); // runs are per-profile scoped
-      if (!rm[2]) return json(res, 200, { object: 'hermes.run', run_id: r.id, status: r.done ? 'completed' : 'running', session_id: r.session });
+      if (!rm[2]) {
+        if (runStatus === 'hang') return void req.on('close', () => {});
+        if (typeof runStatus === 'number') return json(res, runStatus, { error: 'status unavailable' });
+        return json(res, 200, { object: 'hermes.run', run_id: r.id, status: r.done ? 'completed' : 'running', ...(runStatus === 'none' ? {} : { session_id: r.session }) });
+      }
       if (rm[2] !== '/events') return json(res, 202, { status: 'stopping' });
       res.writeHead(200, { 'Content-Type': 'text/event-stream' }); let at = Number(u.searchParams.get('after') || 0), closed = false; res.on('close', () => { closed = true; });
       for (;;) {
