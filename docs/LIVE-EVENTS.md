@@ -1,6 +1,6 @@
 # Live chat events (hub features `live` (v1, 0.3.14) and `live2` (v2, 0.4.0))
 
-> **Status:** v1 is shipped. v2 and everything under "0.4.0" below is the **phase 1 contract**: designed, not implemented yet. Routes marked `x-foxfleet-status: planned` in `contract/openapi.json` answer 404 until the hub advertises the matching feature in `GET /api/auth` → `hub.features`. Clients must check the feature, never the version string.
+> **Status:** v1 shipped in 0.3.14. v2 and everything under "0.4.0" below is implemented in the hub since 0.4.0-alpha (routes marked `x-foxfleet-status: implemented (0.4.0-alpha)` in `contract/openapi.json`). A hub without them answers 404: clients must check the matching feature in `GET /api/auth` → `hub.features`, never the version string.
 
 ## v1 (0.3.14): run notices, no text
 
@@ -57,7 +57,7 @@ v1 and v2 are separate cursors: never send a v1 id to v2 or the reverse (a forei
 - The SSE `id:` of an event is `<store>:<seq>`. `store` is a random id of the hub's data directory: it changes only when the hub's data is reset or restored from elsewhere.
 - Resume with `Last-Event-ID: <store>:<seq>` (what EventSource sends) or `?since=<store>:<seq>` (alias `after`, as in v1; the query wins over the header). The hub replays every retained event with a larger `seq`, in order, then goes live.
 - No cursor: the stream starts at "now" (nothing replayed). Take a snapshot first (`GET /api/chats` returns `cursor`) and connect with `since=<that cursor>`: then nothing that happened between the snapshot and the connect is lost.
-- Retention: the newest **5000** events per account, at most **7 days**. Events are persisted (one file per account, mode 0600, like the notification log).
+- Retention: the newest **5000** events per account (`FOXFLEET_LIVE_RETAIN_EVENTS`, 100–100000), at most **7 days** (`FOXFLEET_LIVE_RETAIN_DAYS`, 1–90), and at most 32 MiB of event data. Events are persisted (one file per account, mode 0600, like the notification log).
 
 ### Gap
 
@@ -67,7 +67,9 @@ v1 and v2 are separate cursors: never send a v1 id to v2 or the reverse (a forei
 |---|---|
 | `expired` | the cursor is older than the retained events |
 | `reset` | `store` differs (hub data reset/restored) or `seq` is in the future |
-| `invalid` | the cursor cannot be parsed (includes a v1 `<epoch>:<n>` id whose epoch is not this store) |
+| `invalid` | the cursor cannot be parsed (not `<id>:<digits>`) |
+
+A v1 `<epoch>:<n>` id has the same shape as a v2 cursor from another store, so it is answered as `reset`.
 
 After a gap the stream continues live from `cursor`. The client must resync: `GET /api/chats`, then for each cached chat `GET …/messages?after_n=<last n>` (or drop the cache for that chat). Store `cursor` as the new resume point.
 
@@ -85,7 +87,7 @@ After a gap the stream continues live from `cursor`. The client must resync: `GE
 
 Limits: 8 streams per account across v1 and v2 (`429 too_many_streams`); a client more than 1 MB behind is disconnected and resumes by id.
 
-Ordering guarantees: events are delivered in `seq` order. For one chat, `message.new` for message `n` always comes before a `read` or `chat.updated` that counts it. Clients **must ignore unknown event types and unknown fields** (new ones are added without a version bump).
+Ordering guarantees: events are delivered in `seq` order. For one chat, `message.new` for message `n` always comes before a `read` or `chat.updated` that counts it. `run.started` can come before the `message.new` of the user message that started it (a new chat learns its session id at launch): key runs on `run_id`. Clients **must ignore unknown event types and unknown fields** (new ones are added without a version bump).
 
 ## Event (common fields)
 
@@ -127,7 +129,9 @@ Streaming text is **not** on this stream: it stays on the run's own stream. The 
 | `reply_to` | string \| null | `hub_id` of the quoted message |
 | `edited_at` | int \| null | |
 | `run_id` | string \| null | the run that produced an assistant message |
-| `images` | `{url, mime}[]` | short-lived media links, same rules as history |
+| `images` | `{url, mime}[]` | short-lived media links, same rules as history. Not filled in 0.4.0-alpha: fetch the message from history for media |
+
+Fields that are null or unknown may be left out of a `Message` (treat absent as null).
 
 ### Typing (ephemeral)
 
@@ -144,7 +148,7 @@ showing). The hub repeats a non-idle state at least every 5 s while it lasts; a 
 `GET /api/chats?archived=0|1` (default 0) → `{ "chats": ChatRow[], "cursor": "<store>:<seq>", "total_unread": int, "total_unread_all": int }`
 
 One row per agent (FoxFleet's list is agents; an agent's sessions are its history). Order: pinned (by pin order), then by
-`last_message.at` descending. `cursor` is the v2 position the snapshot matches: connect the stream with `since=<cursor>`.
+`last_message.at` descending, then registry order. `cursor` is the v2 position the snapshot matches: connect the stream with `since=<cursor>`.
 `GET /api/chats/{agent}` → one `ChatRow` (404 `chat_not_found`).
 
 ### ChatRow
@@ -153,7 +157,7 @@ One row per agent (FoxFleet's list is agents; an agent's sessions are its histor
 |---|---|---|
 | `agent`, `label`, `kind` | string | as in `/api/agents` |
 | `chat` | string \| null | the agent's most recent session (the one the app opens) |
-| `last_message` | object \| null | `{hub_id, role, sender, preview, at, status}`; `sender` is `"you"` for the user, else the agent label; `preview` is plain text, ≤ 160 chars, markup and tool output removed, `"[image]"` / `"[file]"` for media |
+| `last_message` | object \| null | `{hub_id, role, sender, preview, at, status}`; `sender` is `"you"` for the user, else the agent label; `preview` is plain text, ≤ 160 chars, markup and tool output removed, media as a short label (`Photo`, `Video`, `File: <name>`). `hub_id` is null when the preview comes from the agent's own session list before the hub numbered any message of that agent |
 | `unread_count` | int | agent messages after the read position, over all of this agent's sessions, hidden messages excluded |
 | `read_up_to` | int | read position in `chat` |
 | `archived` | bool | |
@@ -177,6 +181,8 @@ Each change is also pushed as `chat.updated`.
 - Idempotent and monotonic: an `up_to` at or below the stored position changes nothing (200, current state). An `up_to` beyond the last message is clamped. `all: true` reads every session of the agent up to its newest message.
 - Clears `manual_unread`. Pushes `read` (and `chat.updated`) to every stream of the account, so other devices update their badges.
 - The **agent's** side (did the agent see my message) is `Message.status` (`delivered`, `read`), pushed as `message.status`.
+- Sending a message in a chat through the hub (app, web or notification reply) reads that chat up to your message (`read` is pushed).
+- The first time the hub sees a chat (opening it, or the chat-list sync) it numbers the existing messages silently: they do not become unread. A session the agent started after the agent was added to the hub, found by the sync (at most once a minute per agent, triggered by `GET /api/chats`), counts as unread. A user message written elsewhere does not move your read position.
 - History gains the same numbering: `GET /api/agents/{name}/sessions/{id}/messages` adds `hub_id`, `n` and `status` per message when the hub has indexed them, and accepts `after_n=<n>` (oldest first, up to `limit`) for cache catch-up.
 
 ## Pull (0.4.0): `GET /api/live/events?since=<store>:<seq>&limit=<1..500>`
@@ -199,6 +205,7 @@ than retention or from another store: resync as after a gap. `400 invalid_cursor
 - `mark_read` (default `true`): the chat is marked read up to its newest message first, the way replying in a messenger reads the chat.
 - `text`: 1–32 000 chars (`413 text_too_long`). Text only; no attachments.
 - Rate limit: 30 replies per minute per account (`429 rate_limited`, `Retry-After`).
+- Bot agents (connection `bot`) have no hub-side history: their messages are not numbered or pushed as `message.*`, and a notification reply to one is `409` (no `code`).
 
 `POST /api/notify/read` body `{"agent", "chat", "up_to"?: n}` (no `up_to` = newest): the Mark-read action. Same auth (bearer or reply token), same result as `POST /api/chats/{agent}/read`.
 
@@ -222,4 +229,6 @@ revoked or out-of-scope token is `403 reply_token_invalid`, **never 401** (401 w
 
 Nothing existing changes shape: new fields are additive, `/api/agents` keeps its unread-free rows, and the v1 stream is untouched.
 
-Hub environment (planned, documented in `site/.vitepress/gen.mjs` with the implementation): `FOXFLEET_LIVE_RETAIN_EVENTS` (default 5000), `FOXFLEET_LIVE_RETAIN_DAYS` (default 7).
+v1 change in 0.4.0: its `429` body now carries `code: too_many_streams` (frames unchanged).
+
+Hub environment (documented in `site/.vitepress/gen.mjs`): `FOXFLEET_LIVE_RETAIN_EVENTS` (default 5000), `FOXFLEET_LIVE_RETAIN_DAYS` (default 7).

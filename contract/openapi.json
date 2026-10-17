@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.3.14-alpha",
+    "version": "0.4.0-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -1980,11 +1980,11 @@
                           },
                           "hub_id": {
                             "type": "string",
-                            "description": "Planned 0.4.0 (`readReceipts`): stable hub id, as in live v2."
+                            "description": "Feature `readReceipts` (0.4.0): stable hub id, as in live v2."
                           },
                           "n": {
                             "type": "integer",
-                            "description": "Planned 0.4.0: per-chat position."
+                            "description": "0.4.0: per-chat position."
                           },
                           "status": {
                             "type": "string",
@@ -1994,7 +1994,7 @@
                               "read",
                               "failed"
                             ],
-                            "description": "Planned 0.4.0: user messages."
+                            "description": "0.4.0: user messages."
                           }
                         }
                       }
@@ -2088,7 +2088,7 @@
               "type": "integer",
               "minimum": 0
             },
-            "description": "Planned 0.4.0: messages with n > after_n, oldest first, up to limit."
+            "description": "0.4.0: messages with n > after_n, oldest first, up to limit."
           }
         ]
       }
@@ -4613,7 +4613,7 @@
                 "1"
               ]
             },
-            "description": "Planned 0.4.0 (`notifyReply`): `1` adds `reply: {token, expires_at}` to reply_finished and approval events, minted for this device stream only."
+            "description": "Feature `notifyReply` (0.4.0): `1` adds `reply: {token, expires_at}` to reply_finished and approval events, minted for this device stream only."
           }
         ],
         "responses": {
@@ -5345,7 +5345,7 @@
       "get": {
         "operationId": "liveStream",
         "summary": "Live chat events for open clients (SSE, feature `live`).",
-        "description": "Server-Sent Events, no message text (docs/LIVE-EVENTS.md). Resume with Last-Event-ID or ?after=<epoch>:<n>; no cursor starts at now. Frames: `retry: 2000`; optional `event: foxfleet.gap` {cursor} (hub restarted or buffer overrun: do a full catch-up); `event: live` with `id: <epoch>:<n>` and {id,type,agent,chat,at,run_id?,state?,request_id?,kind?}, type one of run_started, run_finished, approval; once `event: foxfleet.ready` {contract:'foxfleet.live/1',cursor,heartbeat_ms} (no id); `: keep-alive` every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close. At most 8 streams per account (429). v2 (feature `live2`, planned 0.4.0): add ?v=2 for contract foxfleet.live/2: persistent per-account seq, `id: <store>:<seq>`, `event: <type>` with a LiveEvent body, ephemeral `event: typing` (TypingEvent, no id), foxfleet.ready {contract,cursor,store,heartbeat_ms}, foxfleet.gap {reason: expired|reset|invalid, cursor}. Without v the stream is v1, unchanged. Unsupported v: 400 unsupported_version.",
+        "description": "Server-Sent Events, no message text (docs/LIVE-EVENTS.md). Resume with Last-Event-ID or ?after=<epoch>:<n>; no cursor starts at now. Frames: `retry: 2000`; optional `event: foxfleet.gap` {cursor} (hub restarted or buffer overrun: do a full catch-up); `event: live` with `id: <epoch>:<n>` and {id,type,agent,chat,at,run_id?,state?,request_id?,kind?}, type one of run_started, run_finished, approval; once `event: foxfleet.ready` {contract:'foxfleet.live/1',cursor,heartbeat_ms} (no id); `: keep-alive` every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close. At most 8 streams per account (429). v2 (feature `live2`, 0.4.0): add ?v=2 for contract foxfleet.live/2: persistent per-account seq, `id: <store>:<seq>`, `event: <type>` with a LiveEvent body, ephemeral `event: typing` (TypingEvent, no id), foxfleet.ready {contract,cursor,store,heartbeat_ms}, foxfleet.gap {reason: expired|reset|invalid, cursor} (a v1 `<epoch>:<n>` id is a `reset`). Without v the stream is v1, unchanged. Unsupported v: 400 unsupported_version.",
         "tags": [
           "live"
         ],
@@ -5427,7 +5427,7 @@
         "tags": [
           "live"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "since",
@@ -5499,7 +5499,7 @@
         "tags": [
           "chats"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "archived",
@@ -5563,7 +5563,7 @@
         "tags": [
           "chats"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "agent",
@@ -5602,7 +5602,7 @@
         "tags": [
           "chats"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "agent",
@@ -5662,7 +5662,7 @@
         "tags": [
           "chats"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "agent",
@@ -5722,7 +5722,7 @@
         "tags": [
           "chats"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "parameters": [
           {
             "name": "agent",
@@ -5787,7 +5787,7 @@
         "tags": [
           "notify"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "security": [
           {
             "session": []
@@ -5912,7 +5912,7 @@
         "tags": [
           "notify"
         ],
-        "x-foxfleet-status": "planned (0.4.0-alpha phase 1)",
+        "x-foxfleet-status": "implemented (0.4.0-alpha)",
         "security": [
           {
             "session": []
@@ -6004,7 +6004,7 @@
         "type": "apiKey",
         "in": "header",
         "name": "X-Foxfleet-Reply-Token",
-        "description": "Planned 0.4.0: 24 h token scoped to one device, agent and chat; only /api/notify/reply and /api/notify/read."
+        "description": "0.4.0: 24 h token scoped to one device, agent and chat; only /api/notify/reply and /api/notify/read."
       }
     },
     "responses": {
@@ -6173,7 +6173,7 @@
           },
           "code": {
             "type": "string",
-            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0, planned): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams, chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After)."
+            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams (429, live v1 and v2), chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After)."
           },
           "cursor": {
             "type": "string",
@@ -7478,7 +7478,11 @@
                 ],
                 "properties": {
                   "hub_id": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "description": "null only when the preview comes from the agent's own session list before the hub numbered any message of this agent"
                   },
                   "role": {
                     "type": "string",
@@ -7493,7 +7497,8 @@
                   },
                   "preview": {
                     "type": "string",
-                    "maxLength": 160
+                    "maxLength": 160,
+                    "description": "Plain text, markup and tool output removed; media as a short label (Photo, Video, File: name)"
                   },
                   "at": {
                     "type": "integer"
