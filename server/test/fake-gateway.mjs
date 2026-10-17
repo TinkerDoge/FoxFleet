@@ -26,6 +26,11 @@ async function turn(s, text) {
     out({ jsonrpc: '2.0', id, method: 'sudo', params }); await new Promise((res) => { open.get(id).done = res; }); const was = open.get(id); open.delete(id); const note = was.answer === null ? 'sudo-refused ' : 'sudo-answered '; s.partial += note; ev(s, 'message.delta', { text: note });
   }
   if (/\[with \d+ image/.test(text)) { s.partial += text + ' '; ev(s, 'message.delta', { text: text + ' ' }); } // echo what the picture attach did
+  if (/steps/.test(text)) { // 0.4.1 step detail: commentary, a status line, one tool with args and a result, reasoning in one piece
+    ev(s, 'message.interim', { text: 'Checking the folder first', already_streamed: false }); ev(s, 'status.update', { kind: 'warn', text: 'Context is getting long' });
+    ev(s, 'tool.start', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' } }); await sleep(5);
+    ev(s, 'tool.complete', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' }, result: '{"output":"a b","exit_code":0}', duration_s: 0.5 }); ev(s, 'reasoning.available', { text: 'thought about it' });
+  }
   const words = /slow/.test(text) ? 30 : 3;
   for (let i = 0; i < words && !s.interrupted; i++) { s.partial += `w${i} `; ev(s, 'message.delta', { text: `w${i} ` }); await sleep(/slow/.test(text) ? 100 : 5); }
   finish(s, s.interrupted ? 'interrupted' : 'done');

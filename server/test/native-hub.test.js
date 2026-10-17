@@ -173,5 +173,11 @@ test('event mapping keeps session, turn, message and tool identities distinct an
   const s = { stored: 'S', turn: null, partial: '', running: false };
   const evs = [{ type: 'message.start' }, { type: 'tool.start', payload: { tool_id: 'call_9', name: 'web' } }, { type: 'message.delta', payload: { text: 'hi' } }, { type: 'tool.complete', payload: { tool_id: 'call_9', name: 'web', duration_s: 1.5, result: { secret: 'x' } } }, { type: 'message.complete', payload: { text: 'hi', status: 'complete' } }, { type: 'terminal.output', payload: { text: 'nope' } }].map((e) => normalise(e, s));
   assert.deepEqual(evs.map((e) => e?.type), ['turn.start', 'tool.start', 'message.delta', 'tool.end', 'turn.end', undefined]);
-  assert.ok(evs[1].turn_id === evs[4].turn_id && evs[1].tool_id === 'call_9' && evs[0].session_id === 'S'); assert.ok(!JSON.stringify(evs[3]).includes('secret'), 'tool results are not forwarded');
+  assert.ok(evs[1].turn_id === evs[4].turn_id && evs[1].tool_id === 'call_9' && evs[0].session_id === 'S'); assert.ok(!('result' in evs[3]) && !('args' in evs[3]), 'the raw tool result and args are not forwarded');
+  // 0.4.1: tool.end carries ok, duration_ms and a clipped result preview (<= 500 chars + …), never the full result
+  assert.equal(evs[3].ok, true); assert.equal(evs[3].duration_ms, 1500); assert.equal(evs[3].result_preview, '{"secret":"x"}');
+  const big = normalise({ type: 'tool.complete', payload: { tool_id: 'c2', name: 'sh', result: 'y'.repeat(2000) + 'TAIL', duration_s: 0.25 } }, s);
+  assert.equal(big.result_preview.length, 501); assert.ok(big.result_preview.endsWith('…') && !big.result_preview.includes('TAIL')); assert.equal(big.duration_ms, 250);
+  const failed = normalise({ type: 'tool.complete', payload: { tool_id: 'c3', name: 'sh', result: '{"exit_code":2,"output":"boom"}' } }, s);
+  assert.equal(failed.ok, false); assert.equal(failed.duration_ms, undefined);
 });

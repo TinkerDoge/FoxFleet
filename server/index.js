@@ -155,14 +155,17 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // Live v2 (docs/LIVE-EVENTS.md): run notices, typing, the agent's reply as message.new, and the user's message statuses.
   const withReg = (scope, fn) => { void registries.get(scope)?.then(fn).catch(() => {}); };
   runs.onStart((r) => withReg(r.scope, (reg) => { reg.live2.emit('run.started', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id }); typingSet(reg, r, 'thinking', null); rowChanged(reg, r.scope, r.agent); }));
-  runs.onEvent((r, kind, tool) => withReg(r.scope, (reg) => { typingSet(reg, r, kind, tool); if (!r.ledgerRead && r.session) { r.ledgerRead = true; reg.ledger.readByAgent(r.agent, r.session, r); } }));
+  runs.onEvent((r, kind, tool, x = {}) => withReg(r.scope, (reg) => {
+    typingSet(reg, r, kind, tool, x);
+    if (x.step && r.session && !r.done) reg.live2.ephemeral('run.step', { agent: r.agent, chat: r.session, run_id: r.id, ...x.step, at: Date.now() }); // ephemeral: never stored or replayed
+    if (!r.ledgerRead && r.session) { r.ledgerRead = true; reg.ledger.readByAgent(r.agent, r.session, r); } }));
   runs.onFinish((r, state) => withReg(r.scope, async (reg) => {
     typingStop(r);
     try {
-      const text = cleanText(r.text || '').text, m = reg.store.all().find((x) => x.name === r.agent);
+      const cleaned = cleanText(r.text || ''), text = cleaned.text, m = reg.store.all().find((x) => x.name === r.agent), x = runs.extras(r);
       if (r.session && m && state !== 'error' && text.trim()) {
         if (!reg.ledger.has(r.agent, r.session)) await ensureIndexed(reg, m, r.session).catch(() => false);
-        if (reg.ledger.has(r.agent, r.session)) { reg.ledger.readByAgent(r.agent, r.session, r); reg.ledger.add(r.agent, r.session, { role: 'assistant', text, source: 'agent', runId: r.id }); }
+        if (reg.ledger.has(r.agent, r.session)) { reg.ledger.readByAgent(r.agent, r.session, r); reg.ledger.add(r.agent, r.session, { role: 'assistant', text, source: 'agent', runId: r.id, reasoning: [x.reasoning, cleaned.reasoning].filter((v) => v && v.trim()).join('\n\n'), tools: x.tools }); }
       }
     } finally { reg.live2.emit('run.finished', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id, state: state === 'error' ? 'error' : state === 'stopped' ? 'stopped' : 'done' }); rowChanged(reg, r.scope, r.agent); }
   }));
@@ -186,15 +189,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   // ---- live v2 helpers: typing, chat-list rows, ledger indexing (docs/LIVE-EVENTS.md) ----
   const TYPING_TTL_MS = 6000, TYPING_REPEAT_MS = 4000, typingRuns = new Map(); let typingTimer = null;
-  const typingSend = (t) => { t.sent = Date.now(); t.reg.live2.typing({ agent: t.agent, chat: t.chat, state: t.state, tool: t.tool, ttl_ms: TYPING_TTL_MS }); };
-  function typingSet(reg, r, state, tool) {
+  // label (what the step is about: tool arguments, commentary or a status line) and tool_id only appear when known, so plain frames stay as before.
+  const typingSend = (t) => { t.sent = Date.now(); t.reg.live2.typing({ agent: t.agent, chat: t.chat, state: t.state, tool: t.tool, ...(t.label ? { label: t.label } : {}), ...(t.toolId ? { tool_id: t.toolId } : {}), ttl_ms: TYPING_TTL_MS }); };
+  const oneLine = (v, n) => String(v).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, n);
+  function typingSet(reg, r, state, tool, x = {}) {
     if (!r.session || r.done) return;
-    let t = typingRuns.get(r.id); if (!t) { t = { reg, agent: r.agent, chat: r.session, state: null, tool: null, sent: 0 }; typingRuns.set(r.id, t); }
-    const label = state === 'tool' && tool ? String(tool).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 80) : null;
-    if (t.state !== state || t.tool !== label || Date.now() - t.sent >= TYPING_REPEAT_MS) { t.state = state; t.tool = label; typingSend(t); }
+    let t = typingRuns.get(r.id); if (!t) { t = { reg, agent: r.agent, chat: r.session, state: null, tool: null, label: null, toolId: null, sent: 0 }; typingRuns.set(r.id, t); }
+    if (!state) { if (!x.label || !t.state) return; state = t.state; tool = t.tool; } // a label-only step (commentary, status) keeps the current state
+    const name = state === 'tool' && tool ? oneLine(tool, 80) : null, label = x.label ? oneLine(x.label, 200) : null, toolId = state === 'tool' && x.toolId ? oneLine(x.toolId, 120) : null;
+    if (t.state !== state || t.tool !== name || t.label !== label || t.toolId !== toolId || Date.now() - t.sent >= TYPING_REPEAT_MS) { t.state = state; t.tool = name; t.label = label; t.toolId = toolId; typingSend(t); }
     if (!typingTimer) { typingTimer = setInterval(() => { const n = Date.now(); for (const x of typingRuns.values()) if (n - x.sent >= TYPING_REPEAT_MS) typingSend(x); if (!typingRuns.size) { clearInterval(typingTimer); typingTimer = null; } }, 1000); typingTimer.unref?.(); }
   }
-  function typingStop(r) { const t = typingRuns.get(r.id); if (!t) return; typingRuns.delete(r.id); t.state = 'idle'; t.tool = null; typingSend(t); }
+  function typingStop(r) { const t = typingRuns.get(r.id); if (!t) return; typingRuns.delete(r.id); t.state = 'idle'; t.tool = null; t.label = null; t.toolId = null; typingSend(t); }
   /** One chat-list row (docs/LIVE-EVENTS.md ChatRow). */
   function chatRow(reg, scope, m) {
     const L = reg.ledger, a = L.agent(m.name), label = m.label || m.name, last = L.lastMessage(m.name), act = reg.activity.get(m.name);
@@ -322,18 +328,22 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : 'offline', online, chatReady, managementReady: false,
-      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
+      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       hasBotToken: Boolean(p.hasBotToken),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: Boolean(bot), message: bot ? 'Bot media via hub' : 'Bot API disabled' } } };
   }
+  // How a client changes the model (docs/LIVE-EVENTS.md "Model picker"): 'native' through the native gateway (/native/models, /native/sessions/{id}/model),
+  // 'request' through GET /api/agents/{name}/models + a per-chat override the hub sends with each run, 'none' when the agent offers no model list.
+  const providersOf = (r) => (Array.isArray(r?.providers) ? r.providers : []).filter((pr) => pr && typeof pr === 'object' && pr.slug != null).map((pr) => ({ slug: String(pr.slug), name: String(pr.name ?? pr.slug), current: pr.is_current === true, models: (Array.isArray(pr.models) ? pr.models : []).map((x) => (typeof x === 'string' ? x : x?.id ?? x?.name)).filter(Boolean).slice(0, 300).map(String) })).slice(0, 60);
+  const modelsMode = (m, p) => (nativeUi(m) ? 'native' : kindOf(m) === 'hermes' && p?.capabilities ? 'request' : 'none');
   function agentView(m, p, index) {
     if (m.connection === 'bot') return botAgentView(m, p, index);
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : online ? 'online' : 'offline', online, chatReady, managementReady: Boolean(p.managementReady),
-      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'hermes', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), media: mediaInfo(m) },
+      capabilities: { ...capabilitiesOf(m), reactions: true, agentReactions: kindOf(m) === 'hermes', busy: nativeUi(m) ? ['queue', 'steer', 'interrupt'] : busyModes({ kind: kindOf(m), native: p.capabilities ? nativeFeatures(p.capabilities) : null }), nativeUi: nativeUi(m), nativeRuns: Boolean(p.capabilities && nativeFeatures(p.capabilities).runs), models: modelsMode(m, p), media: mediaInfo(m) },
       ...(Number.isInteger(p.active_sessions) ? { activeSessions: p.active_sessions } : {}),
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: mediaCheck(m) } };
@@ -415,17 +425,17 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     const reg = ctx.reg, scope = scopeOf(ctx);
     const inner = async (item, { rebuild }) => {
       reg.activity.touch(m.name, { role: 'user', text: item.text, session: item.session || undefined });
-      const link = {};
+      const link = {}, mo = item.session ? reg.ledger.modelOf(m.name, item.session) : null; // per-chat model override (models: 'request')
       if (native?.runs) {
         const content = item.message.content, input = typeof content === 'string' ? content : [{ role: 'user', content }];
         const ctrl = nativeControl({ api: reg.upstream.api, m, link }); link.steer = ctrl.steer; link.stop = ctrl.stop;
         return runs.start({ scope, agent: m.name, session: item.session || undefined, link, timeoutMs, onFinish: undefined,
-          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: item.session || undefined, idempotencyKey: item.id, link, signal }),
+          open: (signal) => nativeRun({ api: (mm, route, o) => reg.upstream.api(mm, route, o), m, input, sessionId: item.session || undefined, idempotencyKey: item.id, link, signal, model: mo?.model, provider: mo?.provider }),
           check: (r) => ({ ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }) });
       }
       const messages = rebuild || !item.body ? [item.message] : item.body.messages; // older Hermes keeps its own transcript by session id
       return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,
-        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: item.body?.model || 'hermes-agent', messages, stream: true }) }),
+        open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: mo?.model || item.body?.model || 'hermes-agent', ...(mo?.provider ? { provider: mo.provider } : {}), messages, stream: true }) }),
         check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }; } });
     };
     return { async launch(item, opts) {
@@ -786,6 +796,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         // dashboard, API server, connector, facade or coordinator for one. Only `pin` (hub-side state) falls through to the shared handler below.
         if (m.connection === 'bot' && !(route === 'pin' && parts.length === 4 && req.method === 'PUT')) {
           if (!bot) throw botDisabled();
+          if ((route === 'models' && parts.length === 4) || (route === 'sessions' && parts.length === 6 && parts[5] === 'model')) throw fault(409, 'Bot agents have no model list', 'models_unsupported');
           return await bot.route({ req, res, url, parts, m, scope: scopeOf(ctx), user: auth.user, reg: ctx.reg, readJson, sendJson, current });
         }
         // Reactions and "delete for me" live beside each account's history. Never accept an actor identity from a request body.
@@ -816,6 +827,31 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const t of runs.texts(scope, m.name)) media.note(scope, m.name, t);
           return sendJson(res, 200, media.resolve({ scope, agent: m.name, machineId: m.machineId, profile: m.profile, ref: b?.ref }));
         }
+        if (route === 'models' && parts.length === 4 && req.method === 'GET') { // one model list for every agent kind (0.4.1): native gateway or the API server's /api/model/options
+          const mode = modelsMode(m, nativeUi(m) ? null : (await probeShared(m)).view), refresh = url.searchParams.get('refresh') === '1', sid = url.searchParams.get('session_id') || '';
+          if (mode === 'none') throw fault(409, 'This agent offers no model list', 'models_unsupported');
+          let providers;
+          if (mode === 'native') providers = providersOf(await ctx.reg.native.ui(m.machineId).call(m.profile, 'models', { refresh }));
+          else {
+            const r = await ctx.reg.upstream.api(m, `/api/model/options${refresh ? '?refresh=1' : ''}`);
+            if (r.status === 404 || r.status === 405) { await r.body?.cancel(); throw fault(409, 'This agent is too old to list its models', 'models_unsupported'); }
+            const d = await upstreamJson(r); if (!d || typeof d !== 'object' || (d.providers !== undefined && !Array.isArray(d.providers))) throw fault(502, 'Invalid agent response', 'upstream_error');
+            providers = providersOf(d);
+          }
+          current(m);
+          const override = mode === 'request' && validSessionId(sid) ? ctx.reg.ledger.modelOf(m.name, sid) : null;
+          return sendJson(res, 200, { mode, providers, ...(override ? { override } : {}) });
+        }
+        if (route === 'sessions' && parts.length === 6 && parts[5] === 'model' && req.method === 'POST') { // per-chat model for 'request' agents: kept by the hub, sent with every new run of that chat
+          const sid = sessionId(parts[4]), b = await readJson(req, 1024), mode = modelsMode(m, nativeUi(m) ? null : (await probeShared(m)).view);
+          if (mode === 'native') throw fault(409, 'This agent changes models through its native gateway (/native/sessions/{id}/model)', 'models_unsupported');
+          if (mode !== 'request') throw fault(409, 'This agent offers no model list', 'models_unsupported');
+          if (b.model === null || b.model === '') { ctx.reg.ledger.setModel(m.name, sid, null); return sendJson(res, 200, { session_id: sid, model: null, provider: null }); }
+          if (typeof b.model !== 'string' || !/^[\w.:/@+-]{1,200}$/.test(b.model)) throw fault(400, 'model must be a model id from GET /api/agents/{name}/models, or null to use the agent default', 'invalid_model');
+          if (b.provider != null && (typeof b.provider !== 'string' || !/^[\w.:-]{1,64}$/.test(b.provider))) throw fault(400, 'provider must be a provider slug from GET /api/agents/{name}/models', 'invalid_model');
+          const v = ctx.reg.ledger.setModel(m.name, sid, { model: b.model, provider: b.provider || null });
+          current(m); return sendJson(res, 200, { session_id: sid, model: v.model, provider: v.provider });
+        }
         if (route === 'native') { // native Hermes UI gateway (see hermes-ui.js): sessions, journaled sends, shared event stream, approvals/clarifications
           if (kindOf(m) !== 'hermes' || !nativeUi(m)) { if (parts.length === 4 && req.method === 'GET') return sendJson(res, 200, { native: false }); throw fault(409, 'This agent has no native Hermes gateway; use the standard chat'); }
           const nat = ctx.reg.native, scope = scopeOf(ctx), mid = m.machineId, prof = m.profile, sidOf = (v) => { if (!/^[\w.:-]{1,120}$/.test(v ?? '')) throw fault(400, 'Invalid session'); return v; };
@@ -831,7 +867,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             const live = readLiveCatalog(r);
             return sendJson(res, 200, { source: 'agent', pairs: live.pairs, sub: live.sub, canon: live.canon, commands: live.commands, categories: live.categories, skills: live.skills, skill_count: live.skillCount, ...(live.warning ? { warning: live.warning } : {}) });
           }
-          if (parts.length === 5 && parts[4] === 'models' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'models', { refresh: url.searchParams.get('refresh') === '1' }); return sendJson(res, 200, { providers: (r.providers ?? []).map((pr) => ({ slug: String(pr.slug), name: String(pr.name ?? pr.slug), current: pr.is_current === true, models: (pr.models ?? []).map((x) => (typeof x === 'string' ? x : x?.id ?? x?.name)).filter(Boolean).slice(0, 300).map(String) })).slice(0, 60) }); }
+          if (parts.length === 5 && parts[4] === 'models' && req.method === 'GET') { const r = await nat.ui(mid).call(prof, 'models', { refresh: url.searchParams.get('refresh') === '1' }); return sendJson(res, 200, { providers: providersOf(r) }); }
           if (parts.length === 7 && parts[4] === 'sessions') {
             const sid = sidOf(parts[5]), what = parts[6];
             if (what === 'attach' && req.method === 'POST') { await readJson(req); return sendJson(res, 200, await nat.attach(scope, mid, prof, sid)); }

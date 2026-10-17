@@ -11,12 +11,15 @@ import { toolMedia, withMediaLines } from './media-tags.js';
 import { randomBytes } from 'node:crypto';
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { fault } from './config.js';
+import { argsPreview, toolOutcome, durationMs, stepText, levelOf } from './steps.js';
 
 export const CONTRACT = 'foxfleet.native/1';
 const LOG_MAX = 500, MAX_VIEWERS = 32, KEEP_JOURNAL = 500;
 const id = (p) => `${p}_${randomBytes(9).toString('base64url')}`;
 export const MODES = ['auto', 'queue', 'steer', 'interrupt'];
 
+// tool.end detail: ok, duration in ms and a short result preview (the full result stays in the transcript).
+const toolEnd = (p) => { const { ok, result_preview } = toolOutcome(p.result, { error: p.error }), ms = durationMs(p); return { ok, ...(ms !== undefined ? { duration_ms: ms } : {}), ...(result_preview ? { result_preview } : {}) }; };
 // Upstream event -> versioned FoxFleet event (or null to drop). `s` is the session state (turn id, tool names).
 export function normalise(up, s) {
   const p = up.payload ?? {}, base = { v: 1, session_id: s.stored };
@@ -29,11 +32,14 @@ export function normalise(up, s) {
     case 'thinking.delta': return null;
     case 'message.complete': { s.running = false; const status = String(p.status ?? 'complete'); return { ...base, type: 'turn.end', turn_id: s.turn, ...(!s.reasoned && typeof p.reasoning === 'string' && p.reasoning.trim() ? { reasoning: p.reasoning.slice(0, 20_000) } : {}), status: /interrupt/.test(status) ? 'interrupted' : /error|fail/.test(status) ? 'failed' : 'complete', text: withMediaLines(String(p.text ?? s.partial), s.media ?? []) }; }
     case 'tool.generating': return { ...base, type: 'tool.progress', turn_id: s.turn, name: String(p.name ?? 'tool').slice(0, 80) };
-    case 'tool.start': return { ...base, type: 'tool.start', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
+    case 'tool.start': { const preview = argsPreview(p.args); return { ...base, type: 'tool.start', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(preview ? { preview } : {}) }; }
     case 'tool.progress': return { ...base, type: 'tool.progress', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80) };
-    case 'tool.complete': { const media = toolMedia(p.name, p.args, p.result).filter((m) => !(s.media ?? []).includes(m.ref)); if (media.length) s.media = [...(s.media ?? []), ...media.map((m) => m.ref)]; return { ...base, type: 'tool.end', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(media.length ? { media } : {}), ...(typeof p.duration_s === 'number' ? { duration_s: p.duration_s } : {}) }; }
+    case 'tool.complete': { const media = toolMedia(p.name, p.args, p.result).filter((m) => !(s.media ?? []).includes(m.ref)); if (media.length) s.media = [...(s.media ?? []), ...media.map((m) => m.ref)]; return { ...base, type: 'tool.end', turn_id: s.turn, tool_id: String(p.tool_id ?? ''), name: String(p.name ?? 'tool').slice(0, 80), ...(media.length ? { media } : {}), ...(typeof p.duration_s === 'number' ? { duration_s: p.duration_s } : {}), ...toolEnd(p) }; }
     case 'request.cancel': return { ...base, type: 'request.cancel', request_id: String(p.id ?? ''), reason: String(p.reason ?? '') };
-    case 'status.update': return p.text ? { ...base, type: 'status', level: String(p.kind ?? 'info'), text: String(p.text).slice(0, 300) } : null;
+    case 'status.update': return p.text ? { ...base, type: 'status', ...(s.turn ? { turn_id: s.turn } : {}), level: String(p.kind ?? 'info'), text: String(p.text).slice(0, 300) } : null;
+    case 'message.interim': { if (p.already_streamed === true) return null; const t = stepText(p.text ?? p.message ?? p.content); return t ? { ...base, type: 'step', kind: 'commentary', turn_id: s.turn, text: t, level: 'info' } : null; }
+    case 'subagent.start': case 'subagent.complete': { const done = up.type === 'subagent.complete', st = String(p.status ?? ''), what = p.goal ?? p.summary ?? p.task ?? '';
+      return { ...base, type: 'step', kind: 'subagent', turn_id: s.turn, text: stepText(done ? `Subagent ${/fail|error/.test(st) ? 'failed' : 'finished'}${what ? `: ${what}` : ''}` : `Subagent started${what ? `: ${what}` : ''}`), level: done ? levelOf(st) : 'info' }; }
     case 'session.title': return p.title ? { ...base, type: 'session.title', title: String(p.title).slice(0, 300) } : null;
     default: return null;
   }

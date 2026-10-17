@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Foxfleet hub API",
-    "version": "0.4.0-alpha",
+    "version": "0.4.1-alpha",
     "description": "The contract shared by the hub, the web app and the Android app. Contract tests (contract/run.mjs) run against the real hub and the web mock hub.",
     "license": {
       "name": "MIT",
@@ -2820,7 +2820,8 @@
           "404": {
             "$ref": "#/components/responses/Error"
           }
-        }
+        },
+        "description": "Frames: OpenAI-style `data: {choices:[{delta:{content|reasoning_content}}]}`; `event: hermes.tool.progress` {tool} once when a tool starts (and for commentary); `event: foxfleet.tool` (RunToolFrame) for the tool lifecycle; `event: foxfleet.step` (RunStepFrame, 0.4.1) for commentary, status lines and subagents; `event: foxfleet.request` / `foxfleet.request_closed` / `foxfleet.ack` (native gateway); `event: foxfleet.gap`; `event: foxfleet.run`. Clients ignore unknown events and fields. See docs/LIVE-EVENTS.md \"Step detail\"."
       }
     },
     "/api/agents/{name}/runs/{id}/stop": {
@@ -5345,7 +5346,7 @@
       "get": {
         "operationId": "liveStream",
         "summary": "Live chat events for open clients (SSE, feature `live`).",
-        "description": "Server-Sent Events (docs/LIVE-EVENTS.md). v1 (no `v`) carries no message text; v2 carries message text in message.new / message.edited. v1: resume with Last-Event-ID or ?after=<epoch>:<n>; no cursor starts at now. Frames: `retry: 2000`; optional `event: foxfleet.gap` {cursor} (hub restarted or buffer overrun: do a full catch-up); `event: live` with `id: <epoch>:<n>` and {id,type,agent,chat,at,run_id?,state?,request_id?,kind?}, type one of run_started, run_finished, approval; once `event: foxfleet.ready` {contract:'foxfleet.live/1',cursor,heartbeat_ms} (no id); `: keep-alive` every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close. At most 8 streams per account (429). v2 (feature `live2`, 0.4.0): add ?v=2 for contract foxfleet.live/2: persistent per-account seq, `id: <store>:<seq>`, `event: <type>` with a LiveEvent body, ephemeral `event: typing` (TypingEvent, no id), foxfleet.ready {contract,cursor,store,heartbeat_ms}, foxfleet.gap {reason: expired|reset|invalid, cursor} (a v1 `<epoch>:<n>` id is a `reset`). Without v the stream is v1, unchanged. Unsupported v: 400 unsupported_version.",
+        "description": "Server-Sent Events (docs/LIVE-EVENTS.md). v1 (no `v`) carries no message text; v2 carries message text in message.new / message.edited. v1: resume with Last-Event-ID or ?after=<epoch>:<n>; no cursor starts at now. Frames: `retry: 2000`; optional `event: foxfleet.gap` {cursor} (hub restarted or buffer overrun: do a full catch-up); `event: live` with `id: <epoch>:<n>` and {id,type,agent,chat,at,run_id?,state?,request_id?,kind?}, type one of run_started, run_finished, approval; once `event: foxfleet.ready` {contract:'foxfleet.live/1',cursor,heartbeat_ms} (no id); `: keep-alive` every 15 s; `event: foxfleet.auth` {reason:'signed_out'} then close. At most 8 streams per account (429). v2 (feature `live2`, 0.4.0): add ?v=2 for contract foxfleet.live/2: persistent per-account seq, `id: <store>:<seq>`, `event: <type>` with a LiveEvent body, ephemeral `event: typing` (TypingEvent, no id), ephemeral `event: run.step` (RunStepEvent, no id, 0.4.1), foxfleet.ready {contract,cursor,store,heartbeat_ms}, foxfleet.gap {reason: expired|reset|invalid, cursor} (a v1 `<epoch>:<n>` id is a `reset`). Without v the stream is v1, unchanged. Unsupported v: 400 unsupported_version.",
         "tags": [
           "live"
         ],
@@ -5984,6 +5985,162 @@
           }
         }
       }
+    },
+    "/api/agents/{name}/models": {
+      "get": {
+        "operationId": "listModels",
+        "summary": "Provider and model choices for any agent with capabilities.models native or request (0.4.1).",
+        "description": "Native gateway agents: the live picker (same as /native/models). Hermes API-server agents: GET /api/model/options of the agent. 409 models_unsupported when the agent has none (bots, older Hermes, other kinds). With ?session_id= a `request` agent also returns the chat's override. See docs/LIVE-EVENTS.md \"Model picker\".",
+        "tags": [
+          "agents"
+        ],
+        "x-foxfleet-status": "implemented (0.4.1-alpha)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            },
+            "description": "Ask the agent to probe its providers again (slow)."
+          },
+          {
+            "name": "session_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Return this chat's override (request agents)."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Model list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          },
+          "502": {
+            "$ref": "#/components/responses/Error"
+          },
+          "504": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/agents/{name}/sessions/{id}/model": {
+      "post": {
+        "operationId": "setChatModel",
+        "summary": "Per-chat model override for agents with capabilities.models `request` (0.4.1): kept by the hub, sent as model/provider with every new run of this chat; `model: null` clears it.",
+        "description": "Applies from the next run (a running reply keeps its model). Native gateway agents use POST /native/sessions/{sid}/model instead (409 models_unsupported here).",
+        "tags": [
+          "agents"
+        ],
+        "x-foxfleet-status": "implemented (0.4.1-alpha)",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          },
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Session id"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "model"
+                ],
+                "properties": {
+                  "model": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 200,
+                    "description": "A model id from GET /api/agents/{name}/models"
+                  },
+                  "provider": {
+                    "type": [
+                      "string",
+                      "null"
+                    ],
+                    "maxLength": 64,
+                    "description": "Provider slug from the same list. Without one Hermes may ignore the model on chat completions."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The override now in effect",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelOverride"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -6173,7 +6330,7 @@
           },
           "code": {
             "type": "string",
-            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams (429, live v1 and v2), chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After)."
+            "description": "Machine-readable reason when the hub knows one, e.g. machine_offline, display_unsupported, gateway_unreachable, dashboard_auth, timeout, reopen (screen routes); outside, denied, missing, too_big, type, rate (media). Clients show a specific message for each and fall back to `error` for unknown codes. History (GET /api/agents/{name}/sessions/{id}/messages): agent_offline, timeout, auth_failed, upstream_error (docs/API-ERRORS.md). Phase 1 (0.4.0): unsupported_version, invalid_cursor, cursor_expired (410, body also has `cursor`), too_many_streams (429, live v1 and v2), chat_not_found, invalid_read_position, invalid_idempotency_key, idempotency_conflict (409), reply_token_invalid (403, never 401), text_too_long (413), rate_limited (429 + Retry-After). 0.4.1 (model routes): models_unsupported (409), invalid_model (400)."
           },
           "cursor": {
             "type": "string",
@@ -6607,6 +6764,15 @@
           "agentReactions": {
             "type": "boolean",
             "description": "The agent can react itself (Hermes: a REACT: line in its reply)."
+          },
+          "models": {
+            "type": "string",
+            "enum": [
+              "native",
+              "request",
+              "none"
+            ],
+            "description": "How a client changes the model (0.4.1): `native` through the native gateway (GET /native/models, POST /native/sessions/{sid}/model); `request` through GET /api/agents/{name}/models and a per-chat override (POST /api/agents/{name}/sessions/{id}/model) the hub sends with each new run of that chat; `none`: no model list (bots, older Hermes, other kinds). Hide the picker for `none`."
           }
         }
       },
@@ -7429,6 +7595,42 @@
                 }
               }
             }
+          },
+          "reasoning": {
+            "type": "string",
+            "description": "0.4.1, assistant messages: the reply's reasoning (at most 64 KiB UTF-8). Absent when none."
+          },
+          "reasoning_truncated": {
+            "type": "boolean",
+            "description": "0.4.1: reasoning was cut at 64 KiB."
+          },
+          "tools": {
+            "type": "array",
+            "maxItems": 50,
+            "description": "0.4.1, assistant messages: tools the reply ran, same shape as history ({name, args?, result?, ok?}); args and result at most 500 characters + …. Absent when none.",
+            "items": {
+              "type": "object",
+              "required": [
+                "name"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "maxLength": 81
+                },
+                "args": {
+                  "type": "string",
+                  "maxLength": 501
+                },
+                "result": {
+                  "type": "string",
+                  "maxLength": 501
+                },
+                "ok": {
+                  "type": "boolean"
+                }
+              }
+            }
           }
         }
       },
@@ -7719,6 +7921,16 @@
           },
           "ttl_ms": {
             "type": "integer"
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "0.4.1: what the step is about (tool arguments preview, commentary or a status line). Absent when unknown."
+          },
+          "tool_id": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "0.4.1: the running tool call (state `tool`), same id as on run.step and foxfleet.tool. Absent when unknown."
           }
         }
       },
@@ -7744,6 +7956,248 @@
           },
           "duplicate": {
             "type": "boolean"
+          }
+        }
+      },
+      "RunStepEvent": {
+        "type": "object",
+        "required": [
+          "agent",
+          "chat",
+          "run_id",
+          "kind",
+          "at"
+        ],
+        "description": "0.4.1: ephemeral `event: run.step` frame on the v2 stream (like typing: no id, no seq, never stored or replayed, not on the pull endpoint). One per tool start/end, commentary or status line of a running reply. A client that missed some just shows the next one; the finished message.new carries the summary (reasoning, tools).",
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "chat": {
+            "type": "string"
+          },
+          "run_id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "tool.start",
+              "tool.end",
+              "commentary",
+              "status"
+            ]
+          },
+          "tool_id": {
+            "type": "string",
+            "maxLength": 120,
+            "description": "tool.start / tool.end when known (pairs them)"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 81,
+            "description": "tool name (tool.start / tool.end)"
+          },
+          "preview": {
+            "type": "string",
+            "maxLength": 501,
+            "description": "tool.start: arguments preview (at most 200 characters + …); tool.end: result preview (at most 500 + …)"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "tool.end"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "tool.end, when the agent reports it"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 301,
+            "description": "commentary / status: the line to show"
+          },
+          "at": {
+            "type": "integer",
+            "description": "Unix ms"
+          }
+        }
+      },
+      "RunToolFrame": {
+        "type": "object",
+        "required": [
+          "type",
+          "tool_id",
+          "name"
+        ],
+        "description": "`event: foxfleet.tool` on a run stream (/runs/{id}/events, /chat, /messages). Native gateway agents since 0.3.x; Hermes /v1/runs agents since 0.4.1. The 0.4.1 fields are additive.",
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "tool.start",
+              "tool.progress",
+              "tool.end"
+            ]
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "native gateway only"
+          },
+          "tool_id": {
+            "type": "string",
+            "description": "the agent's call id, or t1, t2 … per run when the agent sends none (empty on a tool.progress the hub cannot pair)"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "preview": {
+            "type": "string",
+            "maxLength": 201,
+            "description": "tool.start (0.4.1): one-line arguments preview, at most 200 characters + …"
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "tool.end (0.4.1)"
+          },
+          "duration_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "tool.end (0.4.1), when reported"
+          },
+          "result_preview": {
+            "type": "string",
+            "maxLength": 501,
+            "description": "tool.end (0.4.1): at most 500 characters + …; never the full result"
+          }
+        }
+      },
+      "RunStepFrame": {
+        "type": "object",
+        "required": [
+          "kind",
+          "text",
+          "level"
+        ],
+        "description": "0.4.1: `event: foxfleet.step` on a run stream: something the agent says or reports between tool calls.",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "commentary",
+              "status",
+              "subagent"
+            ]
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "native gateway only"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 301
+          },
+          "level": {
+            "type": "string",
+            "enum": [
+              "info",
+              "warn",
+              "error"
+            ]
+          }
+        }
+      },
+      "ModelList": {
+        "type": "object",
+        "required": [
+          "mode",
+          "providers"
+        ],
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": [
+              "native",
+              "request"
+            ]
+          },
+          "providers": {
+            "type": "array",
+            "maxItems": 60,
+            "items": {
+              "type": "object",
+              "required": [
+                "slug",
+                "name",
+                "current",
+                "models"
+              ],
+              "properties": {
+                "slug": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "current": {
+                  "type": "boolean",
+                  "description": "the agent's default provider"
+                },
+                "models": {
+                  "type": "array",
+                  "maxItems": 300,
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          },
+          "override": {
+            "type": "object",
+            "required": [
+              "model",
+              "provider"
+            ],
+            "description": "`request` agents with ?session_id=: the chat's override, absent when none",
+            "properties": {
+              "model": {
+                "type": "string"
+              },
+              "provider": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "ModelOverride": {
+        "type": "object",
+        "required": [
+          "session_id",
+          "model",
+          "provider"
+        ],
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "model": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "null: the agent's default"
+          },
+          "provider": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }

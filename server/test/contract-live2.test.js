@@ -12,7 +12,7 @@ const check = (schema, value, what) => { const errs = validate(schema, value, sp
 const ref = (name) => ({ $ref: `#/components/schemas/${name}` });
 
 test('contract: chats, read, live events, history numbering and notify reply match openapi.json; routes are marked implemented', async (t) => {
-  for (const [p, item] of Object.entries(spec.paths)) for (const op of Object.values(item)) if (op['x-foxfleet-status']) assert.equal(op['x-foxfleet-status'], 'implemented (0.4.0-alpha)', p);
+  for (const [p, item] of Object.entries(spec.paths)) for (const op of Object.values(item)) if (op['x-foxfleet-status']) assert.match(op['x-foxfleet-status'], /^implemented \(0\.4\.[01]-alpha\)$/, p);
   for (const f of ['live2', 'chats', 'readReceipts', 'notifyReply']) assert.ok(JSON.stringify(spec).includes(`"${f}"`), f);
   const { mock } = await hermes(t, { messages: [{ id: 1, role: 'user', content: 'q' }, { id: 2, role: 'assistant', content: 'a' }], sessions: [] });
   const x = await hub(t, { password: PASS }), a = await login(x.base), h = { headers: a.h };

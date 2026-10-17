@@ -7,14 +7,15 @@
 //    written elsewhere are found when the hub reads the chat again (`reconcile`) and arrive as `message.new` with source `external`.
 //  - hub_id is derived from (agent, chat, n): stable, unique per account, nothing to store.
 //  - Read positions only move forward. Unread = agent messages after the read position, hidden ("delete for me") ones excluded.
-//  - Idempotency records for notification replies (24 h) live here too.
+//  - Idempotency records for notification replies (24 h) live here too, and (0.4.1) per-chat model overrides ({model, provider}).
 // One JSON file per account, tmp + rename, mode 0600, debounced like the other stores.
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { previewOf } from './activity.js';
+import { messageExtras } from './steps.js';
 
 export const PREVIEW_MAX = 160, TEXT_MAX_BYTES = 64 * 1024, IDEM_TTL_MS = 24 * 3600_000;
-const MAX_ENTRIES = 300, MAX_IDS = 20_000, MAX_SESSIONS = 100, IDEM_MAX = 30 * 60 * 24, SAVE_MS = 250, RESYNC_MS = 30_000;
+const MAX_MODEL_OVERRIDES = 2000, MAX_ENTRIES = 300, MAX_IDS = 20_000, MAX_SESSIONS = 100, IDEM_MAX = 30 * 60 * 24, SAVE_MS = 250, RESYNC_MS = 30_000;
 const RANK = { sent: 0, delivered: 1, read: 2 };
 
 export const hubIdOf = (agent, chat, n) => 'h' + createHash('sha256').update(`${agent}\0${chat}`).digest('base64url').slice(0, 12) + '.' + n;
@@ -27,8 +28,8 @@ export function clipText(text) {
 
 // Idempotency keys are kept 24 h. The default cap is a full day at the reply rate limit (30 a minute), so no key is evicted early.
 export async function chatLedger(file, { now = () => Date.now(), hooks = {}, idemMax = IDEM_MAX } = {}) {
-  let db = { v: 1, agents: {}, idem: {} };
-  try { const raw = JSON.parse(await readFile(file, 'utf8')); if (raw && typeof raw === 'object' && raw.agents && typeof raw.agents === 'object') db = { v: 1, agents: raw.agents, idem: raw.idem && typeof raw.idem === 'object' ? raw.idem : {} }; } catch { /* first run */ }
+  let db = { v: 1, agents: {}, idem: {}, models: {} };
+  try { const raw = JSON.parse(await readFile(file, 'utf8')); if (raw && typeof raw === 'object' && raw.agents && typeof raw.agents === 'object') db = { v: 1, agents: raw.agents, idem: raw.idem && typeof raw.idem === 'object' ? raw.idem : {}, models: raw.models && typeof raw.models === 'object' ? raw.models : {} }; } catch { /* first run */ }
   let writing = Promise.resolve(), timer = null, closed = false;
   const write = () => (writing = writing.then(async () => { if (closed) return; const tmp = file + '.tmp'; await writeFile(tmp, JSON.stringify(db), { mode: 0o600 }); await rename(tmp, file); }).catch(() => {}));
   const save = () => { if (!timer && !closed) { timer = setTimeout(() => { timer = null; void write(); }, SAVE_MS); timer.unref?.(); } };
@@ -61,17 +62,18 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
     for (const [name, a] of Object.entries(db.agents)) { if (!known(name)) continue; const u = agentUnread(name); all += u; if (!a.archived && !muted(name)) badge += u; }
     return { total_unread: badge, total_unread_all: all };
   }
-  const view = (agent, chat, e, text) => {
-    const body = clipText(text ?? '');
+  // x: the reply's reasoning / tools (live run or transcript), clipped like history; they ride on the event only and are never stored here.
+  const view = (agent, chat, e, text, x) => {
+    const body = clipText(text ?? ''), extra = x && e.r === 'assistant' ? messageExtras(x) : {};
     return { hub_id: hubIdOf(agent, chat, e.n), upstream_id: e.u ?? null, n: e.n, role: e.r, text: body.text, ...(body.truncated ? { truncated: true } : {}), at: e.at, source: e.src ?? 'external',
-      ...(e.r === 'user' && e.st ? { status: e.st } : {}), ...(e.err ? { error: e.err } : {}), reply_to: e.rt ?? null, edited_at: e.ed ?? null, run_id: e.run ?? null };
+      ...(e.r === 'user' && e.st ? { status: e.st } : {}), ...(e.err ? { error: e.err } : {}), reply_to: e.rt ?? null, edited_at: e.ed ?? null, run_id: e.run ?? null, ...extra };
   };
   function readState(agent, chat) {
     const s = sessOf(agent, chat);
     return { chat, read_up_to: s?.read ?? 0, unread_count: unreadIn(s), agent_unread: agentUnread(agent), total_unread: totals().total_unread };
   }
   /** Add a message the hub saw (sent through it, or a finished reply). Returns the Message object (as on the wire). */
-  function add(agent, chat, { role, text, at, source, status, upstreamId, runId, replyTo, cid, error }) {
+  function add(agent, chat, { role, text, at, source, status, upstreamId, runId, replyTo, cid, error, reasoning, tools }) {
     const s = sessOf(agent, chat) ?? newSession(agent, chat), n = ++s.last, t = Number.isFinite(at) ? at : now();
     const e = { n, r: role, at: t, p: previewOf(text ?? '', PREVIEW_MAX), src: source || 'external' };
     if (upstreamId) { e.u = String(upstreamId); bindId(s, e.u, n); }
@@ -82,7 +84,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
     const a = agentOf(agent); if (role === 'user') a.manual = false;
     if (role === 'assistant' && a.archived && !muted(agent)) a.archived = false; // a new message brings an unmuted archived chat back
     touch(agent); save();
-    const msg = view(agent, chat, e, text);
+    const msg = view(agent, chat, e, text, { reasoning, tools });
     event('message.new', { agent, chat, message: msg });
     if (readMoved) { const st = readState(agent, chat); event('read', { agent, chat, read_up_to: st.read_up_to, unread_count: st.unread_count, agent_unread: st.agent_unread, total_unread: st.total_unread }); }
     changed(agent);
@@ -113,7 +115,7 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       for (const m of list) {
         const n = ++s.last; if (m.id != null) bindId(s, String(m.id), n);
         pushEntry(s, { n, r: m.role, at: Number.isFinite(m.ts) ? m.ts : now(), p: previewOf(m.content ?? '', PREVIEW_MAX), src: 'external', ...(m.id != null ? { u: String(m.id) } : {}) });
-        if (unreadNew) event('message.new', { agent, chat, message: view(agent, chat, s.msgs.at(-1), m.content) });
+        if (unreadNew) event('message.new', { agent, chat, message: view(agent, chat, s.msgs.at(-1), m.content, m) });
       }
       s.read = unreadNew ? 0 : s.last; s.at = Math.max(s.at, ...list.map((m) => (Number.isFinite(m.ts) ? m.ts : 0)));
       touch(agent); save(); changed(agent); return { added: unreadNew ? list.length : 0, bound: 0 };
@@ -125,11 +127,11 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       const u = String(m.id), p = previewOf(m.content ?? '', PREVIEW_MAX);
       const open = s.msgs.filter((e) => !e.u && e.r === m.role && e.n > anchor);
       const e = open.find((x) => x.p === p) ?? open[0];
-      if (e) { e.u = u; bindId(s, u, e.n); anchor = e.n; bound++; event('message.edited', { agent, chat, message: view(agent, chat, e, m.content) }); continue; }
+      if (e) { e.u = u; bindId(s, u, e.n); anchor = e.n; bound++; event('message.edited', { agent, chat, message: view(agent, chat, e, m.content, m) }); continue; }
       const n = ++s.last, at = Number.isFinite(m.ts) ? m.ts : now(), ne = { n, r: m.role, at, p, src: 'external', u };
       bindId(s, u, n); pushEntry(s, ne); s.at = Math.max(s.at, at); anchor = n; added++;
       const a = agentOf(agent); if (m.role === 'assistant' && a.archived && !muted(agent)) a.archived = false;
-      event('message.new', { agent, chat, message: view(agent, chat, ne, m.content) });
+      event('message.new', { agent, chat, message: view(agent, chat, ne, m.content, m) });
     }
     if (added || bound) { touch(agent); save(); changed(agent); }
     return { added, bound };
@@ -191,8 +193,16 @@ export async function chatLedger(file, { now = () => Date.now(), hooks = {}, ide
       else event('message.edited', { agent, chat, message: view(agent, chat, e ?? { n, r: 'assistant', at: now(), u: String(upstreamId) }, text) });
       changed(agent); return true;
     },
-    removeSession(agent, chat) { const a = db.agents[agent]; if (a?.sessions?.[chat]) { delete a.sessions[chat]; touch(agent); save(); changed(agent); } },
-    removeAgent(agent) { if (db.agents[agent]) { delete db.agents[agent]; save(); } event('chat.removed', { agent }); },
+    removeSession(agent, chat) { const a = db.agents[agent]; if (a?.sessions?.[chat]) { delete a.sessions[chat]; touch(agent); save(); changed(agent); } if (db.models[`${agent}\0${chat}`]) { delete db.models[`${agent}\0${chat}`]; save(); } },
+    removeAgent(agent) { if (db.agents[agent]) { delete db.agents[agent]; save(); } for (const k of Object.keys(db.models)) if (k.startsWith(`${agent}\0`)) { delete db.models[k]; save(); } event('chat.removed', { agent }); },
+    /** Per-chat model override (0.4.1, POST /api/agents/{name}/sessions/{id}/model): { model, provider } or null. Sent with each new run of that chat. */
+    modelOf(agent, chat) { const v = chat ? db.models[`${agent}\0${chat}`] : null; return v ? { model: v.model, provider: v.provider ?? null } : null; },
+    setModel(agent, chat, v) {
+      const k = `${agent}\0${chat}`;
+      if (!v) delete db.models[k];
+      else { delete db.models[k]; db.models[k] = { model: v.model, provider: v.provider ?? null, at: now() }; const keys = Object.keys(db.models); if (keys.length > MAX_MODEL_OVERRIDES) for (const x of keys.slice(0, keys.length - MAX_MODEL_OVERRIDES)) delete db.models[x]; }
+      save(); return v ? { model: v.model, provider: v.provider ?? null } : null;
+    },
     idem: {
       get(key) { const r = db.idem[key]; if (!r || now() - r.at > IDEM_TTL_MS) return null; return r; },
       put(key, hash, result) {

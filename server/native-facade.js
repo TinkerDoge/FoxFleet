@@ -3,6 +3,7 @@
 // The run is a view of the native session: it is created when a turn starts (also for turns Hermes schedules itself) and it ends with the turn.
 // Native-only data rides on extra SSE events: foxfleet.request / foxfleet.request_closed (approvals, questions) and foxfleet.ack.
 import { fault } from './config.js';
+import { levelOf } from './steps.js';
 
 const enc = new TextEncoder();
 const frame = (obj, event) => enc.encode(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(obj)}\n\n`);
@@ -13,8 +14,10 @@ export function toFrames(e) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
     case 'reasoning': return [frame({ choices: [{ delta: { reasoning_content: e.text } }] })];
     case 'turn.end': return e.reasoning ? [frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] })] : []; // a provider that only reports its reasoning with the final message
-    case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress'), frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name }, 'foxfleet.tool')];
-    case 'tool.end': return [frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name }, 'foxfleet.tool'), ...(e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : [])]; // tool-made files ride the normal MEDIA: card pipeline
+    case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress'), frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name, ...(e.preview ? { preview: e.preview } : {}) }, 'foxfleet.tool')];
+    case 'tool.end': return [frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name, ...(typeof e.ok === 'boolean' ? { ok: e.ok } : {}), ...(e.duration_ms !== undefined ? { duration_ms: e.duration_ms } : {}), ...(e.result_preview ? { result_preview: e.result_preview } : {}) }, 'foxfleet.tool'), ...(e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : [])]; // tool-made files ride the normal MEDIA: card pipeline
+    case 'status': return [frame({ kind: 'status', ...(e.turn_id ? { turn_id: e.turn_id } : {}), text: e.text, level: levelOf(e.level) }, 'foxfleet.step')];
+    case 'step': return [...(e.kind === 'commentary' ? [frame({ tool: e.text.replace(/\s+/g, ' ').trim().slice(0, 120) }, 'hermes.tool.progress')] : []), frame({ kind: e.kind, ...(e.turn_id ? { turn_id: e.turn_id } : {}), text: e.text, level: e.level }, 'foxfleet.step')];
     case 'request.open': return [frame(e, 'foxfleet.request')];
     case 'request.cancel': return [frame({ request_id: e.request_id, reason: e.reason || 'cancelled' }, 'foxfleet.request_closed')];
     case 'request.answered': return [frame({ request_id: e.request_id, reason: 'answered' }, 'foxfleet.request_closed')];

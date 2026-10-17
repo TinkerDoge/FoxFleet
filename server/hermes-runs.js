@@ -4,6 +4,7 @@
 // Upstream event names below follow the Hermes docs (message.delta, message.interim, tool events, terminal run events); they are
 // matched loosely and normalised to the stream the clients already parse. NEEDS a live Hermes check (see docs/HERMES-CHAT-CONTROLS.md).
 import { fault } from './config.js';
+import { argsPreview, toolOutcome, durationMs, levelOf, stepText, TOOL_NAME_MAX } from './steps.js';
 
 export const FEATURES = ['run_submission', 'run_status', 'run_events_sse', 'run_steer', 'run_stop'];
 const enc = new TextEncoder();
@@ -29,10 +30,39 @@ export function normalise(ev, name, link) {
   const out = [];
   if (typeof d.run_id === 'string' && !link.runId) link.runId = d.run_id;
   if (typeof d.session_id === 'string' && !link.sessionId) link.sessionId = d.session_id;
-  if (/reasoning|thinking/.test(type) && /delta/.test(type)) { const t = asText(d.delta ?? d.text); if (t) out.push(frame({ choices: [{ delta: { reasoning_content: t } }] })); }
+  if (/reasoning|thinking/.test(type) && /delta/.test(type)) { const t = asText(d.delta ?? d.text); if (t) { link.reasonedDelta = true; out.push(frame({ choices: [{ delta: { reasoning_content: t } }] })); } }
+  else if (type === 'reasoning.available') { // full reasoning in one piece: only when none streamed as deltas in this run, so it is never shown twice
+    const t = asText(d.text ?? d.reasoning ?? d.content);
+    if (t.trim() && !link.reasonedDelta) { out.push(frame({ choices: [{ delta: { reasoning_content: link.reasonedFull ? `\n\n${t}` : t } }] })); link.reasonedFull = true; }
+  }
   else if (type === 'message.delta' || (/delta/.test(type) && !/tool/.test(type))) { const t = asText(d.delta ?? d.text ?? d.content); if (t) { link.streamed = true; out.push(frame({ choices: [{ delta: { content: t } }] })); } }
-  else if (type === 'message.interim') { const t = asText(d.text ?? d.message ?? d.content).replace(/\s+/g, ' ').trim().slice(0, 120); if (t) out.push(frame({ tool: t }, 'hermes.tool.progress')); }
-  else if (/^tool/.test(type)) { out.push(frame({ tool: String(d.tool ?? d.name ?? 'tool').slice(0, 80) }, 'hermes.tool.progress')); }
+  else if (type === 'message.interim') {
+    const raw = asText(d.text ?? d.message ?? d.content), t = raw.replace(/\s+/g, ' ').trim().slice(0, 120);
+    if (t) out.push(frame({ tool: t }, 'hermes.tool.progress'));
+    if (t && d.already_streamed !== true) out.push(frame({ kind: 'commentary', text: stepText(raw), level: 'info' }, 'foxfleet.step'));
+  } else if (/^subagent\.(start|started|complete|completed|failed|end)$/.test(type)) {
+    const done = !/start/.test(type), status = String(d.status ?? (type === 'subagent.failed' ? 'failed' : '')), what = asText(done ? (d.summary ?? d.result ?? d.goal ?? d.task) : (d.goal ?? d.task ?? d.text));
+    const text = stepText(done ? `Subagent ${/fail|error/.test(status) ? 'failed' : /timeout|timed/.test(status) ? 'timed out' : 'finished'}${what ? `: ${what}` : ''}` : `Subagent started${what ? `: ${what}` : ''}`);
+    out.push(frame({ kind: 'subagent', text, level: done ? levelOf(status) : 'info' }, 'foxfleet.step'));
+  } else if (/^tool/.test(type)) {
+    const name = String(d.tool ?? d.name ?? 'tool').slice(0, TOOL_NAME_MAX), upId = d.tool_call_id ?? d.call_id ?? d.tool_id;
+    const open = (link.openTools ??= []);
+    if (/^tool\.(start|started)$/.test(type)) {
+      const tool_id = typeof upId === 'string' && upId ? upId.slice(0, 120) : `t${(link.toolSeq = (link.toolSeq ?? 0) + 1)}`, preview = argsPreview(d.preview ?? d.args ?? d.arguments);
+      open.push({ tool_id, name }); if (open.length > 50) open.shift();
+      out.push(frame({ tool: name }, 'hermes.tool.progress'), frame({ type: 'tool.start', tool_id, name, ...(preview ? { preview } : {}) }, 'foxfleet.tool'));
+    } else if (/^tool\.(completed|complete|done|finished|failed|error|end)$/.test(type)) {
+      // pair with the open start: the upstream id when there is one, else the oldest open call of that tool (Hermes reports calls in order)
+      let i = typeof upId === 'string' && upId ? open.findIndex((o) => o.tool_id === upId) : -1; if (i < 0) i = open.findIndex((o) => o.name === name);
+      const tool_id = i >= 0 ? open.splice(i, 1)[0].tool_id : `t${(link.toolSeq = (link.toolSeq ?? 0) + 1)}`;
+      const { ok, result_preview } = toolOutcome(d.result ?? d.output ?? d.result_preview, { error: /failed|error/.test(type) ? true : d.error });
+      const ms = durationMs(d);
+      out.push(frame({ type: 'tool.end', tool_id, name, ok, ...(ms !== undefined ? { duration_ms: ms } : {}), ...(result_preview ? { result_preview } : {}) }, 'foxfleet.tool'));
+    } else { // any other tool tick while it runs: lifecycle detail only (hermes.tool.progress is sent once, on start)
+      const o = [...open].reverse().find((x) => x.name === name);
+      out.push(frame({ type: 'tool.progress', tool_id: o?.tool_id ?? (typeof upId === 'string' ? upId.slice(0, 120) : ''), name }, 'foxfleet.tool'));
+    }
+  }
   else if (/^run\.(completed|complete|done|finished)$/.test(type)) {
     link.terminal = 'completed'; link.pendingSteer = pendingOf(d);
     const final = asText(d.output ?? d.final ?? d.content);
@@ -44,10 +74,10 @@ export function normalise(ev, name, link) {
 const pendingOf = (d) => { const v = d.pending_steer ?? d.pendingSteer; return (Array.isArray(v) ? v : v ? [v] : []).map(asText).filter(Boolean).slice(0, 20); };
 
 /** One stream of normalised frames for a native run; `open` posts the run, then follows its events with cursor replay. */
-export function nativeRun({ api, m, input, sessionId, idempotencyKey, link, signal, fetchEvents }) {
+export function nativeRun({ api, m, input, sessionId, idempotencyKey, link, signal, fetchEvents, model, provider }) {
   const headers = { 'Content-Type': 'application/json', ...(idempotencyKey ? { 'Idempotency-Key': idempotencyKey } : {}) };
   return (async () => {
-    const created = await api(m, '/v1/runs', { method: 'POST', signal, headers, body: JSON.stringify({ input, ...(sessionId ? { session_id: sessionId } : {}) }) });
+    const created = await api(m, '/v1/runs', { method: 'POST', signal, headers, body: JSON.stringify({ input, ...(sessionId ? { session_id: sessionId } : {}), ...(model ? { model } : {}), ...(model && provider ? { provider } : {}) }) });
     if (![200, 201, 202].includes(created.status)) { await created.body?.cancel(); throw fault([403, 404, 405, 409, 413].includes(created.status) ? created.status : 502, 'Agent request failed'); }
     let info; try { info = await created.json(); } catch { throw fault(502, 'Invalid agent response'); }
     const runId = info?.run_id ?? info?.id; if (typeof runId !== 'string' || !/^[\w.:-]{1,200}$/.test(runId)) throw fault(502, 'Invalid agent response');

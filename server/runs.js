@@ -4,6 +4,7 @@
 import { normaliseSse } from './reasoning.js';
 import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
+import { clip, TOOL_NAME_MAX, TOOL_PREVIEW_MAX, MSG_TOOLS_MAX } from './steps.js';
 
 /** Reconnect hint sent at the start of every event stream. */
 export const RETRY_MS = 3000;
@@ -12,22 +13,54 @@ const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-
 export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, maxRunMs = 30 * 60_000, maxActive = 8, keepAliveMs = 15_000, now = () => Date.now() } = {}) {
   const runs = new Map(); // id -> run
   const finishListeners = [], startListeners = [], eventListeners = [];
-  // What the agent is doing right now, from one upstream SSE event: writing ('typing'), reasoning ('thinking') or running a tool ('tool'). Live v2 typing uses it.
-  const activityOf = (text) => {
-    const tool = /^event: hermes\.tool\.progress$/m.test(text) ? (() => { try { return String(JSON.parse(/^data: ?(.*)$/m.exec(text)?.[1] ?? '{}')?.tool ?? '') || 'tool'; } catch { return 'tool'; } })() : null;
-    if (tool) return { kind: 'tool', tool };
+  // What the agent is doing right now, from one upstream SSE event: writing ('typing'), reasoning ('thinking') or running a tool ('tool'),
+  // plus the step detail live v2 shows (typing label / tool_id, run.step). kind is null when the event only carries a label or a step.
+  const dataOf = (text) => { try { return JSON.parse(/^data: ?(.*)$/m.exec(text)?.[1] ?? '{}') ?? {}; } catch { return {}; } };
+  const activityOf = (text, r) => {
+    const ev = /^event: (\S+)$/m.exec(text)?.[1];
+    if (ev === 'hermes.tool.progress') {
+      const d = dataOf(text), tool = String(d?.tool ?? '') || 'tool', label = typeof d?.label === 'string' && d.label.trim() ? clip(d.label.replace(/\s+/g, ' ').trim(), TOOL_PREVIEW_MAX) : null;
+      // chat completions (no native link) only send this frame, once per tool start; the native and /v1/runs paths also send foxfleet.tool, which carries the step
+      const cc = !r.link;
+      return { kind: 'tool', tool, label, ...(cc ? { step: { kind: 'tool.start', name: clip(tool, TOOL_NAME_MAX), ...(label ? { preview: label } : {}) }, cc: true } : {}) };
+    }
+    if (ev === 'foxfleet.tool') {
+      const d = dataOf(text), name = clip(String(d?.name ?? 'tool'), TOOL_NAME_MAX), tool_id = typeof d?.tool_id === 'string' && d.tool_id ? d.tool_id.slice(0, 120) : undefined;
+      if (d?.type === 'tool.start') return { kind: 'tool', tool: name, toolId: tool_id, label: d.preview || null, step: { kind: 'tool.start', ...(tool_id ? { tool_id } : {}), name, ...(d.preview ? { preview: d.preview } : {}) }, lifecycle: d };
+      if (d?.type === 'tool.end') return { kind: null, step: { kind: 'tool.end', ...(tool_id ? { tool_id } : {}), name, ...(typeof d.ok === 'boolean' ? { ok: d.ok } : {}), ...(Number.isFinite(d.duration_ms) ? { duration_ms: d.duration_ms } : {}), ...(d.result_preview ? { preview: d.result_preview } : {}) }, lifecycle: d };
+      return { kind: 'tool', tool: name, toolId: tool_id, label: null };
+    }
+    if (ev === 'foxfleet.step') {
+      const d = dataOf(text), t = typeof d?.text === 'string' ? d.text : '';
+      return t ? { kind: null, label: clip(t, TOOL_PREVIEW_MAX), step: { kind: d.kind === 'commentary' ? 'commentary' : 'status', text: t } } : null;
+    }
+    if (ev) return null;
     let kind = null;
     for (const line of text.split('\n')) if (line.startsWith('data:') && line.length > 8) { try { const d = JSON.parse(line.slice(5))?.choices?.[0]?.delta; if (typeof d?.content === 'string' && d.content) return { kind: 'typing', tool: null }; if (typeof d?.reasoning_content === 'string' && d.reasoning_content) kind = 'thinking'; } catch { /* not json */ } }
     return kind ? { kind, tool: null } : null;
   };
+  // What the finished reply carries on live v2 message.new: its reasoning and the tools it ran (same shape as history, clipped there).
+  const REASONING_KEEP = 64 * 1024 + 4;
+  const collect = (r, text, a) => {
+    for (const line of text.split('\n')) if (line.startsWith('data:') && line.length > 8) { try { const rc = JSON.parse(line.slice(5))?.choices?.[0]?.delta?.reasoning_content; if (typeof rc === 'string' && r.reasoning.length < REASONING_KEEP) r.reasoning += rc; } catch { /* not json */ } }
+    if (!a) return;
+    if (a.lifecycle) {
+      r.lifecycle = true; const d = a.lifecycle;
+      if (d.type === 'tool.start' && r.tools.length < MSG_TOOLS_MAX) r.tools.push({ id: a.step.tool_id, name: a.step.name, ...(d.preview ? { args: d.preview } : {}) });
+      else if (d.type === 'tool.end') { const t = r.tools.find((x) => x.id && x.id === a.step.tool_id && x.ok === undefined) ?? r.tools.find((x) => x.name === a.step.name && x.ok === undefined); if (t) { if (typeof d.ok === 'boolean') t.ok = d.ok; if (d.result_preview) t.result = d.result_preview; } }
+    } else if (a.cc && r.tools.length < MSG_TOOLS_MAX) r.tools.push({ name: a.step.name, ...(a.step.preview ? { args: a.step.preview } : {}) });
+  };
+  /** Reasoning and tools of a run, for message.new (see collect). */
+  const extrasOf = (r) => ({ reasoning: r.reasoning, tools: r.tools.map(({ id, ...t }) => t) });
 
   function sweep() { const t = now(); for (const [id, r] of runs) if (r.done && t - r.finished > ttlMs) runs.delete(id); }
   const push = (r, text) => {
     for (const line of text.split('\n')) if (line.startsWith('data:') && line.length > 8) { try { const c = JSON.parse(line.slice(5))?.choices?.[0]?.delta?.content; if (typeof c === 'string' && r.text.length < 1_000_000) r.text += c; } catch { /* not json */ } }
+    const a = activityOf(text, r); collect(r, text, a);
     const index = r.next++; r.log.push({ index, text }); r.bytes += text.length;
     while (r.bytes > maxBytes && r.log.length > 1) r.bytes -= r.log.shift().text.length;
     for (const fn of r.subs) fn();
-    if (eventListeners.length) { const a = activityOf(text); if (a) for (const f of eventListeners) { try { f(r, a.kind, a.tool); } catch { /* listeners are best effort */ } } }
+    if (eventListeners.length && a) for (const f of eventListeners) { try { f(r, a.kind, a.tool ?? null, { label: a.label ?? null, toolId: a.toolId ?? null, step: a.step ?? null }); } catch { /* listeners are best effort */ } }
   };
   const finish = (r, state) => { if (r.done) return; r.done = true; r.state = state; r.finished = now(); clearTimeout(r.timer); try { r.onFinish?.(r, state); } catch { /* history is best effort */ } for (const f of finishListeners) { try { f(r, state); } catch { /* listeners are best effort */ } } if (state !== 'done') push(r, `event: foxfleet.run\ndata: ${JSON.stringify({ state })}`); for (const fn of r.subs) fn(); };
 
@@ -54,14 +87,16 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
       try { up = await open(abort.signal); } finally { clearTimeout(opener); }
       if (!up.ok || !up.body) { await up.body?.cancel(); throw fault([403, 404, 405, 409, 413, 416].includes(up.status) ? up.status : 502, 'Agent request failed'); }
       const headers = check(up);
-      const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', link: link || null, stopping: false, done: false, stopped: false, started: now(), finished: 0, log: [], text: '', onFinish, next: 1, bytes: 0, subs: new Set() };
+      const r = { id: randomBytes(9).toString('base64url'), scope, agent, session: session || headers['X-Hermes-Session-Id'] || null, headers, abort, state: 'running', link: link || null, stopping: false, done: false, stopped: false, started: now(), finished: 0, log: [], text: '', reasoning: '', tools: [], lifecycle: false, onFinish, next: 1, bytes: 0, subs: new Set() };
       r.timer = setTimeout(() => { abort.abort(); }, maxRunMs); r.timer.unref?.();
       runs.set(r.id, r); for (const f of startListeners) { try { f(r); } catch { /* listeners are best effort */ } } void pump(r, link || !/text\/event-stream/.test(up.headers?.get?.('content-type') ?? '') ? up.body : normaliseSse(up.body)); return r;
     },
     /** Called for every run that ends (any agent, any user): the agent list's last-activity line uses it. */
     onFinish(fn) { finishListeners.push(fn); },
-    /** Called for every upstream event that shows what the agent is doing: fn(run, 'typing' | 'thinking' | 'tool', toolName | null). */
+    /** Called for every upstream event that shows what the agent is doing: fn(run, 'typing' | 'thinking' | 'tool' | null, toolName | null, { label, toolId, step }). */
     onEvent(fn) { eventListeners.push(fn); },
+    /** The reasoning and tools a run produced so far: { reasoning, tools: [{ name, args?, result?, ok? }] } (unclipped; ledger clips). */
+    extras: extrasOf,
     /** Called for every run that starts (after the agent accepted it): live chat events use it. */
     onStart(fn) { startListeners.push(fn); },
     /** Is a reply running for this user and agent right now? */

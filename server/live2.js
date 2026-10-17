@@ -104,8 +104,9 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
       for (const fn of [...subs]) { try { fn(entry); } catch { /* a broken viewer never breaks the emitter */ } }
       return ev;
     },
-    /** Ephemeral typing frame to every open stream (not stored, no seq). */
-    typing(data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ typing: true, line }); } catch { /* ignore */ } } },
+    typing(data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: 'typing', typing: true, line }); } catch { /* ignore */ } } },
+    /** Ephemeral frame (typing, run.step) to every open stream in its live phase: not stored, no seq, never replayed. */
+    ephemeral(type, data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: type, typing: type === 'typing', line }); } catch { /* ignore */ } } },
     /** Parse a client cursor: none | invalid | reset | expired | ok (with seq). */
     parse(v) {
       prune(); // age out first: on an idle hub nothing else has dropped old events yet
@@ -148,7 +149,7 @@ export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HE
   const frame = (entry) => `id: ${log.store}:${entry.seq}\nevent: ${entry.type}\ndata: ${entry.line}\n\n`;
   const send = (entry) => { // live phase only
     if (closed) return;
-    if (entry.typing) res.write(`event: typing\ndata: ${entry.line}\n\n`);
+    if (entry.ephemeral) res.write(`event: ${entry.ephemeral}\ndata: ${entry.line}\n\n`);
     else { if (entry.seq <= last) return; last = entry.seq; res.write(frame(entry)); }
     if (res.writableLength > MAX_BACKLOG) end(true); // it resumes by id
   };
