@@ -85,6 +85,8 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
       return { enabled: db.prefs.enabled, storage: health.ok ? { ok: true } : { ok: false, error: health.error }, dropped, agents: Object.entries(db.prefs.agents).map(([agent, m]) => ({ agent, until: m.until })),
         chats: Object.entries(db.prefs.chats).map(([k, m]) => { const [agent, chat] = k.split('\n'); return { agent, chat, until: m.until }; }) };
     },
+    /** The active mute of a whole agent ({ until }, null = forever), or null. The chat list shows it. */
+    muteOf(agent, t = now()) { const m = db.prefs.agents[agent]; return active(m, t) ? { until: m.until } : null; },
     async setEnabled(enabled) { if (typeof enabled !== 'boolean') throw fault(400, 'enabled must be true or false'); db.prefs.enabled = enabled; await saveNow(); return store.prefs(); },
     /** Mute (`muted: true`, optionally for `forMs`; no duration = until unmuted) or unmute one agent, or one chat of it. */
     async setMute({ agent, chat, muted, forMs }) {
@@ -112,7 +114,7 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
 }
 
 /** Stream: replay after `after`, then live. Heartbeat comment keeps proxies open; a viewer that cannot keep up is dropped (it resumes by id). */
-export function attachNotifyStream(req, res, store, { after = 0, keepAliveMs = HEARTBEAT_MS, device = null, alive = () => true } = {}) {
+export function attachNotifyStream(req, res, store, { after = 0, keepAliveMs = HEARTBEAT_MS, device = null, alive = () => true, decorate = null } = {}) {
   if (store.streams >= MAX_STREAMS) throw fault(429, 'Too many notification streams open for this account');
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
   res.write(`retry: ${RETRY_MS}\n\n`);
@@ -120,7 +122,7 @@ export function attachNotifyStream(req, res, store, { after = 0, keepAliveMs = H
   const { events, first } = store.since(from, MAX_EVENTS);
   if (after > cursor || (from > 0 && from + 1 < first)) res.write(`event: foxfleet.gap\ndata: ${JSON.stringify({ first: Math.min(first, cursor + 1), cursor })}\n\n`); // gap: ids between the client's cursor and `first` are gone
   let last = from, closed = false, ka, unsub = () => {};
-  const send = (e) => { if (closed || e.id <= last) return; last = e.id; if (e.muted) return; res.write(`id: ${e.id}\nevent: notify\ndata: ${JSON.stringify(e)}\n\n`); if (res.writableLength > MAX_BACKLOG) end(true); }; // a viewer that stops reading is dropped (it resumes by id); the replay itself is bounded by the log size
+  const send = (e) => { if (closed || e.id <= last) return; last = e.id; if (e.muted) return; let extra = null; if (decorate) { try { extra = decorate(e); } catch { extra = null; } } res.write(`id: ${e.id}\nevent: notify\ndata: ${JSON.stringify(extra ? { ...e, ...extra } : e)}\n\n`); if (res.writableLength > MAX_BACKLOG) end(true); }; // a viewer that stops reading is dropped (it resumes by id); the replay itself is bounded by the log size
   const end = (destroy = false, reason = null) => {
     if (closed) return; closed = true; clearInterval(ka); unsub();
     if (device) { const set = byDevice.get(device); set?.delete(close); if (set && !set.size) byDevice.delete(device); }

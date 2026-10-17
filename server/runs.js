@@ -11,7 +11,15 @@ const SSE_HEADERS = { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-
 
 export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, maxRunMs = 30 * 60_000, maxActive = 8, keepAliveMs = 15_000, now = () => Date.now() } = {}) {
   const runs = new Map(); // id -> run
-  const finishListeners = [], startListeners = [];
+  const finishListeners = [], startListeners = [], eventListeners = [];
+  // What the agent is doing right now, from one upstream SSE event: writing ('typing'), reasoning ('thinking') or running a tool ('tool'). Live v2 typing uses it.
+  const activityOf = (text) => {
+    const tool = /^event: hermes\.tool\.progress$/m.test(text) ? (() => { try { return String(JSON.parse(/^data: ?(.*)$/m.exec(text)?.[1] ?? '{}')?.tool ?? '') || 'tool'; } catch { return 'tool'; } })() : null;
+    if (tool) return { kind: 'tool', tool };
+    let kind = null;
+    for (const line of text.split('\n')) if (line.startsWith('data:') && line.length > 8) { try { const d = JSON.parse(line.slice(5))?.choices?.[0]?.delta; if (typeof d?.content === 'string' && d.content) return { kind: 'typing', tool: null }; if (typeof d?.reasoning_content === 'string' && d.reasoning_content) kind = 'thinking'; } catch { /* not json */ } }
+    return kind ? { kind, tool: null } : null;
+  };
 
   function sweep() { const t = now(); for (const [id, r] of runs) if (r.done && t - r.finished > ttlMs) runs.delete(id); }
   const push = (r, text) => {
@@ -19,6 +27,7 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
     const index = r.next++; r.log.push({ index, text }); r.bytes += text.length;
     while (r.bytes > maxBytes && r.log.length > 1) r.bytes -= r.log.shift().text.length;
     for (const fn of r.subs) fn();
+    if (eventListeners.length) { const a = activityOf(text); if (a) for (const f of eventListeners) { try { f(r, a.kind, a.tool); } catch { /* listeners are best effort */ } } }
   };
   const finish = (r, state) => { if (r.done) return; r.done = true; r.state = state; r.finished = now(); clearTimeout(r.timer); try { r.onFinish?.(r, state); } catch { /* history is best effort */ } for (const f of finishListeners) { try { f(r, state); } catch { /* listeners are best effort */ } } if (state !== 'done') push(r, `event: foxfleet.run\ndata: ${JSON.stringify({ state })}`); for (const fn of r.subs) fn(); };
 
@@ -51,6 +60,8 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
     },
     /** Called for every run that ends (any agent, any user): the agent list's last-activity line uses it. */
     onFinish(fn) { finishListeners.push(fn); },
+    /** Called for every upstream event that shows what the agent is doing: fn(run, 'typing' | 'thinking' | 'tool', toolName | null). */
+    onEvent(fn) { eventListeners.push(fn); },
     /** Called for every run that starts (after the agent accepted it): live chat events use it. */
     onStart(fn) { startListeners.push(fn); },
     /** Is a reply running for this user and agent right now? */

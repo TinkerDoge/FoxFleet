@@ -18,12 +18,15 @@ import { nativeHub } from './hermes-ui.js';
 import { nativeFacade, viewOf } from './native-facade.js';
 import { applyLive, catalogFor, readLiveCatalog } from './commands.js';
 import { activityStore, sortAgents } from './activity.js';
-import { normalizeTranscript, sessionRow, flattenContent } from './transcript.js';
+import { normalizeTranscript, sessionRow, flattenContent, cleanText } from './transcript.js';
 import { readFileSync } from 'node:fs';
 import { accountStore, SESSION_AGE as ACCOUNT_SESSION_AGE } from './accounts.js';
 import { connectorHub } from './connector.js';
 import { notifyStore, attachNotifyStream, closeDeviceStreams } from './notify.js';
 import { liveBus, attachLiveStream } from './live.js';
+import { liveLog, attachLive2Stream, retentionFromEnv, PULL_MAX, PULL_DEFAULT } from './live2.js';
+import { chatLedger, hubIdOf, clipText } from './ledger.js';
+import { replyTokens } from './reply-tokens.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
@@ -51,7 +54,7 @@ export const APP_ORIGIN = 'https://appassets.androidplatform.net';
 // What this hub build can do, so a newer app can tell "this hub is too old" instead of showing nothing. Add a name when a feature ships; never remove one.
 /** Opt-in diagnostics (FOXFLEET_DEBUG=1): one JSON line per event, never message text or addresses. */
 const log = (event, data = {}) => { if (process.env.FOXFLEET_DEBUG) console.log(JSON.stringify({ t: new Date().toISOString(), event, ...data })); };
-export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify', 'live'];
+export const HUB_FEATURES = ['screenErrors', 'media', 'mediaTags', 'agentActivity', 'pin', 'hubInfo', 'notify', 'live', 'live2', 'chats', 'readReceipts', 'notifyReply'];
 const HUB_VERSION = (() => { try { return JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version; } catch { return 'unknown'; } })();
 export const HUB_INFO = { version: HUB_VERSION, features: HUB_FEATURES };
 const FILE_UNAVAILABLE = 'Agent file download unavailable; check Hermes version and session file permissions';
@@ -131,7 +134,7 @@ async function streamResponse(req, res, getResponse, timeoutMs, headers, failure
   } finally { clearTimeout(timer); res.removeListener('close', onClose); abort.abort(); }
 }
 
-export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, probeTtlMs = 10_000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {} } = {}) {
+export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || path.join(DIR, 'config.json'), host = process.env.FOXFLEET_HOST || '127.0.0.1', ownerPassword = process.env.FOXFLEET_PASSWORD || '', singleUser = false, trustedOrigins = process.env.FOXFLEET_TRUSTED_ORIGINS || '', timeoutMs = 5000, probeTtlMs = 10_000, avatarDir, botApi = process.env.FOXFLEET_BOT_API === '1', botAgents = process.env.FOXFLEET_BOT_AGENTS, botOptions = {}, replyRatePerMin = 30 } = {}) {
   if (!validHost(host)) throw fault(400, 'Invalid bind host');
   if (typeof ownerPassword !== 'string' || ownerPassword.length > 4096) throw fault(400, 'Invalid owner password');
   if (singleUser && !loopback(host)) throw fault(400, 'Single-user mode (no login) is only allowed on a loopback bind');
@@ -139,7 +142,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   if (avatarDir !== undefined && (typeof avatarDir !== 'string' || !path.isAbsolute(avatarDir) || avatarDir.includes('\0'))) throw fault(400, 'Invalid avatar directory');
   const trusted = trustedOriginList(trustedOrigins);
   const trustedList = trusted, cfgPath = path.resolve(configPath), dataDir = path.dirname(cfgPath), avatarBase = avatarDir ? path.resolve(avatarDir) : DEFAULT_AVATAR_DIR;
+  await mkdir(dataDir, { recursive: true });
   const accounts = await accountStore(path.join(dataDir, 'accounts'));
+  const tokens = await replyTokens(path.join(dataDir, 'reply-token.key')), retention = retentionFromEnv();
   accounts.onSessionEnd((device) => closeDeviceStreams(device)); // a revoked / expired / signed-out device must not keep receiving notifications
   // Legacy FOXFLEET_PASSWORD bootstraps the first owner ("owner") so existing deployments keep working.
   if (ownerPassword && accounts.needsSetup()) await accounts.createUser('owner', ownerPassword, 'owner', { skipPolicy: true });
@@ -147,6 +152,20 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const machines = await machineStore(path.join(dataDir, 'machines.json'));
   const runs = runRegistry();
   runs.onStart((r) => { void registries.get(r.scope)?.then((reg) => reg.live.fromRunStart(r)).catch(() => {}); });
+  // Live v2 (docs/LIVE-EVENTS.md): run notices, typing, the agent's reply as message.new, and the user's message statuses.
+  const withReg = (scope, fn) => { void registries.get(scope)?.then(fn).catch(() => {}); };
+  runs.onStart((r) => withReg(r.scope, (reg) => { reg.live2.emit('run.started', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id }); typingSet(reg, r, 'thinking', null); rowChanged(reg, r.scope, r.agent); }));
+  runs.onEvent((r, kind, tool) => withReg(r.scope, (reg) => { typingSet(reg, r, kind, tool); if (!r.ledgerRead && r.session) { r.ledgerRead = true; reg.ledger.readByAgent(r.agent, r.session, r); } }));
+  runs.onFinish((r, state) => withReg(r.scope, async (reg) => {
+    typingStop(r);
+    try {
+      const text = cleanText(r.text || '').text, m = reg.store.all().find((x) => x.name === r.agent);
+      if (r.session && m && state !== 'error' && text.trim()) {
+        if (!reg.ledger.has(r.agent, r.session)) await ensureIndexed(reg, m, r.session).catch(() => false);
+        if (reg.ledger.has(r.agent, r.session)) { reg.ledger.readByAgent(r.agent, r.session, r); reg.ledger.add(r.agent, r.session, { role: 'assistant', text, source: 'agent', runId: r.id }); }
+      }
+    } finally { reg.live2.emit('run.finished', { agent: r.agent, chat: r.session ?? undefined, run_id: r.id, state: state === 'error' ? 'error' : state === 'stopped' ? 'stopped' : 'done' }); rowChanged(reg, r.scope, r.agent); }
+  }));
   runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.live.fromRunFinish(r, state)).catch(() => {}); });
   runs.onFinish((r, state) => { void registries.get(r.scope)?.then((reg) => reg.notify.fromRun(r, state)).catch(() => {}); });
   runs.onFinish((r, state) => { if (r.text && state !== 'error') void registries.get(r.scope)?.then((reg) => reg.activity.touch(r.agent, { role: 'assistant', text: r.text, session: r.session ?? undefined })); }); const facade = nativeFacade({ runs }), connectors = connectorHub(), als = new AsyncLocalStorage(), registries = new Map(), authFails = new Map();
@@ -158,10 +177,88 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
-      reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); });
+      reg.live2 = await liveLog(path.join(dir, 'live-events'), retention);
+      reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { hooks: { event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
+      reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live2.emit('approval', { agent: a?.name ?? s.agent, chat: s.stored ?? undefined, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); rowChanged(reg, userId, a?.name ?? s.agent); });
       return reg;
     })());
     return registries.get(userId);
+  }
+  // ---- live v2 helpers: typing, chat-list rows, ledger indexing (docs/LIVE-EVENTS.md) ----
+  const TYPING_TTL_MS = 6000, TYPING_REPEAT_MS = 4000, typingRuns = new Map(); let typingTimer = null;
+  const typingSend = (t) => { t.sent = Date.now(); t.reg.live2.typing({ agent: t.agent, chat: t.chat, state: t.state, tool: t.tool, ttl_ms: TYPING_TTL_MS }); };
+  function typingSet(reg, r, state, tool) {
+    if (!r.session || r.done) return;
+    let t = typingRuns.get(r.id); if (!t) { t = { reg, agent: r.agent, chat: r.session, state: null, tool: null, sent: 0 }; typingRuns.set(r.id, t); }
+    const label = state === 'tool' && tool ? String(tool).replace(/[\x00-\x1f\x7f]/g, ' ').slice(0, 80) : null;
+    if (t.state !== state || t.tool !== label || Date.now() - t.sent >= TYPING_REPEAT_MS) { t.state = state; t.tool = label; typingSend(t); }
+    if (!typingTimer) { typingTimer = setInterval(() => { const n = Date.now(); for (const x of typingRuns.values()) if (n - x.sent >= TYPING_REPEAT_MS) typingSend(x); if (!typingRuns.size) { clearInterval(typingTimer); typingTimer = null; } }, 1000); typingTimer.unref?.(); }
+  }
+  function typingStop(r) { const t = typingRuns.get(r.id); if (!t) return; typingRuns.delete(r.id); t.state = 'idle'; t.tool = null; typingSend(t); }
+  /** One chat-list row (docs/LIVE-EVENTS.md ChatRow). */
+  function chatRow(reg, scope, m) {
+    const L = reg.ledger, a = L.agent(m.name), label = m.label || m.name, last = L.lastMessage(m.name), act = reg.activity.get(m.name);
+    const pins = reg.activity.pins(), pi = pins.indexOf(m.name), chat = L.latest(m.name) ?? act?.session ?? null;
+    const lm = last ? { hub_id: hubIdOf(m.name, last.chat, last.e.n), role: last.e.r, sender: last.e.r === 'user' ? 'you' : label, preview: last.e.p, at: last.e.at, ...(last.e.r === 'user' && last.e.st ? { status: last.e.st } : {}) }
+      : act?.preview ? { hub_id: null, role: act.role, sender: act.role === 'user' ? 'you' : label, preview: String(act.preview).slice(0, 160), at: act.at } : null;
+    const needs = kindOf(m) === 'hermes' && nativeUi(m) && m.machineId ? reg.native.openRequests(scope, m.machineId, m.profile) > 0 : false;
+    return { agent: m.name, label, kind: kindOf(m), chat, last_message: lm, unread_count: L.agentUnread(m.name), read_up_to: chat ? L.readUpTo(m.name, chat) : 0, archived: Boolean(a?.archived), muted: reg.notify.muteOf(m.name),
+      pinned: pi >= 0, pin_order: pi >= 0 ? pi : null, working: runs.working(scope, m.name), needs_input: needs, manual_unread: Boolean(a?.manual), updated_at: Math.max(a?.updated ?? 0, lm?.at ?? 0) };
+  }
+  const sortRows = (rows, order) => rows.sort((x, y) => { const px = x.pin_order ?? -1, py = y.pin_order ?? -1; if ((px >= 0) !== (py >= 0)) return px >= 0 ? -1 : 1; if (px >= 0) return px - py; const tx = x.last_message?.at ?? 0, ty = y.last_message?.at ?? 0; if (tx !== ty) return ty - tx; return order.indexOf(x.agent) - order.indexOf(y.agent); });
+  /** chat.updated, coalesced: every change in one tick costs one event per agent, after the events that caused it. */
+  function rowChanged(reg, scope, agent) {
+    if (!reg?.live2 || typeof agent !== 'string') return;
+    (reg.dirtyRows ??= new Set()).add(agent);
+    if (!reg.rowTimer) reg.rowTimer = setImmediate(() => { reg.rowTimer = null; const names = [...reg.dirtyRows]; reg.dirtyRows.clear(); for (const n of names) { const m = reg.store.all().find((x) => x.name === n); if (m) { try { reg.live2.emit('chat.updated', { agent: n, row: chatRow(reg, scope, m) }); } catch { /* best effort */ } } } });
+  }
+  // The first time the hub sees a chat it numbers the agent's whole transcript (silently: old history is not unread). Single-flight.
+  const ensuring = new Map();
+  function ensureIndexed(reg, m, chat) {
+    if (reg.ledger.has(m.name, chat)) return Promise.resolve(true);
+    if (m.connection === 'bot') return Promise.resolve(false);
+    const k = `${reg.dir}\0${m.name}\0${chat}`; if (ensuring.has(k)) return ensuring.get(k);
+    const p = (async () => { const msgs = normalizeTranscript((await reg.upstream.messages(m, chat)).messages); if (!reg.ledger.has(m.name, chat)) reg.ledger.reconcile(m.name, chat, msgs); return true; })().finally(() => ensuring.delete(k));
+    ensuring.set(k, p); return p;
+  }
+  async function ensureOr404(reg, m, chat) {
+    if (!validSessionId(chat)) throw fault(404, 'Chat not found', 'chat_not_found');
+    let ok; try { ok = await ensureIndexed(reg, m, chat); } catch (e) { if (e?.status === 404) throw fault(404, 'Chat not found', 'chat_not_found'); throw e; }
+    if (!ok) throw fault(404, 'Chat not found', 'chat_not_found');
+  }
+  const sendRefs = new WeakMap(); // the user message object handed to the coordinator -> its ledger entry, so the launch marks the right one delivered
+  const sourceOf = (ctx) => (ctx.auth?.via === 'bearer' ? 'app' : 'web');
+  /** Coordinator send (non-native agents) with the ledger: the message is numbered before it is queued, then delivered / failed as the coordinator decides. */
+  async function submitIndexed(ctx, m, deps, params, source) {
+    const reg = ctx.reg, chat = params.session;
+    const dup = params.clientId && reg.coord.items().some((i) => i.scope === params.scope && i.agent === params.agent && i.client === params.clientId);
+    let msg = null;
+    if (!chat && params.message) sendRefs.set(params.message, { chat: null, source });
+    if (!dup && chat && m.connection !== 'bot' && params.mode !== 'steer' && params.modes.includes(params.mode) && typeof params.text === 'string' && params.text.length <= 100_000 && (params.text.trim() || Array.isArray(params.message?.content))) {
+      try { await ensureIndexed(reg, m, chat); } catch { /* agent unreachable: the send will say so; nothing to number */ }
+      if (reg.ledger.has(m.name, chat)) { msg = reg.ledger.add(m.name, chat, { role: 'user', text: params.text, source, status: 'sent' }); sendRefs.set(params.message, { chat, n: msg.n }); }
+    }
+    let result;
+    try { result = await reg.coord.submit(deps, params); }
+    catch (e) { if (msg) reg.ledger.setStatus(m.name, chat, (x) => x.n === msg.n, 'failed', { error: e.safe ? e.message : 'Could not send' }); throw e; }
+    if (msg) { reg.ledger.setCid(m.name, chat, msg.n, result.message?.id); if (result.message?.state === 'failed') reg.ledger.setStatus(m.name, chat, (x) => x.n === msg.n, 'failed', { error: result.message.error }); }
+    return { result, msg };
+  }
+  /** The coordinator started (or failed to start) a queued message: mark it delivered with its run, or failed. A brand-new chat is numbered here, once its id is known. */
+  function launchedInLedger(reg, m, item, run, error) {
+    if (m.connection === 'bot') return;
+    const ref = sendRefs.get(item.message), chat = run?.session || ref?.chat || item.session; if (!chat) return;
+    const n = (ref && ref.chat === chat ? ref.n : null) ?? reg.ledger.entryByCid(m.name, chat, item.id)?.n;
+    if (error) { if (n) reg.ledger.setStatus(m.name, chat, (x) => x.n === n, 'failed', { error }); return; }
+    if (n) { reg.ledger.setStatus(m.name, chat, (x) => x.n === n, 'delivered', { runId: run.id }); return; }
+    if (!item.session || reg.ledger.has(m.name, chat)) { const msg = reg.ledger.add(m.name, chat, { role: 'user', text: item.text, source: ref?.source || 'app', status: 'delivered', runId: run.id, cid: item.id }); if (item.message) sendRefs.set(item.message, { chat, n: msg.n }); }
+  }
+  /** Native (Hermes UI gateway) send result -> ledger. The chat was indexed before the send (or is brand new). */
+  function nativeInLedger(reg, m, r, { text, source, mode, fresh }) {
+    const chat = r.stored; if (!chat || mode === 'steer' || m.connection === 'bot') return null;
+    if (!fresh && !reg.ledger.has(m.name, chat)) return null;
+    const failed = ['rejected', 'failed'].includes(r.message?.state), st = failed ? 'failed' : r.message?.ack ? 'delivered' : 'sent';
+    return reg.ledger.add(m.name, chat, { role: 'user', text, source, status: st, runId: st === 'delivered' && r.run ? r.run.id : undefined, error: failed ? r.message?.error || 'The agent refused the message' : undefined });
   }
   const scoped = (key) => new Proxy({}, { get: (_, prop) => { const t = als.getStore()?.reg?.[key]; if (!t) throw fault(401, 'Login required'); const v = t[prop]; return typeof v === 'function' ? v.bind(t) : v; } });
   const store = scoped('store'), upstream = scoped('upstream'), artifacts = scoped('artifacts'), screens = scoped('screens');
@@ -201,11 +298,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     if (!machines.get(machine.id)) throw fault(403, 'This machine was revoked');
     const names = [...new Set((Array.isArray(msg.profiles) ? msg.profiles : []).map((p) => String(p?.profile ?? '')).filter((n) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(n)))].slice(0, 32);
     const mine = reg.store.all().filter((a) => a.machineId === machine.id);
-    for (const a of mine) if (!names.includes(a.profile)) { await reg.store.remove(a.name); reg.upstream.clear(); }
+    for (const a of mine) if (!names.includes(a.profile)) { await reg.store.remove(a.name); reg.upstream.clear(); reg.ledger.removeAgent(a.name); }
     const out = [];
     for (const profile of names) {
       let a = reg.store.all().find((x) => x.machineId === machine.id && x.profile === profile);
-      if (!a) a = await reg.store.add({ kind: 'hermes', connection: 'machine', machineId: machine.id, profile, name: uniqueName(reg, profile, machine.id) });
+      if (!a) { a = await reg.store.add({ kind: 'hermes', connection: 'machine', machineId: machine.id, profile, name: uniqueName(reg, profile, machine.id) }); rowChanged(reg, user.id, a.name); }
       out.push({ profile, agent: a.name });
     }
     await link.expose(names); await machines.setProfiles(machine.id, out); reg.upstream.clear();
@@ -316,7 +413,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // How the coordinator starts a reply. It runs later (queue drain, interrupt), outside the request: use the captured registry, never the scoped proxies.
   function launcher(m, ctx, native) {
     const reg = ctx.reg, scope = scopeOf(ctx);
-    return { async launch(item, { rebuild }) {
+    const inner = async (item, { rebuild }) => {
       reg.activity.touch(m.name, { role: 'user', text: item.text, session: item.session || undefined });
       const link = {};
       if (native?.runs) {
@@ -330,7 +427,84 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       return runs.start({ scope, agent: m.name, session: item.session || undefined, timeoutMs,
         open: (signal) => reg.upstream.api(m, '/v1/chat/completions', { method: 'POST', signal, headers: { 'Content-Type': 'application/json', ...(item.session ? { 'X-Hermes-Session-Id': item.session } : {}) }, body: JSON.stringify({ model: item.body?.model || 'hermes-agent', messages, stream: true }) }),
         check: (r) => { if (!r.headers.get('content-type')?.includes('text/event-stream')) throw fault(502, 'Invalid chat stream'); return { ...(r.headers.get('x-hermes-session-id') ? { 'X-Hermes-Session-Id': r.headers.get('x-hermes-session-id') } : {}) }; } });
+    };
+    return { async launch(item, opts) {
+      let run;
+      try { run = await inner(item, opts); } catch (e) { try { launchedInLedger(reg, m, item, null, e?.safe ? e.message : 'Could not start the reply'); } catch { /* best effort */ } throw e; }
+      try { launchedInLedger(reg, m, item, run, null); } catch { /* best effort */ }
+      return run;
     } };
+  }
+  // ---- notification reply / read (docs/LIVE-EVENTS.md "Notification direct reply") ----
+  const replyFlight = new Map(), replyRate = new Map();
+  /** Send text into a chat from the hub itself (notification reply): same path as a normal queued send. Returns { message, run_id }. */
+  async function sendFromHub(ctx, m, chat, text, source, clientId) {
+    const reg = ctx.reg, scope = scopeOf(ctx);
+    if (nativeUi(m)) {
+      const r = await facade.send(reg.native, { scope, m, session: chat, text, images: [], mode: 'queue', clientId });
+      reg.activity.touch(m.name, { role: 'user', text, session: chat });
+      const msg = nativeInLedger(reg, m, r, { text, source, mode: 'queue', fresh: false });
+      return { message: msg ? reg.ledger.messageAt(m.name, chat, msg.n, text) : null, run_id: r.run?.id ?? null };
+    }
+    const native = await nativeFor(m);
+    const { result, msg } = await submitIndexed(ctx, m, launcher(m, ctx, native), { scope, agent: m.name, session: chat, mode: 'queue', text, message: { role: 'user', content: text }, clientId, modes: ['queue'] }, source);
+    return { message: msg ? reg.ledger.messageAt(m.name, chat, msg.n, text) : null, run_id: result.run_id ?? null };
+  }
+  async function notifyAction(req, res, ctx, action, limit) {
+    const reg = ctx.reg, scope = scopeOf(ctx), b = await readJson(req, 256 * 1024);
+    const agent = typeof b.agent === 'string' ? b.agent : '', chat = typeof b.chat === 'string' ? b.chat : '';
+    if (limit && (agent !== limit.agent || chat !== limit.chat)) throw fault(403, 'This notification action is for another chat', 'reply_token_invalid');
+    const m = reg.store.all().find((x) => x.name === agent); if (!m || !validSessionId(chat)) throw fault(404, 'Chat not found', 'chat_not_found');
+    if (action === 'read') {
+      if (b.up_to !== undefined && !(Number.isInteger(b.up_to) && b.up_to >= 1)) throw fault(400, 'up_to must be a positive whole number', 'invalid_read_position');
+      await ensureOr404(reg, m, chat);
+      return sendJson(res, 200, reg.ledger.read(agent, chat, b.up_to ?? reg.ledger.lastN(agent, chat)).state);
+    }
+    const hk = req.headers['idempotency-key'], bk = b.idempotency_key;
+    if (hk !== undefined && bk !== undefined && hk !== bk) throw fault(400, 'Idempotency-Key and idempotency_key differ', 'invalid_idempotency_key');
+    const key = bk ?? hk; if (typeof key !== 'string' || !/^[A-Za-z0-9_.:-]{8,100}$/.test(key)) throw fault(400, 'idempotency_key is required: 8-100 characters of A-Z a-z 0-9 _ . : -', 'invalid_idempotency_key');
+    if (typeof b.text !== 'string' || !b.text.trim()) throw fault(400, 'Write a reply first');
+    if (b.text.length > 32_000) throw fault(413, 'Too long to send from a notification; open the chat', 'text_too_long');
+    if (b.mark_read !== undefined && typeof b.mark_read !== 'boolean') throw fault(400, 'mark_read must be true or false');
+    const hash = createHash('sha256').update(`${agent}\0${chat}\0${b.text}`).digest('hex'), ik = `${scope}\0${key}`;
+    while (replyFlight.has(ik)) await replyFlight.get(ik).catch(() => {}); // the same key in flight: wait for it, then answer as a replay
+    const prior = reg.ledger.idem.get(key);
+    if (prior) { if (prior.h !== hash) throw fault(409, 'This idempotency key was already used for a different reply', 'idempotency_conflict'); return sendJson(res, 200, { ...prior.result, message: prior.result.message ? { ...prior.result.message, text: clipText(b.text).text } : null, duplicate: true }); }
+    const t = Date.now(), win = (replyRate.get(scope) ?? []).filter((x) => x > t - 60_000);
+    if (win.length >= replyRatePerMin) throw Object.assign(fault(429, 'Too many replies; try again shortly', 'rate_limited'), { retryAfter: Math.max(1, Math.ceil((win[0] + 60_000 - t) / 1000)) });
+    win.push(t); replyRate.set(scope, win); if (replyRate.size > 5000) replyRate.delete(replyRate.keys().next().value);
+    const p = (async () => {
+      if (m.connection === 'bot') throw fault(409, 'Direct reply is not available for this agent; open the chat');
+      await ensureOr404(reg, m, chat);
+      if (b.mark_read !== false) reg.ledger.read(agent, chat, reg.ledger.lastN(agent, chat));
+      const sent = await sendFromHub(ctx, m, chat, b.text, 'notification', key);
+      const message = sent.message ?? { hub_id: null, upstream_id: null, n: 0, role: 'user', ...clipText(b.text), at: Date.now(), source: 'notification', status: 'sent', reply_to: null, edited_at: null, run_id: null };
+      const result = { message, session_id: chat, run_id: sent.run_id ?? null, duplicate: false };
+      const { text: _omit, truncated: _t, ...stored } = message; reg.ledger.idem.put(key, hash, { ...result, message: stored }); // the text itself is not kept
+      return result;
+    })();
+    replyFlight.set(ik, p);
+    try { return sendJson(res, 202, await p); } finally { replyFlight.delete(ik); }
+  }
+  // Chats written elsewhere (another Hermes client): on a chat-list read, at most once a minute per agent, look at the agent's newest
+  // session in the background; new messages arrive as message.new (source external), a brand-new session's replies count as unread.
+  const syncing = new Map();
+  function syncExternal(ctx, list) {
+    const reg = ctx.reg, scope = scopeOf(ctx);
+    for (const m of list) {
+      if (kindOf(m) !== 'hermes' || m.connection === 'bot' || (m.machineId && !connectors.isOnline(m.machineId))) continue;
+      const k = `${scope}\0${m.name}`, last = syncing.get(k); if (last && Date.now() - last < 60_000) continue;
+      syncing.set(k, Date.now()); if (syncing.size > 2000) syncing.delete(syncing.keys().next().value);
+      void (async () => {
+        const data = await upstreamJson(await reg.upstream.dashboard(m, '/api/sessions?limit=1&order=recent')), row = (Array.isArray(data?.sessions) ? data.sessions : Array.isArray(data) ? data : []).find((r) => r?.id != null);
+        if (!row) return; const sr = sessionRow(row), chat = sr.id; if (!validSessionId(chat)) return;
+        const L = reg.ledger, a = L.ensureAgent(m.name), had = L.has(m.name, chat);
+        if (had && (sr.updated ?? 0) <= L.sessionAt(m.name, chat) + 1000) return;
+        const msgs = normalizeTranscript((await reg.upstream.messages(m, chat)).messages);
+        L.reconcile(m.name, chat, msgs, { unreadNew: !had && (sr.started ?? sr.updated ?? 0) > a.since });
+        log('chats.sync', { agent: m.name, known: had });
+      })().catch((e) => log('chats.sync', { agent: m.name, error: e?.status ?? e?.code ?? 'failed' }));
+    }
   }
   function agentData(m, route, data, originalConnections) { current(m); const safe = safeAgentData(data, [...originalConnections, ...store.all()]); return route === 'skills' && Array.isArray(safe) ? { skills: safe } : safe; }
   const cookieToken = (req) => req.headers.cookie?.split(';').map((v) => v.trim()).find((v) => v.startsWith('foxfleet_session='))?.slice('foxfleet_session='.length);
@@ -440,6 +614,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (auth && !singleUser) await accounts.revoke(auth.user.id, auth.device).catch(() => {});
         return sendJson(res, 200, { authenticated: singleUser }, { 'Set-Cookie': cookieFor(req, '', 0) });
       }
+      if (req.method === 'POST' && parts[0] === 'api' && parts[1] === 'notify' && (parts[2] === 'reply' || parts[2] === 'read') && parts.length === 3) { // notification actions: the session, or a scoped reply token
+        let limit = null;
+        if (!auth) {
+          const tok = req.headers['x-foxfleet-reply-token'];
+          if (typeof tok !== 'string' || !tok) throw fault(401, 'Login required');
+          const c = tokens.verify(tok), user = c ? accounts.users().find((u) => u.id === c.user) : null;
+          const deviceOk = c && user && !user.disabled && accounts.isActive(c.device) && accounts.devices(c.user).some((d) => d.id === c.device);
+          if (!deviceOk) { authThrottle(req); throw fault(403, 'This notification action has expired; open the chat in the app', 'reply_token_invalid'); } // never 401: that would sign the app out
+          ctx.auth = { user, device: c.device, via: 'reply' }; ctx.reg = await registryFor(user.id, user.role === 'owner'); limit = { agent: c.agent, chat: c.chat };
+        }
+        return await notifyAction(req, res, ctx, parts[2], limit);
+      }
       if (parts[0] === 'api' && !auth) throw fault(401, 'Login required');
       if (parts[0] === 'api' && parts[1] === 'auth') {
         const me = auth.user, route = parts[2];
@@ -482,12 +668,46 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (data?.connection === 'bot' && !bot) throw fault(400, 'Invalid connection mode');
           if (data?.connection === 'bot' && !allowBotAgent(String(data?.name ?? ''))) throw fault(403, 'The bot API is not enabled for this agent (FOXFLEET_BOT_AGENTS)');
           const m = await store.add(data?.connection === 'bot' ? { ...data, botId: randomBytes(12).toString('hex') } : data);
-          return sendJson(res, 201, { connection: publicAgent(m) });
+          rowChanged(ctx.reg, scopeOf(ctx), m.name); return sendJson(res, 201, { connection: publicAgent(m) });
         }
       }
       if (parts[0] === 'api' && parts[1] === 'live' && parts[2] === 'stream' && parts.length === 3 && req.method === 'GET') { // live chat events (docs/LIVE-EVENTS.md): resumable SSE, 15 s heartbeat
-        const device = singleUser ? null : auth.device;
+        const device = singleUser ? null : auth.device, v = url.searchParams.get('v');
+        if (v !== null && v !== '1' && v !== '2') throw fault(400, 'Unsupported live contract version; use v=1 or v=2', 'unsupported_version');
+        if (v === '2') return void attachLive2Stream(req, res, ctx.reg.live2, { cursor: url.searchParams.get('since') ?? url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined, counter: ctx.reg.live });
         return void attachLiveStream(req, res, ctx.reg.live, { cursor: url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined });
+      }
+      if (parts[0] === 'api' && parts[1] === 'live' && parts[2] === 'events' && parts.length === 3 && req.method === 'GET') { // live v2 pull: the stream's events as JSON
+        const lg = ctx.reg.live2, c = lg.parse(url.searchParams.get('since') ?? '');
+        if (c.kind === 'none' || c.kind === 'invalid') throw fault(400, 'since must be a cursor from GET /api/chats or the live stream', 'invalid_cursor');
+        if (c.kind !== 'ok') throw Object.assign(fault(410, 'That cursor is no longer available; resync the chat list and chats', 'cursor_expired'), { extra: { cursor: lg.cursor } });
+        const { entries, hasMore } = lg.since(c.seq, pageInt(url.searchParams.get('limit'), 1, PULL_MAX, PULL_DEFAULT));
+        return sendJson(res, 200, { events: entries.map((e) => JSON.parse(e.line)), cursor: hasMore && entries.length ? `${lg.store}:${entries.at(-1).seq}` : lg.cursor, has_more: hasMore });
+      }
+      if (parts[0] === 'api' && parts[1] === 'chats') { // chat list, archive, mark unread, read receipts (docs/LIVE-EVENTS.md)
+        const L = ctx.reg.ledger, scope = scopeOf(ctx), all = store.all();
+        const find = (name) => { const m = all.find((x) => x.name === name); if (!m) throw fault(404, 'Chat not found', 'chat_not_found'); return m; };
+        if (parts.length === 2 && req.method === 'GET') {
+          for (const m of all) L.ensureAgent(m.name);
+          syncExternal(ctx, all);
+          const archived = url.searchParams.get('archived') === '1', rows = sortRows(all.map((m) => chatRow(ctx.reg, scope, m)), all.map((m) => m.name));
+          return sendJson(res, 200, { chats: rows.filter((r) => r.archived === archived), cursor: ctx.reg.live2.cursor, ...L.totals() });
+        }
+        if (parts.length === 3 && req.method === 'GET') return sendJson(res, 200, chatRow(ctx.reg, scope, find(parts[2])));
+        if (parts.length === 4 && parts[3] === 'archive' && req.method === 'PUT') { const m = find(parts[2]), b = await readJson(req, 512); if (typeof b.archived !== 'boolean') throw fault(400, 'archived must be true or false'); L.setArchived(m.name, b.archived); return sendJson(res, 200, chatRow(ctx.reg, scope, m)); }
+        if (parts.length === 4 && parts[3] === 'unread' && req.method === 'PUT') { const m = find(parts[2]), b = await readJson(req, 512); if (typeof b.unread !== 'boolean') throw fault(400, 'unread must be true or false'); L.setManualUnread(m.name, b.unread); return sendJson(res, 200, chatRow(ctx.reg, scope, m)); }
+        if (parts.length === 4 && parts[3] === 'read' && req.method === 'POST') {
+          const m = find(parts[2]), b = await readJson(req, 1024);
+          if (b.all === true) {
+            let changed = false; for (const s2 of L.sessions(m.name)) changed = L.read(m.name, s2, L.lastN(m.name, s2)).changed || changed;
+            const latest = L.latest(m.name); if (!latest && L.agent(m.name)?.manual) L.setManualUnread(m.name, false);
+            return sendJson(res, 200, latest ? L.readState(m.name, latest) : { chat: null, read_up_to: 0, unread_count: 0, agent_unread: 0, total_unread: L.totals().total_unread });
+          }
+          if (typeof b.chat !== 'string' || !Number.isInteger(b.up_to) || b.up_to < 1) throw fault(400, 'Send { chat, up_to } with a positive whole up_to, or { all: true }', 'invalid_read_position');
+          await ensureOr404(ctx.reg, m, b.chat);
+          return sendJson(res, 200, L.read(m.name, b.chat, b.up_to).state);
+        }
+        throw fault(404, 'Not found');
       }
       if (parts[0] === 'api' && parts[1] === 'notify') { // notifications (docs/notifications-api.md): per-account event log, resumable SSE stream, mute
         const nt = ctx.reg.notify, route = parts[2];
@@ -495,7 +715,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 3 && route === 'stream' && req.method === 'GET') {
           // The rotated token (X-Session-Token, apps) is already on `res` here (set at identify time) and survives writeHead: clients must read it from this response too.
           const device = singleUser ? null : auth.device;
-          return void attachNotifyStream(req, res, nt, { after: cursorOf(url.searchParams.get('after') ?? req.headers['last-event-id']), keepAliveMs: Number(process.env.FOXFLEET_NOTIFY_HEARTBEAT_MS) || undefined, device, alive: device ? () => accounts.isActive(device) : undefined });
+          // ?reply=1: reply_finished / approval events carry a reply token minted for this device's stream only (never stored in the log)
+          const decorate = url.searchParams.get('reply') === '1' ? (e) => ((e.type === 'reply_finished' || e.type === 'approval') && e.agent && e.chat ? { reply: tokens.mint({ user: auth.user.id, device: device ?? 'local', agent: e.agent, chat: e.chat }) } : null) : null;
+          return void attachNotifyStream(req, res, nt, { after: cursorOf(url.searchParams.get('after') ?? req.headers['last-event-id']), keepAliveMs: Number(process.env.FOXFLEET_NOTIFY_HEARTBEAT_MS) || undefined, device, alive: device ? () => accounts.isActive(device) : undefined, decorate });
         }
         if (parts.length === 3 && route === 'events' && req.method === 'GET') {
           const rawSince = url.searchParams.get('since'), rawLimit = url.searchParams.get('limit');
@@ -506,7 +728,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 3 && route === 'prefs' && req.method === 'PUT') { const b = await readJson(req, 4096); return sendJson(res, 200, await nt.setEnabled(b.enabled)); }
         if (parts.length === 3 && route === 'mute' && req.method === 'PUT') {
           const b = await readJson(req, 4096); if (typeof b.agent !== 'string' || !store.all().some((m) => m.name === b.agent)) throw fault(404, 'Unknown agent');
-          return sendJson(res, 200, await nt.setMute({ agent: b.agent, chat: b.chat, muted: b.muted, forMs: b.for_ms }));
+          const prefs = await nt.setMute({ agent: b.agent, chat: b.chat, muted: b.muted, forMs: b.for_ms }); rowChanged(ctx.reg, scopeOf(ctx), b.agent); return sendJson(res, 200, prefs);
         }
         if (parts.length === 3 && route === 'test' && req.method === 'POST') { await readJson(req, 4096); if (!nt.allowTest()) { res.setHeader('Retry-After', '60'); throw fault(429, 'Too many test notifications; wait a minute'); } return sendJson(res, 200, { event: nt.emit({ type: 'test' }) }); }
         throw fault(404, 'Not found');
@@ -519,7 +741,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 3 && req.method === 'PATCH') { const b = await body0(); return sendJson(res, 200, { machine: view(await machines.rename(uid, parts[2], b.name)) }); }
         if (parts.length === 3 && req.method === 'DELETE') { // revoke: token gone, link dropped, its agents removed
           const m = await machines.remove(uid, parts[2]); connectors.drop(m.id);
-          for (let pass = 0; pass < 2; pass++) { for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); } await new Promise((r) => setImmediate(r)); } // second pass: a sync that was mid-flight
+          for (let pass = 0; pass < 2; pass++) { for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); ctx.reg.ledger.removeAgent(a.name); } await new Promise((r) => setImmediate(r)); } // second pass: a sync that was mid-flight
           upstream.clear(); return sendJson(res, 200, { ok: true });
         }
         if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') { // rotate: the old token dies now; a new code re-pairs the same machine
@@ -538,7 +760,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
         if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicAgent(m) }); }
-        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); if (store.get(parts[2]).connection === 'bot') await bot?.removeAgent(store.get(parts[2]), ctx.reg); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
+        if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); if (store.get(parts[2]).connection === 'bot') await bot?.removeAgent(store.get(parts[2]), ctx.reg); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); ctx.reg.ledger.removeAgent(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
       if (url.pathname === '/api/agents' && req.method === 'GET') { // Every kind, in registry order (?bridged=1 is accepted for 0.4 clients and ignored).
@@ -565,7 +787,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (req.method === 'PUT' || req.method === 'DELETE') {
             const b = await readJson(req, 2048);
             if (!messages.some(x => x.id != null && String(x.id) === b.message_id)) throw fault(404, 'Message not found');
-            if (parts[5] === 'hidden') await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT');
+            if (parts[5] === 'hidden') { await ctx.reg.reactions.hide(m.name, sid, b.message_id, req.method === 'PUT'); try { ctx.reg.ledger.reconcile(m.name, sid, messages); ctx.reg.ledger.hide(m.name, sid, b.message_id, req.method === 'PUT', messages.find((x) => String(x.id) === b.message_id)?.content ?? ''); } catch { /* best effort */ } }
             else await ctx.reg.reactions.set(m.name, sid, b.message_id, b.emoji, actor, req.method === 'PUT');
           } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
           const ids = new Set(messages.map(x => String(x.id)));
@@ -575,7 +797,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (url.searchParams.has('profile') && url.searchParams.get('profile') !== m.profile) throw fault(400, 'Use the saved connection profile');
         if (route === 'pin' && parts.length === 4 && req.method === 'PUT') { // pin or unpin for THIS user; pinned agents stay on top in the order they were pinned
           const b = await readJson(req, 512); if (typeof b?.pinned !== 'boolean') throw fault(400, 'pinned must be true or false');
-          const pins = await ctx.reg.activity.pin(m.name, b.pinned); return sendJson(res, 200, { pinned: pins.includes(m.name), pins });
+          const pins = await ctx.reg.activity.pin(m.name, b.pinned); rowChanged(ctx.reg, scopeOf(ctx), m.name); return sendJson(res, 200, { pinned: pins.includes(m.name), pins });
         }
         if (route === 'media' && parts.length === 4 && req.method === 'POST') { // a ref the agent mentioned in a reply -> a short-lived link for THIS user
           const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const t of runs.texts(scope, m.name)) media.note(scope, m.name, t);
@@ -648,7 +870,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'); if (!lastUser) throw fault(400, 'No user message');
           const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
           if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
+          const given = /^[\w.:-]{1,120}$/.test(data.session_id ?? ''); if (given) await ensureIndexed(ctx.reg, m, data.session_id).catch(() => {});
           const images = userImages(flat), r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: images.length ? (flat.text.trim() || 'Look at the attached image.') : text, images, mode: typeof data.mode === 'string' ? data.mode : 'queue', clientId: data.client_id }); ctx.reg.activity.touch(m.name, { role: 'user', text, session: data.session_id });
+          if (!r.duplicate) nativeInLedger(ctx.reg, m, r, { text, source: sourceOf(ctx), mode: typeof data.mode === 'string' ? data.mode : 'queue', fresh: !given });
           return sendJson(res, r.duplicate ? 200 : 202, { message: viewOf(r.message), session_id: r.stored, ...(r.run ? { run_id: r.run.id } : {}) });
         }
         if (route === 'messages' && parts.length === 4 && req.method === 'POST' && kindOf(m) === 'hermes') {
@@ -659,7 +883,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const flat = flattenContent(lastUser.content), text = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
           const mode = typeof data.mode === 'string' ? data.mode : 'queue';
           if (data.client_id !== undefined && !/^[\w.:-]{8,100}$/.test(String(data.client_id))) throw fault(400, 'Invalid client_id');
-          const result = await ctx.reg.coord.submit(launcher(m, ctx, native), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode, text, message: { role: 'user', content: lastUser.content }, body: payload, clientId: data.client_id, modes });
+          const { result } = await submitIndexed(ctx, m, launcher(m, ctx, native), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode, text, message: { role: 'user', content: lastUser.content }, body: payload, clientId: data.client_id, modes }, sourceOf(ctx));
           return sendJson(res, result.duplicate ? 200 : 202, result);
         }
         if (route === 'runs') { // resumable chat runs: list, follow from a cursor, stop. A run outlives its client connection.
@@ -714,7 +938,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
+          const given = /^[\w.:-]{1,120}$/.test(data.session_id ?? ''); if (given) await ensureIndexed(ctx.reg, m, data.session_id).catch(() => {});
           const images = userImages(flat), r = await facade.send(ctx.reg.native, { scope: scopeOf(ctx), m, session: data.session_id, text: images.length ? (flat.text.trim() || 'Look at the attached image.') : userText || '(attachment)', images, mode: 'auto', idleOnly: true }); ctx.reg.activity.touch(m.name, { role: 'user', text: userText || '(attachment)', session: data.session_id });
+          nativeInLedger(ctx.reg, m, r, { text: userText || '(attachment)', source: sourceOf(ctx), mode: 'auto', fresh: !given });
           if (!r.run) throw fault(409, 'Hermes did not start a reply for this message; check the conversation');
           return runs.attach(req, res, r.run);
         }
@@ -722,7 +948,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data);
           current(m);
           const lastUser = [...payload.messages].reverse().find((x) => x.role === 'user'), flat = flattenContent(lastUser?.content), userText = (flat.text + (flat.images.length ? ' [image]'.repeat(flat.images.length) : '')).trim();
-          const res1 = await ctx.reg.coord.submit(launcher(m, ctx, await nativeFor(m)), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true });
+          const { result: res1 } = await submitIndexed(ctx, m, launcher(m, ctx, await nativeFor(m)), { scope: scopeOf(ctx), agent: m.name, session: validSessionId(data.session_id) ? data.session_id : '', mode: 'queue', text: userText || '(attachment)', message: { role: 'user', content: lastUser?.content ?? '' }, body: payload, modes: ['queue'], idleOnly: true }, sourceOf(ctx));
           return runs.attach(req, res, runs.get(scopeOf(ctx), m.name, res1.run_id));
         }
         if (route === 'artifacts') {
@@ -750,12 +976,24 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           return sendJson(res, 200, agentData(m, route, { sessions: rows.filter((r) => r?.id != null).map(sessionRow), total: Number.isInteger(data?.total) ? data.total : rows.length, limit, offset }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
-          const limit = pageInt(url.searchParams.get('limit'), 1, 200, 80), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), raw = (await upstream.messages(m, sessionId(parts[4]), { limit, offset })).messages;
+          const limit = pageInt(url.searchParams.get('limit'), 1, 200, 80), offset = pageInt(url.searchParams.get('offset'), 0, 100000, 0), sid = sessionId(parts[4]), L = ctx.reg.ledger, rawAfter = url.searchParams.get('after_n');
+          if (rawAfter !== null) { // cache catch-up: messages numbered after n, oldest first (needs the whole transcript to number it)
+            if (!/^\d{1,9}$/.test(rawAfter)) throw fault(400, 'after_n must be a whole number');
+            const full = normalizeTranscript((await upstream.messages(m, sid)).messages); current(m);
+            L.reconcile(m.name, sid, full); L.annotate(m.name, sid, full);
+            const after = full.filter((x) => Number.isInteger(x.n) && x.n > Number(rawAfter)), page = after.slice(0, limit);
+            for (const x of page) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content);
+            return sendJson(res, 200, agentData(m, route, { messages: page, offset: 0, limit, has_more: after.length > limit }, originalConnections));
+          }
+          const raw = (await upstream.messages(m, sid, { limit, offset })).messages;
           const msgs = normalizeTranscript(raw); for (const x of msgs) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content); // old chats keep their pictures
+          if (L.annotate(m.name, sid, msgs) > 0 && (offset === 0 && raw.length < limit ? true : L.mayResync(m.name, sid))) { // some messages are not numbered yet: number the chat (this page if it is the whole chat, else read it once)
+            try { const full = offset === 0 && raw.length < limit ? msgs : normalizeTranscript((await upstream.messages(m, sid)).messages); L.reconcile(m.name, sid, full); L.annotate(m.name, sid, msgs); } catch { /* the page is still served */ }
+          }
           return sendJson(res, 200, agentData(m, route, { messages: msgs, offset, limit, has_more: raw.length >= limit }, originalConnections));
         }
         if (route === 'sessions' && parts.length === 5 && req.method === 'PATCH') { const b = await readJson(req, 4096); current(m); if (typeof b.title !== 'string' || !b.title.trim() || b.title.length > 200) throw fault(400, 'Invalid title'); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ title: b.title.trim() }) })); return sendJson(res, 200, { id: parts[4], title: b.title.trim() }); }
-        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); await ctx.reg.reactions.remove(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
+        if (route === 'sessions' && parts.length === 5 && req.method === 'DELETE') { current(m); await upstreamJson(await upstream.dashboard(m, '/api/sessions/' + encodeURIComponent(sessionId(parts[4])), { method: 'DELETE' })); await ctx.reg.reactions.remove(m.name, parts[4]); ctx.reg.ledger.removeSession(m.name, parts[4]); return sendJson(res, 200, { ok: true }); }
         let remote, opts = {};
         if (req.method === 'GET' && parts.length === 4) remote = { sessions: '/api/sessions?limit=50', cron: '/api/cron/jobs', skills: '/api/skills', config: '/api/config', profiles: '/api/profiles' }[route];
         if (req.method === 'GET' && route === 'usage' && parts.length === 4) { const days = url.searchParams.get('days') || '30'; if (!/^\d{1,3}$/.test(days) || Number(days) < 1 || Number(days) > 365) throw fault(400, 'Invalid usage period'); remote = '/api/analytics/usage?days=' + days; }
@@ -770,7 +1008,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       return await serveStatic(url, res, avatarBase);
     } catch (error) {
       if (res.headersSent) { if (!res.destroyed) res.destroy(); return; }
-      sendJson(res, error.safe ? error.status : 500, { error: error.safe ? error.message : 'Hub request failed', ...(error.safe && error.code ? { code: error.code } : {}) }, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
+      sendJson(res, error.safe ? error.status : 500, { error: error.safe ? error.message : 'Hub request failed', ...(error.safe && error.code ? { code: error.code } : {}), ...(error.safe && error.extra ? error.extra : {}) }, error.retryAfter ? { 'Retry-After': String(error.retryAfter) } : {});
     }
   }));
   // Whole-request timeout must cover a 90 MB upload on a slow phone link; headers stay strict.
@@ -837,9 +1075,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   // Closing the hub writes every account's pending notification events first (the save is debounced), and closes the stores afterwards so a run that
   // finishes late cannot schedule a write into a data directory that may be gone. The close callback fires after both.
   const notifyStores = async () => (await Promise.allSettled([...registries.values()])).filter((x) => x.status === 'fulfilled' && x.value.notify).map((x) => x.value.notify);
+  const liveStores = async () => (await Promise.allSettled([...registries.values()])).filter((x) => x.status === 'fulfilled' && x.value.live2).map((x) => x.value);
   const closeHub = server.close;
   server.close = function (cb) {
-    void (async () => { await bot?.close().catch(() => {}); for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); })().finally(() => cb?.(err)); }));
+    clearInterval(typingTimer); typingTimer = null; typingRuns.clear();
+    void (async () => { await bot?.close().catch(() => {}); for (const n of await notifyStores()) await n.flush().catch(() => {}); })().finally(() => closeHub.call(this, (err) => { void (async () => { for (const n of await notifyStores()) await n.close({ flush: true }).catch(() => {}); for (const r of await liveStores()) { clearImmediate(r.rowTimer); r.rowTimer = null; await r.ledger.close().catch(() => {}); await r.live2.close().catch(() => {}); } })().finally(() => cb?.(err)); }));
     return this;
   };
   server.setupCode = setupCode; server.accounts = accounts;

@@ -46,7 +46,7 @@ export function parseLiveCursor(v, bus) {
 }
 
 export function attachLiveStream(req, res, bus, { cursor = '', keepAliveMs = HEARTBEAT_MS, alive = () => true } = {}) {
-  if (bus.streams >= MAX_STREAMS) throw fault(429, 'Too many live streams open for this account');
+  if (bus.streams >= MAX_STREAMS) throw fault(429, 'Too many live streams open for this account', 'too_many_streams');
   const c = parseLiveCursor(cursor, bus);
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
   res.write(`retry: ${RETRY_MS}\n\n`);
