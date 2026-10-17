@@ -148,6 +148,7 @@ import dev.foxfleet.app.ui.chat.CommandDef
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.window.Dialog
 import dev.foxfleet.app.ui.chat.extractMedia
 import dev.foxfleet.app.ui.chat.localCommandFor
@@ -325,6 +326,8 @@ fun ChatScreen(
                     else if (typingLabel != null) Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.semantics { contentDescription = "${agent.label ?: agent.name} is $typingLabel" }) {
                         Text(typingLabel, style = MaterialTheme.typography.bodySmall, color = c.accent, maxLines = 1); TypingDots(c.accent)
                     }
+                    // Offline is a state, not progress: a static label (the shimmer dips below 4.5:1 mid-sweep). Connecting/Updating keep the shimmer.
+                    else if (link == dev.foxfleet.app.data.live.LinkState.Offline && linkText != null) Text(linkText, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1, modifier = Modifier.semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite })
                     else if (linkText != null) ShimmerStatusText(linkText, style = MaterialTheme.typography.bodySmall)
                     else Text(if (agent.online) "Online" else "Offline", style = MaterialTheme.typography.bodySmall, color = if (agent.online) c.onlineText else c.textMuted, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                 }
