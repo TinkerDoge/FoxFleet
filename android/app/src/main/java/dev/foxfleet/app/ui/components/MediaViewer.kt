@@ -28,6 +28,7 @@ import dev.foxfleet.app.ui.chat.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.launch
+import coil3.compose.AsyncImage
 import me.saket.telephoto.zoomable.coil3.ZoomableAsyncImage
 import okhttp3.OkHttpClient
 
@@ -51,7 +52,7 @@ fun MediaViewer(items: List<MediaRef>, startIndex: Int, client: OkHttpClient?, o
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.size - 1)) { items.size }
     val current = items.getOrNull(pager.currentPage)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page -> MediaPage(items[page], client) }
+        HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page -> MediaPage(items[page], client, swipe = items.size > 1) }
         Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             val deletable = current != null && host?.cache != null && current.agent != null && current.ref != null
             if (onDelete != null && deletable) SoftIconButton(FoxIcons.get("delete"), "Delete from this device", onClick = {
@@ -72,7 +73,7 @@ fun MediaViewer(items: List<MediaRef>, startIndex: Int, client: OkHttpClient?, o
 }
 
 @Composable
-private fun MediaPage(item: MediaRef, client: OkHttpClient?) {
+private fun MediaPage(item: MediaRef, client: OkHttpClient?, swipe: Boolean) {
     val host = LocalMediaHost.current
     var progress by remember(item, host) { mutableStateOf(MediaRepository.Progress()) }
     var attempt by remember(item, host) { mutableIntStateOf(0) }
@@ -88,7 +89,8 @@ private fun MediaPage(item: MediaRef, client: OkHttpClient?) {
     }
     Box(Modifier.fillMaxSize()) {
         if (source != null) when (item.kind) {
-            MediaRef.Kind.Image -> ZoomableAsyncImage(model = source, contentDescription = item.alt.ifBlank { "Image" }, modifier = Modifier.fillMaxSize())
+            MediaRef.Kind.Image -> if (swipe) AsyncImage(source, item.alt.ifBlank { "Image" }, modifier = Modifier.fillMaxSize())
+                else ZoomableAsyncImage(model = source, contentDescription = item.alt.ifBlank { "Image" }, modifier = Modifier.fillMaxSize())
             MediaRef.Kind.Video -> if (!LocalInspectionMode.current) VideoPlayer(source!!, host?.client ?: client)
         } else Column(Modifier.align(Alignment.Center).padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             if (error) {

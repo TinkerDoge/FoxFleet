@@ -61,14 +61,15 @@ class OldHubReactionsTest {
 
     @Test fun reactStateCoversEveryHub() {
         val saved = UiMessage("assistant", "x", id = "2", hubId = "h.2"); val live = UiMessage("assistant", "y", hubId = "h.3"); val bare = UiMessage("assistant", "z")
-        val on = Capabilities(reactions = true); val old = Capabilities(reactions = false); val bot = Capabilities(reactions = false, bot = true)
+        val on = Capabilities(reactions = true); val old = Capabilities(reactions = false);        val bot = Capabilities(reactions = true, bot = true)
+        assertEquals(ReactState.Ready, MessageActions.reactState(bot, hubIds = false, m = saved))
+        assertEquals(ReactState.Off, MessageActions.reactState(Capabilities(reactions = false, bot = true), hubIds = false, m = saved))
         assertEquals(ReactState.Ready, MessageActions.reactState(on, hubIds = true, m = live))   // 0.4.1 hub: hub id is enough
         assertEquals(ReactState.Pending, MessageActions.reactState(on, hubIds = false, m = live)) // 0.4.0: needs the provider id
         assertEquals(ReactState.Pending, MessageActions.reactState(on, hubIds = false, m = bare)) // 0.3.x: no ids at all yet
         assertEquals(ReactState.Off, MessageActions.reactState(on, hubIds = true, m = bare))     // current hub, streaming / just sent: silent (QA blocker)
         assertEquals(ReactState.Ready, MessageActions.reactState(on, hubIds = false, m = saved))
         assertEquals(ReactState.HubTooOld, MessageActions.reactState(old, hubIds = false, m = saved)) // hub before reactions (< 0.3.7)
-        assertEquals(ReactState.Off, MessageActions.reactState(bot, hubIds = false, m = saved))
         assertNull(MessageActions.reactHint(ReactState.Ready)); assertNull(MessageActions.reactHint(ReactState.Off))
     }
 

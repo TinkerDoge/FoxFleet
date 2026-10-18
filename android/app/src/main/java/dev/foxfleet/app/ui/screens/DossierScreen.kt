@@ -80,10 +80,20 @@ fun DossierScreen(
     val c = LocalHubColors.current
     var viewing by remember(media) { mutableStateOf<Int?>(null) }
     val p = agent.presence()
-    Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding()) {
-        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-            SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
-            Text("Agent dossier", style = MaterialTheme.typography.titleLarge, color = c.text)
+    Column(Modifier.fillMaxSize().background(c.bg)) {
+        Box {
+            Column(Modifier.fillMaxWidth().statusBarsPadding().padding(top = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                AgentAvatar(agent.name, p, 96.dp)
+                Spacer(Modifier.size(12.dp))
+                Text(agent.displayName, style = MaterialTheme.typography.titleLarge, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (agent.capabilities.bot) "bot" else agent.name, style = MaterialTheme.typography.bodyMedium, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Spacer(Modifier.size(16.dp))
+                Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    DossierPill("Message", "chat", Modifier.weight(1f), onClick = { sessions.firstOrNull()?.id?.let(onOpenSession) ?: onBack() })
+                }
+                Spacer(Modifier.size(8.dp))
+            }
+            SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text, modifier = Modifier.statusBarsPadding().padding(8.dp))
         }
         LazyVerticalGrid(
             columns = GridCells.Fixed(3),
@@ -92,25 +102,8 @@ fun DossierScreen(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            item(key = "who", span = { GridItemSpan(maxLineSpan) }) {
-                Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        AgentAvatar(agent.name, p, 64.dp)
-                        Spacer(Modifier.width(16.dp))
-                        Column(Modifier.weight(1f)) {
-                            Text(agent.displayName, style = MaterialTheme.typography.titleLarge, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(agent.name, style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Spacer(Modifier.size(6.dp))
-                            StatusPill(p)
-                        }
-                    }
-                    val subtitle = fleetSubtitle(agent)
-                    if (subtitle.isNotBlank()) { Spacer(Modifier.size(10.dp)); Text(subtitle, style = MaterialTheme.typography.bodyMedium, color = c.textMuted) }
-                }
-                Hairline()
-            }
             item(key = "chatlabel", span = { GridItemSpan(maxLineSpan) }) {
-                SectionLabel("Recent chats")
+                SectionLabel("Chats")
             }
             if (sessions.isEmpty()) item(key = "nochats", span = { GridItemSpan(maxLineSpan) }) {
                 Text("No chats saved on this device yet.", style = MaterialTheme.typography.bodyMedium, color = c.textMuted, modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp))
@@ -174,5 +167,18 @@ private fun DossierMediaTile(ref: MediaRef, onOpen: () -> Unit) {
         if (s != null) AsyncImage(s, ref.alt.ifBlank { "Media" }, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         else FoxIcon(if (ref.kind == MediaRef.Kind.Video) "play" else "image", tint = c.textMuted)
         if (ref.kind == MediaRef.Kind.Video) Box(Modifier.align(Alignment.BottomEnd).padding(4.dp)) { FoxIcon("play", tint = Color.White, size = 18.dp) }
+    }
+}
+
+@Composable
+private fun DossierPill(label: String, icon: String, modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalHubColors.current
+    Column(
+        modifier.clip(RoundedCornerShape(16.dp)).background(c.surfaceAlt).clickable(onClick = onClick).padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        FoxIcon(icon, tint = c.accent, size = 22.dp)
+        Spacer(Modifier.size(4.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = c.text)
     }
 }
