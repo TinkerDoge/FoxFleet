@@ -1520,17 +1520,23 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return None
         return newest
 
-    async def _complete_placeholder(self, state: _Stream, chat_id: str, text: str) -> SendResult:
-        """Replace the stored tick with the turn's real answer and end the turn with it."""
+    async def _complete_placeholder(self, state: _Stream, chat_id: str, text: str) -> Optional[SendResult]:
+        """Replace the stored tick with the turn's real answer and end the turn with it.
+
+        ``None`` means another send already resolved this placeholder: the caller falls through to
+        a normal send instead of writing this text into a turn that has moved on.
+        """
         async with state.lock:
+            if not state.placeholder or state.finalized:
+                return None
             state.placeholder = False
-            if not state.finalized:
-                if not await self._push_final(state, chat_id, text, state.reply_to):
-                    state.placeholder = True
-                    return SendResult(success=False,
-                                      error="FoxFleet: the reply replacing the placeholder was not confirmed by the hub",
-                                      error_kind="transient", retryable=True)
-                state.finalized = True
+            if not await self._push_final(state, chat_id, text, state.reply_to):
+                state.placeholder = True
+                return SendResult(success=False,
+                                  error="FoxFleet: the reply replacing the placeholder was not confirmed by the hub",
+                                  error_kind="transient", retryable=True)
+            state.finalized = True
+            state.owed, state.handed_off = None, False  # this turn is complete; nothing else is owed
             ids = state.ids()
         logger.info("FoxFleet: replaced the empty-stream placeholder in chat %s with the reply", chat_id)
         return SendResult(success=True, message_id=ids[-1], continuation_message_ids=tuple(ids[:-1]),
@@ -1787,9 +1793,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not text.strip():
             return _blank_result()
         meta = metadata or {}
-        pending = self._pending_placeholder(str(chat_id))
+        # Only this turn's ANSWER may replace the tick: command/notice replies and interim sends
+        # are separate messages, never the turn's text.
+        pending = None if (self._notice_send.get() or meta.get("_interim_send")) else self._pending_placeholder(str(chat_id))
         if pending is not None:
-            return await self._complete_placeholder(pending, str(chat_id), text)
+            done = await self._complete_placeholder(pending, str(chat_id), text)
+            if done is not None:
+                return done
         owed = None if (self._notice_send.get() or meta.get("_interim_send")) else self._owed_stream(str(chat_id), text)
         if owed is not None:
             return await self._complete_owed(owed, str(chat_id), text)

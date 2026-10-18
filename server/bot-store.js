@@ -268,10 +268,13 @@ export function botStore(file, options = {}) {
         .sort((a, b) => b.updated - a.updated).map((c) => { const list = vis(c.id), last = list.at(-1); return { id: c.id, title: c.title, updated: c.updated, started: c.created, messages: list.length, preview: last ? last.text.replace(/\s+/g, ' ').trim().slice(0, 140) : '' }; });
       return { sessions: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
     },
-    /** One page of a chat's messages, counted from the end, oldest first. */
-    transcript(chatId, { limit = 80, offset = 0 } = {}) {
+    /** One page of a chat's messages, counted from the end, oldest first. `hidden` (0.4.2) is this
+     *  account's "delete for me" set: hidden rows are removed BEFORE paging, so offset/has_more
+     *  describe the visible conversation. */
+    transcript(chatId, { limit = 80, offset = 0, hidden = null } = {}) {
       const d = st(); if (!d.chats[chatId]) throw fault(404, 'Unknown session');
-      const list = d.messages[chatId], end = Math.max(0, list.length - offset), start = Math.max(0, end - limit);
+      const all = d.messages[chatId], list = hidden?.size ? all.filter((m) => !hidden.has(String(m.id))) : all;
+      const end = Math.max(0, list.length - offset), start = Math.max(0, end - limit);
       return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: mediaText(m.text, m.media), ts: m.ts, ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
     },
 

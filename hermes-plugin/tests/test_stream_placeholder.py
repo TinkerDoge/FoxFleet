@@ -77,6 +77,36 @@ async def test_the_placeholder_tick_is_replaced_by_the_recovery_reply(real, make
         "reasoning only, no content deltas", "The authoritative reply after the recovery"]
 
 
+async def test_a_notice_or_interim_send_never_replaces_the_tick(real, make_adapter):
+    """A command/notice reply is its own message, never the turn's answer: the tick must survive."""
+    adapter, events = make_adapter(), []
+    adapter.set_message_handler(_handler(events))
+    assert await adapter.connect() is True
+    chat = (await real.post_message("tick then a notice"))["session_id"]
+    run = (await _poll(lambda: real.runs(chat)))[0]
+    sse = await real.follow_run(run["id"])
+    await wait_for(lambda: events)
+    try:
+        assert await adapter.send_stream_frame("", chat_id=chat, reply_to=None, turn_id="t-notice") is True
+        assert await adapter.send_stream_frame("✅", finalize=True, chat_id=chat, reply_to=None, turn_id="t-notice") is True
+        token = adapter._notice_send.set(True)  # what an inline slash-command reply sets
+        try:
+            notice = await adapter.send(chat, "Gateway status: all good", metadata={"notify": True})
+        finally:
+            adapter._notice_send.reset(token)
+        assert notice.success
+        _, body = await real.call(f"/api/agents/helper/sessions/{chat}/messages", expect=200)
+        assert [m["content"] for m in body["messages"]] == ["tick then a notice", "✅", "Gateway status: all good"]
+        assert not sse.ended, "a notice must not end the answer's run"
+        # the real answer still replaces the tick in place
+        result = await adapter.send(chat, "the real answer", metadata={"notify": True})
+        assert result.success and result.message_id == body["messages"][1]["id"]
+        await _finished(sse, timeout=10)
+    finally:
+        await sse.close()
+    assert [m["content"] for m in await real.transcript(chat)] == ["tick then a notice", "the real answer", "Gateway status: all good"]
+
+
 async def test_a_placeholder_with_no_recovery_stays_as_the_answer_and_ends_by_idle(brisk, make_adapter):
     """A genuine one-character "✅" reply (or an empty turn) must not be lost or hang the run."""
     adapter, events = make_adapter(token=brisk.agent_token, hub=brisk), []

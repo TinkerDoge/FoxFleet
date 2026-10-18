@@ -151,3 +151,16 @@ test('a nonsense session id is a 404, never a 500', async (t) => {
     }
   }
 });
+
+test('hidden messages are removed before paging, so offset and has_more describe the visible chat', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'p1');
+  for (const text of ['p2', 'p3', 'p4']) await rpc(b, { t: 'message.send', id: text, chat_id: id, text, final: true });
+  const msgs = await transcript(b, id), hiddenId = msgs.find((m) => m.content === 'p2').id;
+  await b.h.call(`/api/agents/${b.name}/sessions/${id}/hidden`, { method: 'PUT', data: { message_id: hiddenId } });
+  const page = await (await b.h.call(`/api/agents/${b.name}/sessions/${id}/messages?limit=2&offset=0`)).json();
+  assert.deepEqual(page.messages.map((m) => m.content), ['p3', 'p4']);
+  assert.equal(page.has_more, true);
+  const page2 = await (await b.h.call(`/api/agents/${b.name}/sessions/${id}/messages?limit=2&offset=2`)).json();
+  assert.deepEqual(page2.messages.map((m) => m.content), ['p1']);
+  assert.equal(page2.has_more, false);
+});

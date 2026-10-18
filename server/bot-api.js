@@ -451,10 +451,11 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       }));
     }
     if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
-      const out = store.transcript(parts[4], { limit: page(url.searchParams.get('limit'), 1, 200, 80), offset: page(url.searchParams.get('offset'), 0, 100000, 0) });
-      const hidden = new Set(c.reg.reactions.hidden(c.m.name, parts[4]));
-      if (hidden.size) out.messages = out.messages.filter((x) => !hidden.has(String(x.id)));
-      return c.sendJson(res, 200, out);
+      // hidden rows are removed before paging: offset and has_more describe the visible conversation
+      return c.sendJson(res, 200, store.transcript(parts[4], {
+        limit: page(url.searchParams.get('limit'), 1, 200, 80), offset: page(url.searchParams.get('offset'), 0, 100000, 0),
+        hidden: new Set(c.reg.reactions.hidden(c.m.name, parts[4])),
+      }));
     }
     // 0.4.2: reactions and "delete for me" for bot agents, on the bot store's own message ids.
     // No ledger: an fm_ id is both ids, so the snapshot mirrors `messages` into `by_hub_id` and

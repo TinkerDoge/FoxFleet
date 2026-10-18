@@ -1,123 +1,147 @@
 # Codex review — `fix/bot-live-reply-reactions` vs `origin/main` (0165d66)
 
-Branch HEAD: `4284f6b` — "[0.4.2-alpha] bot path: no ✅ placeholder reply, reactions work (agent REACT: + user), capability set"
+Branch HEAD: `5c80ce6` — "[0.4.2-alpha] review fixes: placeholder can never lose a reply; reaction parity + hygiene"
+Previous review: FAIL on `4284f6b` (9 findings). This pass re-checks those nine and hunts regressions.
 
 REVIEW: FAIL
 
-The intended behaviour is real and the happy path works (verified against the real hub and the real Hermes
-stream consumer). But the placeholder swallow reports a final as delivered when it sent nothing, and Hermes'
-own delivery accounting then suppresses the reply whenever the real answer is exactly the placeholder — a
-silent reply loss introduced by this branch. Two reaction-targeting defects and three smaller gaps follow.
+All nine prior findings are genuinely addressed — the reply-loss class is gone (I re-ran the exact
+`finish("✅")` / stale-finalize shapes against the real hub and the real Hermes consumer), the tick no
+longer hangs a run for `replyWaitMs`, the reaction is applied once on the final to the answered message
+with `asEmoji` parity, and the hidden/cleanup/404 items hold. One new defect blocks a pass: `send()`
+surrenders **any** text to a pending placeholder before the notice/interim guard, so a send that is not
+that turn's answer is written into the tick's message and finalizes that turn. The branch's own
+invariant ("only the chat's NEWEST stream can match, so a later turn cannot hijack an old tick") holds
+only when the later turn streams.
 
 ## Findings
 
-1. **HIGH — `hermes-plugin/foxfleet/adapter.py:1444-1455`: a genuine `✅` reply is silently lost.**
-   The branch returns `True` for a final frame it deliberately did not send. Hermes marks a native finalize
-   delivered *before* asking the adapter (`stream_consumer_transport.py:383-397`: `_mark_final_delivered(record=text)`,
-   then `_already_sent = True; _last_sent_text = text`), so after the swallow the consumer records
-   `_delivered_final_text = "✅"` and claims the turn's final was delivered. If the completed response is itself
-   `"✅"` (or normalises to it), `run_turn._run_agent_mark_streamed_delivery` (run_turn.py:2072-2140) asks
-   `delivered_final_matches("✅")`, gets `True`, sets `already_sent`, and the normal final send is suppressed —
-   the hub never receives anything.
-   This is reachable in production: short replies are held during interim ticks by the `_MIN_NEW_MSG_CHARS`
-   guard (stream_consumer_transport.py:342, with the default cursor `" ▉"`), so a one-token answer can reach a
-   finalize with zero chunks.
-   Evidence (real hub + real consumer, no deltas, `finish("✅")`):
-   `final_response_sent=True final_content_delivered=True delivered_final_text='✅' already_sent=True
-   delivered_final_matches('✅')=True`, hub transcript `[('user', …)]` — nothing else. The new test
-   "scoped to streams that showed nothing" sends `"partial answer"` first, so it never exercises this path.
-   Same class: any final whose display payload normalises to the placeholder, and a final whose display payload
-   is empty (e.g. a directive-only body) is suppressed through the `None`/legacy-trust path.
+1. **MEDIUM — `hermes-plugin/foxfleet/adapter.py:1790-1792`: a placeholder absorbs a later, unrelated
+   `send()` and ends that turn with foreign text.**
+   `pending = self._pending_placeholder(...)` (line 1790) runs *before* the notice/interim exclusion on
+   line 1793 (`owed = None if (self._notice_send.get() or meta.get("_interim_send")) else ...`). A pending
+   tick therefore captures the next `send()` in that chat no matter what it is: `_complete_placeholder`
+   edits the tick into that text with `final=true` and returns the tick's id as the delivered message.
+   The text is not lost, but it never exists as its own message, the empty turn is finalized with
+   someone else's content, and the `_send_notice`/`_dispatch_inline_reply` invariant ("a notice: never
+   ends another live answer", adapter.py:1177) is broken for the 300 s `PLACEHOLDER_TTL` window.
+   Reproduced with the real hub + real adapter (`python probe_hijack.py`, three chats on one adapter):
+   - tick in chat A (non-final `✅`), then `adapter.send(chat, "/status output from a command handler")`
+     → `success=True message_id=fm_6Mq1hAjmuo_FcBz_` = the tick's id; transcript
+     `['first question', '/status output from a command handler']` — the tick was overwritten, no new
+     message.
+   - tick in chat B, then a notice-marked send (`_notice_send` set, exactly what
+     `_dispatch_inline_reply` does for `/status`, `/help`, `/model`) → same: it replaced the tick
+     (`same_as_tick: True`).
+   - control, chat C: tick, then a *new stream* (`send_stream_frame("new turn partial", turn_id="turn-d")`),
+     then `send("new turn final")` → new id, tick untouched (`[..., '✅', 'new turn partial', 'new turn final']`).
+     So the newest-stream rule works only when the later turn seeds a stream; any later send that does
+     not (inline command reply, interim notice, a turn for which `send_stream_frame` returned False at
+     `MAX_STREAMS`) is hijacked.
+   Fix: gate the match the same way the owed path already is, e.g.
+   `pending = None if (self._notice_send.get() or meta.get("_interim_send")) else self._pending_placeholder(...)`,
+   and re-check `state.placeholder` inside the `async with state.lock` in `_complete_placeholder`
+   (the decision is currently taken outside the lock, adapter.py:1523-1527).
 
-2. **MEDIUM — `adapter.py:1444-1455`: genuinely empty turns now leave the hub run open for `replyWaitMs`.**
-   Tool-only turns and intentional-silence replies finalize with the placeholder; nothing is sent and
-   `run_turn` returns early on the `"(empty)"` sentinel, so the bot run gets no terminal event. The hub ends it
-   only on its idle timer (`server/bot-api.js:40` `replyWaitMs: 300_000`). Probe: 1 s after `consumer.finish("")`
-   the run is still `state: 'running'` with no message. Previously the bare `✅` frame ended the run immediately.
-   Anything that derives "working" from the open run now waits up to 5 minutes. No test covers the run state.
+2. **LOW — `adapter.py:1523-1537` vs `1539-1552`: `_complete_placeholder` leaves `state.owed` set.**
+   A stream can hold both states (a final with text fails → `owed` set with no chunks; a following
+   `✅` finalize then takes the placeholder branch, adapter.py:1451-1466). After the placeholder is
+   completed, a later `send()` of the owed text matches `_owed_stream`, and `_complete_owed` — seeing
+   `finalized` — returns `success` with the old ids and sends nothing. Harmless while that text is
+   already on the hub, silent non-delivery if it is not. Clear `owed` in `_complete_placeholder` (as
+   `_complete_owed` does), and/or have `_complete_owed` require `state.text() == text` before claiming
+   success on a finalized stream.
 
-3. **MEDIUM — `server/bot-api.js:95-100,124,136` + `server/bot-store.js:257`: the reaction is applied on every
-   frame and always to the newest user message.**
-   The comment/CHANGELOG say the emoji lands "on final frames"; `botReactOf` returns `react` whenever the
-   stripped text is non-empty, and `dispatch` calls `applyBotReact` without checking `final`. The target is
-   `lastUserMessage()` at commit time, not the message being answered (`req.reply_to`), unlike the non-bot path
-   which anchors on `ledger.userBefore(...)`.
-   Evidence: an interim (`final:false`) frame already stored the agent's 🖤 on the user message; after a second
-   user message arrived mid-reply, the final frame put the same 🖤 on the *second* question too — one answer
-   reacted to two different user messages. A cumulative snapshot that cuts a ZWJ sequence (`REACT: 🙅` then
-   `REACT: 🙅‍♀️`) can likewise leave two stored emoji from the same reply.
+3. **LOW — `server/bot-api.js:453-458` + `server/bot-store.js:272-276`: hidden filtering happens after
+   the page slice, so pagination no longer adds up.** `out.messages = out.messages.filter(...)` after
+   `store.transcript(...)` leaves `has_more`/`offset` describing the unfiltered list: a page can return
+   fewer than `limit` items while `has_more` is false, and hidden rows inside a page silently shrink it.
+   `chats()` does this correctly (filter before slicing, via `vis()`), so the transcript route is the
+   odd one; filter inside `transcript()` and compute `has_more` from the visible list.
 
-4. **MEDIUM — `bot-api.js:95-100`: bare symbol emoji are stripped and the reaction silently dropped.**
-   The non-bot path normalises through `asEmoji` (`server/reactions.js:10-11`, appending U+FE0F). The bot path
-   passes the raw token to `reactions.set`, which validates with `/^\p{RGI_Emoji}$/v`; `"❤"` (U+2764 alone) fails,
-   `"❤️"` passes. The 400 is caught by `applyBotReact`'s `catch {}`, so the reply loses the line and no reaction
-   is stored. Probe: `REACT: ❤\nGood night` → stored text `"Good night"`, reaction snapshot `{}`.
+4. **LOW — `bot-api.js:95-101`: a reaction-only reply keeps the raw `REACT: ❤` directive as visible text
+   until its final frame.** `botReactOf` returns `{ text: t }` unchanged for `only && !final`, so the
+   cumulative snapshot mid-stream shows `REACT: ❤`, and a reaction-only reply whose final frame never
+   arrives keeps the directive in the transcript forever. `server/test/bot-reactions.test.js:73-79`
+   codifies this ("kept verbatim"). Now that bot agents advertise `agentReactions` (index.js:383), the
+   apps render it; stripping the line without applying the reaction on non-final frames (or applying
+   the reaction early and not finalizing) would remove the visible directive.
 
-5. **LOW — `bot-api.js:445-446` + `bot-store.js:259-263`: "delete for me" leaks through the chat list.**
-   Hidden ids are filtered only from the paged `/messages` response. `chats()` still builds `preview` from the
-   last stored message and `q` still matches hidden text. Probe after hiding the bot reply: `/messages` correctly
-   drops it, but `/sessions` reports `preview: "the secret reply text"` and `/sessions?q=secret` still returns the
-   chat. Same-account only (the reactions store is per account), but the feature visibly does not hold. Pagination
-   is otherwise safe: clients advance `offset` by page size, not by the returned count.
+5. **LOW (doc) — `CHANGELOG.md:21` and `contract/bot-api.md:33-41` overstate the guarantee.** "No reply
+   can be lost either way" is true for the native-frame path this branch fixes. Outside it — native
+   streaming disabled for a turn because `send_stream_frame` returned False at `MAX_STREAMS`
+   (adapter.py:1436-1441) — the empty finalize goes out through `send()`/`edit_message` as an ordinary
+   `✅` message and the real text then opens a second message: the pre-branch "tick, then reply" shape.
+   Also worth stating: with a placeholder still pending when the next turn starts streaming, the
+   recovery text no longer matches (correctly) and the tick stays as a stray `✅` — the accepted cost of
+   the newest-stream rule.
 
-6. **LOW — `bot-api.js:482`: deleting a bot chat leaves its reaction/hidden rows behind.**
-   The non-bot route removes them (`index.js:1129` `reactions.remove`); the bot `DELETE sessions/{id}` does not.
-   Probe: after a 200 delete, `reactions.json` still held both reaction rows and the hidden row for the dead chat
-   id. Reaction rows expire after 90 days, hidden rows never do (only capped), and the stale ids keep matching
-   `hidden()` lookups.
+## The nine prior findings — re-verified
 
-7. **LOW — `bot-api.js:453-454`: session id is not validated like the non-bot route.**
-   Non-bot uses `sessionId(parts[4])`; the bot route passes the raw segment to `botStore`. `__proto__` and
-   `constructor` resolve on the plain-object `chats`/`messages` maps and throw inside `transcript`
-   (`list.length`/`list.slice` on `Object.prototype`), answering 500 "Hub request failed" instead of 404.
-   Probe: 500 for `/messages`, `/reactions`, `/hidden` on both ids; unknown ordinary ids 404 correctly.
-   Pre-existing for `/messages`, extended to the two new routes. No write or prototype pollution observed.
+1. HIGH (lost genuine `✅`/suppressed reply) — **fixed.** The tick is stored non-final
+   (`_push_snapshot`, `state.placeholder=True`), so Hermes' recorded payload stays `"✅"` while the
+   message is on the hub. Probe with the real consumer, no deltas, `finish("✅")`:
+   `delivered_final_matches("✅")=True already_sent=True`, transcript `[user, '✅']`, run still live,
+   then ends by idle — exactly one `✅`, nothing suppressed. For a real answer with no deltas,
+   `delivered_final_matches(answer)=False`, so the gateway does not suppress and its recovery `send()`
+   edits the tick in place (plugin test 1: `result.message_id == tick_id`, `foxfleet.replace` emitted,
+   run finished).
+2. MEDIUM (run hung for `replyWaitMs`) — **fixed.** The tick is a bot write, so `botActivity` arms
+   `replyIdleMs` (bot-api.js:284-288, 312; default 30 s at `bot-api.js:40`). With `replyIdleMs=400` the run ends `done` in <400 ms
+   (plugin test 2 and my probe); `replyWaitMs` (300 s) only applies to runs that never wrote.
+3. MEDIUM (react on non-final / wrong target) — **fixed.** `botReactOf(v.req.text, v.req.final === true)`
+   and `applyBotReact` only on final, `final === true` (bot-api.js:95-140); target is
+   `liveRun(...).userMsgId` captured in `startRun` from `postMessages` (bot-api.js:297, 408), with
+   `lastUserMessage` only as the agent-initiated fallback. Tests cover mid-stream no-reaction, once-only,
+   and "reacts to the answered message, not the mid-turn one".
+4. MEDIUM (no `asEmoji` parity) — **fixed.** `botReactOf` uses `replyReaction` (reactions.js:12-17):
+   `REACT: ❤` → stored `❤️`; a token that is not an emoji leaves the text untouched and applies
+   nothing. Test `bot-reactions.test.js:111`.
+5. LOW (preview/`q` leak) — **fixed.** `chats()` takes `hiddenOf` and filters before the preview and
+   the `q` match (bot-store.js:261-269); route passes the account's hidden ids (bot-api.js:445-451).
+   Test `:119`.
+6. LOW (chat delete left rows) — **fixed.** `reactions.remove` on the chat route (bot-api.js:492); test
+   `:132` asserts `reactions.json` is empty.
+7. LOW (`__proto__` 500s) — **fixed.** `!CHAT_ID.test(parts[4])` → 404 before any store call
+   (bot-api.js:444); test `:145` covers `__proto__`, `constructor`, `not-a-chat` on both routes.
+8. LOW (contract silent on REACT:) — **fixed.** `contract/bot-api.md` "Reply conventions (0.4.2)".
+9. LOW (reaction-only bubble vs `reaction_only`) — **still open, as documented** in the CHANGELOG and
+   contract. Consistent with the stated scope.
 
-8. **LOW — `contract/bot-api.md:30`: the REACT: contract is undocumented.**
-   The table gains `/reactions` and `/hidden`, but nothing tells a bot author that a `REACT: <emoji>` line in
-   `message.send`/`message.edit` is stripped from the stored text and applied to the user's message — a
-   behaviour that mutates what the bot wrote. "Content: text only" reads as no interpretation. CHANGELOG only.
+## Security / identity on the new bot routes (checked)
 
-9. **LOW (design) — `bot-api.js:95-100`: a reaction-only reply is stored as a bare emoji message.**
-   Non-bot agents keep the text and set `reaction_only`, which the apps hide; bot chats store `"👀"` as message
-   text and the bot `/messages` route never emits `reaction_only`, so the app shows an emoji bubble next to the
-   reaction. Deliberate (it gives the run a message to end on) but it is a visible agent-parity divergence and
-   should be stated as such, not just implied by a test assertion.
+- Actor is built only from `c.scope`/`c.user` (bot-api.js:465); a body-supplied actor is ignored.
+- `message_id` is type/length checked, then required to exist in *that* chat's transcript
+  (bot-api.js:467-468) — a cross-chat id is 404 `message_not_found`. The bot store lives under the
+  per-account registry dir, so no other account reaches it.
+- Emoji is validated by `reactionStore.set` (`validEmoji` → 400 `invalid_emoji`); hidden ids are capped.
+- Replayed `message.send` (`out.replayed`) applies no reaction, and `set()` is idempotent.
 
 ## Tests run (real counts)
 
-- `node --test --test-timeout=120000 server/test/*.test.js`: **594 tests, 583 pass, 4 fail, 7 skipped** (matches
-  `scripts/hub-tests.min` 594).
-  The 4 failures are `cli.test.js:177`, `connector-doctor.test.js:15`, `connector-doctor.test.js:30`,
-  `machines.test.js:56`. I reproduced the same 4 on an `origin/main` (0165d66) worktree — baseline, not
-  regressions.
-- `node --test server/test/bot-reactions.test.js server/test/bot-sessions.test.js`: **12/12 pass**.
-- `pytest test_stream_placeholder.py`: **3 passed**; with `test_transport.py test_stream_fallback.py
-  test_native_lifecycle.py`: **99 passed**.
-
-## Verified positives
-
-- The core mechanism works for its intended case: placeholder swallowed, no `✅` message stored, the hub run
-  stays open, and a following `adapter.send(..., notify=True)` is streamed into that run (plugin test, plus the
-  run-state probe). The recovery send is only suppressed when the final text matches the recorded `"✅"` (finding 1).
-- Identity: the actor is built from `c.scope`/`c.user` only (`bot-api.js:455`); a body-supplied `actor` is
-  ignored (probe: stored actor was the authenticated `user:<scope>`).
-- Message ids: type/length validated and required to exist in *that* chat's transcript; a message id from another
-  of the same user's chats answers 404 `message_not_found` (probe). The bot store itself lives under the per-user
-  registry dir (`bot-api.js:50`), so another account cannot reach it.
-- Replays: the same `idempotency_key` returns `replayed: true` and does not apply the reaction twice (probe).
-- `capabilities.reactions/agentReactions` true is consistent with the routes that now exist; the updated
-  `bot-sessions` expectation matches the real view.
+- `node --test --test-timeout=120000 server/test/*.test.js`: **600 tests, 589 pass, 4 fail, 7 skipped**
+  (matches `scripts/hub-tests.min` 600). The 4 failures are `cli.test.js:177`,
+  `connector-doctor.test.js:15`, `connector-doctor.test.js:30`, `machines.test.js:56`; I extracted a
+  pristine `origin/main` tree (`git archive`) and ran those three files there: **23 tests, 19 pass,
+  4 fail — identical set.** Baseline (local Hermes checkout present, connector key), not regressions.
+- `node --test server/test/bot-reactions.test.js server/test/bot-sessions.test.js`: **18/18 pass**
+  (12 in the new file, including the 11 behaviours listed for it).
+- `pytest test_stream_placeholder.py`: **4 passed**; whole plugin suite (`pytest` in
+  `hermes-plugin/tests`): **193 passed, 1 skipped** (2:12).
 
 ## Test gaps
 
-- No test for a `"✅"`-only final with zero chunks (finding 1); the "scoped to streams that showed nothing" test
-  actually sends content first, so its name is misleading.
-- No test for the empty/tool-only turn's run state (finding 2).
-- No test for a `final:false` frame carrying `REACT:` + content, or for a user message arriving mid-reply
-  (finding 3).
-- No test for a bare-symbol emoji (`❤`) or for `asEmoji` parity (finding 4).
-- No test that `chats()` preview/`q` exclude hidden text (finding 5), or that deleting a chat clears reactions
-  (finding 6), or for malformed session ids (finding 7).
-- No test that a body-supplied `actor` is ignored, that cross-chat message ids are refused, or that a replay
-  applies the reaction once — the security properties I verified by probe are unguarded.
+- No test for finding 1: a notice/interim/plain `send()` arriving while a placeholder is pending.
+- No test drives a real `run_turn` turn for the #71643 recovery — the plugin test calls
+  `adapter.send()` directly, so only the two gateway predicates it depends on
+  (`delivered_final_matches`) were verified by reading and by measurement, not end-to-end.
+- No test that a `REACT:` token that is *not* an emoji leaves the reply text untouched.
+
+## Positives worth keeping
+
+- `_pending_placeholder` correctly refuses finalised, expired and non-newest streams; `_evictable_stream`
+  is unchanged and placeholder streams become idle-evictable after `STREAM_IDLE_EVICT`.
+- The placeholder branch only fires on a lone `✅` final with no chunks and no unconfirmed send, so any
+  stream that showed content (including a genuine `✅` after deltas) keeps the ordinary final path.
+- `_complete_placeholder` reuses `_push_final`, so a replacement longer than one chunk gets the same
+  overflow/split handling as any other final, and a rate-limited hub is waited out.

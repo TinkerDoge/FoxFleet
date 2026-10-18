@@ -39,7 +39,7 @@ message ids, with the same request/response shape as the other agents.
 
 An empty native stream is closed by Hermes with a lone `✅` finalize frame. The adapter stores that
 tick non-final so the turn stays open: the authoritative text (if any) then replaces that message,
-and with no text the tick stays as the answer.
+and with no text the tick stays as the answer. Only the turn's own answer may replace it; notice/interim sends are separate messages.
 
 Reserved names, **not implemented** (frozen so later versions do not collide). A bot that sends one gets
 `error.code = "unsupported"`; the hub never emits the hub → bot ones in v1:
