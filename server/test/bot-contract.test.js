@@ -24,6 +24,16 @@ test('vectors: every invalid frame is refused with exactly its documented code',
   assert.ok(vectors.invalid.some((x) => x.frame.id === undefined && x.frame.t === 'message.send'), 'missing id is covered');
 });
 
+test('vectors: models.set provider and model count limits', () => {
+  const frame = (providers) => ({ t: 'models.set', id: 'm', providers });
+  assert.equal(validateRequest(frame(Array.from({ length: 60 }, (_, i) => ({ slug: `p${i}` })))).ok, true);
+  const overP = validateRequest(frame(Array.from({ length: 61 }, (_, i) => ({ slug: `p${i}` }))));
+  assert.equal(overP.ok, false); assert.equal(overP.code, 'invalid_request');
+  assert.equal(validateRequest(frame([{ slug: 'x', models: Array.from({ length: 300 }, (_, i) => `m${i}`) }])).ok, true);
+  const overM = validateRequest(frame([{ slug: 'x', models: Array.from({ length: 301 }, (_, i) => `m${i}`) }]));
+  assert.equal(overM.ok, false); assert.equal(overM.code, 'invalid_request');
+});
+
 const shape = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, k === 'result' ? 'result' : shape(v[k])])) : typeof v);
 const example = (name) => vectors.hub_frames.find((x) => x.name === name)?.frame;
 
