@@ -69,16 +69,15 @@ class ModelChipTest {
         chips().assertCountEquals(1)
     }
 
-    @Test fun anAgentWithoutAModelListHasNoChip() {
+    @Test fun anAgentWithoutAModelListStillGetsTheChipWhenControlsExist() {
         chat(Capabilities(sessions = true, models = "none"), controls)
-        chips().assertCountEquals(0)
-        compose.onAllNodesWithText("Model").assertCountEquals(0)
+        chips().assertCountEquals(1)
     }
 
-    /** A bot agent: /model goes to the agent as text, so the app offers nothing to pick from. */
-    @Test fun aBotAgentHasNoChip() {
+    /** A bot agent still gets the card (the hub has no list; picking sends /model as a message). */
+    @Test fun aBotAgentHasTheChip() {
         chat(Capabilities(sessions = true, models = "none", bot = true), controls)
-        chips().assertCountEquals(0)
+        chips().assertCountEquals(1)
     }
 
     /** Nothing to open it with: no native controls, so no chip either. */

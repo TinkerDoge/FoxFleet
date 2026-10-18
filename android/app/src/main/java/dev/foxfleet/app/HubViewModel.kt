@@ -701,7 +701,15 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             setModel = { m, p -> api.setChatModel(agent.name, chatFor(agent.name).sessionId ?: error("No conversation yet"), m, p) },
             busy = { "" }, setBusy = { error("Not available for this agent") },
         )
-        else -> null
+        else -> dev.foxfleet.app.ui.screens.NativeControls(
+            models = { runCatching { api.agentModels(agent.name, chatFor(agent.name).sessionId) }.getOrDefault(emptyList()) },
+            setModel = { m, p ->
+                val cmd = buildString { append("/model "); append(m); if (!p.isNullOrBlank()) append(" --provider ").append(p) }
+                send(agent.name, cmd)
+                "Asked the agent to use $m"
+            },
+            busy = { "" }, setBusy = {},
+        )
     }
     suspend fun answerRequest(agent: String, id: String, result: kotlinx.serialization.json.JsonObject): String? = chatFor(agent).answerRequest(api, agent, id, result)
 

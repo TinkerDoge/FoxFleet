@@ -81,7 +81,7 @@ object MessageActions {
      * A message can take a reaction once the hub can address it: by its provider id, or by its hub id when the hub takes hub ids as
      * targets ([hubIds]: `hub.features.reactionEvents`, 0.4.1 hubs). Older hubs only know provider ids.
      */
-    fun canReact(m: UiMessage, hubIds: Boolean = true) = m.id != null || (hubIds && m.hubId != null)
+    fun canReact(m: UiMessage, hubIds: Boolean = true, bot: Boolean = false) = m.id != null || (m.hubId != null && (hubIds || bot))
 
     /**
      * What a message offers for reactions (0.4.2). Older hubs used to drop the quick row, the pills and the double tap without a word:
@@ -89,13 +89,14 @@ object MessageActions {
      */
     fun reactState(caps: dev.foxfleet.app.data.Capabilities, hubIds: Boolean, m: UiMessage): ReactState = when {
         caps.reactions -> when {
-            canReact(m, hubIds) -> ReactState.Ready
+            canReact(m, hubIds, bot = caps.bot) -> ReactState.Ready
             // a current hub (hub-id targets): a message without ids yet is one still streaming or just sent; its hub id comes
             // with message.new. Nothing to say there (as in 0.4.1): no hint, no double-tap toast, no id request.
             hubIds -> ReactState.Off
             else -> ReactState.Pending // an older hub: it needs the provider id, which comes once the turn is saved
         }
-        caps.bot -> ReactState.Off // bot agents have no reactions on any hub
+        // Bot chats store fm_ ids as hubId; reactions are on (0.4.2). Only hide them when the hub itself has none.
+        caps.bot && !caps.reactions -> ReactState.Off
         else -> ReactState.HubTooOld
     }
 

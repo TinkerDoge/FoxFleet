@@ -331,7 +331,7 @@ fun ChatScreen(
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
     // 0.4.3: /model is a card in the chat (not a sheet), opened from the header chip or from typing /model. Only where the hub has a model list.
-    val modelControls = nativeControls?.takeIf { agent.capabilities.modelsMode != "none" }
+    val modelControls = nativeControls
     val modelCard = picker?.takeIf { it.kind == "model" && it.valid(state.sessionId) }
     var chipModel by remember(agent.name, state.sessionId) { mutableStateOf<String?>(null) }
     fun openModelCard(ask: Triple<String, String?, String>? = null) { picker = PickerCard(state.sessionId, "model", ask = ask) }
@@ -344,11 +344,13 @@ fun ChatScreen(
     var bgSheet by remember { mutableStateOf(false) }
     CompositionLocalProvider(LocalChatBgActive provides !bgState.bg.isDefault) {
     Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize().background(c.bg).statusBarsPadding().navigationBarsPadding().imePadding()) {
-            // Narrow phones (under 400 dp) or large text: Screen, Background and History move into one "More" menu so the name keeps room; New chat stays an icon. All targets stay 44 dp or more.
+        Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             val compact = androidx.compose.ui.platform.LocalConfiguration.current.screenWidthDp < 400 || androidx.compose.ui.platform.LocalDensity.current.fontScale > 1.15f
             var moreMenu by remember { mutableStateOf(false) }
-            Row(Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f).fillMaxWidth()) {
+                ChatBackgroundLayer(bgState.bg, bgState.bitmap)
+                Column(Modifier.fillMaxSize().statusBarsPadding()) {
+            Row(Modifier.padding(horizontal = 10.dp, vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(c.surface.copy(alpha = 0.82f)).padding(horizontal = 4.dp, vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                 SoftIconButton(FoxIcons.get("back"), "Back", onBack, tint = c.text)
                 Spacer(Modifier.width(4.dp))
                 AgentAvatar(agent.name, agent.presence(), 34.dp, Modifier.sharedAvatar(agent.name)
@@ -387,20 +389,20 @@ fun ChatScreen(
                     }
                 }
             }
-            Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
-                ChatBackgroundLayer(bgState.bg, bgState.bitmap)
                 Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures, agentLabel = agent.displayName) { openMedia(it) }
-                // The /model card sits in the chat, above the composer, on the request cards' shape. It takes at most most of the chat and scrolls rather than clip.
                 if (modelControls != null && modelCard != null) BoxWithConstraints(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
                     ModelCard(modelControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null },
                         modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp).heightIn(max = maxHeight * 0.92f).verticalScroll(rememberScrollState()),
                         startAsk = modelCard.ask, onPicked = { chipModel = it })
                 }
             }
+            }
+            }
+            Box(Modifier.background(c.bg)) {
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
-                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, models = agent.capabilities.modelsMode, modelsKnown = agent.capabilities.models != null, onModel = { args -> modelCommand(args, nativeControls, state, picker = { openModelCard() }, onConfirm = { m, p, r -> openModelCard(Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, models = agent.capabilities.modelsMode, modelsKnown = agent.capabilities.models != null, hasPicker = nativeControls != null, onModel = { args -> modelCommand(args, nativeControls, state, picker = { openModelCard() }, onConfirm = { m, p, r -> openModelCard(Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 agentCommands = agent.capabilities.skills,
                 reply = reply, onClearReply = { reply = null }, disabled = state.loading,
@@ -415,7 +417,11 @@ fun ChatScreen(
                     }
                 },
             )
+            }
         }
+    AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
+        viewing?.let { v -> MediaViewer(v.items, v.index, httpClient, onClose = { viewing = null }, onDelete = onDeleteMedia) }
+    }
     }
     // A choice card belongs to the chat that opened it: another chat, a new chat or five minutes later and it is gone.
     LaunchedEffect(state.sessionId) { picker = null }
@@ -449,9 +455,6 @@ fun ChatScreen(
     selecting?.let { SelectTextDialog(it) { selecting = null } }
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     if (bgSheet) ChatBackgroundSheet(bgState) { bgSheet = false }
-    AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
-        viewing?.let { v -> MediaViewer(v.items, v.index, httpClient, onClose = { viewing = null }, onDelete = onDeleteMedia) }
-    }
     }
 }
 
@@ -802,6 +805,7 @@ private fun Composer(
     /** How /model works for this agent (0.4.1): "native", "request" or "none"; [modelsKnown] false on hubs that do not say. */
     models: String = if (native) "native" else "none",
     modelsKnown: Boolean = false,
+    hasPicker: Boolean = false,
     onModel: (String) -> Unit = {},
     onChoices: (String, List<String>) -> Unit = { _, _ -> },
     defs: List<CommandDef>? = null,
@@ -883,10 +887,9 @@ private fun Composer(
             if (agentCommands && opensCommandBrowser(input)) { input = ""; browser = true; browserQuery = ""; showHidden = false; return }
             parseLocal(input, agentCommands)?.let { (cmd, args) -> onLocal(cmd, args); input = ""; return }
             Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m ->
-                // the picker whenever the hub has a model list for this agent (native gateway or the hub's request path)
-                if (models != "none") { input = ""; onModel(m.groupValues[1].trim()); return }
-                // No picker list for this agent (bot agents): send /model as typed — the agent's own
-                // Hermes /model handler answers it or switches the chat's model. Never refuse here.
+                // Open the in-chat card whenever we have a picker (native, request, or a bot command card).
+                if (hasPicker || models != "none") { input = ""; onModel(m.groupValues[1].trim()); return }
+                // No picker at all: send /model as typed — the agent's own Hermes handler answers it.
             }
             if (native) Regex("^/([A-Za-z0-9_-]+)$").find(input.trim())?.let { m ->
                 (defs ?: HermesCatalog.defs).firstOrNull { it.name == m.groupValues[1].lowercase() || m.groupValues[1].lowercase() in it.aliases }
