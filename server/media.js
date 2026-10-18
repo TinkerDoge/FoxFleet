@@ -35,23 +35,26 @@ export function mediaHub({ connectors, fetchUrl = fetchImage, now = () => Date.n
     if (!revokePath) return Promise.resolve();
     const rows = [...revoked].map(([k, at]) => { const [scope, agent, ref] = k.split('\0'); return { scope, agent, ref, at }; });
     const tmp = `${revokePath}.${randomBytes(6).toString('hex')}.tmp`;
-    revokePending = revokePending.then(async () => {
+    const job = revokePending.then(async () => {
       await mkdir(path.dirname(revokePath), { recursive: true });
       try { await writeFile(tmp, JSON.stringify({ v: 1, rows }), { mode: 0o600, flag: 'wx' }); await rename(tmp, revokePath); }
       finally { await unlink(tmp).catch(() => {}); }
-    }).catch(() => {});
-    return revokePending;
+    });
+    revokePending = job.catch(() => {}); // keep the serial queue alive after a failed write
+    return job;
   }
 
   /** Remember every ref in this reply text (so a client may later ask for exactly these). `at` is the message's own timestamp. */
-  function note(scope, agent, text, at = now()) {
+  function note(scope, agent, text, at) {
     if (typeof text !== 'string' || (!text.includes('MEDIA:') && !text.includes('](') && !text.includes('http'))) return 0;
     const refs = parseMedia(text).media.map((m) => m.ref).filter((r) => !isData(r)); if (!refs.length) return 0; // data: pictures carry their own bytes: nothing to fetch, nothing to remember
     const k = key(scope, agent), bag = mentioned.get(k) ?? mentioned.set(k, new Map()).get(k), t = now();
+    // 3-arg (live/test) uses now(); an explicit undefined/NaN timestamp from a transcript row is 0 so it cannot look "newer" than a tombstone.
+    const when = Number.isFinite(at) ? at : (arguments.length < 4 ? t : 0);
     let dropped = false;
     for (const r of refs) {
       const rv = revoked.get(rkey(scope, agent, r));
-      if (rv !== undefined && at <= rv) continue; // still revoked: an old mention of a deleted file stays dead
+      if (rv !== undefined && when <= rv) continue; // still revoked: an old mention of a deleted file stays dead
       if (rv !== undefined) { revoked.delete(rkey(scope, agent, r)); dropped = true; } // a newer reply re-offered it
       bag.delete(r); bag.set(r, t); // re-insert = most recent last
     }

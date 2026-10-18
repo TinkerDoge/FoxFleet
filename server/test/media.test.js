@@ -74,6 +74,21 @@ test('hub: revoke forgets a ref forever — transcript reload cannot resurrect i
   assert.ok(hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }).url, 'newer reply can be resolved again');
 });
 
+test('hub: a missing timestamp cannot resurrect a revoked ref; the revoke file reloads', async (t) => {
+  const dir = tmp(); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); const file = path.join(dir, 'media-revoked.json');
+  const clock = { n: 1_000_000 };
+  const hub = mediaHub({ connectors: stubConnectors({ '/tmp/a.png': { body: PNG, mime: 'image/png', name: 'a.png' } }), now: () => clock.n, revokePath: file });
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', 100);
+  await hub.revoke({ scope: 'u', agent: 'a', ref: '/tmp/a.png', at: 200 });
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', undefined);
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'undefined at is treated as old, not newer');
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', NaN);
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'NaN at is treated as old');
+  const again = mediaHub({ connectors: stubConnectors({ '/tmp/a.png': { body: PNG, mime: 'image/png', name: 'a.png' } }), now: () => clock.n, revokePath: file });
+  again.note('u', 'a', 'MEDIA:/tmp/a.png', 100);
+  assert.throws(() => again.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'a new hub instance reloads the tombstone');
+});
+
 test('hub: URL refs go through the SSRF-guarded fetcher with the media allowlist, and only if the agent mentioned them', async () => {
   const calls = []; const hub = mediaHub({ connectors: {}, fetchUrl: async (u, o) => { calls.push([u, o]); return { type: 'video/mp4', body: Buffer.from('v') }; } });
   assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', ref: 'https://evil.example/x.mp4' }), /not offered/, 'not an open proxy');
@@ -115,6 +130,12 @@ test('end to end: delete for everyone — resolve, delete, resolve 404, old toke
   assert.equal((await fetch(x.base + info.url)).status, 404, 'an old token stops serving');
   const d2 = await (await del(`/api/agents/${agent.name}/media`, { ref: png })).json(); assert.deepEqual(d2, { ok: true, deleted: false }, 'idempotent second delete');
   assert.equal((await del(`/api/agents/${agent.name}/media`, { ref: '' })).status, 400, 'empty ref');
+  const ghost = '/tmp/never-mentioned.png';
+  const d3 = await del(`/api/agents/${agent.name}/media`, { ref: ghost });
+  assert.equal(d3.status, 200, 'deleting a ref this process has not noted still tombstones it');
+  assert.deepEqual(await d3.json(), { ok: true, deleted: true });
+  const later = await post(`/api/agents/${agent.name}/media`, { ref: ghost });
+  assert.equal(later.status, 404, 'a later resolve of that ghost ref stays 404');
 });
 
 test('security: nothing that can run in a browser is deliverable; hostile names cannot break headers; documents are attachments, never inline', async () => {

@@ -710,13 +710,16 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const payload = Buffer.from(JSON.stringify({ scope: c.scope, botId: m.botId, id: row.id, expires })).toString('base64url');
         return c.sendJson(res, 200, { url: `/api/media/bot.${payload}.${mediaSign(payload)}`, kind: row.kind, name: row.name, expires });
       }
-      if (parts[3] === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": drop the bot blob and the offer
+      if (parts[3] === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": drop the bot blob and tombstone the offer
         const b = await c.readJson(req, 8192), ref = typeof b?.ref === 'string' ? b.ref.trim() : '';
         if (!ref || ref.length > 2000) throw fault(400, 'Invalid ref');
         const store = await readyStore(c);
         const row = store.mediaForRef(ref);
-        if (row) { await blobs.discard(c.reg, m.botId, store, row.id); if (media) await media.revoke({ scope: c.scope, agent: m.name, ref }); return c.sendJson(res, 200, { ok: true, deleted: true }); }
-        if (media && media.revoked(c.scope, m.name, ref) !== null) return c.sendJson(res, 200, { ok: true, deleted: false }); // idempotent
+        const already = !row && media && media.revoked(c.scope, m.name, ref) !== null;
+        if (row) await blobs.discard(c.reg, m.botId, store, row.id);
+        if (media) await media.revoke({ scope: c.scope, agent: m.name, ref });
+        if (row) return c.sendJson(res, 200, { ok: true, deleted: true });
+        if (already) return c.sendJson(res, 200, { ok: true, deleted: false });
         throw fault(404, 'Not found');
       }
       if (parts[3] === 'messages'  && parts.length === 4 && req.method === 'POST') return await postMessages(c);

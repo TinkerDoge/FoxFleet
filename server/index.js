@@ -909,13 +909,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const { text, at } of runs.texts(scope, m.name)) media.note(scope, m.name, text, at);
           return sendJson(res, 200, media.resolve({ scope, agent: m.name, machineId: m.machineId, profile: m.profile, ref: b?.ref }));
         }
-        if (route === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": hub forgets the offer; the next resolve 404s forever
+        if (route === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": always tombstone, even if this process has not noted the ref yet (a 404 here used to drop only the phone cache, then the next tap redownloaded)
           const b = await readJson(req, 8192), scope = scopeOf(ctx), ref = typeof b?.ref === 'string' ? b.ref.trim() : '';
           if (!ref || ref.length > 2000) throw fault(400, 'Invalid ref');
-          if (media.revoked(scope, m.name, ref) !== null) return sendJson(res, 200, { ok: true, deleted: false }); // idempotent
-          if (!media.knows(scope, m.name, ref)) throw fault(404, 'That file was not offered by this agent');
+          const already = media.revoked(scope, m.name, ref) !== null;
           await media.revoke({ scope, agent: m.name, ref });
-          return sendJson(res, 200, { ok: true, deleted: true });
+          return sendJson(res, 200, { ok: true, deleted: !already });
         }
         if (route === 'models' && parts.length === 4 && req.method === 'GET') { // one model list for every agent kind (0.4.1): native gateway or the API server's /api/model/options
           const mode = modelsMode(m, nativeUi(m) ? null : (await probeShared(m)).view), refresh = url.searchParams.get('refresh') === '1', sid = url.searchParams.get('session_id') || '';
