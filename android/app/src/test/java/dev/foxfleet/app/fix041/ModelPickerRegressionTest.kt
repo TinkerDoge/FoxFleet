@@ -59,9 +59,9 @@ class ModelPickerRegressionTest {
         compose.onNodeWithText("Choose a provider").assertExists()
     }
 
-    @Test fun noModelListSaysSoInsteadOfSendingIt() {
-        assertTrue(typeModel(Capabilities(sessions = true, models = "none"), null).isEmpty())
-        compose.onNodeWithText("This agent offers no model list, so /model cannot change it from here.").assertExists()
+    /** A bot agent has no picker list: /model must reach the agent, whose own Hermes handler answers it. */
+    @Test fun noModelListSendsTheCommandToTheAgent() {
+        assertEquals(listOf("/model"), typeModel(Capabilities(sessions = true, models = "none", bot = true), null))
     }
 
     @Test fun olderHubWithoutTheFieldKeepsTheOldBehaviour() {

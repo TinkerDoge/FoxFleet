@@ -847,7 +847,8 @@ private fun Composer(
             Regex("^/model(?:\\s+(.*))?$", RegexOption.IGNORE_CASE).find(input.trim())?.let { m ->
                 // the picker whenever the hub has a model list for this agent (native gateway or the hub's request path)
                 if (models != "none") { input = ""; onModel(m.groupValues[1].trim()); return }
-                if (modelsKnown) { input = ""; note = "This agent offers no model list, so /model cannot change it from here."; return }
+                // No picker list for this agent (bot agents): send /model as typed — the agent's own
+                // Hermes /model handler answers it or switches the chat's model. Never refuse here.
             }
             if (native) Regex("^/([A-Za-z0-9_-]+)$").find(input.trim())?.let { m ->
                 (defs ?: HermesCatalog.defs).firstOrNull { it.name == m.groupValues[1].lowercase() || m.groupValues[1].lowercase() in it.aliases }
