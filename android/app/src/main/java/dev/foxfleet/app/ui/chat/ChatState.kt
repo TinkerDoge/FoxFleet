@@ -253,6 +253,8 @@ class ChatState {
         onToolEvent = { e -> if (g == gen) { tools = tools.update(e); toolLabel = null; editSteps { it.tool(e) } } }, // per-call events replace the legacy label
         onStep = { k, t, l -> if (g == gen) editSteps { it.note(k, t, l) } },
         onRunState = { st -> if (g == gen && st in FAILED_RUN) runFailed = true },
+        // 0.4.2: the hub sends the whole thinking each time; replace, and keep the start time for the duration.
+        onReasoningSnapshot = { text -> if (g == gen) { if (text.isBlank()) { streamReasoning = ""; reasoningStart = 0L } else { if (streamReasoning.isEmpty()) reasoningStart = System.currentTimeMillis(); streamReasoning = text } } },
         onRequest = { r -> if (g == gen && requests.none { it.id == r.id }) requests = requests + r },
         onRequestClosed = { id, _ -> if (g == gen) requests = requests.filter { it.id != id } },
         onAck = { id, ack -> if (g == gen) queue = queue.map { if (it.id == id) it.copy(ack = ack) else it } },
@@ -268,7 +270,7 @@ class ChatState {
         push(UiMessage(role = "user", content = userText, images = images))
         pendingUser = userText; runId = null
         val sentAt = System.currentTimeMillis(); val before = messages
-        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace, onStep = cb.onStep, onRunState = cb.onRunState) } }
+        try { stream { cb -> api.chat(agent, messages, sessionId, cb.onContent, cb.onReasoning, cb.onTool, cb.onSession, cb.onRun, cb.onGap, cb.onRequest, cb.onRequestClosed, cb.onAck, cb.onReconnecting, cb.onToolEvent, onReplace = cb.onReplace, onStep = cb.onStep, onRunState = cb.onRunState, onReasoningSnapshot = cb.onReasoningSnapshot) } }
         catch (e: dev.foxfleet.app.data.HubApiException) {
             if (!e.transient || runId != null || !autoResubmit(api, agent, UiMessage(role = "user", content = userText, images = images), sentAt)) throw e
         }

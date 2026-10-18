@@ -310,12 +310,11 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     let st = liveRun(session.botId, chatId); if (!st && change.kind !== 'send') return; if (!st) { try { st = await startRun(session.scope, m, chatId); } catch { return; } }
     if (st.ended) return;
     st.wrote = st.wrote || change.kind !== 'action'; arm(st);
-    if (typeof change.reasoning === 'string' && change.reasoning) {
-      // The app appends what it is told, so send only the growth; a revision (rare) re-sends it whole.
-      const seen = st.reasoning ?? '';
-      const grew = change.reasoning.startsWith(seen) ? change.reasoning.slice(seen.length) : change.reasoning;
-      if (grew) emit(st, sse({ text: grew }, 'foxfleet.reasoning'));
+    if (typeof change.reasoning === 'string' && change.reasoning !== (st.reasoning ?? '')) {
+      // A full snapshot, not a delta: the app replaces its block with it, so a reconnect replay, a
+      // shortened/cleared revision and a repeated frame all converge on the same text.
       st.reasoning = change.reasoning;
+      emit(st, sse({ text: change.reasoning }, 'foxfleet.reasoning'));
     }
     if (change.kind === 'send') { st.parts.push({ id: change.id, text: change.text }); emit(st, delta((st.parts.length > 1 ? '\n\n' : '') + change.text)); }
     else if (change.kind === 'edit') {

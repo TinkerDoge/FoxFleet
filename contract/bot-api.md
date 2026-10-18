@@ -39,8 +39,8 @@ message ids, with the same request/response shape as the other agents.
 
 **Thinking (0.4.2).** `message.send` and `message.edit` accept an optional `reasoning` string (the
 turn's thinking, capped at 64 KiB). The hub keeps it with the reply (`reasoning` in the transcript)
-and streams it on the reply's run as `foxfleet.reasoning` events whose `text` is only the new part
-(the client appends). A bot that sends none is unchanged.
+and streams it on the reply's run as `foxfleet.reasoning` events whose `text` is the whole thinking
+so far (the client replaces its block, so replays and revisions converge). A bot that sends none is unchanged.
 
 An empty native stream is closed by Hermes with a lone `✅` finalize frame. The adapter stores that
 tick non-final so the turn stays open: the authoritative text (if any) then replaces that message,

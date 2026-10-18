@@ -27,8 +27,8 @@ Tier 1 of the bot-path repair (the six agents now talk to the hub as native bot 
     (`gateway/platform_reasoning.py`). Inert for every other platform, restored after each turn.
   - Protocol: `message.send` / `message.edit` take an optional bounded `reasoning` string.
   - Hub: the thinking is stored with the reply (history contains `reasoning`), and the reply's run
-    streams it as `foxfleet.reasoning` deltas (`{text}`): the app appends them to its collapsible
-    block. Only the growth is sent, so a repeated snapshot adds nothing.
+    streams it as `foxfleet.reasoning` snapshots (`{text}` is the whole thinking so far): the app
+    replaces its collapsible block, so replays, revisions and shortened text all converge.
   - Plugin: buffers the reasoning per chat (bounded, 0.25 s debounce, flushed from the adapter's
     loop so the agent thread never blocks) and carries it on the reply's first message.
   - Android: the bot stream handles `foxfleet.reasoning`; the existing live ReasoningBlock and the

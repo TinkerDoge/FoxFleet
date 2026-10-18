@@ -390,6 +390,8 @@ class HubApi(private val store: SettingsStore) {
         val onReplace: (String) -> Unit = {},
         /** 0.4.1 hubs: `foxfleet.step` commentary / status / sub-agent lines (kind, text, level). */
         val onStep: (String, String, String?) -> Unit = { _, _, _ -> },
+        /** 0.4.2 hubs: `foxfleet.reasoning` carries the whole thinking so far — replace, never append. */
+        val onReasoningSnapshot: (String) -> Unit = {},
     )
 
     /**
@@ -414,6 +416,7 @@ class HubApi(private val store: SettingsStore) {
         onReplace: (String) -> Unit = {},
         onStep: (String, String, String?) -> Unit = { _, _, _ -> },
         onRunState: (String) -> Unit = {},
+        onReasoningSnapshot: (String) -> Unit = {},
     ): String = withContext(Dispatchers.IO) {
         val payload = buildJsonObject {
             put("model", "hermes-agent")
@@ -423,7 +426,7 @@ class HubApi(private val store: SettingsStore) {
         }.toString()
         val url = base().newBuilder().encodedPath(agentPath(agent) + "/chat").build()
         val response = await(client.newCall(Request.Builder().url(url).post(payload.toRequestBody(jsonMedia)).build()))
-        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace, onStep = onStep, onRunState = onRunState), null, 0)
+        pump(agent, response, StreamCallbacks(onContent, onReasoning, onTool, onSession, onRun, onGap, onRequest = onRequest, onRequestClosed = onRequestClosed, onAck = onAck, onReconnecting = onReconnecting, onToolEvent = onToolEvent, onReplace = onReplace, onStep = onStep, onRunState = onRunState, onReasoningSnapshot = onReasoningSnapshot), null, 0)
     }
 
     /** Reattach to a run after a restart or a lost connection; replays from [after] (0 = the whole reply so far). */
@@ -634,11 +637,11 @@ class HubApi(private val store: SettingsStore) {
                             if (text != null) { builder.setLength(0); builder.append(text); cb.onReplace(text) }
                             true
                         }
-                        // The turn's thinking (0.4.2 hub + plugin). Only the growth is sent, and the
-                        // screen appends it to the live ReasoningBlock.
+                        // The turn's thinking (0.4.2 hub + plugin): the whole text so far. The screen
+                        // replaces its live ReasoningBlock, so replays and revisions converge.
                         e.event == "foxfleet.reasoning" -> {
                             runCatching { json.parseToJsonElement(e.data).jsonObject["text"]?.jsonPrimitive?.contentOrNull }.getOrNull()
-                                ?.takeIf { it.isNotEmpty() }?.let(cb.onReasoning)
+                                ?.let(cb.onReasoningSnapshot)
                             true
                         }
                         e.event == "foxfleet.gap" -> { builder.setLength(0); cb.onGap(); true }

@@ -9,18 +9,18 @@ const chat = async (b, text = 'think this through') => (await (await b.h.call(`/
 const transcript = async (b, id) => (await (await b.h.call(`/api/agents/${b.name}/sessions/${id}/messages`)).json()).messages;
 const liveRun = async (b, id) => (await (await b.h.call(`/api/agents/${b.name}/runs?session_id=${id}`)).json()).runs[0];
 
-test("a turn's thinking rides with the reply: streamed as growth, kept in history", async (t) => {
+test("a turn's thinking rides with the reply: streamed as snapshots, kept in history", async (t) => {
   const b = await bootBot(t), id = await chat(b);
   const run = await liveRun(b, id);
   const s = sseReader(await b.h.call(`/api/agents/${b.name}/runs/${run.id}/events`)); t.after(() => s.cancel());
   const sent = await (await rpc(b, { t: 'message.send', id: 'r1', chat_id: id, text: 'Working on it.', reasoning: 'Check the logs. ' })).json();
   const mid = sent.result.message_id;
-  // A second snapshot repeats the growth and adds more: only the new part is sent to the app.
+  // A second snapshot repeats the text and adds more: the app is given the whole text each time.
   assert.equal((await rpc(b, { t: 'message.edit', id: 'r2', chat_id: id, message_id: mid, text: 'Working on it.', reasoning: 'Check the logs. Then the config.' })).status, 200);
   assert.equal((await rpc(b, { t: 'message.edit', id: 'r3', chat_id: id, message_id: mid, text: 'Fixed. The port was wrong.', reasoning: 'Check the logs. Then the config.', final: true })).status, 200);
   await s.until(() => s.events.filter((e) => e.event === 'foxfleet.reasoning').length >= 2, 5000);
   const shown = s.events.filter((e) => e.event === 'foxfleet.reasoning').map((e) => e.data.text);
-  assert.deepEqual(shown, ['Check the logs. ', 'Then the config.'], 'the app appends deltas; a repeated snapshot adds nothing');
+  assert.deepEqual(shown, ['Check the logs. ', 'Check the logs. Then the config.'], 'each event is the whole thinking so far; an unchanged frame adds nothing');
   const msgs = await transcript(b, id);
   assert.equal(msgs.length, 2);
   assert.equal(msgs[1].content, 'Fixed. The port was wrong.');

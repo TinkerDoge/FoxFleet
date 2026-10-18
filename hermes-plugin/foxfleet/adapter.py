@@ -283,6 +283,14 @@ _TRANSIENT_RPC_CODES = {"rate_limited"}
 _LOCAL_OWNERS: dict[str, "weakref.ReferenceType[FoxFleetAdapter]"] = {}
 
 
+def _clip_utf8(text: str, limit: int) -> str:
+    """``text`` cut to at most ``limit`` UTF-8 bytes without splitting a character."""
+    raw = text.encode("utf-8")
+    if len(raw) <= limit:
+        return text
+    return raw[:limit].decode("utf-8", "ignore")
+
+
 def _jittered(delay: float) -> float:
     return delay * (0.5 + random.random() / 2)
 
@@ -494,6 +502,11 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         self._closing = True
+        for task in list(self._reasoning_tasks):
+            task.cancel()
+        self._reasoning_tasks.clear()
+        self._reasoning_flush.clear()
+        self._reasoning.clear()  # per-chat thinking does not outlive the connection
         await self._stop_tasks()
         conn, self._conn = self._conn, None
         self._connected.clear()
@@ -1486,6 +1499,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
                       else await self._push_snapshot(state, str(chat_id), text, reply_to, False) is None)
             if pushed:
                 state.finalized = bool(finalize)
+                if finalize:
+                    self._reasoning.pop(str(chat_id), None)  # the turn is over
                 return True
             if not finalize:
                 # A False here makes Hermes leave native mode, "close" the stream with a
@@ -1529,7 +1544,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
     # frames must go out on the adapter's loop, so the text is buffered and flushed with a small
     # debounce. The hub stores it with the reply and streams it to the app's collapsible block.
     REASONING_DEBOUNCE = 0.25
-    MAX_REASONING = 30000
+    # The hub refuses a reasoning field over 64 KiB of UTF-8; stay under it with room for the frame.
+    MAX_REASONING_BYTES = 60000
 
     def on_reasoning_delta(self, chat_id: str, text: str) -> None:
         """Thread-safe: append this turn's thinking for ``chat_id`` and schedule a flush."""
@@ -1547,14 +1563,19 @@ class FoxFleetAdapter(BasePlatformAdapter):
     def _note_reasoning(self, chat_id: str, piece: str) -> None:
         """On the loop: grow this turn's thinking and make sure one flush is pending."""
         current = self._reasoning.get(chat_id, "")
-        if len(current) + len(piece) > self.MAX_REASONING:
+        grown = _clip_utf8(current + piece, self.MAX_REASONING_BYTES)
+        if len(grown) <= len(current):
             return  # bounded: a runaway model must not grow the frame forever
-        self._reasoning[chat_id] = current + piece
-        if chat_id not in self._reasoning_flush:
-            self._reasoning_flush.add(chat_id)
-            task = asyncio.get_running_loop().create_task(self._flush_reasoning(chat_id))
-            self._reasoning_tasks.add(task)
-            task.add_done_callback(self._reasoning_tasks.discard)
+        self._reasoning[chat_id] = grown
+        self._schedule_flush(chat_id)
+
+    def _schedule_flush(self, chat_id: str) -> None:
+        if chat_id in self._reasoning_flush:
+            return
+        self._reasoning_flush.add(chat_id)
+        task = asyncio.get_running_loop().create_task(self._flush_reasoning(chat_id))
+        self._reasoning_tasks.add(task)
+        task.add_done_callback(self._reasoning_tasks.discard)
 
     async def _flush_reasoning(self, chat_id: str) -> None:
         """On the loop: after the debounce, show the accumulated thinking on the open stream."""
@@ -1576,6 +1597,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
                     logger.debug("FoxFleet: reasoning update for chat %s failed: %s", chat_id, err)
         finally:
             self._reasoning_flush.discard(chat_id)
+            if self._reasoning.get(chat_id, "") != text:
+                # a delta arrived while this flush was in flight: it needs its own pass
+                self._schedule_flush(chat_id)
 
     def _newest_stream(self, chat_id: str) -> Optional[_Stream]:
         newest = None
@@ -1599,6 +1623,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if result.success:
             state.sent_reasoning = state.reasoning
         else:
+            # A display field must never block the reply: drop it and let the next frame carry text only.
+            state.reasoning, state.sent_reasoning = "", ""
             logger.debug("FoxFleet: reasoning update for chat %s not delivered: %s", chat_id, result.error)
 
     def _pending_placeholder(self, chat_id: str) -> Optional[_Stream]:
@@ -1692,9 +1718,15 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 if previous == chunk and not final and (index != 0 or (chunk_reasoning or "") == (state.sent_reasoning or "")):
                     continue
                 result = await self._edit(chat_id, mid, chunk, finalize=final, reasoning=chunk_reasoning)
+                if not result.success and chunk_reasoning:
+                    state.reasoning, chunk_reasoning = "", None  # never lose the text over a display field
+                    result = await self._edit(chat_id, mid, chunk, finalize=final)
             else:
                 chunk_reply_to = reply_to if index == 0 else None
                 result = await self._send_chunk(chat_id, chunk, chunk_reply_to, final=final, reasoning=chunk_reasoning)
+                if not result.success and chunk_reasoning:
+                    state.reasoning, chunk_reasoning = "", None
+                    result = await self._send_chunk(chat_id, chunk, chunk_reply_to, final=final)
                 unknown = self._unknown_outcomes.get(self._fingerprint(chat_id, chunk, chunk_reply_to, final))
                 if not result.success and unknown is not None:
                     state.unconfirmed = (chunk, chunk_reply_to, final, unknown[0])
