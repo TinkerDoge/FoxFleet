@@ -1,1 +1,1 @@
-<?xml version="1.0" encoding="utf-8"?><paths><cache-path name="camera" path="camera/" /><cache-path name="media" path="media/" /><cache-path name="media-cache" path="media-cache/" /></paths>
+<?xml version="1.0" encoding="utf-8"?><paths><cache-path name="camera" path="camera/" /><cache-path name="media" path="media/" /><files-path name="media-cache" path="media-cache/" /><files-path name="updates" path="updates/" /></paths>

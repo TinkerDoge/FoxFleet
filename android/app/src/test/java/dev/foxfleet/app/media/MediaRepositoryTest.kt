@@ -58,4 +58,46 @@ class MediaRepositoryTest {
         MediaRepository(dir, 32).session("hub", "alice").acquire("x") { f, _, _ -> f.writeText("ok") }.close()
         MediaRepository(dir, 32).session("hub", "alice").acquire("x") { _, _, _ -> error("warm disk hit") }.use { assertEquals("ok", it.file.readText()) }
     }
+    // 0.4.3 C1: the durable directory (filesDir) keeps a warm hit across a brand new repository, as it does across a process restart.
+    @Test fun `durable directory keeps a warm hit for a new repository instance`() = runBlocking {
+        val filesDir = Files.createTempDirectory("app-files").toFile()
+        MediaRepository(filesDir, 64).session("hub", "alice").acquire("durable") { f, _, _ -> f.writeText("kept") }.close()
+        var loads = 0
+        MediaRepository(filesDir, 64).session("hub", "alice").acquire("durable") { f, _, _ -> loads++; f.writeText("redownload") }.use { assertEquals("kept", it.file.readText()) }
+        assertEquals(0, loads)
+    }
+    // 0.4.3 C2
+    @Test fun `session delete drops the file so the next open downloads again`() = runBlocking {
+        val r = repo(64); val s = r.session("hub", "alice"); var loads = 0; val id = MediaRepository.identity("agent", "inst", "m1")
+        suspend fun load() = s.acquire(id) { f, _, _ -> loads++; f.writeText("m1") }
+        load().close(); assertEquals(1, loads)
+        s.delete(id)
+        assertEquals(0L, r.usageBytes())
+        load().close(); assertEquals(2, loads)
+    }
+    @Test fun `delete of a leased file waits for the viewer to close`() = runBlocking {
+        val r = repo(64); val s = r.session("hub", "alice"); val id = MediaRepository.identity("agent", "inst", "v")
+        val playing = s.acquire(id) { f, _, _ -> f.writeText("video") }
+        s.delete(id)
+        assertTrue("still playing", playing.file.exists())
+        playing.close()
+        assertFalse("removed once closed", playing.file.exists())
+        assertEquals(0L, r.usageBytes())
+    }
+    @Test fun `deleteAgent removes every cached file of one agent only`() = runBlocking {
+        val r = repo(128); val s = r.session("hub", "alice")
+        s.acquire(MediaRepository.identity("sumi", "inst", "a")) { f, _, _ -> f.writeText("a") }.close()
+        s.acquire(MediaRepository.identity("sumi", "inst", "b")) { f, _, _ -> f.writeText("b") }.close()
+        s.acquire(MediaRepository.identity("other", "inst", "a")) { f, _, _ -> f.writeText("o") }.close()
+        assertEquals(3L, r.usageBytes())
+        s.deleteAgent("sumi")
+        assertEquals(1L, r.usageBytes())
+    }
+    @Test fun `repository delete removes an identity across owners`() = runBlocking {
+        val r = repo(128); val identity = MediaRepository.identity("sumi", "inst", "m")
+        r.session("hub", "alice").acquire(identity) { f, _, _ -> f.writeText("x") }.close()
+        r.session("hub", "bob").acquire(identity) { f, _, _ -> f.writeText("y") }.close()
+        r.delete(identity)
+        assertEquals(0L, r.usageBytes())
+    }
 }
