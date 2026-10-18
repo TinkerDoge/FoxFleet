@@ -1,8 +1,18 @@
 // A protocol-faithful stand-in for `python -m tui_gateway.entry` (Hermes), written from the REAL frames observed against hermes-agent
 // 0670ba45 (see design/notes/hermes-ui-gateway.md). Newline-delimited JSON-RPC on stdio, `gateway.ready` first, per-session `seq`
 // on events, server->client `clarify` requests, busy-submit acks, request.cancel, open_requests / inflight / queued in snapshots.
-// Behaviour by prompt text: "slow ..." streams for ~3s, "clarify ..." asks a question first, "crash" kills the process.
+// Behaviour by prompt text: "slow ..." streams for ~3s, "clarify ..." asks a question first, "crash" kills the process,
+// "mediacase" / "mediacase2" make tool files, "nostream" sends the reply only in message.complete.
 import readline from 'node:readline';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+// Like Hermes, stored sessions outlive the process (Hermes keeps them in its state DB; here a small file in HERMES_HOME), while runtime
+// ids and confirm tokens do not: a restarted gateway resumes a stored id under a NEW runtime id and has forgotten every old one.
+// Sessions are created lazily (`info.lazy`): one is stored only once a turn finished, so a chat that never completed a turn is unknown after a restart.
+const STORE = process.env.HERMES_HOME ? join(process.env.HERMES_HOME, 'fake-gateway-sessions.json') : null;
+const stored = () => { try { return JSON.parse(readFileSync(STORE, 'utf8')); } catch { return {}; } };
+const persist = (s) => { if (!STORE) return; try { const all = stored(); all[s.stored] = { messages: s.messages, rev: s.rev ?? 1 }; writeFileSync(STORE, JSON.stringify(all)); } catch { /* best effort */ } };
+const RT = process.pid.toString(36); // runtime ids are per process
 let n = 0, srq = 0, busyMode = 'interrupt'; const sessions = new Map(), open = new Map(); let clientCaps = false;
 const out = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 const ok = (id, result) => out({ jsonrpc: '2.0', id, result }), err = (id, code, message) => out({ jsonrpc: '2.0', id, error: { code, message } });
@@ -36,12 +46,17 @@ async function turn(s, text) {
     ev(s, 'tool.start', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' } }); await sleep(5);
     ev(s, 'tool.complete', { tool_id: 'call_s1', name: 'terminal', args: { command: 'ls -la' }, result: '{"output":"a b","exit_code":0}', duration_s: 0.5 }); ev(s, 'reasoning.available', { text: 'thought about it' });
   }
+  // 0.4.2 N1: a tool-made file ("mediacase"; "mediacase2" makes a second, distinct one) and a profile with streaming.enabled=false
+  // ("nostream": no message.delta, only message.complete carries the text).
+  if (/mediacase/.test(text)) { ev(s, 'tool.start', { tool_id: 'call_m1', name: 'image_generate', args: { prompt: 'chart' } }); await sleep(5); ev(s, 'tool.complete', { tool_id: 'call_m1', name: 'image_generate', result: '{"path":"/tmp/fake/chart.png"}', duration_s: 0.1 }); }
+  if (/mediacase2/.test(text)) { ev(s, 'tool.start', { tool_id: 'call_m2', name: 'image_generate', args: { prompt: 'map' } }); await sleep(5); ev(s, 'tool.complete', { tool_id: 'call_m2', name: 'image_generate', result: '{"path":"/tmp/fake/map.png"}', duration_s: 0.1 }); }
+  if (/nostream/.test(text)) { s.partial = /ownmedia/.test(text) ? 'Here is the chart.\nMEDIA:/tmp/fake/chart.png\nAnd a table: MEDIA:/tmp/fake/table.csv' : 'Finished reply without streaming.'; return finish(s, 'done'); }
   const words = /slow/.test(text) ? 30 : 3;
   for (let i = 0; i < words && !s.interrupted; i++) { s.partial += `w${i} `; ev(s, 'message.delta', { text: `w${i} ` }); await sleep(/slow/.test(text) ? 100 : 5); }
   finish(s, s.interrupted ? 'interrupted' : 'done');
 }
 function finish(s, how) {
-  const text = s.partial; if (text) s.messages.push({ role: 'assistant', content: text, ...(how === 'interrupted' ? { interrupted: true } : {}) });
+  const text = s.partial; if (text) s.messages.push({ role: 'assistant', content: text, ...(how === 'interrupted' ? { interrupted: true } : {}) }); persist(s);
   ev(s, 'message.complete', { text, status: how === 'interrupted' ? 'interrupted' : 'complete' }); s.running = false;
   const next = s.queue.shift(); if (next) setTimeout(() => turn(s, next), 5);
 }
@@ -63,8 +78,10 @@ const handlers = {
   'model.options': (id) => ok(id, { providers: [{ slug: 'custom', name: 'Custom', is_current: true, models: ['fake-model'] }] }),
   'session.list': (id) => ok(id, { sessions: [...sessions.values()].filter((s, i, a) => a.findIndex((x) => x.stored === s.stored) === i).map((s) => ({ id: s.stored, title: s.cur || null, message_count: s.messages.length })) }),
   'session.create': (id, p) => { const key = p.idempotency_key && [...sessions.values()].find((s) => s.idem === p.idempotency_key); if (key) return ok(id, { session_id: key.rt, stored_session_id: key.stored, message_count: 0, messages: [], info: {} });
-    const s = { rt: 'rt' + (++n), stored: '20261009_000000_' + n.toString(16).padStart(6, '0'), seq: 0, events: [], messages: [], queue: [], running: false, corrections: [], idem: p.idempotency_key }; sessions.set(s.rt, s); ok(id, { session_id: s.rt, stored_session_id: s.stored, message_count: 0, messages: [], info: { model: 'fake-model', lazy: true } }); },
-  'session.resume': (id, p) => { const s = [...sessions.values()].find((x) => x.stored === p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, { ...snapshot(s), resumed: true }); },
+    const s = { rt: `rt${++n}-${RT}`, stored: '20261009_000000_' + RT + '_' + n.toString(16).padStart(6, '0'), seq: 0, events: [], messages: [], queue: [], running: false, corrections: [], idem: p.idempotency_key }; sessions.set(s.rt, s); ok(id, { session_id: s.rt, stored_session_id: s.stored, message_count: 0, messages: [], info: { model: 'fake-model', lazy: true } }); },
+  'session.resume': (id, p) => { let s = [...sessions.values()].find((x) => x.stored === p.session_id);
+    if (!s) { const old = stored()[p.session_id]; if (!old) return err(id, 4007, 'session not found'); s = { rt: `rt${++n}-${RT}`, stored: p.session_id, seq: 0, events: [], messages: old.messages ?? [], rev: old.rev ?? 1, queue: [], running: false, corrections: [] }; sessions.set(s.rt, s); }
+    ok(id, { ...snapshot(s), resumed: true }); },
   'session.activate': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, snapshot(s)); },
   'session.events.since': (id, p) => { if (typeof p.last_seen !== 'number' && p.last_seen !== undefined) return err(id, 4000, 'invalid params'); const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); ok(id, { events: s.events.filter((e) => e.seq > (p.last_seen ?? 0)), latest_seq: s.seq, truncated: false, count: 0, epoch: 'epoch-' + process.pid, open_requests: snapshot(s).open_requests }); },
   'image.attach_bytes': (id, p) => { const s = sessions.get(p.session_id); if (!s) return err(id, 4007, 'session not found'); if (!p.content_base64) return err(id, 4015, 'content_base64 required'); const bytes = Buffer.from(p.content_base64, 'base64'); if (!bytes.length) return err(id, 4015, 'image is empty'); (s.attached ??= []).push(bytes.length); ok(id, { attached: true, path: '/tmp/upload-' + s.attached.length + '.png', count: s.attached.length, bytes: bytes.length }); },
@@ -79,9 +96,16 @@ const handlers = {
     if (p.operation !== 'model') return err(id, 4002, `unsupported mutate: ${p.operation}`);
     const s = sessions.get(p.session_id) || [...sessions.values()].find((x) => x.stored === p.session_id);
     if (!s) return err(id, 4007, 'session not found');
-    const model = String(p.payload?.model || '').split(' --')[0];
-    if (/expensive/.test(model) && p.payload?.confirm !== true && p.payload?.confirm !== 'tok') return ok(id, { status: 'confirmation_required', confirm: 'tok', message: 'This model is expensive. Confirm to switch.', model });
-    s.rev = (s.rev ?? 1) + 1; s.model = model;
+    // Hermes validate_action (hermes_state_mutations.py at pin f9bdaa30): payload keys within {model, provider, confirm}, every value a
+    // non-empty string, else RuntimeStoreError('invalid_params') -> JSON-RPC 4001. So `confirm: true` (a boolean) is refused outright.
+    const pl = p.payload;
+    if (!pl || typeof pl !== 'object' || !('model' in pl) || Object.keys(pl).some((k) => !['model', 'provider', 'confirm'].includes(k)) || Object.values(pl).some((v) => typeof v !== 'string' || !v.trim())) return err(id, 4001, 'invalid_params');
+    const model = String(pl.model).split(' --')[0];
+    // session_mutation_model._selection_guard_refusal: the token is bound to the target and the session revision; only that exact token
+    // applies the switch, a stale or foreign one gets a fresh refusal (never an error, never a silent apply).
+    const token = `tok-${model}-${pl.provider ?? ''}-${s.rev ?? 1}`;
+    if (/expensive/.test(model) && pl.confirm !== token) return ok(id, { status: 'confirmation_required', confirm_required: true, confirm: token, target_model: model, confirm_message: 'This model is expensive. Confirm to switch.' });
+    s.rev = (s.rev ?? 1) + 1; s.model = model; if (s.messages.length) persist(s);
     return ok(id, { status: 'ok', model, value: model, scope: 'session', revision: s.rev });
   },
 };

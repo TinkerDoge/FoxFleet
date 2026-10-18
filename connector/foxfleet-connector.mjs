@@ -429,7 +429,13 @@ export const UI_OPS = {
   resolve: (p) => ['command.resolve', { name: need(str(p.name, 100), 'name') }],
   dispatch: (p) => { const name = need(str(p.name, 100), 'name').replace(/^\//, ''); if (!DISPATCH_OK.has(name)) throw Object.assign(new Error(`/${name} is not available remotely`), { code: 'not_allowed' }); return ['command.dispatch', { name, arg: typeof p.arg === 'string' ? p.arg.slice(0, 2000) : '', session_id: need(str(p.session_id), 'session_id') }]; },
   // /model: session-scoped switch. `--global` / `--once` flags are refused here; a profile default is changed in Hermes itself.
-  setmodel: (p) => { const v = need(str(p.value, 300), 'value'); if (/(^|\s)--(global|once)\b/i.test(v)) throw Object.assign(new Error('Changing the profile default is not available remotely'), { code: 'not_allowed' }); return ['session.mutate', { value: v, session_id: need(str(p.session_id), 'session_id'), ...(p.confirm === true ? { confirm: true } : {}) }]; },
+  // Builds Hermes's own shape (gateway/session_mutations.py _FIELDS; validate_action: payload {model, provider?, confirm?}, all non-empty
+  // strings). setModel() adds the revision fence, the request id and the confirm token; it never sends `value` or a boolean confirm.
+  setmodel: (p) => {
+    const v = need(str(p.value, 300), 'value'); if (/(^|\s)--(global|once)\b/i.test(v)) throw Object.assign(new Error('Changing the profile default is not available remotely'), { code: 'not_allowed' });
+    const provider = /--provider\s+(\S+)/.exec(v)?.[1], model = need(str(v.replace(/--provider(\s+\S+)?/g, '').trim(), 300), 'value');
+    return ['session.mutate', { session_id: need(str(p.session_id), 'session_id'), operation: 'model', payload: { model, ...(provider ? { provider } : {}) } }];
+  },
   // /busy: the mode is a PROFILE-wide Hermes setting (display.busy_input_mode), not per conversation. `status` only reads it.
   busy: (p) => { const m = need(str(p.mode, 20), 'mode'); if (!['queue', 'steer', 'interrupt', 'status'].includes(m)) throw Object.assign(new Error('mode must be queue, steer, interrupt or status'), { code: 'bad_params' }); return ['config.set', { key: 'busy', value: m }]; },
   models: (p) => ['model.options', { ...(str(p.session_id) ? { session_id: p.session_id } : {}), refresh: p.refresh === true }],
@@ -673,7 +679,7 @@ export class HermesGateway {
     return this.readyP;
   }
   exited(code, fail) {
-    const was = this.state; this.state = 'down'; this.child = null; this.runtime.clear();
+    const was = this.state; this.state = 'down'; this.child = null; this.runtime.clear(); this.modelConfirm?.clear(); // runtime ids (and their pending /model prompts) died with the process
     for (const [, p] of this.pending) { clearTimeout(p.timer); p.reject(Object.assign(new Error('The Hermes gateway stopped'), { code: 'gateway_down' })); } this.pending.clear();
     const open = [...this.open.keys()]; this.open.clear();
     if (was === 'starting') return fail?.(new Error(`The Hermes gateway exited while starting (code ${code}). ${this.stderrTail.trim().split('\n').slice(-2).join(' ')}`));
@@ -733,26 +739,23 @@ export class HermesGateway {
   /** FoxFleet always wants the thinking stream, even if the profile hides it in the CLI. Best-effort: older Hermes ignores the key. */
   wantReasoning(sid) { if (!sid) return; void this.rpc('config.set', { key: 'show_reasoning', value: 'on', session_id: sid }).catch(() => {}); }
   /** Hermes 0.22+: /model is session.mutate, not config.set. Fence from activate/resume; confirm token is kept per session. */
+  // Confirm: Hermes refuses a guarded target with a `confirm` token and applies it only when that exact string comes back. The token
+  // lives in this process only (modelConfirm, per runtime session), so after a connector or gateway restart there is none: the
+  // confirm is then sent WITHOUT `confirm` (a boolean is invalid_params in Hermes) and Hermes asks again, which the apps show as a
+  // fresh confirmation. A stale token is safe too: Hermes answers it with a new refusal, never a silent switch.
   async setModel(params) {
-    UI_OPS.setmodel(params); // --global / --once / missing fields
-    const raw = String(params.value), sid = params.session_id;
-    const provider = /--provider\s+(\S+)/.exec(raw)?.[1];
-    const model = raw.replace(/--provider\s+\S+/g, '').trim();
+    const [method, req] = UI_OPS.setmodel(params), sid = req.session_id, { model } = req.payload; // --global / --once / missing fields
     let snap;
     try { snap = await this.rpc('session.activate', { session_id: sid }); }
     catch { snap = await this.withSource('session.resume', { session_id: sid, cols: 100 }); }
-    const payload = { model, ...(provider ? { provider } : {}) };
-    if (params.confirm === true) {
-      const tok = this.modelConfirm?.get(sid);
-      if (tok !== undefined) payload.confirm = tok; else payload.confirm = true;
-    }
-    const r = await this.rpc('session.mutate', {
-      session_id: sid, operation: 'model', payload,
+    const tok = params.confirm === true ? this.modelConfirm?.get(sid) : undefined;
+    const r = await this.rpc(method, {
+      ...req, payload: { ...req.payload, ...(tok ? { confirm: tok } : {}) },
       expected_revision: snap?.revision ?? 0, expected_generation: snap?.execution_generation ?? 0,
       request_id: crypto.randomUUID().replace(/-/g, ''),
     });
     if (r?.status === 'confirmation_required') {
-      (this.modelConfirm ??= new Map()).set(sid, r.confirm);
+      const m = (this.modelConfirm ??= new Map()); if (typeof r.confirm === 'string' && r.confirm.trim()) m.set(sid, r.confirm); else m.delete(sid);
       return { value: model, scope: 'session', confirm_required: true, confirm_message: String(r.message || r.confirm_message || 'Confirm this model').slice(0, 300) };
     }
     this.modelConfirm?.delete(sid);
