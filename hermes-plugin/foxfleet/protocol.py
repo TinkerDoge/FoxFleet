@@ -364,8 +364,8 @@ def error_kind_for(code: str) -> str:
 
 
 _REQUEST_FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media"},
-    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media", "reasoning"},
+    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "reasoning"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},

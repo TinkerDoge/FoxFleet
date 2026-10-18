@@ -634,6 +634,13 @@ class HubApi(private val store: SettingsStore) {
                             if (text != null) { builder.setLength(0); builder.append(text); cb.onReplace(text) }
                             true
                         }
+                        // The turn's thinking (0.4.2 hub + plugin). Only the growth is sent, and the
+                        // screen appends it to the live ReasoningBlock.
+                        e.event == "foxfleet.reasoning" -> {
+                            runCatching { json.parseToJsonElement(e.data).jsonObject["text"]?.jsonPrimitive?.contentOrNull }.getOrNull()
+                                ?.takeIf { it.isNotEmpty() }?.let(cb.onReasoning)
+                            true
+                        }
                         e.event == "foxfleet.gap" -> { builder.setLength(0); cb.onGap(); true }
                         e.event == "foxfleet.run" -> { runCatching { json.parseToJsonElement(e.data).jsonObject["state"]?.jsonPrimitive?.contentOrNull }.getOrNull()?.let(cb.onRunState); finished = true; false } // stopped or failed on the hub
                         e.event == "foxfleet.request" -> { runCatching { json.parseToJsonElement(e.data).jsonObject }.getOrNull()?.let(::parseRequest)?.let(cb.onRequest); true }

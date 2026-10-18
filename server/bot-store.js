@@ -224,7 +224,10 @@ export function botStore(file, options = {}) {
           return { ...m };
         });
         for (const m of media) d.media[m.id].attached = true;
-        const message = { ...(media.length ? { media } : {}), id: id('fm_'), role: 'assistant', text: req.text, ts: now, format: req.format, ...(req.reply_to ? { reply_to: req.reply_to } : {}) };
+        const message = { ...(media.length ? { media } : {}), id: id('fm_'), role: 'assistant', text: req.text, ts: now, format: req.format,
+          // 0.4.2: the turn's thinking, kept with the reply so history and the live block show it
+          ...(typeof req.reasoning === 'string' && req.reasoning ? { reasoning: req.reasoning } : {}),
+          ...(req.reply_to ? { reply_to: req.reply_to } : {}) };
         addMessage(d, req.chat_id, message);
         return { message_id: message.id, chat_id: req.chat_id, date: now };
       }); });
@@ -234,6 +237,7 @@ export function botStore(file, options = {}) {
         const m = messageOf(d, req.chat_id, req.message_id);
         if (m.role !== 'assistant') throw new BotError('forbidden', 'Only messages written by the bot can be edited');
         m.text = req.text; m.format = req.format; m.edited = true; d.chats[req.chat_id].updated = now;
+        if (typeof req.reasoning === 'string') { if (req.reasoning) m.reasoning = req.reasoning; else delete m.reasoning; }
         return { message_id: m.id, chat_id: req.chat_id, edited: true };
       }); });
     },
@@ -275,7 +279,8 @@ export function botStore(file, options = {}) {
       const d = st(); if (!d.chats[chatId]) throw fault(404, 'Unknown session');
       const all = d.messages[chatId], list = hidden?.size ? all.filter((m) => !hidden.has(String(m.id))) : all;
       const end = Math.max(0, list.length - offset), start = Math.max(0, end - limit);
-      return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: mediaText(m.text, m.media), ts: m.ts, ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
+      return { messages: list.slice(start, end).map((m) => ({ id: m.id, role: m.role, content: mediaText(m.text, m.media), ts: m.ts,
+        ...(m.reasoning ? { reasoning: m.reasoning } : {}), ...(m.edited ? { edited: true } : {}) })), offset, limit, has_more: start > 0 };
     },
 
     /** Open cards for one chat, in the shape the web already renders. Expired rows are not listed. */

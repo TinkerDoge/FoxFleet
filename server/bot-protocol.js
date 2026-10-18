@@ -24,6 +24,8 @@ export function selectSubprotocol(header) {
 }
 export const protocolForSubprotocol = (sub) => (sub === SUBPROTOCOL_V11 ? PROTOCOL_V11 : PROTOCOL);
 export const LIMITS = { max_frame_bytes: 1048576, max_text_bytes: 65536, window: 100, max_unacked: 1000 };
+// The turn's thinking is bounded like the text is, but it is not a negotiated limit: a hub-side cap.
+const MAX_REASONING_BYTES = 65536;
 export const CLOSE = { normal: 1000, going_away: 1001, protocol: 1002, unsupported: 1003, bad_utf8: 1007, bad_frame: 1008, too_big: 1009, internal: 1011, slow: 1013, token_revoked: 4001, gone: 4003, replaced: 4009 };
 export const ERROR_CODES = ['invalid_request', 'unsupported', 'unknown_type', 'bad_frame', 'not_found', 'forbidden', 'too_large', 'rate_limited', 'idempotency_conflict', 'ack_out_of_range', 'internal'];
 export const BOT_REQUESTS = ['message.send', 'message.edit', 'message.delete', 'chat.action', 'commands.set', 'ack', 'ping', 'pong'];
@@ -60,8 +62,8 @@ const KEY = /^[A-Za-z0-9._:-]{1,128}$/;
 const COMMAND_NAME = /^[a-z0-9_]{1,32}$/;
 const RESERVED_FIELDS = ['media', 'buttons', 'keyboard', 'card', 'thread_id', 'group_id', 'parse_mode', 'silent', 'reactions'];
 const FIELDS = {
-  'message.send': ['chat_id', 'text', 'format', 'reply_to', 'final', 'idempotency_key'],
-  'message.edit': ['chat_id', 'message_id', 'text', 'format', 'final', 'idempotency_key'],
+  'message.send': ['chat_id', 'text', 'format', 'reply_to', 'final', 'idempotency_key', 'reasoning'],
+  'message.edit': ['chat_id', 'message_id', 'text', 'format', 'final', 'idempotency_key', 'reasoning'],
   'message.delete': ['chat_id', 'message_id', 'idempotency_key'],
   'chat.action': ['chat_id', 'action'],
   'commands.set': ['commands'],
@@ -90,17 +92,23 @@ function fields(t, f) {
   const key = () => { if (f.idempotency_key !== undefined) { if (typeof f.idempotency_key !== 'string' || !KEY.test(f.idempotency_key)) return fail('invalid_request', 'Invalid idempotency_key'); out.idempotency_key = f.idempotency_key; } return null; };
   const format = () => { if (f.format !== undefined && f.format !== 'markdown' && f.format !== 'text') return fail('invalid_request', 'format is markdown or text'); out.format = f.format ?? 'markdown'; return null; };
   const final = () => { if (f.final !== undefined && typeof f.final !== 'boolean') return fail('invalid_request', 'final must be a boolean'); out.final = f.final ?? false; return null; };
+  // 0.4.2: the turn's thinking, carried with the reply (bounded so one turn cannot grow a frame forever).
+  const reasoning = () => {
+    if (f.reasoning === undefined) return null;
+    if (typeof f.reasoning !== 'string' || Buffer.byteLength(f.reasoning) > MAX_REASONING_BYTES) return fail('invalid_request', `reasoning must be a string of at most ${MAX_REASONING_BYTES} bytes`);
+    out.reasoning = f.reasoning; return null;
+  };
   switch (t) {
     case 'message.send':
       if ((e = ref(f.chat_id, CHAT_ID, 'chat_id'))) return e; out.chat_id = f.chat_id;
       if ((e = text(f.text))) return e; out.text = f.text;
-      if ((e = format()) || (e = final())) return e;
+      if ((e = format()) || (e = final()) || (e = reasoning())) return e;
       if (f.reply_to !== undefined) { if ((e = ref(f.reply_to, MESSAGE_ID, 'reply_to'))) return e; out.reply_to = f.reply_to; }
       if ((e = key())) return e; return out;
     case 'message.edit':
       if ((e = ref(f.chat_id, CHAT_ID, 'chat_id')) || (e = ref(f.message_id, MESSAGE_ID, 'message_id'))) return e; out.chat_id = f.chat_id; out.message_id = f.message_id;
       if ((e = text(f.text))) return e; out.text = f.text;
-      if ((e = format()) || (e = final()) || (e = key())) return e; return out;
+      if ((e = format()) || (e = final()) || (e = reasoning()) || (e = key())) return e; return out;
     case 'message.delete':
       if ((e = ref(f.chat_id, CHAT_ID, 'chat_id')) || (e = ref(f.message_id, MESSAGE_ID, 'message_id'))) return e; out.chat_id = f.chat_id; out.message_id = f.message_id;
       if ((e = key())) return e; return out;

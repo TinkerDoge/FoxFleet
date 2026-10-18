@@ -309,6 +309,11 @@ class _Stream:
     # the turn is not finished. A later send() with real text edits that message in place.
     placeholder: bool = False
     placeholder_at: float = 0.0
+    # The turn's thinking (0.4.2), accumulated from the agent's reasoning callback and carried on
+    # the reply's first message. ``sent_reasoning`` is what the hub already has, so an unchanged
+    # reasoning never forces an edit.
+    reasoning: str = ""
+    sent_reasoning: str = ""
     touched: float = field(default_factory=time.monotonic)
 
     def text(self) -> str:
@@ -391,6 +396,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._chat_names: OrderedDict[str, str] = OrderedDict()
         self._unknown_outcomes: OrderedDict[str, tuple[str, float]] = OrderedDict()
         self._streams: OrderedDict[tuple[str, str], _Stream] = OrderedDict()
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._reasoning: dict[str, str] = {}          # chat -> thinking that arrived before a flush
+        self._reasoning_flush: set[str] = set()       # chats with a flush task pending
+        self._reasoning_tasks: set[asyncio.Task] = set()
         # Accepted+acked messages whose handler is held behind a drain, persisted so a gateway that
         # stops before running them leaves a record; the next connect sends UNPROCESSED_NOTICE.
         self._unprocessed: OrderedDict[str, tuple[str, str]] = OrderedDict()
@@ -430,6 +439,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if self._conn is not None and self._running:
             return True
+        try:
+            self._loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
         try:
             url = protocol.bot_ws_url(self._hub_url)
             protocol.check_bot_token(self._token)
@@ -1446,6 +1459,11 @@ class FoxFleetAdapter(BasePlatformAdapter):
             text = _clean_text(content)
             if state.finalized:
                 return finalize and text == state.text()
+            if not state.chunks:  # a seed opens this turn's stream: its thinking starts empty
+                state.reasoning, state.sent_reasoning = "", ""
+                self._reasoning[str(chat_id)] = ""
+            else:
+                state.reasoning = self._reasoning.get(str(chat_id), state.reasoning)
             if not text.strip():
                 return True  # seed/typing is not a persisted message
             if (finalize and text.strip() == _EMPTY_FINALIZE_PLACEHOLDER
@@ -1504,6 +1522,84 @@ class FoxFleetAdapter(BasePlatformAdapter):
                     and now - state.owed_at <= self.HANDOFF_TTL):
                 return state
         return None
+
+    # --- reasoning (0.4.2) -----------------------------------------------------------
+    #
+    # Hermes calls ``agent.reasoning_callback`` from the agent's thread while a turn runs; the
+    # frames must go out on the adapter's loop, so the text is buffered and flushed with a small
+    # debounce. The hub stores it with the reply and streams it to the app's collapsible block.
+    REASONING_DEBOUNCE = 0.25
+    MAX_REASONING = 30000
+
+    def on_reasoning_delta(self, chat_id: str, text: str) -> None:
+        """Thread-safe: append this turn's thinking for ``chat_id`` and schedule a flush."""
+        piece = str(text or "")
+        if not piece:
+            return
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(self._note_reasoning, str(chat_id), piece)
+        except RuntimeError:  # loop shut down between the check and the call
+            pass
+
+    def _note_reasoning(self, chat_id: str, piece: str) -> None:
+        """On the loop: grow this turn's thinking and make sure one flush is pending."""
+        current = self._reasoning.get(chat_id, "")
+        if len(current) + len(piece) > self.MAX_REASONING:
+            return  # bounded: a runaway model must not grow the frame forever
+        self._reasoning[chat_id] = current + piece
+        if chat_id not in self._reasoning_flush:
+            self._reasoning_flush.add(chat_id)
+            task = asyncio.get_running_loop().create_task(self._flush_reasoning(chat_id))
+            self._reasoning_tasks.add(task)
+            task.add_done_callback(self._reasoning_tasks.discard)
+
+    async def _flush_reasoning(self, chat_id: str) -> None:
+        """On the loop: after the debounce, show the accumulated thinking on the open stream."""
+        try:
+            await asyncio.sleep(self.REASONING_DEBOUNCE)
+            text = self._reasoning.get(chat_id, "")  # the turn's full thinking: copied, not consumed
+            state = self._newest_stream(chat_id)
+            if not text or state is None or state.finalized:
+                return
+            async with state.lock:
+                if state.finalized or not state.chunks:
+                    return  # no reply bubble yet: the next frame carries it
+                state.reasoning = text
+                if text == state.sent_reasoning:
+                    return
+                try:
+                    await self._push_reasoning(state, chat_id)
+                except Exception as err:  # a display-only update must never fail anything else
+                    logger.debug("FoxFleet: reasoning update for chat %s failed: %s", chat_id, err)
+        finally:
+            self._reasoning_flush.discard(chat_id)
+
+    def _newest_stream(self, chat_id: str) -> Optional[_Stream]:
+        newest = None
+        for (chat, _turn), state in self._streams.items():
+            if chat == chat_id and (newest is None or state.touched >= newest.touched):
+                newest = state
+        return newest
+
+    async def _push_reasoning(self, state: _Stream, chat_id: str) -> None:
+        """Re-send the reply's first message with the new thinking (text unchanged)."""
+        chunks = protocol.split_text(state.text())
+        if not chunks or not state.chunks:
+            return
+        mid = state.chunks[0][0]
+        result = await self._edit(chat_id, mid, chunks[0], finalize=False, reasoning=state.reasoning)
+        for attempt in range(2):  # a throttled display update is worth one quiet retry
+            if result.success or result.error_kind != "rate_limited":
+                break
+            await asyncio.sleep(min(max(result.retry_after or self.RATE_LIMIT_BACKOFF * 2 ** attempt, 0.05), 1.5))
+            result = await self._edit(chat_id, mid, chunks[0], finalize=False, reasoning=state.reasoning)
+        if result.success:
+            state.sent_reasoning = state.reasoning
+        else:
+            logger.debug("FoxFleet: reasoning update for chat %s not delivered: %s", chat_id, result.error)
 
     def _pending_placeholder(self, chat_id: str) -> Optional[_Stream]:
         """The newest stream in ``chat_id``, when it is still waiting on its placeholder's real text.
@@ -1569,7 +1665,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         return failure is None
 
     async def _push_snapshot(self, state: _Stream, chat_id: str, text: str, reply_to: Optional[str],
-                             finalize: bool) -> Optional[SendResult]:
+                             finalize: bool, reasoning: Optional[str] = None) -> Optional[SendResult]:
         """Make this turn's hub messages show ``text``; only confirmed (id, text) pairs are kept.
         Returns None on success, else the failing result."""
         if state.unconfirmed is not None:
@@ -1580,6 +1676,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             state.chunks.append((result.message_id, sent))
             state.unconfirmed = None
         chunks = protocol.split_text(text)
+        thinking = state.reasoning if reasoning is None else reasoning
         # A corrected authoritative final may be shorter than the live preview.
         while len(state.chunks) > len(chunks):
             result = await self._delete_chunk(chat_id, state.chunks[-1][0])
@@ -1588,14 +1685,16 @@ class FoxFleetAdapter(BasePlatformAdapter):
             state.chunks.pop()
         for index, chunk in enumerate(chunks):
             final = finalize and index == len(chunks) - 1
+            # The thinking rides on the reply's first message only.
+            chunk_reasoning = thinking if index == 0 else None
             if index < len(state.chunks):
                 mid, previous = state.chunks[index]
-                if previous == chunk and not final:
+                if previous == chunk and not final and (index != 0 or (chunk_reasoning or "") == (state.sent_reasoning or "")):
                     continue
-                result = await self._edit(chat_id, mid, chunk, finalize=final)
+                result = await self._edit(chat_id, mid, chunk, finalize=final, reasoning=chunk_reasoning)
             else:
                 chunk_reply_to = reply_to if index == 0 else None
-                result = await self._send_chunk(chat_id, chunk, chunk_reply_to, final=final)
+                result = await self._send_chunk(chat_id, chunk, chunk_reply_to, final=final, reasoning=chunk_reasoning)
                 unknown = self._unknown_outcomes.get(self._fingerprint(chat_id, chunk, chunk_reply_to, final))
                 if not result.success and unknown is not None:
                     state.unconfirmed = (chunk, chunk_reply_to, final, unknown[0])
@@ -1606,6 +1705,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 state.chunks[index] = item
             else:
                 state.chunks.append(item)
+            if index == 0 and chunk_reasoning is not None:
+                state.sent_reasoning = chunk_reasoning
         return None
 
     async def _delete_chunk(self, chat_id: str, message_id: str) -> SendResult:
@@ -1821,14 +1922,16 @@ class FoxFleetAdapter(BasePlatformAdapter):
                           raw_response={"message_ids": list(ids)} if len(ids) > 1 else None)
 
     async def _send_chunk(self, chat_id: str, text: str, reply_to: Optional[str], *,
-                          final: bool = False, key: Optional[str] = None) -> SendResult:
+                          final: bool = False, key: Optional[str] = None,
+                          reasoning: Optional[str] = None) -> SendResult:
         fingerprint = self._fingerprint(chat_id, text, reply_to, final)
         reused = self._take_unknown_outcome(fingerprint) or key
         key = reused or secrets.token_hex(16)
         try:
             res = await self._request("message.send", retry_unknown=True, chat_id=chat_id, text=text,
                                       format="markdown", reply_to=reply_to, final=final,
-                                      idempotency_key=key)
+                                      idempotency_key=key,
+                                      **({"reasoning": reasoning} if reasoning else {}))
         except _OutcomeUnknown as exc:
             # Same content retried later (e.g. by _send_with_retry) reuses this key: the hub dedupes.
             self._remember_unknown(fingerprint, key)
@@ -1897,14 +2000,16 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 break
         return await self._edit(chat_id, message_id, content, finalize=finalize)
 
-    async def _edit(self, chat_id: str, message_id: str, content: str, *, finalize: bool) -> SendResult:
+    async def _edit(self, chat_id: str, message_id: str, content: str, *, finalize: bool,
+                    reasoning: Optional[str] = None) -> SendResult:
         if protocol.utf8_len(content) > protocol.MAX_TEXT_BYTES:
             return SendResult(success=False, error="edit exceeds the 64 KiB FoxFleet message cap",
                               error_kind="too_long")
         try:  # an edit to the same text is idempotent, so an unknown outcome may be retried
             res = await self._request("message.edit", retry_unknown=True, chat_id=str(chat_id),
                                       message_id=str(message_id), text=content, format="markdown",
-                                      final=bool(finalize))
+                                      final=bool(finalize),
+                                      **({"reasoning": reasoning} if reasoning else {}))
         except (_OutcomeUnknown, _NotSent) as exc:
             return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="transient", retryable=True)
         except _BadResponse as exc:

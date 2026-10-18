@@ -37,6 +37,11 @@ event). A reply that is only a `REACT:` line keeps the emoji as its text so the 
 `sessions/{id}/reactions` and `sessions/{id}/hidden` work for bot chats on the bot store's `fm_`
 message ids, with the same request/response shape as the other agents.
 
+**Thinking (0.4.2).** `message.send` and `message.edit` accept an optional `reasoning` string (the
+turn's thinking, capped at 64 KiB). The hub keeps it with the reply (`reasoning` in the transcript)
+and streams it on the reply's run as `foxfleet.reasoning` events whose `text` is only the new part
+(the client appends). A bot that sends none is unchanged.
+
 An empty native stream is closed by Hermes with a lone `✅` finalize frame. The adapter stores that
 tick non-final so the turn stays open: the authoritative text (if any) then replaces that message,
 and with no text the tick stays as the answer. Only the turn's own answer may replace it; notice/interim sends are separate messages.

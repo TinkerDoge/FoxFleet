@@ -21,6 +21,19 @@ Tier 1 of the bot-path repair (the six agents now talk to the hub as native bot 
   - The tick is ambiguous — a bubble close, or an agent's actual one-character reply — so it is now stored NON-final and the turn stays open: when the recovery text arrives, `send()` edits that same message into the reply and ends the turn with it. With no recovery (a genuine `"✅"` answer, an empty or silent turn) the tick stays as the answer and the hub's idle timer ends the run. A notice or interim send can never consume the tick. (A provider/transport that bypasses native streaming is outside this path and keeps the old tick-then-reply shape.)
 - Fix (hub, bot agents): the REACT: line of a bot reply is honoured like every other agent's, with the same normalisation and reaction-only rule (`replyReaction`, so `❤` becomes `❤️`). The line is stripped from the stored text whenever something else remains; the emoji is applied once, on the final frame, to the message the turn answers (`reaction_only` parity for bot live messages is still open). Announced as a `message.reaction` live v2 event.
 - Feature (hub, bot agents): `GET`/`PUT`/`DELETE …/sessions/{id}/reactions` and `…/hidden` work for bot chats on the bot store's own message ids (an `fm_` id is both ids, so the snapshot mirrors `messages` into `by_hub_id` and live events carry it in both fields). Hidden messages are filtered from the transcript, from chat previews and from chat search; deleting a chat drops its reaction and hidden rows; a malformed session id is a 404, never a 500. Bot agents now advertise `capabilities.reactions` / `agentReactions` true so the apps show the affordances. REACT: lines still stored by older replies are derived on read.
+- Feature (0.4.2): a bot turn's thinking now reaches the app — live and in history.
+  - Gateway: a messaging adapter that implements `on_reasoning_delta(chat_id, text)` gets the
+    agent's reasoning from the same per-turn callback the local viewer uses
+    (`gateway/platform_reasoning.py`). Inert for every other platform, restored after each turn.
+  - Protocol: `message.send` / `message.edit` take an optional bounded `reasoning` string.
+  - Hub: the thinking is stored with the reply (history contains `reasoning`), and the reply's run
+    streams it as `foxfleet.reasoning` deltas (`{text}`): the app appends them to its collapsible
+    block. Only the growth is sent, so a repeated snapshot adds nothing.
+  - Plugin: buffers the reasoning per chat (bounded, 0.25 s debounce, flushed from the adapter's
+    loop so the agent thread never blocks) and carries it on the reply's first message.
+  - Android: the bot stream handles `foxfleet.reasoning`; the existing live ReasoningBlock and the
+    stored `reasoning` field then show it, collapsed, with its duration.
+
 - Tests: bot REACT: strip/apply (full, reaction-only, mid-stream, answered-message target, bare-symbol normalisation), user reaction PUT/DELETE/idempotency + error codes, delete-for-me (transcript, preview, search), chat-delete cleanup, bad-id 404s, capability set, derived reactions; plugin placeholder replaced by the recovery reply, placeholder with no recovery ending by idle, literal `"✅"` final, and an ordinary streamed reply as control. hub-tests.min 600.
 
 Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone whose hub was not redeployed (0.4.0 or older). The reactions he saw were missing or failed without a word. The app now explains instead. No hub, web or contract changes. Android versionCode 30.

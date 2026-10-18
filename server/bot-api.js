@@ -121,7 +121,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           const m = agentOf(session.reg, session.botId);
           const answered = liveRun(session.botId, v.req.chat_id)?.userMsgId ?? null; // the message this turn answers
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
-          await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: store.messageText(v.req.chat_id, out.result.message_id), final: v.req.final });
+          await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: store.messageText(v.req.chat_id, out.result.message_id), final: v.req.final, reasoning: v.req.reasoning });
           if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react, answered);
         }
         return out;
@@ -134,7 +134,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           const m = agentOf(session.reg, session.botId);
           const answered = liveRun(session.botId, v.req.chat_id)?.userMsgId ?? null;
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
-          await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: store.messageText(v.req.chat_id, v.req.message_id), final: v.req.final });
+          await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: store.messageText(v.req.chat_id, v.req.message_id), final: v.req.final, reasoning: v.req.reasoning });
           if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react, answered);
         }
         return out;
@@ -297,7 +297,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   function startRun(scope, m, chatId, userMsgId) {
     const key = `${m.botId}\0${chatId}`, cur = live.get(key); if (cur) return Promise.resolve(cur);
     if (starting.has(key)) return starting.get(key);
-    const st = { key, botId: m.botId, chatId, userMsgId: userMsgId ?? null, parts: [], ended: false, wrote: false, timer: null, ctl: null, run: null, link: null };
+    const st = { key, botId: m.botId, chatId, userMsgId: userMsgId ?? null, parts: [], ended: false, wrote: false, timer: null, ctl: null, run: null, link: null, reasoning: '' };
     st.link = { runId: 'bot', stop: () => interruptRun(st) };
     const p = runs.start({ scope, agent: m.name, session: chatId, timeoutMs: 5000, link: st.link, check: () => ({ 'X-Hermes-Session-Id': chatId }), onFinish: (r) => { r.text = composed(st); },
       open: async () => new Response(new ReadableStream({ start(c) { st.ctl = c; } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) })
@@ -310,6 +310,13 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     let st = liveRun(session.botId, chatId); if (!st && change.kind !== 'send') return; if (!st) { try { st = await startRun(session.scope, m, chatId); } catch { return; } }
     if (st.ended) return;
     st.wrote = st.wrote || change.kind !== 'action'; arm(st);
+    if (typeof change.reasoning === 'string' && change.reasoning) {
+      // The app appends what it is told, so send only the growth; a revision (rare) re-sends it whole.
+      const seen = st.reasoning ?? '';
+      const grew = change.reasoning.startsWith(seen) ? change.reasoning.slice(seen.length) : change.reasoning;
+      if (grew) emit(st, sse({ text: grew }, 'foxfleet.reasoning'));
+      st.reasoning = change.reasoning;
+    }
     if (change.kind === 'send') { st.parts.push({ id: change.id, text: change.text }); emit(st, delta((st.parts.length > 1 ? '\n\n' : '') + change.text)); }
     else if (change.kind === 'edit') {
       const part = st.parts.find((x) => x.id === change.id); if (!part) return;
