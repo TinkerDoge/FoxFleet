@@ -8,6 +8,16 @@ Android versionCode 32 (vc31 was not shipped). Android-only fix for a QA blocker
 
 - Fix (Android): a labelled agent's pictures, files and voice notes load again. vc31 passed the display name to the transcript as the agent id, so every `MEDIA:` card called `/api/agents/<label>/media` (404 "Unknown agent") and the transcript avatars took their colour and custom picture from the label. The transcript now gets the id for media, avatars and hub calls, and the label only for text: the live status line (`SUMI is working…`), "Start a conversation with …" and the permission/question card titles. Test: `fix042/DisplayNameTest`.
 
+Follow-ups from Soran's vc31 check (N1 to N3). Hub and connector only: no Android, web or contract change, so no APK rebuild.
+
+- Fix (connector, N2): confirming an expensive model after the connector restarted between the prompt and the confirm failed with "Hub request failed".
+  - Cause: Hermes's confirm token lived only in the old connector's memory. With no token, `setModel` sent `payload.confirm: true`, a boolean, which Hermes refuses as `invalid_params`.
+  - Now `confirm` is sent only with the token Hermes issued, and only for that runtime session. Without a token the confirm goes out plain, Hermes asks again, and the apps show the confirmation again. Tokens are also dropped when the Hermes gateway process exits. A non-string token is never stored.
+  - Hub: `/model` on a runtime id from a gateway that has since restarted (4007, before the link-up re-attach landed) re-attaches once and sends again. Other errors are not retried.
+- Fix (connector, N3): `UI_OPS.setmodel` built `session.mutate {value, …}`, a shape Hermes does not take. It was only used for validation. It now builds Hermes's request (`{session_id, operation: "model", payload: {model, provider?}}`), and `setModel` sends exactly that plus the revision fence, request id and token. The op stays in the advertised `ops` list.
+- Fix (hub, N1): with streaming off, a tool-made file was listed twice in the reply (`MEDIA:` from `tool.end`, then again in `message.complete`'s text). `turn.end` now drops lines that are only `MEDIA:<ref>` for a ref this run already delivered. Distinct files, inline tags and the rest of the text are kept. Streaming replies are unchanged.
+- Tests: `connector-model.test.js` (9). The fake gateway now checks `session.mutate` the way Hermes does (string-only payload, a token bound to model and revision), keeps stored sessions across a restart under new runtime ids, and has `nostream` / `mediacase` prompts. hub-tests.min 597.
+
 Android versionCode 31. Hub + connector fixes for the live reply Doge still saw as a green tick (grokbot's 0.4.1 notes claimed these were done; the run stream still dropped `message.complete`).
 
 - Fix (hub, native gateway): the reply to a native session now shows in the open chat when Hermes does not stream tokens (`streaming.enabled: false`, or a provider that only sends `message.complete`).

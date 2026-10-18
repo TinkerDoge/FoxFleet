@@ -299,6 +299,11 @@ Clients ignore unknown events and fields, so older apps see no change. Live v2 m
 | `request` | `GET /api/agents/{agent}/models` (the agent's `GET /api/model/options`) | `POST /api/agents/{agent}/sessions/{id}/model` `{model, provider?}`: a per-chat override the hub keeps (in `chats.json`) and sends as `model` / `provider` with every new run of that chat (`/v1/runs` and chat completions). `{model: null}` clears it. A running reply keeps its model |
 | `none` | 409 `models_unsupported` | hide the picker (bots, older Hermes, other kinds) |
 
+Native confirm (0.4.2): a guarded model answers `{confirm_required: true, confirm_message}` and is **not** switched; the client resends
+the same model with `confirm: true`. Hermes's confirm token stays on the machine, in the connector's memory. If the connector or its
+Hermes gateway restarted since the prompt, the token is gone. The confirm then comes back `confirm_required: true` again (never an
+error): show the confirmation again, and the next `confirm: true` switches. A stale token is safe too: Hermes answers it with a new prompt.
+
 `GET /api/agents/{agent}/models[?refresh=1][&session_id=]` → `{ mode, providers: [{slug, name, current, models: string[]}], override? }`
 (at most 60 providers × 300 models; `override` = the chat's `{model, provider}` for `request` agents when `session_id` is given and one
 is set). Send a `provider` with the model: Hermes ignores a bare model on chat completions. Errors: `docs/API-ERRORS.md`.
