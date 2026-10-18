@@ -315,8 +315,8 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
-    // Per-chat background (kept on this phone only); a new chat's look moves to the chat when the hub gives it an id.
-    val bgState = rememberChatBackground(agent.name, state.sessionId, state.messages.isNotEmpty() || state.streaming)
+    // Per-agent background (kept on this phone only): every chat of this agent shows the same look.
+    val bgState = rememberChatBackground(agent.name)
     var bgSheet by remember { mutableStateOf(false) }
     CompositionLocalProvider(LocalChatBgActive provides !bgState.bg.isDefault) {
     Box(Modifier.fillMaxSize()) {

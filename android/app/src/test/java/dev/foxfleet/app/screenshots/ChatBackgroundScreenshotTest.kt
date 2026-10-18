@@ -61,7 +61,7 @@ class ChatBackgroundScreenshotTest {
         UiMessage("user", "Thanks. Can you rotate Echo's key too?", ts = now - 60_000),
     )
     private lateinit var store: ChatBackgroundStore
-    private val key get() = store.key("Atlas", "s1")
+    private val key get() = store.key("Atlas")
 
     @Before fun clean() { store = ChatBackgroundStore(RuntimeEnvironment.getApplication()); store.clearAll() }
 

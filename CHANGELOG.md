@@ -6,6 +6,7 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 Android versionCode 34 on main (this merge does not bump it). Display-name / media-id fix from vc32, plus hub+connector N1–N3.
 
+- Change (Android, 0.4.3): the dark theme is a cool dark grey rather than warm brown (`bg`, surfaces, offline, muted/faint text), and a chat background is now saved **per agent**, not per chat: opening any session of an agent shows that agent's look, and setting it in one chat updates them all. Old per-chat looks are migrated to the agent on first read (an entry with a picture wins; the old keys are left in place). Test: `ChatBackgroundsTest`.
 - Fix (Android): a labelled agent's pictures, files and voice notes load again. vc31 passed the display name to the transcript as the agent id, so every `MEDIA:` card called `/api/agents/<label>/media` (404 "Unknown agent") and the transcript avatars took their colour and custom picture from the label. The transcript now gets the id for media, avatars and hub calls, and the label only for text: the live status line (`SUMI is working…`), "Start a conversation with …" and the permission/question card titles. Test: `fix042/DisplayNameTest`.
 
 Follow-ups from Soran's vc31 check (N1 to N3). Hub and connector only: no Android, web or contract change, so no APK rebuild.

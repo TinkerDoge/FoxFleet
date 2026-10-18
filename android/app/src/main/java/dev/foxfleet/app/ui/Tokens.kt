@@ -29,18 +29,18 @@ object Tokens {
         const val userBubbleAlpha = 0.12f
     }
     object Dark {
-        val bg = Color(0xFF181514)
-        val surface = Color(0xFF231F1D)
-        val surfaceAlt = Color(0xFF2D2825)
+        val bg = Color(0xFF121212)
+        val surface = Color(0xFF1C1C1C)
+        val surfaceAlt = Color(0xFF2A2A2A)
         val hairline = Color(0x1FFFFFFF)
         val text = Color(0xFFEDEDED)
-        val textMuted = Color(0xFFA8A29C)
-        val textFaint = Color(0xFF9A948E)
+        val textMuted = Color(0xFFA3A3A3)
+        val textFaint = Color(0xFF8C8C8C)
         val online = Color(0xFF4CC38A)
         val onlineText = Color(0xFF6ACF9D)
         val idle = Color(0xFFE0B04A)
         val idleText = Color(0xFFE0B04A)
-        val offline = Color(0xFF4D4843)
+        val offline = Color(0xFF4A4A4A)
         val danger = Color(0xFFFF6B5E)
         const val userBubbleAlpha = 0.16f
     }
@@ -69,7 +69,7 @@ object Tokens {
         const val maxEdge = 1600
         const val quality = 82
         val solids: List<Solid> = listOf(
-            Solid("sand", "Sand", Color(0xFFEDE6DA), Color(0xFF1A150D)),
+            Solid("sand", "Sand", Color(0xFFEDE6DA), Color(0xFF1A1815)),
             Solid("sage", "Sage", Color(0xFFDDE7DB), Color(0xFF111A13)),
             Solid("sky", "Sky", Color(0xFFDCE8F2), Color(0xFF0F1722)),
             Solid("blush", "Blush", Color(0xFFF3DFDC), Color(0xFF1F1414)),
@@ -77,7 +77,7 @@ object Tokens {
             Solid("teal", "Teal", Color(0xFFD8EBE8), Color(0xFF0E1C19)),
             Solid("butter", "Butter", Color(0xFFF2EBCB), Color(0xFF1C180B)),
             Solid("slate", "Slate", Color(0xFFDEE1E6), Color(0xFF14171C)),
-            Solid("ember", "Ember", Color(0xFFF4DDD0), Color(0xFF22140D)),
+            Solid("ember", "Ember", Color(0xFFF4DDD0), Color(0xFF201512)),
             Solid("midnight", "Midnight", Color(0xFFDCE1EC), Color(0xFF0A0F1A)),
         )
         val patterns: List<Pattern> = listOf(
