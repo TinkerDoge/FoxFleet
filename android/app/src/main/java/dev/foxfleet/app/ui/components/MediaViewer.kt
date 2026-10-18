@@ -23,7 +23,10 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import android.widget.Toast
+import androidx.compose.material3.AlertDialog
 import dev.foxfleet.app.media.MediaRepository
+import dev.foxfleet.app.media.MediaStoreSaver
 import dev.foxfleet.app.ui.chat.MediaRef
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.awaitCancellation
@@ -40,34 +43,63 @@ fun MediaViewer(item: MediaRef, client: OkHttpClient?, onClose: () -> Unit) =
 /**
  * Fullscreen viewer for a list of media (0.4.3 C3): horizontal swipe moves between the chat's pictures and
  * videos, or a dossier's grid. Each page owns a cache lease, so clearing storage or deleting another file
- * cannot interrupt the one on screen. [onDelete] (when given) shows a trash action that removes the file from
- * this device only; the hub copy is untouched and the next open downloads it again.
+ * cannot interrupt the one on screen. A Save action copies the file into the phone's gallery; [onDelete]
+ * (when given) shows a "Delete for everyone" action that revokes the file on the hub and drops the phone copy.
  */
 @Composable
-fun MediaViewer(items: List<MediaRef>, startIndex: Int, client: OkHttpClient?, onClose: () -> Unit, onDelete: ((MediaRef) -> Unit)? = null) {
+fun MediaViewer(items: List<MediaRef>, startIndex: Int, client: OkHttpClient?, onClose: () -> Unit, onDelete: (suspend (MediaRef) -> Unit)? = null) {
     BackHandler(onBack = onClose)
     if (items.isEmpty()) { LaunchedEffect(Unit) { onClose() }; return }
     val host = LocalMediaHost.current
+    val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val pager = rememberPagerState(initialPage = startIndex.coerceIn(0, items.size - 1)) { items.size }
     val current = items.getOrNull(pager.currentPage)
+    var confirmDelete by remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         HorizontalPager(state = pager, modifier = Modifier.fillMaxSize()) { page -> MediaPage(items[page], client, swipe = items.size > 1) }
         Row(Modifier.align(Alignment.TopEnd).statusBarsPadding().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            val deletable = current != null && host?.cache != null && current.agent != null && current.ref != null
-            if (onDelete != null && deletable) SoftIconButton(FoxIcons.get("delete"), "Delete from this device", onClick = {
-                scope.launch {
-                    host!!.delete(current.agent!!, current.ref!!, current.instance)
-                    onDelete(current)
-                    onClose()
-                }
-            }, tint = Color.White, background = Color(0x66000000))
+            val cached = current != null && host?.cache != null && current.agent != null && current.ref != null
+            if (cached) {
+                val item = current!!
+                SoftIconButton(FoxIcons.get("download"), "Save to gallery", onClick = {
+                    scope.launch {
+                        try {
+                            val agent = item.agent!!; val ref = item.ref!!
+                            val saved = host!!.acquire(agent, ref, item.instance).use { lease ->
+                                MediaStoreSaver.save(ctx, lease.file, item.kind, item.alt, item.ref, null)
+                            }
+                            Toast.makeText(ctx, "Saved to ${saved.relativePath}", Toast.LENGTH_SHORT).show()
+                        } catch (e: CancellationException) { throw e } catch (_: Exception) {
+                            Toast.makeText(ctx, "Couldn't save this media", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                }, tint = Color.White, background = Color(0x66000000))
+                if (onDelete != null) SoftIconButton(FoxIcons.get("delete"), "Delete for everyone", onClick = { confirmDelete = true }, tint = Color.White, background = Color(0x66000000))
+            }
             SoftIconButton(FoxIcons.get("close"), "Close", onClose, tint = Color.White, background = Color(0x66000000))
         }
         if (items.size > 1) Text(
             "${pager.currentPage + 1} / ${items.size}",
             color = Color.White,
             modifier = Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(16.dp),
+        )
+    }
+    val item = current
+    if (confirmDelete && item != null && onDelete != null) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("Delete this media?") },
+            text = { Text("It will be removed from this phone and from the hub. Opening it again will not download it.") },
+            confirmButton = { SoftButton(onClick = {
+                confirmDelete = false
+                scope.launch {
+                    try { onDelete(item); onClose() }
+                    catch (e: CancellationException) { throw e }
+                    catch (e: Exception) { Toast.makeText(ctx, dev.foxfleet.app.data.scrubAddresses(e.message ?: "Couldn't delete this media"), Toast.LENGTH_SHORT).show() }
+                }
+            }) { Text("Delete") } },
+            dismissButton = { SoftButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
         )
     }
 }

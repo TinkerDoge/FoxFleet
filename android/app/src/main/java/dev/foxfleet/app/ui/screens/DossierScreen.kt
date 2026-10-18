@@ -86,6 +86,7 @@ fun DossierScreen(
     onStop: () -> Unit = {},
     onOpenSession: (String) -> Unit,
     onMediaDeleted: () -> Unit = {},
+    onDeleteMedia: (suspend (MediaRef) -> Unit)? = null,
     onClearMedia: () -> Unit = {},
     httpClient: OkHttpClient? = null,
     now: () -> Long = { System.currentTimeMillis() },
@@ -244,7 +245,7 @@ fun DossierScreen(
     }
     viewing?.let { index ->
         val start = index.coerceIn(0, (media.size - 1).coerceAtLeast(0))
-        MediaViewer(media, start, httpClient, onClose = { viewing = null }, onDelete = { onMediaDeleted() })
+        MediaViewer(media, start, httpClient, onClose = { viewing = null }, onDelete = { ref -> onDeleteMedia?.invoke(ref); onMediaDeleted() })
     }
 }
 

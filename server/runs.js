@@ -101,8 +101,8 @@ export function runRegistry({ ttlMs = 10 * 60_000, maxBytes = 2 * 1024 * 1024, m
     onStart(fn) { startListeners.push(fn); },
     /** Is a reply running for this user and agent right now? */
     working(scope, agent) { for (const r of runs.values()) if (r.scope === scope && r.agent === agent && !r.done) return true; return false; },
-    /** Reply text of this user's runs for an agent (running or just finished): lets the media hub know about a tag the moment it is written. */
-    texts(scope, agent) { sweep(); return [...runs.values()].filter((r) => r.scope === scope && r.agent === agent).map((r) => r.text).filter(Boolean); },
+    /** Reply text of this user's runs for an agent (running or just finished): lets the media hub know about a tag the moment it is written. `at` is the run's start, so a later re-note of a stale run never resurrects a revoked file. */
+    texts(scope, agent) { sweep(); return [...runs.values()].filter((r) => r.scope === scope && r.agent === agent).map((r) => ({ text: r.text, at: r.started })).filter((x) => x.text); },
     get(scope, agent, id) { sweep(); const r = runs.get(id); if (!r || r.scope !== scope || r.agent !== agent) throw fault(404, 'That run is gone (finished runs are kept for a few minutes)'); return r; },
     list(scope, agent, session) { sweep(); return [...runs.values()].filter((r) => r.scope === scope && r.agent === agent && (!session || r.session === session)).map((r) => this.view(r)); },
     view: (r) => ({ id: r.id, session_id: r.session, state: r.done ? r.state : r.stopping ? 'stopping' : 'running', started: r.started, events: r.next - 1, ...(r.link?.runId ? { native: true } : {}) }),

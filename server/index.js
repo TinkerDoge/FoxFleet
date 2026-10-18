@@ -343,10 +343,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const botAll = botList.includes('*'), botAllow = new Set(botList.filter((v) => v !== '*'));
   const allowBotAgent = (name) => botAll || botAllow.has(name);
   if (botApi && !botAll && !botAllow.size) console.warn('foxfleet: WARNING FOXFLEET_BOT_API=1 but FOXFLEET_BOT_AGENTS is unset or empty: NO bot agent is allowed (deny by default). Set FOXFLEET_BOT_AGENTS=<name>[,<name>] or "*" for all.');
-  const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: { ...botOptions, allowAgent: allowBotAgent }, log }) : null;
+  const media = mediaHub({ connectors, revokePath: path.join(dataDir, 'media-revoked.json') }); // MEDIA: tags -> cards (see media.js)
+  const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: { ...botOptions, allowAgent: allowBotAgent }, log, media }) : null;
   const hubInfo = bot ? { ...HUB_INFO, features: [...HUB_FEATURES, 'botApi'] } : HUB_INFO;
   const publicAgent = (m) => ({ ...publicConnection(m), ...(m.connection === 'bot' ? { hasBotToken: Boolean(bot?.hasToken(m.botId)) } : {}) });
-  const media = mediaHub({ connectors }); // MEDIA: tags -> cards (see media.js)
   const uniqueName = (reg, base, machineId) => { const taken = new Set(reg.store.all().filter((a) => a.machineId !== machineId || a.profile !== base).map((a) => a.name)); let n = base, i = 2; while (taken.has(n) || reg.store.reserved(n)) n = `${base}-${i++}`; return n; };
   // The connector tells the hub which profiles it exposes; each becomes (or stays) an agent in the owner's registry.
   async function syncProfiles(machine, msg, link) {
@@ -906,8 +906,16 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           const pins = await ctx.reg.activity.pin(m.name, b.pinned); rowChanged(ctx.reg, scopeOf(ctx), m.name); return sendJson(res, 200, { pinned: pins.includes(m.name), pins });
         }
         if (route === 'media' && parts.length === 4 && req.method === 'POST') { // a ref the agent mentioned in a reply -> a short-lived link for THIS user
-          const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const t of runs.texts(scope, m.name)) media.note(scope, m.name, t);
+          const b = await readJson(req, 8192), scope = scopeOf(ctx); for (const { text, at } of runs.texts(scope, m.name)) media.note(scope, m.name, text, at);
           return sendJson(res, 200, media.resolve({ scope, agent: m.name, machineId: m.machineId, profile: m.profile, ref: b?.ref }));
+        }
+        if (route === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": hub forgets the offer; the next resolve 404s forever
+          const b = await readJson(req, 8192), scope = scopeOf(ctx), ref = typeof b?.ref === 'string' ? b.ref.trim() : '';
+          if (!ref || ref.length > 2000) throw fault(400, 'Invalid ref');
+          if (media.revoked(scope, m.name, ref) !== null) return sendJson(res, 200, { ok: true, deleted: false }); // idempotent
+          if (!media.knows(scope, m.name, ref)) throw fault(404, 'That file was not offered by this agent');
+          await media.revoke({ scope, agent: m.name, ref });
+          return sendJson(res, 200, { ok: true, deleted: true });
         }
         if (route === 'models' && parts.length === 4 && req.method === 'GET') { // one model list for every agent kind (0.4.1): native gateway or the API server's /api/model/options
           const mode = modelsMode(m, nativeUi(m) ? null : (await probeShared(m)).view), refresh = url.searchParams.get('refresh') === '1', sid = url.searchParams.get('session_id') || '';
@@ -1113,12 +1121,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
             const full = normalizeTranscript((await upstream.messages(m, sid)).messages); current(m);
             L.reconcile(m.name, sid, full); L.annotate(m.name, sid, full);
             const after = full.filter((x) => Number.isInteger(x.n) && x.n > Number(rawAfter)), page = after.slice(0, limit);
-            for (const x of page) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content);
+            for (const x of page) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content, x.ts);
             await announceDerived(ctx.reg, m, sid, full);
             return sendJson(res, 200, agentData(m, route, { messages: withReactions(ctx.reg, m, sid, page), offset: 0, limit, has_more: after.length > limit }, originalConnections));
           }
           const raw = (await upstream.messages(m, sid, { limit, offset })).messages;
-          const msgs = normalizeTranscript(raw); for (const x of msgs) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content); // old chats keep their pictures
+          const msgs = normalizeTranscript(raw); for (const x of msgs) if (x.role === 'assistant') media.note(scopeOf(ctx), m.name, x.content, x.ts); // old chats keep their pictures
           if (L.annotate(m.name, sid, msgs) > 0 && (offset === 0 && raw.length < limit ? true : L.mayResync(m.name, sid))) { // some messages are not numbered yet: number the chat (this page if it is the whole chat, else read it once)
             try { const full = offset === 0 && raw.length < limit ? msgs : normalizeTranscript((await upstream.messages(m, sid)).messages); L.reconcile(m.name, sid, full); L.annotate(m.name, sid, msgs); } catch { /* the page is still served */ }
           }

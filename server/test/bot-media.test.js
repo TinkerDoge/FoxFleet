@@ -42,6 +42,27 @@ test('PNG bytes stay on disk, scoped downloads and range; bot refs bind to accou
   assert.equal((await b.h.call(`/api/agents/helper/sessions/${chat}`, { method: 'DELETE' })).status, 200); assert.equal((await download(b, m.id)).status, 404); assert.deepEqual(await files(b), []);
 });
 
+test('delete for everyone: revoke drops the blob, 404s resolve and download, idempotent, other user and agent refused', async (t) => {
+  const b = await bootBot(t), c = await b.connect(V11), chat = await createChat(b);
+  await c.next((x) => x.t === 'hello');
+  const r = await upload(b, chat); assert.equal(r.status, 201); const m = await r.json();
+  const ref = `/bot-media/${m.id}/${m.name}`;
+  assert.equal((await c.request({ t: 'message.send', id: 'send', chat_id: chat, text: '', media: [m.id] })).ok, true);
+  const resolved = await b.h.call('/api/agents/helper/media', { data: { ref } }); assert.equal(resolved.status, 200); const link = await resolved.json();
+  assert.equal((await b.h.call(link.url)).status, 200);
+  const other = await addBot(t, b.h, 'other');
+  assert.equal((await b.h.call('/api/agents/other/media', { method: 'DELETE', data: { ref } })).status, 404, 'another agent cannot delete this ref');
+  const alice = await member(b.h);
+  assert.equal((await b.h.call('/api/agents/helper/media', { method: 'DELETE', token: alice.token, data: { ref } })).status, 404, 'another user cannot delete');
+  const d = await b.h.call('/api/agents/helper/media', { method: 'DELETE', data: { ref } }); assert.equal(d.status, 200); assert.deepEqual(await d.json(), { ok: true, deleted: true });
+  assert.deepEqual(await files(b), [], 'the blob is gone');
+  assert.equal((await download(b, m.id)).status, 404, 'download 404s');
+  assert.equal((await b.h.call('/api/agents/helper/media', { data: { ref } })).status, 404, 'resolve 404s');
+  assert.equal((await b.h.call(link.url)).status, 404, 'the old token 404s');
+  const d2 = await b.h.call('/api/agents/helper/media', { method: 'DELETE', data: { ref } }); assert.equal(d2.status, 200); assert.deepEqual(await d2.json(), { ok: true, deleted: false }, 'idempotent second delete');
+  assert.equal((await b.h.call('/api/agents/helper/media', { method: 'DELETE', data: { ref: '' } })).status, 400, 'empty ref');
+});
+
 test('SVG, HTML, executable and over-cap uploads fail without blobs; exact path and JSON boundary', async (t) => {
   const b = await bootBot(t, { botOptions: { maxMediaBytes: 100 } }), chat = await createChat(b);
   for (const bytes of [Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>'), Buffer.from('<html>Hello</html>'), Buffer.from('MZprogram')]) { assert.equal((await upload(b, chat, bytes)).status, 415); assert.deepEqual(await files(b), []); }

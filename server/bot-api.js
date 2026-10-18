@@ -36,7 +36,7 @@ export function secureBotRequest({ remoteAddress, host, xfp, trusted }) {
  * `scopeReg(scope)` resolves the account's registry ({ dir, store, ... }); `ownerOf(scope)` the account ({ id, disabled? }) or undefined.
  * `trusted` is the hub's set of trusted origins. Nothing here runs unless the hub was created with the bot API on.
  */
-export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted = new Set(), appCommands = [], options = {}, log = () => {} }) {
+export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted = new Set(), appCommands = [], options = {}, log = () => {}, media }) {
   const opt = { heartbeatMs: 25000, maxBufferedBytes: 8 * 1024 * 1024, window: LIMITS.window, replyIdleMs: 30_000, replyWaitMs: 300_000, ...options, rate: { burst: 60, perSec: 20, ...options.rate } };
   const limits = botLimits({ maxUnacked: options.maxUnacked, maxChats: options.maxChats, maxMessagesPerChat: options.maxMessagesPerChat });
   const tokens = tokenIndex(path.join(dataDir, 'bot', 'tokens.json'));
@@ -709,6 +709,15 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const expires = Date.now() + 15 * 60_000;
         const payload = Buffer.from(JSON.stringify({ scope: c.scope, botId: m.botId, id: row.id, expires })).toString('base64url');
         return c.sendJson(res, 200, { url: `/api/media/bot.${payload}.${mediaSign(payload)}`, kind: row.kind, name: row.name, expires });
+      }
+      if (parts[3] === 'media' && parts.length === 4 && req.method === 'DELETE') { // "delete for everyone": drop the bot blob and the offer
+        const b = await c.readJson(req, 8192), ref = typeof b?.ref === 'string' ? b.ref.trim() : '';
+        if (!ref || ref.length > 2000) throw fault(400, 'Invalid ref');
+        const store = await readyStore(c);
+        const row = store.mediaForRef(ref);
+        if (row) { await blobs.discard(c.reg, m.botId, store, row.id); if (media) await media.revoke({ scope: c.scope, agent: m.name, ref }); return c.sendJson(res, 200, { ok: true, deleted: true }); }
+        if (media && media.revoked(c.scope, m.name, ref) !== null) return c.sendJson(res, 200, { ok: true, deleted: false }); // idempotent
+        throw fault(404, 'Not found');
       }
       if (parts[3] === 'messages'  && parts.length === 4 && req.method === 'POST') return await postMessages(c);
       if (parts[3] === 'queue' && parts.length === 4 && req.method === 'GET') {
