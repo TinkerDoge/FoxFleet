@@ -408,7 +408,9 @@ export function mediaLimiter(perMinute = 60, now = () => Date.now()) { let token
 const MAX_TEXT = 100_000;
 const SERVER_REQUESTS = new Set(['approval', 'clarify']); // the only kinds this bridge answers; others get -32601 so the agent fails fast
 // command.dispatch only runs quick/plugin/bundle/skill commands and a few built-ins (compress, retry, undo, memory, skills, queue, steer, goal ...).
-// /model and /busy are NOT dispatched: they are config.set (ops `setmodel`, `busy`).
+// /model is session.mutate operation=model (Hermes 0.22+ refuses config.set key=model).
+// /busy is still config.set. Show reasoning is turned on per FoxFleet session so thinking reaches the phone
+// even when the profile has display.show_reasoning: false (CLI).
 const DISPATCH_OK = new Set(['compress', 'retry', 'undo', 'memory', 'skills']);
 const str = (v, max = 200) => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : null);
 const need = (v, what) => { if (v === null) throw Object.assign(new Error(`${what} is required`), { code: 'bad_params' }); return v; };
@@ -427,7 +429,7 @@ export const UI_OPS = {
   resolve: (p) => ['command.resolve', { name: need(str(p.name, 100), 'name') }],
   dispatch: (p) => { const name = need(str(p.name, 100), 'name').replace(/^\//, ''); if (!DISPATCH_OK.has(name)) throw Object.assign(new Error(`/${name} is not available remotely`), { code: 'not_allowed' }); return ['command.dispatch', { name, arg: typeof p.arg === 'string' ? p.arg.slice(0, 2000) : '', session_id: need(str(p.session_id), 'session_id') }]; },
   // /model: session-scoped switch. `--global` / `--once` flags are refused here; a profile default is changed in Hermes itself.
-  setmodel: (p) => { const v = need(str(p.value, 300), 'value'); if (/(^|\s)--(global|once)\b/i.test(v)) throw Object.assign(new Error('Changing the profile default is not available remotely'), { code: 'not_allowed' }); return ['config.set', { key: 'model', value: v, session_id: need(str(p.session_id), 'session_id'), ...(p.confirm === true ? { confirm_expensive_model: true } : {}) }]; }, // `confirm` answers a confirm_required reply (Hermes does not switch until it is sent)
+  setmodel: (p) => { const v = need(str(p.value, 300), 'value'); if (/(^|\s)--(global|once)\b/i.test(v)) throw Object.assign(new Error('Changing the profile default is not available remotely'), { code: 'not_allowed' }); return ['session.mutate', { value: v, session_id: need(str(p.session_id), 'session_id'), ...(p.confirm === true ? { confirm: true } : {}) }]; },
   // /busy: the mode is a PROFILE-wide Hermes setting (display.busy_input_mode), not per conversation. `status` only reads it.
   busy: (p) => { const m = need(str(p.mode, 20), 'mode'); if (!['queue', 'steer', 'interrupt', 'status'].includes(m)) throw Object.assign(new Error('mode must be queue, steer, interrupt or status'), { code: 'bad_params' }); return ['config.set', { key: 'busy', value: m }]; },
   models: (p) => ['model.options', { ...(str(p.session_id) ? { session_id: p.session_id } : {}), refresh: p.refresh === true }],
@@ -716,16 +718,45 @@ export class HermesGateway {
       const stored = need(str(params.stored_session_id), 'stored_session_id'), rt = this.runtime.get(stored);
       let r; if (rt) { try { r = await this.rpc('session.activate', { session_id: rt }); } catch (e) { if (e.rpc !== 4007) throw e; this.runtime.delete(stored); } }
       if (!r) r = await this.withSource('session.resume', { session_id: stored, cols: 100 });
-      if (r?.session_id) { this.runtime.set(stored, r.session_id); if (!r.message_count && !(r.messages?.length)) this.markFresh(r.session_id); } return r;
+      if (r?.session_id) { this.runtime.set(stored, r.session_id); if (!r.message_count && !(r.messages?.length)) this.markFresh(r.session_id); this.wantReasoning(r.session_id); } return r;
     }
+    if (op === 'setmodel') return this.setModel(params);
     const build = Object.hasOwn(UI_OPS, op) ? UI_OPS[op] : null; if (!build) throw Object.assign(new Error(`${String(op).slice(0, 40)} is not an allowed action`), { code: 'not_allowed' });
     const [method, p] = build(params);
     if (op === 'submit' && typeof p.text === 'string' && this.fresh.has(p.session_id)) { // fallback awareness: the note rides on the first message of a new chat
       const n = this.fresh.get(p.session_id); this.fresh.delete(p.session_id); if (n) p.text = wrapNote(n, p.text);
     }
     const r = method === 'session.create' ? await this.withSource(method, p) : await this.rpc(method, p);
-    if (op === 'create' && r?.stored_session_id && r?.session_id) { this.runtime.set(r.stored_session_id, r.session_id); this.markFresh(r.session_id); }
+    if (op === 'create' && r?.stored_session_id && r?.session_id) { this.runtime.set(r.stored_session_id, r.session_id); this.markFresh(r.session_id); this.wantReasoning(r.session_id); }
     return r;
+  }
+  /** FoxFleet always wants the thinking stream, even if the profile hides it in the CLI. Best-effort: older Hermes ignores the key. */
+  wantReasoning(sid) { if (!sid) return; void this.rpc('config.set', { key: 'show_reasoning', value: 'on', session_id: sid }).catch(() => {}); }
+  /** Hermes 0.22+: /model is session.mutate, not config.set. Fence from activate/resume; confirm token is kept per session. */
+  async setModel(params) {
+    UI_OPS.setmodel(params); // --global / --once / missing fields
+    const raw = String(params.value), sid = params.session_id;
+    const provider = /--provider\s+(\S+)/.exec(raw)?.[1];
+    const model = raw.replace(/--provider\s+\S+/g, '').trim();
+    let snap;
+    try { snap = await this.rpc('session.activate', { session_id: sid }); }
+    catch { snap = await this.withSource('session.resume', { session_id: sid, cols: 100 }); }
+    const payload = { model, ...(provider ? { provider } : {}) };
+    if (params.confirm === true) {
+      const tok = this.modelConfirm?.get(sid);
+      if (tok !== undefined) payload.confirm = tok; else payload.confirm = true;
+    }
+    const r = await this.rpc('session.mutate', {
+      session_id: sid, operation: 'model', payload,
+      expected_revision: snap?.revision ?? 0, expected_generation: snap?.execution_generation ?? 0,
+      request_id: crypto.randomUUID().replace(/-/g, ''),
+    });
+    if (r?.status === 'confirmation_required') {
+      (this.modelConfirm ??= new Map()).set(sid, r.confirm);
+      return { value: model, scope: 'session', confirm_required: true, confirm_message: String(r.message || r.confirm_message || 'Confirm this model').slice(0, 300) };
+    }
+    this.modelConfirm?.delete(sid);
+    return { value: r?.model || r?.value || model, scope: r?.scope || 'session', confirm_required: false, ...(r?.warning ? { warning: String(r.warning).slice(0, 300) } : {}) };
   }
   stop() { this.state = 'down'; this.readyP = null; try { this.child?.kill(); } catch {} }
 }

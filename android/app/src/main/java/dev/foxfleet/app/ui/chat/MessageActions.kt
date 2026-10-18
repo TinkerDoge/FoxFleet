@@ -46,7 +46,7 @@ object MessageActions {
     /** A finished reply that is only a REACT: line (or nothing) draws no row; its reaction shows on the user's message. */
     fun emptyReply(m: UiMessage): Boolean {
         if (m.role == "assistant" && m.reactionOnly) return true // the hub says so (0.4.1 `reaction_only`)
-        if (m.role != "assistant" || m.reasoning.isNotBlank() || m.imageUrls.isNotEmpty()) return false
+        if (m.role != "assistant" || m.reasoning.isNotBlank() || m.imageUrls.isNotEmpty() || m.steps.isNotEmpty()) return false
         val p = MediaTags.parse(m.content); return p.text.isBlank() && p.media.isEmpty()
     }
 

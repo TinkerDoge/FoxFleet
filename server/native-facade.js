@@ -13,7 +13,15 @@ export function toFrames(e) {
   switch (e.type) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
     case 'reasoning': return [frame({ choices: [{ delta: { reasoning_content: e.text } }] })];
-    case 'turn.end': return e.reasoning ? [frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] })] : []; // a provider that only reports its reasoning with the final message
+    case 'turn.end': {
+      // message.complete lands here. handle() used to close the run *before* these frames, so a
+      // profile with streaming.enabled=false (no message.delta) showed a finished tick and no reply
+      // until the chat was reopened from history. streamed=true means deltas already carried the text.
+      const out = [];
+      if (e.reasoning) out.push(frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] }));
+      if (e.text && e.streamed !== true) out.push(frame({ choices: [{ delta: { content: e.text } }] }));
+      return out;
+    }
     case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress'), frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name, ...(e.preview ? { preview: e.preview } : {}) }, 'foxfleet.tool')];
     case 'tool.end': return [frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name, ...(typeof e.ok === 'boolean' ? { ok: e.ok } : {}), ...(e.duration_ms !== undefined ? { duration_ms: e.duration_ms } : {}), ...(e.result_preview ? { result_preview: e.result_preview } : {}) }, 'foxfleet.tool'), ...(e.media?.length ? [frame({ choices: [{ delta: { content: `\n\n${e.media.map((m) => `MEDIA:${m.ref}`).join('\n')}\n` } }] })] : [])]; // tool-made files ride the normal MEDIA: card pipeline
     case 'status': return [frame({ kind: 'status', ...(e.turn_id ? { turn_id: e.turn_id } : {}), text: e.text, level: levelOf(e.level) }, 'foxfleet.step')];
@@ -43,9 +51,14 @@ export function nativeFacade({ runs }) {
       if (needRunning && !nat.isRunning(m.machineId, m.profile, stored)) throw new Error('no turn in flight');
       let ctl; const body = new ReadableStream({ start(c) { ctl = c; }, cancel() { unsub(); } });
       const end = (state, error) => { if (closed) return; closed = true; link.terminal = state; if (error) link.error = error; ctl.enqueue(frame({ state, ...(error ? { error } : {}) }, 'foxfleet.upstream')); ctl.enqueue(enc.encode('data: [DONE]\n\n')); ctl.close(); unsub(); };
+      let streamed = false;
       const handle = (e) => {
         if (closed) return;
-        if (e.type === 'turn.end') { return end(e.status === 'interrupted' ? 'stopped' : e.status === 'failed' ? 'failed' : 'completed', e.status === 'failed' ? 'The agent turn failed' : undefined); }
+        if (e.type === 'message.delta' && e.text) streamed = true;
+        if (e.type === 'turn.end') {
+          for (const f of toFrames({ ...e, streamed })) ctl.enqueue(f);
+          return end(e.status === 'interrupted' ? 'stopped' : e.status === 'failed' ? 'failed' : 'completed', e.status === 'failed' ? 'The agent turn failed' : undefined);
+        }
         if (e.type === 'owner.down') return end('failed', 'The Hermes process on the machine stopped');
         for (const f of toFrames(e)) ctl.enqueue(f);
       };
