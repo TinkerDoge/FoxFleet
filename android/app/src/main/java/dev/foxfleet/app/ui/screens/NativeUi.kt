@@ -71,6 +71,7 @@ class NativeControls(
     val setBusy: suspend (String) -> Unit,
 )
 
+/** [agentName] is the agent's display name (text only). */
 @Composable
 internal fun RequestCard(r: HubApi.OpenRequest, agentName: String, onAnswer: suspend (String, JsonObject) -> String?) {
     val c = LocalHubColors.current; val scope = rememberCoroutineScope()

@@ -364,7 +364,7 @@ fun ChatScreen(
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
-                Transcript(agent.displayName, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures) { viewing = it }
+                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures, agentLabel = agent.displayName) { viewing = it }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
@@ -424,8 +424,13 @@ fun ChatScreen(
 }
 
 
+/**
+ * [agentName] is the agent's id: media (`/api/agents/{id}/media`), avatars, list keys and every hub call use it.
+ * [agentLabel] is its display name, for text only ("Start a conversation with …", the live status line, request card titles).
+ * 0.4.2 vc31 passed the label as [agentName], so every MEDIA card of a labelled agent asked the hub for an unknown agent (404).
+ */
 @Composable
-private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, reactionsOn: Boolean = true, reactStateOf: (UiMessage) -> dev.foxfleet.app.ui.chat.ReactState = { if (reactionsOn) dev.foxfleet.app.ui.chat.ReactState.Ready else dev.foxfleet.app.ui.chat.ReactState.Off }, onReact: (UiMessage, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (UiMessage) -> Unit = {}, gestures: MessageGestures? = null, onOpen: (MediaRef) -> Unit) {
+private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, onLoadOlder: () -> Unit, onResumeQueue: () -> Unit, onCancelQueued: (String) -> Unit, onAnswerRequest: (suspend (String, kotlinx.serialization.json.JsonObject) -> String?)?, reactionsOn: Boolean = true, reactStateOf: (UiMessage) -> dev.foxfleet.app.ui.chat.ReactState = { if (reactionsOn) dev.foxfleet.app.ui.chat.ReactState.Ready else dev.foxfleet.app.ui.chat.ReactState.Off }, onReact: (UiMessage, String, Boolean) -> Unit = { _, _, _ -> }, onPickReaction: (UiMessage) -> Unit = {}, gestures: MessageGestures? = null, agentLabel: String = agentName, onOpen: (MediaRef) -> Unit) {
     val c = LocalHubColors.current
     val list = rememberLazyListState()
     // reverseLayout pins the newest message to the bottom: when the keyboard opens or the
@@ -459,7 +464,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
         Column(modifier.fillMaxWidth().padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             AgentAvatar(agentName, null, 56.dp)
             Spacer(Modifier.size(14.dp))
-            Text("Start a conversation with $agentName", style = MaterialTheme.typography.titleMedium, color = c.text, modifier = Modifier.bgChip())
+            Text("Start a conversation with $agentLabel", style = MaterialTheme.typography.titleMedium, color = c.text, modifier = Modifier.bgChip())
             Spacer(Modifier.size(6.dp))
             Text("Replies stream in live. Long-press a message for more.", style = MaterialTheme.typography.bodySmall, color = if (LocalChatBgActive.current) c.text else c.textMuted, modifier = Modifier.bgChip())
         }
@@ -503,7 +508,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             }
         }
         // cards for what the agent is waiting on sit at the very bottom, where the eye is
-        if (onAnswerRequest != null && state.requests.isNotEmpty()) items(state.requests.size, key = { "req-" + state.requests[it].id }, contentType = { "request" }) { i -> RequestCard(state.requests[i], agentName, onAnswerRequest) }
+        if (onAnswerRequest != null && state.requests.isNotEmpty()) items(state.requests.size, key = { "req-" + state.requests[it].id }, contentType = { "request" }) { i -> RequestCard(state.requests[i], agentLabel, onAnswerRequest) }
         val waiting = state.queue.asReversed()
         items(waiting.size, key = { "q-" + waiting[it].id }, contentType = { "queued" }) { i ->
             val q = waiting[i]
@@ -520,7 +525,7 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
             }
         }
         if (state.streaming) item(key = "stream", contentType = "stream") {
-            StreamingMessage(agentName, state, Modifier.animateItem(), onOpen)
+            StreamingMessage(agentName, state, Modifier.animateItem(), onOpen, agentLabel = agentLabel)
         }
         if (state.loading) item(key = "loading", contentType = "status") { ShimmerStatusText("Loading conversation…", Modifier.padding(8.dp)) }
         // Keys are the message's own identity (hub id, or a content hash), never a list position:
@@ -651,8 +656,9 @@ private class MessageGestures(val onMenu: (UiMessage) -> Unit, val onHeart: (UiM
 /** Screenshot tests: render the live step card opened. */
 internal val LocalStepsOpen = androidx.compose.runtime.staticCompositionLocalOf { false }
 
+/** [agentName] is the id (avatar, media); [agentLabel] the display name for the status line. */
 @Composable
-private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit, stepsStartOpen: Boolean = LocalStepsOpen.current) {
+private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modifier, onOpen: (MediaRef) -> Unit, stepsStartOpen: Boolean = LocalStepsOpen.current, agentLabel: String = agentName) {
     val c = LocalHubColors.current
     val reduce = reduceMotion()
     Row(modifier.fillMaxWidth()) {
@@ -664,7 +670,7 @@ private fun StreamingMessage(agentName: String, state: ChatState, modifier: Modi
             val active = state.tools.active
             val steps = state.steps
             // the step card carries what runs now; the chip below only speaks while there is nothing else to show
-            val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty() || steps.running.isNotEmpty()) null else statusLine(agentName, if (steps.isEmpty) state.toolLabel else null, state.streamReasoning.isNotBlank(), text.isNotBlank())
+            val status = if (state.reconnecting) "Reconnecting…" else if (active.isNotEmpty() || steps.running.isNotEmpty()) null else statusLine(agentLabel, if (steps.isEmpty) state.toolLabel else null, state.streamReasoning.isNotBlank(), text.isNotBlank())
             // The reply being written already sits in the frame it will keep; activity and status stay outside it.
             val shape = RoundedCornerShape(6.dp, 18.dp, 18.dp, 18.dp)
             if (state.streamReasoning.isNotBlank() || text.isNotBlank() || parsedStream.media.isNotEmpty() || !steps.isEmpty) Column(Modifier.clip(shape).background(c.surface).border(1.dp, c.hairline, shape).padding(horizontal = 14.dp, vertical = 10.dp)) {

@@ -4,6 +4,10 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased (0.4.2-alpha)
 
+Android versionCode 32 (vc31 was not shipped). Android-only fix for a QA blocker in vc31; no hub, connector or web changes.
+
+- Fix (Android): a labelled agent's pictures, files and voice notes load again. vc31 passed the display name to the transcript as the agent id, so every `MEDIA:` card called `/api/agents/<label>/media` (404 "Unknown agent") and the transcript avatars took their colour and custom picture from the label. The transcript now gets the id for media, avatars and hub calls, and the label only for text: the live status line (`SUMI is working…`), "Start a conversation with …" and the permission/question card titles. Test: `fix042/DisplayNameTest`.
+
 Android versionCode 31. Hub + connector fixes for the live reply Doge still saw as a green tick (grokbot's 0.4.1 notes claimed these were done; the run stream still dropped `message.complete`).
 
 - Fix (hub, native gateway): the reply to a native session now shows in the open chat when Hermes does not stream tokens (`streaming.enabled: false`, or a provider that only sends `message.complete`).
