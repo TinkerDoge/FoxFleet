@@ -96,6 +96,22 @@ object MediaTags {
     }
 
     /** While a reply streams, a tag (or a line that may become REACT:) is held back until its line is finished (a spaced path may still grow). */
+    /**
+     * Drop one MEDIA: ref from a stored reply so the card is gone, not broken. Remaining tags stay as MEDIA: lines
+     * under the text. Unknown refs are left unchanged.
+     */
+    fun withoutRef(input: String, ref: String): String {
+        if (ref.isEmpty()) return input
+        val parsed = parse(input)
+        if (parsed.media.none { it.ref == ref }) return input
+        val keep = parsed.media.filter { it.ref != ref }
+        val lines = buildList {
+            if (parsed.text.isNotBlank()) add(parsed.text)
+            keep.forEach { add("MEDIA:${it.ref}") }
+        }
+        return lines.joinToString("\n")
+    }
+
     fun parseStreaming(input: String): ParsedMedia {
         val cut = listOfNotNull(Regex("""[`"'*_]{0,3}MEDIA:[^\n]*$""", RegexOption.IGNORE_CASE).find(input)?.range?.first, partialReact.find(input)?.range?.first).minOrNull() ?: -1
         val r = parse(if (cut >= 0) input.substring(0, cut) else input)

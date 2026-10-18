@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
                 }
                 androidx.compose.runtime.DisposableEffect(imageLoader) { onDispose { imageLoader.shutdown() } }
                 androidx.compose.runtime.key(mediaHost) {
-                    CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars, dev.foxfleet.app.ui.components.LocalMediaHost provides mediaHost) { FoxfleetApp(vm) }
+                    CompositionLocalProvider(dev.foxfleet.app.media.LocalAvatarStore provides vm.avatars, dev.foxfleet.app.ui.components.LocalMediaHost provides mediaHost, dev.foxfleet.app.ui.components.LocalHiddenMedia provides vm.hiddenMedia) { FoxfleetApp(vm) }
                 }
             }
         }
