@@ -369,6 +369,7 @@ _REQUEST_FIELDS = {
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
+    "models.set": {"providers"},
     "callback.answer": {"callback_id", "outcome"},
     "card.send": {"chat_id", "kind", "instance", "card_key", "ttl_ms", "idempotency_key", "command", "description", "questions"},
     "card.close": {"request_id", "all_except_instance", "reason"},

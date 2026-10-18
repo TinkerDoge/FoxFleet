@@ -854,7 +854,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         // dashboard, API server, connector, facade or coordinator for one. Only `pin` (hub-side state) falls through to the shared handler below.
         if (m.connection === 'bot' && !(route === 'pin' && parts.length === 4 && req.method === 'PUT')) {
           if (!bot) throw botDisabled();
-          if ((route === 'models' && parts.length === 4) || (route === 'sessions' && parts.length === 6 && parts[5] === 'model')) throw fault(409, 'Bot agents have no model list', 'models_unsupported');
+          if (route === 'sessions' && parts.length === 6 && parts[5] === 'model') throw fault(409, 'Bot agents set the model with /model', 'models_unsupported');
           return await bot.route({ req, res, url, parts, m, scope: scopeOf(ctx), user: auth.user, reg: ctx.reg, readJson, sendJson, current });
         }
         // Reactions and "delete for me" live beside each account's history. Never accept an actor identity from a request body.

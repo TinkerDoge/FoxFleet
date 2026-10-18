@@ -485,6 +485,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._mark_connected()
         self._wire_plugin_handlers(None)
         self._spawn(self._sync_commands())
+        self._spawn(self._sync_models())
         self._spawn(self._flush_unprocessed())
         logger.info("FoxFleet: connected as bot %s (resume from event %d)", conn.hello.bot,
                     conn.hello.resume_from)
@@ -653,6 +654,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 self._install(conn)
                 self._mark_connected()
                 self._spawn(self._sync_commands())
+                self._spawn(self._sync_models())
                 self._spawn(self._flush_unprocessed())
                 logger.info("FoxFleet: reconnected (resume from event %d)", conn.hello.resume_from)
                 break
@@ -2082,6 +2084,18 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not res.ok:
             logger.warning("FoxFleet: hub refused commands.set: %s", res.error_code)
 
+    async def _sync_models(self) -> None:
+        providers = build_model_catalog()
+        if not providers:
+            return
+        try:
+            res = await self._rpc("models.set", timeout=self.RPC_TIMEOUT, providers=providers)
+        except (_OutcomeUnknown, _NotSent, _BadResponse) as exc:
+            logger.info("FoxFleet: models.set not confirmed: %s", exc)
+            return
+        if not res.ok:
+            logger.warning("FoxFleet: hub refused models.set: %s", res.error_code)
+
 
 _COMMAND_NAME_RE = re.compile(r"^[a-z0-9_]{1,32}$")
 _CONTROL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -2140,6 +2154,39 @@ def build_command_catalog(limit: int = 100) -> list[dict]:
             for name, description, _args in iter_plugins():
                 add(name, description)
     return catalog
+
+
+def build_model_catalog(limit_providers: int = 60, limit_models: int = 300) -> list[dict]:
+    """Hermes picker inventory for the hub model card. Empty when inventory is unavailable."""
+    try:
+        from hermes_cli.inventory import build_model_options_payload, load_picker_context
+        payload = build_model_options_payload(load_picker_context(), include_unconfigured=False, refresh=False)
+    except Exception:
+        return []
+    out: list[dict] = []
+    for p in payload.get("providers") or []:
+        if not isinstance(p, dict):
+            continue
+        slug = str(p.get("slug") or "").strip()
+        if not slug:
+            continue
+        models: list[str] = []
+        for m in p.get("models") or []:
+            mid = m if isinstance(m, str) else (m.get("id") or m.get("name") if isinstance(m, dict) else "")
+            sid = str(mid or "").strip()
+            if sid:
+                models.append(sid)
+            if len(models) >= limit_models:
+                break
+        out.append({
+            "slug": slug[:64],
+            "name": str(p.get("name") or slug)[:80],
+            "current": p.get("is_current") is True or p.get("current") is True,
+            "models": models,
+        })
+        if len(out) >= limit_providers:
+            break
+    return out
 
 
 async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_files=None,

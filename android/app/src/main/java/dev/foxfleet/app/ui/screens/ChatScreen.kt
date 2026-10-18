@@ -559,6 +559,9 @@ private fun Transcript(agentName: String, state: ChatState, modifier: Modifier, 
                 }
             }
         }
+        if (state.lateUsers.isNotEmpty()) items(state.lateUsers.size, key = { "late-" + it + ":" + state.lateUsers[it].content.hashCode() }, contentType = { "user" }) { i ->
+            MessageRow(agentName, state.lateUsers[state.lateUsers.size - 1 - i], Modifier.animateItem(), onOpen, state.sessionId.orEmpty())
+        }
         if (state.streaming) item(key = "stream", contentType = "stream") {
             StreamingMessage(agentName, state, Modifier.animateItem(), onOpen, agentLabel = agentLabel)
         }
@@ -770,13 +773,19 @@ private fun MediaCard(ref: MediaRef, onLongClick: (() -> Unit)?, onClick: () -> 
 
 /** What a plain message means while the agent works (no picker). */
 internal fun plainMode(native: Boolean, modes: List<String>) = if (native) "auto" else if ("interrupt" in modes) "interrupt" else "queue"
-/** /model typed in the chat: no argument opens the picker; with arguments it sets the model of this chat only (never the profile default). */
+/** /model typed in the chat: no argument opens the picker; with arguments it sets the model. `--global` is the Hermes default when the agent supports it. */
 internal fun modelCommand(args: String, controls: NativeControls?, state: ChatState, picker: () -> Unit, onConfirm: (model: String, provider: String?, reason: String) -> Unit = { _, _, _ -> }) {
     if (args.isEmpty()) { picker(); return }
-    if (Regex("(^|\\s)--global(\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(args)) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
-    if (state.sessionId == null || controls == null) { state.addNotice("Send the first message first: the model is set per conversation."); return }
-    val provider = Regex("--provider\\s+(\\S+)").find(args)?.groupValues?.get(1); val model = args.replace(Regex("--provider\\s+\\S+"), "").trim()
-    CoroutineScope(Dispatchers.Main).launch { runCatching { controls.setModel(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model)) }.onFailure { if (it is HubApi.ModelConfirmRequired) onConfirm(model, provider, it.reason) else state.addNotice("Could not change the model") } }
+    val global = Regex("(^|\\s)--global(\\s|$)", RegexOption.IGNORE_CASE).containsMatchIn(args)
+    if (global && controls?.setGlobalModel == null) { state.addNotice("Changing the Hermes default is not done from the chat. Use the agent settings."); return }
+    if (state.sessionId == null && controls?.setGlobalModel == null) { state.addNotice("Send the first message first: the model is set per conversation."); return }
+    val provider = Regex("--provider\\s+(\\S+)").find(args)?.groupValues?.get(1)
+    val model = args.replace(Regex("--provider\\s+\\S+"), "").replace(Regex("(^|\\s)--global(\\s|$)", RegexOption.IGNORE_CASE), " ").trim()
+    CoroutineScope(Dispatchers.Main).launch {
+        val apply = if (global) (controls?.setGlobalModel ?: controls?.setModel) else controls?.setModel
+        if (apply == null) { state.addNotice("Could not change the model"); return@launch }
+        runCatching { apply(model, provider) }.onSuccess { state.addNotice(modelSetMessage(model, global)) }.onFailure { if (it is HubApi.ModelConfirmRequired) onConfirm(model, provider, it.reason) else state.addNotice("Could not change the model") }
+    }
 }
 /** Honest names for the send modes. */
 internal fun modeLabel(mode: String) = when (mode) { "steer" -> "Steer"; "interrupt" -> "Interrupt & send"; else -> "Queue" }

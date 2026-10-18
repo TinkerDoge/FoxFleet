@@ -28,9 +28,13 @@ object NotifyChannels {
             val ch = NotificationChannel(c.id, c.label, c.importance).apply {
                 description = c.description
                 if (c == NotifyChannel.Service) { setShowBadge(false); setSound(null, null); enableVibration(false); enableLights(false) }
-                if (c == NotifyChannel.Replies || c == NotifyChannel.Errors) setShowBadge(true)
+                if (c == NotifyChannel.Replies || c == NotifyChannel.Errors || c == NotifyChannel.Approvals) setShowBadge(true)
             }
             nm.createNotificationChannel(ch)
+            if (c == NotifyChannel.Service) nm.getNotificationChannel(c.id)?.let { existing ->
+                existing.setShowBadge(false)
+                nm.createNotificationChannel(existing)
+            }
         }
     }
 

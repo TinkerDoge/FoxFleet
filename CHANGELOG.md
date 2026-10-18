@@ -4,7 +4,9 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased (0.4.2-alpha)
 
-Android versionCode 37. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+Android versionCode 38. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+
+- Fix (Android / hub / plugin): bot model picker lists Hermes providers (`models.set` on connect). Picking works before the first message; `--global` sets the Hermes default. The Connected service line no longer badges. Steer / follow-up / redirect sit after the live reasoning and tool bubble.
 
 - Change (Android): the agent dossier matches Telegram's bot page — large centred avatar, four equal pills (Message, Mute, Share, Stop), username card, then Media / Files / Links / Chats. Media is a flush 3-column grid. Test: `DossierMediaTest`.
 

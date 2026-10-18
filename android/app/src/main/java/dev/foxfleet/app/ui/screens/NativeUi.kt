@@ -73,6 +73,8 @@ class NativeControls(
     val setModel: suspend (model: String, provider: String?) -> String,
     /** Same as [setModel] but with the user's confirmation of a guarded model. */
     val confirmModel: (suspend (model: String, provider: String?) -> String)? = null,
+    /** Bot agents: `/model … --global` (Hermes default). Null = this chat only. */
+    val setGlobalModel: (suspend (model: String, provider: String?) -> String)? = null,
     val busy: suspend () -> String,
     val setBusy: suspend (String) -> Unit,
 )
@@ -122,7 +124,9 @@ internal fun <T> pageOf(items: List<T>, page: Int, size: Int = 8): Triple<List<T
     val pages = maxOf(1, (items.size + size - 1) / size); val p = page.coerceIn(0, pages - 1)
     return Triple(items.drop(p * size).take(size), pages, p)
 }
-internal fun modelSetMessage(model: String) = "Model for this chat is now $model. Your Hermes default is unchanged."
+internal fun modelSetMessage(model: String, global: Boolean = false) =
+    if (global) "Hermes default is now $model. New chats use it."
+    else "Model for this chat is now $model. Your Hermes default is unchanged."
 
 /** What the header chip says and what a test looks for. */
 internal const val MODEL_CHIP_LABEL = "Model for this chat"
@@ -182,7 +186,15 @@ private fun ModelPickerSteps(controls: NativeControls, hasSession: Boolean, onDo
     run {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(if (p == null) "Choose a provider" else "Models from ${p.name}", style = MaterialTheme.typography.titleMedium, color = c.text)
-            if (!hasSession) Text("Send the first message first: the model is set per conversation.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            if (!hasSession && controls.setGlobalModel == null) Text("Send the first message first: the model is set per conversation.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
+            var global by remember { mutableStateOf(false) }
+            if (controls.setGlobalModel != null) {
+                Row(Modifier.fillMaxWidth().clickable { global = !global }, verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                    Checkbox(global, { global = it })
+                    Text("Also set as default (--global)", style = MaterialTheme.typography.bodySmall, color = c.text)
+                }
+            }
+            val canPick = hasSession || (controls.setGlobalModel != null && global) || controls.setGlobalModel != null
             val pending = ask
             when {
                 pending != null -> {
@@ -190,8 +202,11 @@ private fun ModelPickerSteps(controls: NativeControls, hasSession: Boolean, onDo
                     Text(pending.third, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                     SoftButton({
                         busy = true; err = null
-                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onPicked(pending.first); onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message ?: "Could not switch the model"; busy = false } }
-                    }, enabled = hasSession && !busy) { Text("Switch anyway", color = c.accent) }
+                        scope.launch {
+                            val apply = if (global) (controls.setGlobalModel ?: controls.setModel) else (controls.confirmModel ?: controls.setModel)
+                            runCatching { apply(pending.first, pending.second) }.onSuccess { onPicked(pending.first); onDone(modelSetMessage(pending.first, global)) }.onFailure { err = it.message ?: "Could not switch the model"; busy = false }
+                        }
+                    }, enabled = canPick && !busy) { Text("Switch anyway", color = c.accent) }
                     SoftButton({ ask = null; err = null }, enabled = !busy) { Text("Cancel", color = c.textMuted) }
                 }
                 providers == null && err == null -> Text("Loading models…", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
@@ -206,9 +221,12 @@ private fun ModelPickerSteps(controls: NativeControls, hasSession: Boolean, onDo
                         if (rows.isEmpty()) Text("Nothing matches", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                         rows.forEach { row ->
                             if (row is HubApi.ModelProvider) ChoiceRow("${row.name} · ${row.models.size}", true) { sel = row.slug; q = ""; page = 0 }
-                            else { val m = row.toString(); ChoiceRow(m, hasSession && !busy) {
+                            else { val m = row.toString(); ChoiceRow(m, canPick && !busy) {
                                 busy = true
-                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onPicked(m); onDone(modelSetMessage(m)) }.onFailure { if (it is HubApi.ModelConfirmRequired) ask = Triple(m, p!!.slug, it.reason) else err = it.message; busy = false } }
+                                scope.launch {
+                                    val apply = if (global) (controls.setGlobalModel ?: controls.setModel) else controls.setModel
+                                    runCatching { apply(m, p!!.slug) }.onSuccess { onPicked(m); onDone(modelSetMessage(m, global)) }.onFailure { if (it is HubApi.ModelConfirmRequired) ask = Triple(m, p!!.slug, it.reason) else err = it.message; busy = false }
+                                }
                             } }
                         }
                     }

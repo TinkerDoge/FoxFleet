@@ -31,6 +31,7 @@ class NotifyNotifierTest {
         assertEquals(NotificationManager.IMPORTANCE_DEFAULT, nm.getNotificationChannel("foxfleet_errors").importance)
         NotifyChannel.entries.forEach { assertTrue(it.label.isNotBlank() && it.description.isNotBlank()) }
         assertTrue(NotifyChannels.status(ctx).all { it.exists && !it.blocked })
+        assertFalse(nm.getNotificationChannel("foxfleet_service").canShowBadge())
     }
 
     @Test fun creatingChannelsTwiceKeepsWhatTheUserChanged() {
