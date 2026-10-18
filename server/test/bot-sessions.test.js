@@ -74,11 +74,15 @@ test('queue: the fixed shape, active_run is the live reply run of the asked sess
 test('routes a bot does not have are 404 and never reach an upstream; the agent view carries exactly the bot capability set', async (t) => {
   const b = await bootBot(t), sent = await (await send(b, 'hi')).json();
   for (const [route, data] of [['files', {}], ['screen/status'], ['screen/observe', {}], ['skills'], ['skills/toggle', { name: 'x', enabled: true }], ['native'], ['native/sessions', {}], ['config'], ['cron'], ['logs'], ['usage'], ['profiles'], ['artifacts'], ['transcribe', {}], ['media', { ref: 'x' }],
-    [`sessions/${sent.session_id}/reactions`], [`sessions/${sent.session_id}/hidden`], [`sessions/${sent.session_id}/search`], ['sessions/search']]) {
+    [`sessions/${sent.session_id}/search`], ['sessions/search']]) {
     assert.equal((await b.h.call(`/api/agents/helper/${route}`, { data })).status, 404, route);
   }
+  // 0.4.2: reactions and delete-for-me are bot routes now (bot-reactions.test.js covers them)
+  for (const route of [`sessions/${sent.session_id}/reactions`, `sessions/${sent.session_id}/hidden`]) {
+    assert.equal((await b.h.call(`/api/agents/helper/${route}`)).status, 200, route);
+  }
   const view = (await (await b.h.call('/api/agents/helper')).json()).agent;
-  assert.deepEqual({ ...view.capabilities, media: undefined }, { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, bot: true, reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: undefined });
+  assert.deepEqual({ ...view.capabilities, media: undefined }, { chat: true, images: false, files: false, screen: false, voice: false, skills: false, sessions: true, bot: true, reactions: true, agentReactions: true, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: undefined });
   assert.equal(view.status, 'offline'); assert.equal(view.hasBotToken, true); assert.equal(view.checks.media.ok, true); assert.match(view.checks.media.message, /Bot media via hub/);
   assert.equal(view.managementReady, false); assert.equal(view.kind, 'hermes');
   assert.equal((await b.h.call('/api/agents/helper/pin', { method: 'PUT', data: { pinned: true } })).status, 200, 'pin is the shared hub-side handler');

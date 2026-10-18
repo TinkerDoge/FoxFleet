@@ -27,7 +27,7 @@ Implemented in this version, and nothing else:
 | Standalone bot requests | `POST /api/bot/rpc` (non-displacing HTTP, send/edit/delete/typing only) |
 | Hub → bot | `hello`, `message.new`, `res`, `error`, `ping`, `pong` |
 | Bot → hub | `ack`, `ping`, `pong`, `message.send`, `message.edit`, `message.delete`, `chat.action` (`typing`), `commands.set` |
-| User side | the existing agent routes: list/detail, sessions, transcript, `/messages`, `/chat`, `/runs`, `/queue`, `/commands`, `/pin` |
+| User side | the existing agent routes: list/detail, sessions, transcript, `/messages`, `/chat`, `/runs`, `/queue`, `/commands`, `/pin`, `/reactions`, `/hidden` |
 | Content | text only, direct chats (`chat_type: "dm"`) |
 
 Reserved names, **not implemented** (frozen so later versions do not collide). A bot that sends one gets

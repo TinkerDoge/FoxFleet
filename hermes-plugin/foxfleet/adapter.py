@@ -287,6 +287,11 @@ def _jittered(delay: float) -> float:
     return delay * (0.5 + random.random() / 2)
 
 
+# Hermes' finalize placeholder for a native stream that accumulated no visible content
+# (stream_consumer's `_accumulated or "✅"`): a bubble close, never a reply the user should see.
+_EMPTY_FINALIZE_PLACEHOLDER = "✅"
+
+
 @dataclass
 class _Stream:
     chunks: list[tuple[str, str]] = field(default_factory=list)  # only this turn's (id, text)
@@ -1436,6 +1441,17 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 return finalize and text == state.text()
             if not text.strip():
                 return True  # seed/typing is not a persisted message
+            if (finalize and text.strip() == _EMPTY_FINALIZE_PLACEHOLDER
+                    and not state.chunks and state.unconfirmed is None):
+                # Hermes closes a native stream that never showed content with a lone placeholder
+                # ("_accumulated or ✅", stream_consumer). Nothing was ever written to the hub, so
+                # there is no message to complete and no live run to end here: swallowing it keeps
+                # the hub's run open, and Hermes' stale-finalize recovery (#71643) then delivers the
+                # authoritative text through send(), which streams into that still-open run. Sending
+                # the placeholder instead would persist a bare "✅" reply whose final flag ends the
+                # run early — the reply then lands in a run the client is no longer following.
+                state.finalized = True
+                return True
             pushed = (await self._push_final(state, str(chat_id), text, reply_to) if finalize
                       else await self._push_snapshot(state, str(chat_id), text, reply_to, False) is None)
             if pushed:

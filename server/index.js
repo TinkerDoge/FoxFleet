@@ -380,7 +380,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : 'offline', online, chatReady, managementReady: false,
-      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: false, agentReactions: false, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
+      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: true, agentReactions: true, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       hasBotToken: Boolean(p.hasBotToken),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: Boolean(bot), message: bot ? 'Bot media via hub' : 'Bot API disabled' } } };

@@ -14,6 +14,15 @@ Android versionCode 31. Hub + connector fixes for the live reply Doge still saw 
 - Fix (Android): the live status uses the agent's display name, not its id (`sumi is working…` → `SUMI is working…`). A finished reply that has steps but no text yet is still shown (not treated as a REACT-only empty row).
 - Tests: turn.end frames; fake gateway `session.mutate` + `show_reasoning`; emptyReply keeps steps. hub-tests.min 588.
 
+Tier 1 of the bot-path repair (the six agents now talk to the hub as native bot agents, and the bot protocol is text-only: no reasoning, no reactions, and the empty-stream placeholder was stored as a reply).
+
+- Fix (plugin): the empty-stream finalize placeholder (`"✅"`, Hermes closing a native stream that never accumulated visible content) is no longer persisted as a reply.
+  - Cause: `send_stream_frame` treated the lone `"✅"` as real text, so the hub stored a bare tick with `final: true`. That ended the live run; the authoritative reply then arrived by the gateway's #71643 stale-finalize recovery in a run the app was no longer following — the "green tick, reply only after a reload" Doge saw on six agents.
+  - Now a finalize whose text is exactly the placeholder, on a stream that never wrote anything, closes the stream locally and sends nothing to the hub: the run stays open and the recovery send streams the real reply into it. Scoped to empty streams — a stream that showed content still delivers a literal `"✅"` final as its answer.
+- Fix (hub, bot agents): the REACT: line of a bot reply is honoured like every other agent's. The line is stripped from the stored text (the emoji stays alone only when the reply is nothing else, so the run still ends), applied to the newest user message as a stored reaction, and announced as a `message.reaction` live v2 event.
+- Feature (hub, bot agents): `GET`/`PUT`/`DELETE …/sessions/{id}/reactions` and `…/hidden` work for bot chats on the bot store's own message ids (an `fm_` id is both ids, so the snapshot mirrors `messages` into `by_hub_id` and live events carry it in both fields). `hidden` messages are filtered from the transcript route. Bot agents now advertise `capabilities.reactions` / `agentReactions` true so the apps show the affordances. REACT: lines still stored by older replies are derived on read.
+- Tests: bot REACT: strip/apply (full and reaction-only), user reaction PUT/DELETE/idempotency + error codes, delete-for-me, capability set, derived reactions; plugin empty-stream placeholder (real hub + real stream consumer), literal `"✅"` final, and an ordinary streamed reply as control. hub-tests.min 594.
+
 Android fix after Doge installed 0.4.1 (vc29, f4c6e08a…cf93561) on a phone whose hub was not redeployed (0.4.0 or older). The reactions he saw were missing or failed without a word. The app now explains instead. No hub, web or contract changes. Android versionCode 30.
 
 - Fix (Android reactions on older hubs): every reaction affordance depended on three gates. None of them told the user anything when it failed:

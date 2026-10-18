@@ -253,6 +253,8 @@ export function botStore(file, options = {}) {
     deleteChat(chatId) { return run((d) => { try { chatOf(d, chatId); } catch (e) { throw httpFault(e); } delete d.chats[chatId]; delete d.messages[chatId]; }); },
     hasChat: (chatId) => Boolean(st().chats[chatId]),
     messageAuthor: (chatId, messageId) => st().messages[chatId]?.find((x) => x.id === messageId)?.role ?? null,
+    /** The id of the newest user message in the chat (0.4.2: the target of an agent's REACT: line). */
+    lastUserMessage: (chatId) => { const list = st().messages[chatId] ?? []; for (let i = list.length - 1; i >= 0; i--) if (list[i].role === 'user') return list[i].id; return null; },
     /** Chats, newest activity first; `q` matches the title or any message text. */
     chats({ q = '', limit = 30, offset = 0 } = {}) {
       const d = st(), needle = q.toLowerCase();

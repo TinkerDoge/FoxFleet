@@ -7,6 +7,8 @@ import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } fro
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
 import { PROTOCOL_V11, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateHttpRequest, validateMediaRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { flattenContent } from './transcript.js';
+import { takeReact } from './media-tags.js';
+import { agentReactions, reactionView } from './reactions.js';
 
 export const BOT_DISABLED = 'The bot API is disabled on this hub';
 
@@ -86,22 +88,52 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     throw new BotError('rate_limited', 'Too many requests', { retry_after_ms: Math.ceil(((1 - b.tokens) / perSec) * 1000) });
   }
   const agentName = (session) => agentOf(session.reg, session.botId)?.name;
+  // 0.4.2: what a bot reply's REACT: line does (same contract as every other agent). The line is
+  // removed from the stored text whenever something else remains; a reply that is nothing else
+  // keeps the emoji as its text so the run still ends, and the emoji lands on the newest user
+  // message as a stored reaction plus a message.reaction live event.
+  function botReactOf(text, final) {
+    const t = typeof text === 'string' ? text : '';
+    const { text: stripped, react } = takeReact(t);
+    if (!react) return { text: t, react: null };
+    if (stripped.trim()) return { text: stripped, react };
+    return { text: final ? react : t, react: final ? react : null };
+  }
+  async function applyBotReact(session, m, chatId, emoji) {
+    const target = session.store.lastUserMessage(chatId);
+    if (!target) return;
+    const actor = { id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' };
+    try {
+      if (await session.reg.reactions.set(m.name, chatId, [target], emoji, actor, true)) {
+        const groups = session.reg.reactions.list(m.name, chatId)[target] ?? [];
+        session.reg.live2.emit('message.reaction', { agent: m.name, chat: chatId, hub_id: target, upstream_id: target, reactions: groups, change: { emoji, present: true, actor } });
+      }
+    } catch { /* a full store keeps the reply; the reaction is still derived from the transcript */ }
+  }
   async function dispatch(session, v) {
     const { store } = session;
     switch (v.t) {
       case 'message.send': {
+        const reactOf = botReactOf(v.req.text, v.req.final === true);
+        if (reactOf.text !== v.req.text) v.req = { ...v.req, text: reactOf.text };
         const out = await store.send(v.req, guard(session));
         if (!out.replayed) {
+          const m = agentOf(session.reg, session.botId);
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
           await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: store.messageText(v.req.chat_id, out.result.message_id), final: v.req.final });
+          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react);
         }
         return out;
       }
       case 'message.edit': {
+        const reactOf = botReactOf(v.req.text, v.req.final === true);
+        if (reactOf.text !== v.req.text) v.req = { ...v.req, text: reactOf.text };
         const out = await store.edit(v.req, guard(session));
         if (!out.replayed) {
+          const m = agentOf(session.reg, session.botId);
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
           await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: store.messageText(v.req.chat_id, v.req.message_id), final: v.req.final });
+          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react);
         }
         return out;
       }
@@ -408,7 +440,35 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   async function sessionRoutes(c) {
     const { req, res, parts, url } = c, store = await readyStore(c);
     if (parts.length === 4 && req.method === 'GET') return c.sendJson(res, 200, store.chats({ q: (url.searchParams.get('q') || '').slice(0, 200), limit: page(url.searchParams.get('limit'), 1, 100, 30), offset: page(url.searchParams.get('offset'), 0, 100000, 0) }));
-    if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') return c.sendJson(res, 200, store.transcript(parts[4], { limit: page(url.searchParams.get('limit'), 1, 200, 80), offset: page(url.searchParams.get('offset'), 0, 100000, 0) }));
+    if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
+      const out = store.transcript(parts[4], { limit: page(url.searchParams.get('limit'), 1, 200, 80), offset: page(url.searchParams.get('offset'), 0, 100000, 0) });
+      const hidden = new Set(c.reg.reactions.hidden(c.m.name, parts[4]));
+      if (hidden.size) out.messages = out.messages.filter((x) => !hidden.has(String(x.id)));
+      return c.sendJson(res, 200, out);
+    }
+    // 0.4.2: reactions and "delete for me" for bot agents, on the bot store's own message ids.
+    // No ledger: an fm_ id is both ids, so the snapshot mirrors `messages` into `by_hub_id` and
+    // live events carry it in both fields. REACT: lines still in old stored replies are derived.
+    if (parts.length === 6 && (parts[5] === 'reactions' || parts[5] === 'hidden')) {
+      const sid = parts[4], m = c.m, reg = c.reg;
+      const messages = store.transcript(sid, { limit: 1_000_000, offset: 0 }).messages;
+      const actor = { id: 'user:' + c.scope, name: c.user?.username || 'You', kind: 'human' };
+      let changed, change = null, target = null;
+      if (req.method === 'PUT' || req.method === 'DELETE') {
+        const b = await c.readJson(req, 2048);
+        if (typeof b.message_id !== 'string' || !b.message_id || b.message_id.length > 200) throw fault(400, 'Invalid message ID', 'invalid_message_id');
+        if (!messages.some((x) => String(x.id) === b.message_id)) throw fault(404, 'Message not found', 'message_not_found');
+        target = b.message_id;
+        if (parts[5] === 'hidden') await reg.reactions.hide(m.name, sid, [b.message_id], req.method === 'PUT');
+        else { changed = await reg.reactions.set(m.name, sid, [b.message_id], b.emoji, actor, req.method === 'PUT'); if (changed) change = { emoji: b.emoji, present: req.method === 'PUT', actor }; }
+      } else if (req.method !== 'GET') throw fault(405, 'Method not allowed');
+      const view = reactionView({ rows: reg.reactions.list(m.name, sid), derived: agentReactions(messages, { id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' }), resolve: () => null, transcriptIds: new Set(messages.map((x) => String(x.id))) });
+      for (const [k, v] of Object.entries(view.messages)) view.by_hub_id[k] = v; // an fm_ id is both ids here
+      if (change && target) reg.live2.emit('message.reaction', { agent: m.name, chat: sid, hub_id: target, upstream_id: target, reactions: view.by_hub_id[target] ?? [], change });
+      if (target) view.by_hub_id[target] ??= []; // the targeted message is always in the answer, [] when it has none left
+      const hiddenIds = reg.reactions.hidden(m.name, sid).filter((id) => messages.some((x) => String(x.id) === id));
+      return c.sendJson(res, 200, { actor, messages: view.messages, by_hub_id: view.by_hub_id, hidden: hiddenIds, hidden_hub_ids: hiddenIds, ...(changed === undefined ? {} : { changed }) });
+    }
     if (parts.length === 4 && req.method === 'POST') {
       const b = await c.readJson(req, 4096), title = b.title === undefined || b.title === '' ? undefined : b.title;
       if (title !== undefined && (typeof title !== 'string' || !title.trim() || title.length > 200 || /[\x00-\x1f]/.test(title))) throw fault(400, 'Invalid title');
