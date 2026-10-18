@@ -73,6 +73,9 @@ fun SettingsScreen(
     mediaCacheBytes: Long = 0L,
     clearingMedia: Boolean = false,
     onClearMedia: () -> Unit = {},
+    updateUi: dev.foxfleet.app.update.UpdateUi = dev.foxfleet.app.update.UpdateUi.Idle,
+    onCheckUpdates: () -> Unit = {},
+    onInstallUpdate: () -> Unit = {},
     /** The "Notifications" section (see NotificationSettings.kt); empty where the screen is previewed without a hub. */
     notifications: @Composable () -> Unit = {},
 ) {
@@ -166,6 +169,18 @@ fun SettingsScreen(
                     NavRow("Sign out", danger = true, chevron = false, onClick = onSignOut)
                 }
             }
+            SectionLabel("Updates")
+            SoftCard(Modifier.fillMaxWidth()) {
+                Column {
+                    val manifest = (updateUi as? dev.foxfleet.app.update.UpdateUi.Available)?.manifest
+                    if (manifest != null) {
+                        val notes = manifest.notes?.takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""
+                        NavRow("Update available", subtitle = "${manifest.versionName} (${manifest.versionCode})$notes", value = "Install", chevron = false, onClick = onInstallUpdate)
+                        Hairline(Modifier.padding(start = 16.dp))
+                    }
+                    NavRow("Check for updates", subtitle = updateStatus(updateUi), chevron = false, onClick = onCheckUpdates)
+                }
+            }
             SectionLabel("About")
             SoftCard(Modifier.fillMaxWidth()) {
                 Column {
@@ -184,6 +199,16 @@ fun SettingsScreen(
 
 @Composable
 private fun Color_Danger() = if (LocalHubColors.current.dark) androidx.compose.ui.graphics.Color(0xFFFF7B72) else androidx.compose.ui.graphics.Color(0xFFC4372B)
+
+private fun updateStatus(ui: dev.foxfleet.app.update.UpdateUi): String? = when (ui) {
+    dev.foxfleet.app.update.UpdateUi.Idle -> null
+    dev.foxfleet.app.update.UpdateUi.Checking -> "Checking…"
+    dev.foxfleet.app.update.UpdateUi.UpToDate -> "You're on the latest version."
+    is dev.foxfleet.app.update.UpdateUi.Available -> "An update is ready to install."
+    is dev.foxfleet.app.update.UpdateUi.Downloading -> "Downloading… ${ui.percent}%"
+    is dev.foxfleet.app.update.UpdateUi.Installing -> "Opening the installer…"
+    is dev.foxfleet.app.update.UpdateUi.Failed -> ui.message
+}
 
 /** A settings row: title (+ optional second line), optional value on the right, chevron; 56dp tall at least. */
 @Composable

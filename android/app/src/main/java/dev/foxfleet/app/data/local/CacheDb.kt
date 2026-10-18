@@ -219,6 +219,8 @@ interface MessageDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(rows: List<MessageRow>)
 
+    @Query("SELECT * FROM messages WHERE owner = :owner AND agent = :agent ORDER BY ts, ord")
+    suspend fun all(owner: String, agent: String): List<MessageRow>
     @Query("SELECT * FROM chat_meta WHERE owner = :owner AND agent = :agent AND chat_id = :chatId")
     suspend fun meta(owner: String, agent: String, chatId: String): ChatMetaRow?
     @Upsert

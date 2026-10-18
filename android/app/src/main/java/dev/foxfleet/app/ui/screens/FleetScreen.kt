@@ -97,6 +97,8 @@ fun FleetScreen(
     onRefresh: () -> Unit,
     onOpen: (AgentStatus) -> Unit,
     onSettings: () -> Unit,
+    /** Tap the avatar (0.4.3 C3): the agent dossier; the rest of the row still opens the chat. */
+    onDossier: (AgentStatus) -> Unit = {},
     onAvatarLongPress: (String) -> Unit = {},
     onPin: (AgentStatus) -> Unit = {},
     onAddAgent: (() -> Unit)? = null,
@@ -176,7 +178,7 @@ fun FleetScreen(
                         val anim = remember { Animatable(if (animateIn) 0f else 1f) }
                         LaunchedEffect(Unit) { if (anim.value < 1f) { kotlinx.coroutines.delay(staggerDelayMs(i).toLong()); anim.animateTo(1f, tween(360)) } }
                         AgentRow(
-                            a, unread(a), running(a.name), now(), onOpen, onPin, onAvatarLongPress,
+                            a, unread(a), running(a.name), now(), onOpen, onPin, onAvatarLongPress, onDossier,
                             Modifier.animateItem().graphicsLayer { alpha = anim.value; translationY = (1f - anim.value) * 24.dp.toPx() },
                             row = rows[a.name], actions = rowActions, typing = typingLabel(a.name),
                         )
@@ -212,7 +214,7 @@ private fun SearchField(value: String, onChange: (String) -> Unit, modifier: Mod
 @Composable
 private fun AgentRow(
     a: AgentStatus, unread: Boolean, runningHere: Boolean, now: Long, onOpen: (AgentStatus) -> Unit, onPin: (AgentStatus) -> Unit,
-    onChangePicture: (String) -> Unit, modifier: Modifier, row: HubChat? = null, actions: ChatRowActions? = null, typing: String? = null,
+    onChangePicture: (String) -> Unit, onDossier: (AgentStatus) -> Unit, modifier: Modifier, row: HubChat? = null, actions: ChatRowActions? = null, typing: String? = null,
 ) {
     val c = LocalHubColors.current
     val haptic = rememberHaptic()
@@ -252,7 +254,10 @@ private fun AgentRow(
                     .padding(horizontal = 16.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                AgentAvatar(a.name, p, 52.dp, Modifier.sharedAvatar(a.name))
+                AgentAvatar(a.name, p, 52.dp, Modifier.sharedAvatar(a.name)
+                    .combinedClickable(interactionSource = remember { MutableInteractionSource() }, indication = null,
+                        onClick = { onDossier(a) }, onLongClick = { haptic(HapticFeedbackType.LongPress); menu = true })
+                    .semantics { contentDescription = "Open ${a.displayName}'s dossier" })
                 Spacer(Modifier.width(14.dp))
                 Column(Modifier.weight(1f)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

@@ -52,6 +52,8 @@ fun <T> cacheThenNetwork(read: suspend () -> T?, fetch: suspend () -> T, write: 
 
 /** A cached conversation window: the newest messages (chronological) and whether older ones exist on the device or the hub. */
 data class CachedChat(val messages: List<UiMessage>, val hasOlder: Boolean, val olderOffset: Int)
+/** One cached message with the conversation it belongs to (dossier media, 0.4.3 C3). */
+data class AgentMessage(val chatId: String, val message: UiMessage)
 /** An older page from the device: [messages] chronological; [moreOnDevice] false when the device holds nothing older. */
 data class CachedPage(val messages: List<UiMessage>, val moreOnDevice: Boolean, val hubHasOlder: Boolean, val hubOffset: Int)
 
@@ -86,6 +88,12 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
         val moreOnDevice = msgs.count(owner, agent, chatId) > rows.size
         return CachedChat(rows.asReversed().map { it.toUi() }, moreOnDevice || meta?.hasOlder == true, meta?.olderOffset ?: CACHE_PAGE)
     }
+
+    /**
+     * Every cached message of [agent] across all its conversations (dossier media, 0.4.3 C3), each tagged with
+     * its chat id so the viewer can rebuild the same cache instance key the chat used (a warm disk hit, no re-download).
+     */
+    suspend fun messages(agent: String): List<AgentMessage> = msgs.all(owner, agent).map { AgentMessage(it.chatId, it.toUi()) }
 
     /** Keyset page: up to [limit] cached messages older than the message keyed [keyOfOldest]; null when that one is not cached or nothing older is. */
     suspend fun olderThan(agent: String, chatId: String, keyOfOldest: String, limit: Int = CACHE_PAGE): CachedPage? {

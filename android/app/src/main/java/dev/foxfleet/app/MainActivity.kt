@@ -110,6 +110,7 @@ private fun FoxfleetApp(vm: HubViewModel) {
         }
         false -> LoginScreen(vm.hubName, vm.api, vm.bootError, inviteCode = vm.inviteDraft, onChangeHub = { vm.startAddHub() }, onLoggedIn = { vm.onLoggedIn() })
         true -> {
+            LaunchedEffect(Unit) { vm.quietUpdateCheck() }
             // Predictive back: the current page shrinks and slides with the gesture, then pops.
             var backProgress by remember { mutableFloatStateOf(0f) }
             PredictiveBackHandler(enabled = vm.route != Route.Fleet) { progress ->
@@ -121,6 +122,7 @@ private fun FoxfleetApp(vm: HubViewModel) {
                 } finally { backProgress = 0f }
             }
             AvatarFlow(vm)
+            UpdatePrompt(vm)
             SharedTransitionLayout {
                 AnimatedContent(
                     targetState = vm.route,
@@ -159,6 +161,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             agents = vm.agents, loading = vm.fleetLoading, loadedOnce = vm.fleetLoadedOnce, error = vm.fleetError,
             unread = vm::unreadFor, onRefresh = { vm.refreshFleet() }, onPoll = { vm.refreshFleet(silent = true) },
             onOpen = { vm.navigate(Route.Chat(it.name)) }, onSettings = { vm.navigate(Route.Settings) },
+            onDossier = { vm.navigate(Route.Dossier(it.name)); vm.loadDossier(it.name) },
             onAvatarLongPress = { vm.avatarTarget = it }, onPin = vm::pin,
             onAddAgent = if (vm.isOwner) ({ vm.navigate(Route.Agents) }) else null,
             running = { vm.chatFor(it).streaming }, userInitials = dev.foxfleet.app.ui.components.initials(vm.username),
@@ -191,6 +194,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 skills = vm.skills[agent.name].orEmpty(),
                 onAvatarLongPress = { vm.avatarTarget = it },
                 httpClient = vm.api.httpClient,
+                onDeleteMedia = { ref -> ref.agent?.let { a -> ref.ref?.let { r -> vm.deleteMedia(a, r, ref.instance) } } },
                 // Features follow the agent's capabilities from the hub registry.
                 allowImages = agent.capabilities.images,
                 onUploadFile = if (agent.capabilities.files) ({ uri, progress -> vm.uploadFile(agent.name, uri, progress) }) else null,
@@ -201,6 +205,21 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             val st = vm.chatFor(agent.name)
             LaunchedEffect(agent.name, st.sessionId, st.messages.size, st.loading) { val sid = st.sessionId; if (sid != null && !st.loading) vm.sendRead(agent.name, sid) }
             LaunchedEffect(agent.name) { if (agent.capabilities.skills) vm.loadSkills(agent.name) }
+        }
+        is Route.Dossier -> {
+            val agent = vm.agent(route.agent)
+            if (agent == null) { LaunchedEffect(Unit) { vm.back() }; return }
+            LaunchedEffect(agent.name) { vm.loadDossier(agent.name); if (vm.sessions[agent.name] == null) vm.loadSessions(agent.name) }
+            dev.foxfleet.app.ui.screens.DossierScreen(
+                agent = agent,
+                sessions = vm.sessions[agent.name].orEmpty(),
+                media = vm.dossierMedia[agent.name].orEmpty(),
+                onBack = { vm.back() },
+                onOpenSession = { id -> vm.navigate(Route.Chat(agent.name)); vm.openSession(agent.name, id) },
+                onMediaDeleted = { vm.loadDossier(agent.name) },
+                onClearMedia = { vm.clearAgentMedia(agent.name) },
+                httpClient = vm.api.httpClient,
+            )
         }
         is Route.Screen -> dev.foxfleet.app.ui.screens.ScreenScreen(
             agentName = route.agent, api = vm.api, onBack = { vm.back() }, hubKnown = vm.hubKnown, debug = vm.prefs.screenDebug, hubVersion = vm.hubVersion,
@@ -219,6 +238,7 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 dev.foxfleet.app.ui.screens.NotificationsSection(model)
             },
             hubName = vm.hubName, hubVersion = vm.hubVersion, hubOld = dev.foxfleet.app.ui.HubCompat.isOld(vm.hubVersion, vm.hubFeatures), username = vm.username, isOwner = vm.isOwner, onAdmin = { vm.navigate(Route.Admin) }, onHubs = { vm.navigate(Route.Hubs) }, onDevices = { vm.navigate(Route.Devices) },
+            updateUi = vm.updateUi, onCheckUpdates = vm::checkForUpdates, onInstallUpdate = vm::installUpdate,
         )
         }
         Route.Hubs -> dev.foxfleet.app.ui.screens.HubsScreen(
@@ -297,6 +317,35 @@ private fun AvatarFlow(vm: HubViewModel) {
         dismissButton = {
             dev.foxfleet.app.ui.components.SoftButton(onClick = { vm.avatars.reset(target); vm.avatarTarget = null }) {
                 androidx.compose.material3.Text("Reset", color = c.textMuted)
+            }
+        },
+    )
+}
+
+/** The cold-start / Settings "update available" prompt (0.4.3 C4). Install downloads, verifies sha256, then hands off. */
+@Composable
+private fun UpdatePrompt(vm: HubViewModel) {
+    val ui = vm.updateUi
+    val manifest = (ui as? dev.foxfleet.app.update.UpdateUi.Available)?.manifest ?: return
+    val c = LocalHubColors.current
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = { vm.dismissUpdate() },
+        containerColor = c.surface,
+        title = { androidx.compose.material3.Text("Update available") },
+        text = {
+            androidx.compose.material3.Text(
+                "FoxFleet ${manifest.versionName} is ready to install." + (manifest.notes?.takeIf { it.isNotBlank() }?.let { " $it" } ?: ""),
+                color = c.textMuted,
+            )
+        },
+        confirmButton = {
+            dev.foxfleet.app.ui.components.SoftButton(onClick = vm::installUpdate) {
+                androidx.compose.material3.Text("Install", color = c.accent)
+            }
+        },
+        dismissButton = {
+            dev.foxfleet.app.ui.components.SoftButton(onClick = { vm.dismissUpdate() }) {
+                androidx.compose.material3.Text("Later", color = c.textMuted)
             }
         },
     )

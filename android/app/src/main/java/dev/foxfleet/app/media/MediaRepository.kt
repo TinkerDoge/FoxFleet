@@ -33,6 +33,15 @@ class MediaRepository(private val directory: File, val maxBytes: Long = 256L * 1
         flights.values.forEach { it.task.cancel() }; flights.clear()
         files().forEach { retire(it) }
     }
+    /**
+     * Device-only delete of one identity (0.4.3 C2): the hub copy is untouched. A file a viewer still holds
+     * (pinned lease) is retired now and removed when that viewer closes, so playback is never interrupted.
+     */
+    fun delete(identity: String) = synchronized(lock) {
+        val hash = digest(identity)
+        files().filter { it.name.contains("-$hash-") }.forEach { retire(it) }
+        flights.keys.filter { it.endsWith("-$hash") }.forEach { flights.remove(it)?.task?.cancel() }
+    }
     inner class Lease internal constructor(val file: File) : Closeable {
         private var released = false
         override fun close() = synchronized(lock) {
@@ -46,17 +55,27 @@ class MediaRepository(private val directory: File, val maxBytes: Long = 256L * 1
     inner class Session internal constructor(private val owner: String) {
         @Volatile private var closed = false
         private val jobs = HashSet<Deferred<File>>()
+        /** Filenames carry the agent's hash too, so every cached file of one agent can be found and dropped. */
+        private fun keyOf(identity: String): String = "$owner-${digest(identity.substringBefore('\u0000'))}-${digest(identity)}"
         fun close(purge: Boolean = false) = synchronized(lock) {
             closed = true
             jobs.forEach { it.cancel() }; jobs.clear()
             if (purge) files().filter { it.name.startsWith("$owner-") }.forEach { retire(it) }
+        }
+        /** Device-only delete of one message's media (viewer trash). */
+        fun delete(identity: String) { dropPrefix("${keyOf(identity)}-") }
+        /** Device-only delete of every cached media file of [agent], any chat and message. */
+        fun deleteAgent(agent: String) { dropPrefix("$owner-${digest(agent)}-") }
+        private fun dropPrefix(prefix: String) = synchronized(lock) {
+            files().filter { it.name.startsWith(prefix) }.forEach { retire(it) }
+            flights.keys.filter { it.startsWith(prefix) }.forEach { flights.remove(it)?.task?.cancel() }
         }
         suspend fun acquire(
             identity: String,
             onProgress: (Progress) -> Unit = {},
             load: suspend (destination: File, limit: Long, progress: (Progress) -> Unit) -> Unit,
         ): Lease = withContext(Dispatchers.IO) {
-            val key = "$owner-${digest(identity)}"
+            val key = keyOf(identity)
             while (true) {
                 var hit: Lease? = null
                 val flight = synchronized(lock) {

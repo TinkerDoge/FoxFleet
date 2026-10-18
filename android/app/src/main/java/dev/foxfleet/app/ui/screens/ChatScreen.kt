@@ -140,6 +140,7 @@ import dev.foxfleet.app.data.FileMarker
 import dev.foxfleet.app.media.ImageEncoder
 import dev.foxfleet.app.ui.chat.LocalCommand
 import dev.foxfleet.app.ui.chat.MediaRef
+import dev.foxfleet.app.ui.chat.DossierMedia
 import dev.foxfleet.app.ui.chat.HermesCatalog
 import dev.foxfleet.app.ui.chat.commandSuggestions
 import dev.foxfleet.app.ui.chat.opensCommandBrowser
@@ -186,6 +187,9 @@ import dev.foxfleet.app.ui.components.SwipeToReply
 
 /** Chars at the tail of a streaming reply that fade in instead of popping. */
 const val STREAM_FADE_CHARS = 24
+
+/** The viewer's list plus the page it opened on (0.4.3 C3). */
+private data class Viewed(val items: List<MediaRef>, val index: Int)
 
 /** Alpha for char [i] of a [len]-char streaming text: 1 except a soft ramp over the tail. */
 fun streamAlpha(i: Int, len: Int, fade: Int = STREAM_FADE_CHARS): Float {
@@ -245,6 +249,8 @@ fun ChatScreen(
     onUploadFile: (suspend (Uri, (Float) -> Unit) -> FileRef)? = null,
     onOpenScreen: (() -> Unit)? = null,
     initialFiles: List<FileRef> = emptyList(),
+    /** Delete a cached media file from this device (0.4.3 C2); null hides the viewer's trash action. */
+    onDeleteMedia: ((MediaRef) -> Unit)? = null,
     /** Reactions (agents whose hub keeps them): re-read after replies and every 30 s while the chat is on screen. */
     onSyncReactions: () -> Unit = {},
     /** A chip under a message: [present] = what tapping it makes (add yours, or take it back). */
@@ -262,7 +268,14 @@ fun ChatScreen(
     link: dev.foxfleet.app.data.live.LinkState? = null,
 ) {
     val c = LocalHubColors.current
-    var viewing by remember { mutableStateOf(initialViewing) }
+    // The viewer (0.4.3 C3) opens on the chat's whole media list so horizontal swipe moves between siblings.
+    var viewing by remember { mutableStateOf(initialViewing?.let { Viewed(listOf(it), 0) }) }
+    val chatMedia = remember(agent.name, state.sessionId, state.messages) { DossierMedia.refs(agent.name, state.sessionId.orEmpty(), state.messages) }
+    fun openMedia(ref: MediaRef) {
+        val list = chatMedia
+        val merged = if (list.any { DossierMedia.matches(it, ref) }) list else list + ref
+        viewing = Viewed(merged, merged.indexOfFirst { DossierMedia.matches(it, ref) }.coerceAtLeast(0))
+    }
     var reactingTo by remember { mutableStateOf<UiMessage?>(null) }
     var menuFor by remember { mutableStateOf<UiMessage?>(null) }
     var selecting by remember { mutableStateOf<String?>(null) }
@@ -364,7 +377,7 @@ fun ChatScreen(
             Hairline()
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
-                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures, agentLabel = agent.displayName) { viewing = it }
+                Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures, agentLabel = agent.displayName) { openMedia(it) }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
@@ -418,7 +431,7 @@ fun ChatScreen(
     if (history) HistorySheet(agent.name, sessions, sessionsTotal, state.sessionId, sessionsLoading, historyError, onOpenSession, onNewChat, onRefreshSessions, onLoadMoreSessions, onRenameSession, onDeleteSession) { history = false }
     if (bgSheet) ChatBackgroundSheet(bgState) { bgSheet = false }
     AnimatedVisibility(viewing != null, enter = fadeIn(), exit = fadeOut()) {
-        viewing?.let { MediaViewer(it, httpClient) { viewing = null } }
+        viewing?.let { v -> MediaViewer(v.items, v.index, httpClient, onClose = { viewing = null }, onDelete = onDeleteMedia) }
     }
     }
 }

@@ -30,6 +30,8 @@ import kotlinx.coroutines.withContext
 sealed interface Route {
     data object Fleet : Route
     data class Chat(val agent: String) : Route
+    /** The agent dossier (0.4.3 C3): identity, recent chats and the device's cached media. */
+    data class Dossier(val agent: String) : Route
     data object Settings : Route
     data class Screen(val agent: String) : Route
     data object Agents : Route
@@ -43,13 +45,14 @@ sealed interface Route {
 }
 
 /** Screen depth used to pick the slide direction between routes. */
-fun Route.depth(): Int = when (this) { Route.Fleet -> 0; is Route.Chat -> 1; Route.Settings -> 1; is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2; is Route.Machines -> 3; is Route.AgentEditor -> 3 }
+fun Route.depth(): Int = when (this) { Route.Fleet -> 0; is Route.Chat -> 1; is Route.Dossier -> 1; Route.Settings -> 1; is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2; is Route.Machines -> 3; is Route.AgentEditor -> 3 }
 
 /** App state that must outlive rotation: auth, fleet, chats, in-flight streams, route. */
 class HubViewModel(app: Application) : AndroidViewModel(app) {
     val settings = SettingsStore(app)
     val api = HubApi(settings)
-    private val mediaRepository = dev.foxfleet.app.media.MediaRepository(java.io.File(app.cacheDir, "media-cache"))
+    /** Durable, app-private media store (0.4.3 C1): filesDir, not cacheDir, so Android does not evict it. */
+    private val mediaRepository = dev.foxfleet.app.media.MediaRepository(java.io.File(app.filesDir, "media-cache"))
     var mediaHost by mutableStateOf<dev.foxfleet.app.ui.components.MediaHost?>(null); private set
     var mediaCacheBytes by mutableStateOf(0L); private set
     var clearingMedia by mutableStateOf(false); private set
@@ -119,7 +122,102 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             } finally { clearingMedia = false }
         }
     }
+    // ---- auto-update (0.4.3 C4): a manifest JSON, a direct HTTPS APK, a sha256 check, then PackageInstaller ----
+    val updateStore = dev.foxfleet.app.update.UpdateStore(app)
+    var updateUi by mutableStateOf<dev.foxfleet.app.update.UpdateUi>(dev.foxfleet.app.update.UpdateUi.Idle); private set
+    private var updateJob: Job? = null
+
+    /** Cold start: at most once per 12 h, and only on an unmetered network (never burns mobile data). */
+    fun quietUpdateCheck() {
+        if (!updateStore.due(System.currentTimeMillis())) return
+        if (!unmetered()) return
+        checkForUpdates()
+    }
+    private fun unmetered(): Boolean {
+        val cm = getApplication<Application>().getSystemService(android.content.Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_NOT_METERED)
+    }
+    fun checkForUpdates() {
+        if (updateJob?.isActive == true) return
+        updateUi = dev.foxfleet.app.update.UpdateUi.Checking
+        updateJob = viewModelScope.launch {
+            try {
+                val url = dev.foxfleet.app.update.UpdateManifests.DEFAULT_URL
+                val body = withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    require(dev.foxfleet.app.update.UpdatePolicy.isHttps(url)) { "Updates need an HTTPS link." }
+                    api.httpClient.newCall(okhttp3.Request.Builder().url(url).header("Accept", "application/json").build()).execute().use { r ->
+                        if (!r.isSuccessful) throw java.io.IOException("Update check failed (${r.code})")
+                        r.body?.string() ?: throw java.io.IOException("The update file was empty")
+                    }
+                }
+                withContext(kotlinx.coroutines.Dispatchers.IO) { updateStore.markChecked(System.currentTimeMillis()) }
+                val manifest = dev.foxfleet.app.update.UpdateManifests.parse(body)
+                updateUi = if (manifest == null) dev.foxfleet.app.update.UpdateUi.Failed("The update file could not be read.")
+                else when (val plan = dev.foxfleet.app.update.UpdatePlan.decide(BuildConfig.VERSION_CODE, manifest)) {
+                    is dev.foxfleet.app.update.UpdatePlan.Update -> dev.foxfleet.app.update.UpdateUi.Available(plan.manifest)
+                    dev.foxfleet.app.update.UpdatePlan.UpToDate -> dev.foxfleet.app.update.UpdateUi.UpToDate
+                    is dev.foxfleet.app.update.UpdatePlan.Refused -> dev.foxfleet.app.update.UpdateUi.Failed(plan.why)
+                }
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                updateUi = dev.foxfleet.app.update.UpdateUi.Failed(scrubAddresses(e.message ?: "Couldn't check for updates"))
+            }
+        }
+    }
+    fun installUpdate() {
+        val manifest = (updateUi as? dev.foxfleet.app.update.UpdateUi.Available)?.manifest ?: return
+        if (updateJob?.isActive == true) return
+        updateJob = viewModelScope.launch {
+            val apk = java.io.File(getApplication<Application>().filesDir, "updates/foxfleet-${manifest.versionCode}.apk")
+            try {
+                updateUi = dev.foxfleet.app.update.UpdateUi.Downloading(0)
+                withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    dev.foxfleet.app.update.ApkUpdater.download(api.httpClient, manifest, apk) { done, total ->
+                        updateUi = dev.foxfleet.app.update.UpdateUi.Downloading(if (total != null && total > 0) ((done * 100 / total).toInt()).coerceIn(0, 100) else 0)
+                    }
+                    val actual = dev.foxfleet.app.update.ApkUpdater.sha256(apk)
+                    if (!dev.foxfleet.app.update.UpdatePolicy.shaMatches(manifest.sha256, actual)) {
+                        apk.delete()
+                        throw java.io.IOException("The downloaded update did not match its checksum.")
+                    }
+                }
+                updateUi = dev.foxfleet.app.update.UpdateUi.Installing(manifest)
+                val started = withContext(kotlinx.coroutines.Dispatchers.Main) { dev.foxfleet.app.update.ApkUpdater.install(getApplication(), apk) }
+                if (!started) updateUi = dev.foxfleet.app.update.UpdateUi.Failed("The installer could not be started.")
+            } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                updateUi = dev.foxfleet.app.update.UpdateUi.Failed(scrubAddresses(e.message ?: "The update could not be installed"))
+            }
+        }
+    }
+    fun dismissUpdate() { if (updateUi is dev.foxfleet.app.update.UpdateUi.Available) updateUi = dev.foxfleet.app.update.UpdateUi.Idle }
+
     override fun onCleared() { dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { null }; stopLive(); deactivateMedia(); super.onCleared() }
+
+    // ---- agent dossier (0.4.3 C3): recent chats + the media this device has cached for one agent ----
+    var dossierMedia by mutableStateOf<Map<String, List<dev.foxfleet.app.ui.chat.MediaRef>>>(emptyMap()); private set
+    /** Rebuild the agent's grid from the device cache (no hub call); a warm open only reads the .media files. */
+    fun loadDossier(agent: String) {
+        viewModelScope.launch {
+            val refs = fromCache { dev.foxfleet.app.ui.chat.DossierMedia.refs(agent, messages(agent)) }.orEmpty()
+            dossierMedia = dossierMedia + (agent to refs)
+        }
+    }
+    /** Device-only delete of one message's media (the viewer's trash action). */
+    fun deleteMedia(agent: String, ref: String, instance: String) {
+        viewModelScope.launch {
+            try { withContext(kotlinx.coroutines.Dispatchers.IO) { mediaHost?.delete(agent, ref, instance) }; coil3.SingletonImageLoader.get(getApplication<Application>()).memoryCache?.clear() }
+            catch (e: CancellationException) { throw e } catch (_: Exception) {}
+        }
+    }
+    /** Device-only delete of every cached media file of [agent], then reload its grid. */
+    fun clearAgentMedia(agent: String) {
+        viewModelScope.launch {
+            try { withContext(kotlinx.coroutines.Dispatchers.IO) { mediaHost?.deleteAgent(agent) }; coil3.SingletonImageLoader.get(getApplication<Application>()).memoryCache?.clear() }
+            catch (e: CancellationException) { throw e } catch (_: Exception) {}
+            dossierMedia = dossierMedia + (agent to emptyList())
+            refreshMediaUsage()
+        }
+    }
 
 
     var prefs by mutableStateOf(settings.appPrefs); private set

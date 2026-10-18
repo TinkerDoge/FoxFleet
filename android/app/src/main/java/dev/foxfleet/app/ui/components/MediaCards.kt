@@ -79,6 +79,13 @@ class MediaHost(
             }
         }
     }
+    /** Device-only delete (0.4.3 C2): the hub copy stays. A viewer holding the file keeps it until it closes. */
+    suspend fun delete(agent: String, ref: String, instance: String) = withContext(Dispatchers.IO) {
+        cache?.delete(dev.foxfleet.app.media.MediaRepository.identity(agent, instance, ref))
+    }
+
+    /** Device-only delete of every cached media file of [agent] (dossier / settings). */
+    suspend fun deleteAgent(agent: String) = withContext(Dispatchers.IO) { cache?.deleteAgent(agent) }
 }
 val LocalMediaHost = compositionLocalOf<MediaHost?> { null }
 
