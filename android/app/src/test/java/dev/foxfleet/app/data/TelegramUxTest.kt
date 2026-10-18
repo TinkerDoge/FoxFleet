@@ -21,12 +21,13 @@ class TelegramUxTest {
         assertEquals(listOf(17, 18, 19), rows); assertEquals(3, pages); assertEquals(2, shown)
         assertEquals(2, pageOf(items, 99).third); assertEquals(0, pageOf(items, -4).third); assertEquals(1, pageOf(emptyList<Int>(), 3).second)
     }
-    @Test fun modelCommandOpensPickerSetsOnlyThisChatAndRefusesGlobal() {
+    @Test fun modelCommandOpensPickerSetsOnlyThisChatAndRefusesGlobalOnNative() {
         val s = ChatState(); var opened = 0
         modelCommand("", null, s, picker = { opened++ }); assertEquals(1, opened)
         modelCommand("m --global", null, s, picker = { opened++ }); assertEquals(1, opened); assertTrue(s.notices.last().contains("agent settings"))
         modelCommand("m", null, s, picker = { opened++ }); assertTrue(s.notices.last().contains("Send the first message first"))
         assertEquals("Model for this chat is now x. Your Hermes default is unchanged.", modelSetMessage("x"))
+        assertTrue(modelSetMessage("x", true).contains("default"))
     }
     @Test fun noticesAreLocalAndClearedWithTheConversation() {
         val s = ChatState(); s.addNotice("a"); assertEquals(listOf("a"), s.notices); s.newConversation(); assertTrue(s.notices.isEmpty())

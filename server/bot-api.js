@@ -156,6 +156,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         return { result: { acked: n } };
       }
       case 'commands.set': return { result: await store.setCommands(v.req.commands, guard(session)) };
+      case 'models.set': return { result: await store.setModels(v.req.providers, guard(session)) };
       case 'card.send': {
         const out = await store.openCard(v.req, guard(session));
         if (!out.replayed) await showCard(session, v.req.chat_id, cardView({ id: out.result.request_id, ...v.req }));
@@ -720,6 +721,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       if (parts[3] === 'commands' && parts.length === 4 && req.method === 'GET') {
         const store = await readyStore(c), mine = store.commands().map((x) => ({ name: x.name, aliases: [], description: x.description, category: 'Bot', args: '', subcommands: [], availability: 'chat', handler: 'chat', busy: 'queue', executable: true, verified: false }));
         return c.sendJson(res, 200, { source: 'bot', busy: ['queue'], commands: [...mine, ...appCommands] });
+      }
+      if (parts[3] === 'models' && parts.length === 4 && req.method === 'GET') {
+        const store = await readyStore(c);
+        return c.sendJson(res, 200, { mode: 'bot', providers: store.models() });
       }
       if (parts[3] === 'chat' && parts.length === 4 && req.method === 'POST') return await postChat(c);
       if (parts[3] === 'runs') return await runRoutes(c);

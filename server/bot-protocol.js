@@ -28,7 +28,7 @@ export const LIMITS = { max_frame_bytes: 1048576, max_text_bytes: 65536, window:
 const MAX_REASONING_BYTES = 65536;
 export const CLOSE = { normal: 1000, going_away: 1001, protocol: 1002, unsupported: 1003, bad_utf8: 1007, bad_frame: 1008, too_big: 1009, internal: 1011, slow: 1013, token_revoked: 4001, gone: 4003, replaced: 4009 };
 export const ERROR_CODES = ['invalid_request', 'unsupported', 'unknown_type', 'bad_frame', 'not_found', 'forbidden', 'too_large', 'rate_limited', 'idempotency_conflict', 'ack_out_of_range', 'internal'];
-export const BOT_REQUESTS = ['message.send', 'message.edit', 'message.delete', 'chat.action', 'commands.set', 'ack', 'ping', 'pong'];
+export const BOT_REQUESTS = ['message.send', 'message.edit', 'message.delete', 'chat.action', 'commands.set', 'models.set', 'ack', 'ping', 'pong'];
 export const RESERVED = ['message.edited', 'message.deleted', 'callback', 'reaction', 'replay.gap', 'chat.member', 'message.react', 'callback.answer', 'media.upload', 'card.send', 'chat.get', 'chat.cancel'];
 
 export const REQUEST_ID = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -67,6 +67,7 @@ const FIELDS = {
   'message.delete': ['chat_id', 'message_id', 'idempotency_key'],
   'chat.action': ['chat_id', 'action'],
   'commands.set': ['commands'],
+  'models.set': ['providers'],
   ack: ['event_id'],
   ping: [], pong: [],
 };
@@ -128,6 +129,26 @@ function fields(t, f) {
         if (typeof c.name !== 'string' || !COMMAND_NAME.test(c.name) || seen.has(c.name)) return fail('invalid_request', 'Command names are unique, lowercase letters, digits or _, 1 to 32 characters');
         if (typeof c.description !== 'string' || c.description.length < 1 || c.description.length > 256 || /[\x00-\x1f\x7f]/.test(c.description)) return fail('invalid_request', 'Command descriptions are 1 to 256 characters without control characters');
         seen.add(c.name); out.commands.push({ name: c.name, description: c.description });
+      }
+      return out;
+    }
+    case 'models.set': {
+      if (!Array.isArray(f.providers) || f.providers.length > 60) return fail('invalid_request', 'providers is a list of at most 60 entries');
+      const SLUG = /^[\w.:-]{1,64}$/, MODEL = /^[\w.:/@+-]{1,200}$/;
+      out.providers = [];
+      for (const p of f.providers) {
+        if (!isObject(p) || typeof p.slug !== 'string' || !SLUG.test(p.slug)) return fail('invalid_request', 'Each provider has a slug');
+        const name = typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 80) : p.slug;
+        if (/[\x00-\x1f\x7f]/.test(name)) return fail('invalid_request', 'Provider names have no control characters');
+        const models = Array.isArray(p.models) ? p.models : [];
+        if (models.length > 300) return fail('invalid_request', 'Each provider lists at most 300 models');
+        const ids = [];
+        for (const m of models) {
+          const id = typeof m === 'string' ? m : (m && typeof m === 'object' ? String(m.id ?? m.name ?? '') : '');
+          if (!MODEL.test(id)) return fail('invalid_request', 'Model ids are 1 to 200 characters');
+          ids.push(id);
+        }
+        out.providers.push({ slug: p.slug, name, current: p.current === true || p.is_current === true, models: ids });
       }
       return out;
     }

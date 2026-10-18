@@ -70,6 +70,11 @@ test('validation: message.edit, message.delete, chat.action, ack and commands.se
     [{ name: 'a', description: 'x' }, { name: 'a', description: 'y' }], Array.from({ length: 101 }, (_, i) => ({ name: `c${i}`, description: 'd' })), [null], [5]]) bad({ t: 'commands.set', id: 'c', commands }, 'invalid_request');
   assert.equal(check({ t: 'commands.set', id: 'c', commands: Array.from({ length: 100 }, (_, i) => ({ name: `c${i}`, description: 'd' })) }).ok, true);
   bad({ t: 'commands.set', id: 'c' }, 'invalid_request');
+  const providers = [{ slug: 'openrouter', name: 'OpenRouter', current: true, models: ['openrouter/x'] }];
+  assert.deepEqual(check({ t: 'models.set', id: 'm', providers }).req.providers[0].slug, 'openrouter');
+  assert.equal(check({ t: 'models.set', id: 'm', providers: [] }).ok, true);
+  bad({ t: 'models.set', id: 'm' }, 'invalid_request');
+  bad({ t: 'models.set', id: 'm', providers: [{ slug: 'bad slug', models: [] }] }, 'invalid_request');
 });
 
 test('validation: parseBotFrame keeps the phase A verdicts', () => {

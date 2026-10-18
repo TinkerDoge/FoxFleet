@@ -35,6 +35,7 @@ _FIELDS = {
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
+    "models.set": {"providers"},
     "callback.answer": {"callback_id", "outcome"},
     "ack": {"event_id"}, "ping": set(), "pong": set(),
 }
@@ -88,7 +89,7 @@ def validate_request(frame: dict) -> Optional[dict]:
     error = None
     if "idempotency_key" in frame and not (isinstance(frame["idempotency_key"], str) and _KEY.match(frame["idempotency_key"])):
         return _invalid("invalid_request", "Invalid idempotency_key")
-    if kind not in ("commands.set", "callback.answer"):
+    if kind not in ("commands.set", "models.set", "callback.answer"):
         error = _ref(frame.get("chat_id"), _CHAT_ID, "chat_id")
     if error:
         return error
@@ -281,6 +282,9 @@ class FakeHub:
             return self.ok(rid)
         if kind == "commands.set":
             self.commands = frame.get("commands")
+            return self.ok(rid)
+        if kind == "models.set":
+            self.models = frame.get("providers")
             return self.ok(rid)
         if kind == "callback.answer":
             self.stop_answers.append(frame)

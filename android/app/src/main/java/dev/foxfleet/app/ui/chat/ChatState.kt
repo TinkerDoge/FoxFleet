@@ -240,7 +240,7 @@ class ChatState {
 
     fun newConversation() {
         gen++; queue = emptyList(); halted = false; requests = emptyList(); notices = emptyList()
-        messages = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; hiddenUndo = null; persist(SavedChat())
+        messages = emptyList(); lateUsers = emptyList(); keyBase = 0; hasOlder = false; sessionId = null; runId = null; reactions = null; reactionError = null; hiddenUndo = null; persist(SavedChat())
         resetStream(); error = null; loading = false // a new chat loads nothing (an Edit reload it cut short must not leave the composer waiting)
     }
 
@@ -264,6 +264,8 @@ class ChatState {
         onReplace = { if (g == gen) streamText = it },
     )
     private var pendingUser: String? = null
+    /** User messages accepted while this reply is still streaming (steer / follow-up / redirect). Shown after the live bubble. */
+    var lateUsers by mutableStateOf<List<UiMessage>>(emptyList()); private set
 
     /** Streams one assistant turn into the live overlays, then commits it. */
     suspend fun send(api: HubApi, agent: String, userText: String, images: List<dev.foxfleet.app.data.ImageAttachment> = emptyList()) {
@@ -342,6 +344,7 @@ class ChatState {
         val local = UiMessage(role = "assistant", content = text, reasoning = streamReasoning, reasoningMs = reasoningDuration(), steps = log.toToolSteps(), runId = runId)
         val m = if (pending != null && messages.none { it.hubId == pending.hubId }) MessageMerge.merge(local, pending).copy(content = text.ifEmpty { pending.content }) else local
         push(m)
+        flushLateUsers()
     }
     /** The reply just committed, when it has a hub id (the ViewModel stores its thinking and steps in the device cache). */
     val lastCommitted: UiMessage? get() = messages.lastOrNull()?.takeIf { it.role == "assistant" && it.hubId != null }
@@ -374,6 +377,7 @@ class ChatState {
     }
 
     fun finishRun() { runId = null; pendingUser = null; persist(SavedChat(sessionId, null, null)) }
+    private fun flushLateUsers() { if (lateUsers.isNotEmpty()) { messages = messages + lateUsers; lateUsers = emptyList() } }
 
     /**
      * Runs whose stream this chat followed to the end and committed (0.4.2). The hub can still report such a run as the queue's
@@ -410,7 +414,11 @@ class ChatState {
         val running = q.items.firstOrNull { it.runId != null && it.runId == q.activeRun }
         // the run ended (guidance) or Hermes started the queued turn itself: the text joins the transcript
         val gone = queue.filter { (it.state == "guidance_accepted" || (it.state == "queued" && it.ack == "queued")) && q.items.none { i -> i.id == it.id } }
-        if (gone.isNotEmpty()) messages = messages + gone.map { UiMessage(role = "user", content = it.text) }
+        if (gone.isNotEmpty()) {
+            val extra = gone.map { UiMessage(role = "user", content = it.text) }
+            if (streaming) lateUsers = lateUsers + extra.filter { n -> lateUsers.none { it.content == n.content } }
+            else messages = messages + extra
+        }
         if (submitting == 0) { queue = q.items.filter { it.id !in dismissed && it !== running && it.state != "sending" && it.state != "running" }; halted = q.halted; canCancel = q.canCancel; requests = q.openRequests }
         if (q.activeRun != null && !streaming && runId == null && q.activeRun !in finishedRuns) { resume(api, agent, q.activeRun, running?.text); syncQueue(api, agent); return }
         if (q.activeRun == null && !q.halted && attempts < 12 && q.items.any { it.state == "queued" || it.state == "awaiting_stop" }) { delay(300); syncQueue(api, agent, attempts + 1) }

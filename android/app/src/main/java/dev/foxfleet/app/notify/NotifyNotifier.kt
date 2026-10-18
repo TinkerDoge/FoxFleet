@@ -152,7 +152,8 @@ class AndroidNotifier(private val context: Context) : Notifier {
     /** The always-present service line. Quiet by design: low importance, no sound, no badge, nothing to dismiss. */
     fun serviceNotification(link: NotifyLink): Notification = NotificationCompat.Builder(context, NotifyChannel.Service.id)
         .setSmallIcon(R.drawable.ic_stat_foxfleet).setColor(accent).setOngoing(true).setSilent(true).setOnlyAlertOnce(true).setShowWhen(false)
-        .setCategory(NotificationCompat.CATEGORY_SERVICE).setPriority(NotificationCompat.PRIORITY_LOW).setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        .setCategory(NotificationCompat.CATEGORY_SERVICE).setPriority(NotificationCompat.PRIORITY_MIN).setVisibility(NotificationCompat.VISIBILITY_SECRET)
+        .setNumber(0)
         .setContentTitle(serviceText(link)).setContentIntent(open(null, SERVICE_ID)).build()
 
     companion object {

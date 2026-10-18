@@ -707,13 +707,19 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         )
         else -> dev.foxfleet.app.ui.screens.NativeControls(
             models = { runCatching { api.agentModels(agent.name, chatFor(agent.name).sessionId) }.getOrDefault(emptyList()) },
-            setModel = { m, p ->
-                val cmd = buildString { append("/model "); append(m); if (!p.isNullOrBlank()) append(" --provider ").append(p) }
-                send(agent.name, cmd)
-                "Asked the agent to use $m"
-            },
+            setModel = { m, p -> sendModelCommand(agent.name, m, p, global = false) },
+            setGlobalModel = { m, p -> sendModelCommand(agent.name, m, p, global = true) },
             busy = { "" }, setBusy = {},
         )
+    }
+    private suspend fun sendModelCommand(agent: String, model: String, provider: String?, global: Boolean): String {
+        val cmd = buildString {
+            append("/model "); append(model)
+            if (!provider.isNullOrBlank()) append(" --provider ").append(provider)
+            if (global) append(" --global")
+        }
+        send(agent, cmd)
+        return if (global) "Asked the agent to use $model as default" else "Asked the agent to use $model"
     }
     suspend fun answerRequest(agent: String, id: String, result: kotlinx.serialization.json.JsonObject): String? = chatFor(agent).answerRequest(api, agent, id, result)
 

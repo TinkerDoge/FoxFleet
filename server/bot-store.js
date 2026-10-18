@@ -94,7 +94,7 @@ export function tokenIndex(file) {
 }
 
 const botShape = (v) => v && v.v === 1 && Number.isSafeInteger(v.next_event_id) && v.next_event_id >= 1 && Number.isSafeInteger(v.acked) && v.acked >= 0
-  && Array.isArray(v.events) && Array.isArray(v.commands) && ['chats', 'messages', 'idem', 'clients'].every((k) => v[k] && typeof v[k] === 'object' && !Array.isArray(v[k]));
+  && Array.isArray(v.events) && Array.isArray(v.commands) && (v.models == null || Array.isArray(v.models)) && ['chats', 'messages', 'idem', 'clients'].every((k) => v[k] && typeof v[k] === 'object' && !Array.isArray(v[k]));
 
 /** A protocol-level failure (`code` is one of the contract's error codes); the bot gets it in a `res`, a user gets an HTTP status. */
 export class BotError extends Error {
@@ -134,7 +134,7 @@ function prune(d, now, limits) {
 /** `<account dir>/bot/<botId>.json`: everything one bot has: its chats, messages, pending events and ack. Every operation is one atomic write. */
 export function botStore(file, options = {}) {
   const limits = botLimits(options);
-  const store = jsonFile(file, { fresh: () => ({ v: 1, next_event_id: 1, acked: 0, events: [], chats: {}, messages: {}, idem: {}, clients: {}, commands: [] }), valid: botShape });
+  const store = jsonFile(file, { fresh: () => ({ v: 1, next_event_id: 1, acked: 0, events: [], chats: {}, messages: {}, idem: {}, clients: {}, commands: [], models: [] }), valid: botShape });
   const st = () => store.state;
   const referenced = (d, id) => Object.values(d.messages).some((list) => list.some((m) => m.media?.some((a) => a.id === id))) || d.events.some((e) => d.chats[e.chat_id] && e.media?.some((a) => a.id === id));
   const chatOf = (d, chatId) => { const c = d.chats[chatId]; if (!c) throw new BotError('not_found', 'Unknown chat'); return c; };
@@ -251,6 +251,8 @@ export function botStore(file, options = {}) {
     },
     setCommands(list, guard) { return store.mutate((d) => { guard?.(); d.commands = list; return { count: list.length }; }); },
     commands: () => st().commands,
+    setModels(list, guard) { return store.mutate((d) => { guard?.(); d.models = list; return { count: list.length }; }); },
+    models: () => st().models ?? [],
 
     createChat(title, requestedId) { return store.mutate((d) => { const chatId = newChat(d, title, Date.now(), requestedId); return { id: chatId, title: d.chats[chatId].title }; }); },
     renameChat(chatId, title) { return run((d) => { try { chatOf(d, chatId); } catch (e) { throw httpFault(e); } d.chats[chatId].title = title; return { id: chatId, title }; }); },
