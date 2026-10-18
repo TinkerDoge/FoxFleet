@@ -17,6 +17,7 @@ Follow-ups from Soran's vc31 check (N1 to N3). Hub and connector only: no Androi
 - Fix (connector, N3): `UI_OPS.setmodel` built `session.mutate {value, …}`, a shape Hermes does not take. It was only used for validation. It now builds Hermes's request (`{session_id, operation: "model", payload: {model, provider?}}`), and `setModel` sends exactly that plus the revision fence, request id and token. The op stays in the advertised `ops` list.
 - Fix (hub, N1): with streaming off, a tool-made file was listed twice in the reply (`MEDIA:` from `tool.end`, then again in `message.complete`'s text). `turn.end` now drops lines that are only `MEDIA:<ref>` for a ref this run already delivered. Distinct files, inline tags and the rest of the text are kept. Streaming replies are unchanged.
 - Tests: `connector-model.test.js` (9). The fake gateway now checks `session.mutate` the way Hermes does (string-only payload, a token bound to model and revision), keeps stored sessions across a restart under new runtime ids, and has `nostream` / `mediacase` prompts. hub-tests.min 597.
+- Known gap (not merged yet): the docs build fails on this branch. `server/test/fake-gateway.mjs` reads `HERMES_HOME`, which is not in the ENV list in `site/.vitepress/gen.mjs`, so the CI docs job goes red. The fix is one line in `gen.mjs` marking it as test-only; it has to land before or with the merge.
 
 Android versionCode 31. Hub + connector fixes for the live reply Doge still saw as a green tick (grokbot's 0.4.1 notes claimed these were done; the run stream still dropped `message.complete`).
 
