@@ -4,7 +4,9 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased (0.4.2-alpha)
 
-Android versionCode 36. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+Android versionCode 37. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+
+- Change (Android): the agent dossier matches Telegram's bot page — large centred avatar, four equal pills (Message, Mute, Share, Stop), username card, then Media / Files / Links / Chats. Media is a flush 3-column grid. Test: `DossierMediaTest`.
 
 - Fix (Android): bot agents show the model chip and card (`/model` no longer dumps a text list). Picking sends `/model <id>` to the agent. Reactions work on bot chats that have a hub id. Swiping between several pictures in a chat works (zoom no longer steals the pager). Chat header is a translucent pill over the wallpaper. Dossier matches Telegram's bot page (large avatar, pill Message button, media grid).
 

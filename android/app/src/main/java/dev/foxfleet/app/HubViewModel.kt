@@ -195,11 +195,15 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- agent dossier (0.4.3 C3): recent chats + the media this device has cached for one agent ----
     var dossierMedia by mutableStateOf<Map<String, List<dev.foxfleet.app.ui.chat.MediaRef>>>(emptyMap()); private set
+    var dossierFiles by mutableStateOf<Map<String, List<dev.foxfleet.app.ui.chat.DossierFile>>>(emptyMap()); private set
+    var dossierLinks by mutableStateOf<Map<String, List<dev.foxfleet.app.ui.chat.DossierLink>>>(emptyMap()); private set
     /** Rebuild the agent's grid from the device cache (no hub call); a warm open only reads the .media files. */
     fun loadDossier(agent: String) {
         viewModelScope.launch {
-            val refs = fromCache { dev.foxfleet.app.ui.chat.DossierMedia.refs(agent, messages(agent)) }.orEmpty()
-            dossierMedia = dossierMedia + (agent to refs)
+            val msgs = fromCache { messages(agent) }.orEmpty()
+            dossierMedia = dossierMedia + (agent to dev.foxfleet.app.ui.chat.DossierMedia.refs(agent, msgs))
+            dossierFiles = dossierFiles + (agent to dev.foxfleet.app.ui.chat.DossierMedia.files(agent, msgs))
+            dossierLinks = dossierLinks + (agent to dev.foxfleet.app.ui.chat.DossierMedia.links(msgs))
         }
     }
     /** Device-only delete of one message's media (the viewer's trash action). */
