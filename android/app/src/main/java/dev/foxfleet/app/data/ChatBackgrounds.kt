@@ -78,24 +78,45 @@ object ChatBgSizing {
 }
 
 /**
- * Per-chat backgrounds, kept on this phone only: settings in app-private SharedPreferences, the (downscaled JPEG) picture in
- * app-private files. Nothing is sent to the hub. A chat is keyed by agent + session id.
+ * Per-agent backgrounds, kept on this phone only: settings in app-private SharedPreferences, the (downscaled JPEG) picture in
+ * app-private files. Nothing is sent to the hub. One look per agent, shared by every chat of that agent.
  */
 class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir: File) {
     constructor(context: Context) : this(context.getSharedPreferences("foxfleet_chat_bg", Context.MODE_PRIVATE), File(context.filesDir, "chat-bg"))
 
-    fun key(agent: String, session: String?) = agent + "\u0000" + (session ?: "")
+    /** The key is the agent id alone: every session of an agent reads and writes the same look. */
+    fun key(agent: String) = agent
     private val OWNER = "owner"
     private fun pk(key: String) = "bg." + key
     fun imageFile(key: String) = File(dir, MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }.take(32) + ".jpg")
 
-    fun load(key: String): ChatBg {
-        val raw = prefs.getString(pk(key), null) ?: return ChatBg()
+    private fun read(key: String): ChatBg? {
+        val raw = prefs.getString(pk(key), null) ?: return null
         return runCatching {
             val o = JSONObject(raw)
             ChatBg.normalize(o.optString("mode"), o.optString("solid"), o.optString("pattern"), o.optInt("blur", 0), o.optDouble("dim", Tokens.ChatBackgrounds.dimDefault.toDouble()).toFloat(), o.optBoolean("image", false))
                 .let { if (it.image && !imageFile(key).exists()) it.copy(image = false, mode = if (it.mode == BgMode.Image) BgMode.Default else it.mode) else it }
-        }.getOrDefault(ChatBg())
+        }.getOrNull()
+    }
+
+    fun load(key: String): ChatBg = read(key) ?: migrateLegacy(key) ?: ChatBg()
+
+    /**
+     * One-off move from the old per-chat keys (`agent\u0000session`) to the agent-only key. Copies the agent's most recently used
+     * per-chat look (an entry with a picture wins) and leaves the old keys in place rather than wiping the preferences.
+     */
+    private fun migrateLegacy(agent: String): ChatBg? {
+        val prefix = "bg." + agent + "\u0000"
+        val legacy = prefs.all.keys.filter { it.startsWith(prefix) }
+            .mapNotNull { pkey -> read(pkey.removePrefix("bg."))?.let { bg -> if (bg.isDefault && !bg.image) null else pkey.removePrefix("bg.") to bg } }
+        if (legacy.isEmpty()) return null
+        val (from, fromBg) = legacy.firstOrNull { it.second.image } ?: legacy.last()
+        var out = fromBg
+        if (fromBg.image) {
+            val src = imageFile(from)
+            if (src.exists()) { dir.mkdirs(); src.copyTo(imageFile(agent), overwrite = true) } else out = fromBg.copy(image = false, mode = if (fromBg.mode == BgMode.Image) BgMode.Default else fromBg.mode)
+        }
+        save(agent, out); return out
     }
 
     fun save(key: String, bg: ChatBg) {
@@ -131,16 +152,6 @@ class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir:
 
     /** Reset to default: the setting and the stored picture both go. */
     fun reset(key: String) { prefs.edit().remove(pk(key)).apply(); imageFile(key).delete() }
-
-    /** A chat that just got its id keeps the look it had as a new chat (only if the saved chat has none of its own). */
-    fun move(from: String, to: String) {
-        if (from == to) return
-        val bg = load(from); if (bg.isDefault && !bg.image) return
-        val dest = load(to); if (!dest.isDefault || dest.image) return
-        var out = bg
-        if (bg.image) { val src = imageFile(from); if (src.exists()) { dir.mkdirs(); src.copyTo(imageFile(to), overwrite = true) } else out = bg.copy(image = false, mode = if (bg.mode == BgMode.Image) BgMode.Default else bg.mode) }
-        save(to, out); reset(from)
-    }
 
     /**
      * Called once a session is signed in (never on sign-out). Backgrounds belong to one account on one hub: nothing stored (or older data

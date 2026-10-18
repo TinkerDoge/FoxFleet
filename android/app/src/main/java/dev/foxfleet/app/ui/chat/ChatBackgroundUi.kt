@@ -88,9 +88,9 @@ fun solidColor(id: String, dark: Boolean): Color? = Tokens.ChatBackgrounds.solid
 fun patternOf(id: String) = Tokens.ChatBackgrounds.patterns.firstOrNull { it.id == id }
 
 /**
- * One chat's background: settings + decoded picture, read from and written to the private [ChatBackgroundStore].
- * Settings are tiny (SharedPreferences, already in memory). Everything that touches a picture (decode, EXIF turn, JPEG/PNG write, file move or delete)
- * runs on [Dispatchers.IO], so a 50 MP photo never blocks a frame; [gen] drops results that arrive after the chat changed.
+ * One agent's background: settings + decoded picture, read from and written to the private [ChatBackgroundStore].
+ * Settings are tiny (SharedPreferences, already in memory). Everything that touches a picture (decode, EXIF turn, JPEG/PNG write or delete)
+ * runs on [Dispatchers.IO], so a 50 MP photo never blocks a frame; [gen] drops results that arrive after the agent changed.
  */
 @Stable
 class ChatBackgroundState(private val store: ChatBackgroundStore, private val context: Context, initialKey: String, private val scope: CoroutineScope) {
@@ -110,19 +110,13 @@ class ChatBackgroundState(private val store: ChatBackgroundStore, private val co
         }
     }
 
-    /** Switch to another chat. A new chat's look moves to the chat when it gets its id ([adopt] = true). */
-    fun switchTo(newKey: String, adopt: Boolean) {
+    /** Switch to another agent's background. */
+    fun switchTo(newKey: String) {
         if (newKey == key) return
-        val old = key; val g = ++gen
+        val g = ++gen
         key = newKey; failed = false; busy = false
-        if (!adopt) {
-            bg = store.load(newKey); bitmap = null
-            if (bg.image) loadImage(newKey, g)
-        } else scope.launch {
-            // keep what is on screen while the picture file is renamed on the IO thread
-            withContext(Dispatchers.IO) { store.move(old, newKey) }
-            if (g == gen) { bg = store.load(newKey); if (bg.image) loadImage(newKey, g) else bitmap = null }
-        }
+        bg = store.load(newKey); bitmap = null
+        if (bg.image) loadImage(newKey, g)
     }
     fun update(patch: (ChatBg) -> ChatBg) {
         val n = patch(bg); bg = ChatBg.normalize(n.mode.name, n.solid, n.pattern, n.blur, n.dim, n.image); store.save(key, bg)
@@ -145,18 +139,13 @@ class ChatBackgroundState(private val store: ChatBackgroundStore, private val co
 }
 
 @Composable
-fun rememberChatBackground(agent: String, sessionId: String?, hasMessages: Boolean): ChatBackgroundState {
+fun rememberChatBackground(agent: String): ChatBackgroundState {
     val ctx = LocalContext.current.applicationContext
     val store = remember { ChatBackgroundStore(ctx) }
     val scope = rememberCoroutineScope()
-    val key = store.key(agent, sessionId)
+    val key = store.key(agent)
     val st = remember { ChatBackgroundState(store, ctx, key, scope) }
-    var last by remember { mutableStateOf(Triple(agent, sessionId, hasMessages)) }
-    if (key != st.key) {
-        // new chat -> its first message got an id: keep the look; anything else is just another chat
-        st.switchTo(key, adopt = last.first == agent && last.second == null && sessionId != null && hasMessages)
-    }
-    last = Triple(agent, sessionId, hasMessages)
+    if (key != st.key) st.switchTo(key)
     return st
 }
 

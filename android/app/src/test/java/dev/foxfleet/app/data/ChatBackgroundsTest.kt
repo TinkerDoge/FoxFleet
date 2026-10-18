@@ -20,7 +20,7 @@ import org.robolectric.annotation.GraphicsMode
 import java.io.File
 import java.nio.file.Files
 
-/** Per-chat background settings: stored on this phone only, per chat, repaired when corrupt, reset removes the picture too. */
+/** Per-agent background settings: stored on this phone only, one look per agent, repaired when corrupt, reset removes the picture too. */
 @RunWith(RobolectricTestRunner::class)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [34])
@@ -37,16 +37,45 @@ class ChatBackgroundsTest {
     }
 
     @Test fun defaultsAndKeys() {
-        val s = store(); assertEquals(ChatBg(), s.load(s.key("atlas", "s1"))); assertTrue(ChatBg().isDefault)
-        assertTrue(s.key("atlas", "s1") != s.key("atlas", "s2")); assertEquals("atlas\u0000", s.key("atlas", null))
+        val s = store(); assertEquals(ChatBg(), s.load(s.key("atlas"))); assertTrue(ChatBg().isDefault)
+        assertEquals(s.key("atlas"), s.key("atlas")); assertNotEquals(s.key("atlas"), s.key("nova"))
     }
 
-    @Test fun storesPerChatAndRemovesTheEntryWhenDefaultAgain() {
-        val s = store(); val a = s.key("atlas", "1"); val b = s.key("atlas", "2")
-        s.save(a, ChatBg.normalize("Pattern", "sage", "paws", 0, 0.2f, false)); s.save(b, ChatBg.normalize("Solid", "sky", null, 0, 0.2f, false))
-        assertEquals(BgMode.Pattern, s.load(a).mode); assertEquals("paws", s.load(a).pattern); assertEquals("sage", s.load(a).solid)
-        assertEquals(BgMode.Solid, s.load(b).mode); assertEquals("sky", s.load(b).solid)
-        s.save(a, ChatBg()); assertEquals(ChatBg(), s.load(a)); assertEquals(BgMode.Solid, s.load(b).mode)
+    @Test fun storesOneLookPerAgentAndRemovesTheEntryWhenDefaultAgain() {
+        val s = store(); val atlas = s.key("atlas"); val nova = s.key("nova")
+        s.save(atlas, ChatBg.normalize("Pattern", "sage", "paws", 0, 0.2f, false)); s.save(nova, ChatBg.normalize("Solid", "sky", null, 0, 0.2f, false))
+        assertEquals(BgMode.Pattern, s.load(atlas).mode); assertEquals("paws", s.load(atlas).pattern); assertEquals("sage", s.load(atlas).solid)
+        assertEquals(BgMode.Solid, s.load(nova).mode); assertEquals("sky", s.load(nova).solid)
+        s.save(atlas, ChatBg()); assertEquals(ChatBg(), s.load(atlas)); assertEquals(BgMode.Solid, s.load(nova).mode)
+    }
+
+    // ---- the point of 0.4.3: one look per agent, every chat of that agent ----
+    @Test fun everyChatOfAnAgentSharesTheSameLookAndAgentsDoNot() {
+        val s = store()
+        // The key is the agent id alone, so two session ids of one agent resolve to the same stored look.
+        val sumi1 = s.key("sumi"); val sumi2 = s.key("sumi")
+        assertEquals(sumi1, sumi2)
+        s.save(sumi1, ChatBg.normalize("Solid", "sage", null, 0, 0f, false))
+        // setting it "in one chat" is visible "in the other": a single entry backs both.
+        assertEquals(BgMode.Solid, s.load(sumi2).mode); assertEquals("sage", s.load(sumi2).solid)
+        // a second agent keeps its own (empty) look.
+        assertEquals(ChatBg(), s.load(s.key("nova")))
+        s.save(s.key("nova"), ChatBg.normalize("Pattern", "sky", "paws", 0, 0f, false)); assertEquals("sage", s.load(sumi1).solid)
+    }
+
+    @Test fun anAgentWithNoLookOfItsOwnAdoptsItsMostRecentPerChatOneAndKeepsOldKeys() {
+        val s = store()
+        // Legacy per-chat keys written by the old build: agent + NUL + session id.
+        val oldSolid = s.key("atlas") + "\u0000old"; val oldImage = s.key("atlas") + "\u0000new"
+        s.save(oldSolid, ChatBg.normalize("Solid", "sky", null, 0, 0f, false))
+        assertTrue(s.savePicked(ctx, oldImage, jpegUri(400, 300))); s.save(oldImage, ChatBg.normalize("Image", "", null, 4, 0.4f, true))
+        val adopted = s.load(s.key("atlas"))
+        assertEquals(BgMode.Image, adopted.mode); assertEquals(4, adopted.blur); assertTrue(adopted.image)
+        assertNotNull(s.loadBitmap(s.key("atlas")))
+        // The old keys are left in place rather than wiped.
+        assertEquals(BgMode.Solid, s.load(oldSolid).mode); assertTrue(s.load(oldImage).image)
+        // And an agent that already has a look of its own is never overwritten by the migration.
+        s.save(s.key("atlas"), ChatBg.normalize("Solid", "teal", null, 0, 0f, false)); assertEquals("teal", s.load(s.key("atlas")).solid)
     }
 
     @Test fun repairsUntrustedValues() {
@@ -65,7 +94,7 @@ class ChatBackgroundsTest {
     }
 
     @Test fun anImageSettingWithoutItsFileIsDropped() {
-        val s = store(); val k = s.key("atlas", "1"); s.save(k, ChatBg.normalize("Image", "", null, 4, 0.3f, true))
+        val s = store(); val k = s.key("atlas"); s.save(k, ChatBg.normalize("Image", "", null, 4, 0.3f, true))
         assertFalse(s.load(k).image); assertEquals(BgMode.Default, s.load(k).mode)
     }
 
@@ -75,7 +104,7 @@ class ChatBackgroundsTest {
     }
 
     @Test fun aLargePictureIsDownscaledToTheLimitAndStoredPrivately() {
-        val s = store(); val k = s.key("atlas", "1")
+        val s = store(); val k = s.key("atlas")
         assertTrue(s.savePicked(ctx, k, jpegUri(4000, 3000)))
         val bmp = s.loadBitmap(k)!!; assertEquals(Tokens.ChatBackgrounds.maxEdge, maxOf(bmp.width, bmp.height)); assertEquals(1200, minOf(bmp.width, bmp.height))
         assertTrue(s.imageFile(k).length() < 600_000)
@@ -83,30 +112,21 @@ class ChatBackgroundsTest {
 
     @Test fun notAnImageIsRefused() {
         val s = store(); val f = File.createTempFile("notimg", ".txt").apply { writeText("not an image") }
-        assertFalse(s.savePicked(ctx, s.key("a", "1"), Uri.fromFile(f))); assertNull(s.loadBitmap(s.key("a", "1")))
+        assertFalse(s.savePicked(ctx, s.key("a"), Uri.fromFile(f))); assertNull(s.loadBitmap(s.key("a")))
     }
 
     @Test fun resetRemovesSettingAndPicture() {
-        val s = store(); val k = s.key("atlas", "1"); assertTrue(s.savePicked(ctx, k, jpegUri(800, 600))); s.save(k, ChatBg.normalize("Image", "", null, 6, 0.4f, true))
+        val s = store(); val k = s.key("atlas"); assertTrue(s.savePicked(ctx, k, jpegUri(800, 600))); s.save(k, ChatBg.normalize("Image", "", null, 6, 0.4f, true))
         assertEquals(BgMode.Image, s.load(k).mode); s.reset(k); assertEquals(ChatBg(), s.load(k)); assertFalse(s.imageFile(k).exists())
     }
 
-    @Test fun aNewChatKeepsItsLookWhenItGetsAnIdAndNeverOverwritesASavedChat() {
-        val s = store(); val from = s.key("atlas", null); val to = s.key("atlas", "sess"); val other = s.key("atlas", "old")
-        assertTrue(s.savePicked(ctx, from, jpegUri(800, 600))); s.save(from, ChatBg.normalize("Image", "", null, 3, 0.5f, true))
-        s.move(from, to)
-        assertEquals(BgMode.Image, s.load(to).mode); assertEquals(3, s.load(to).blur); assertNotNull(s.loadBitmap(to)); assertFalse(s.imageFile(from).exists()); assertEquals(ChatBg(), s.load(from))
-        s.save(from, ChatBg.normalize("Solid", "sand", null, 0, 0f, false)); s.save(other, ChatBg.normalize("Solid", "sky", null, 0, 0f, false))
-        s.move(from, other); assertEquals("sky", s.load(other).solid)
-    }
-
     @Test fun clearAllWipesEveryBackgroundAndPicture() {
-        val s = store(); val k = s.key("atlas", "1"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 0, 0.2f, true)); s.save(s.key("b", "2"), ChatBg.normalize("Solid", "sky", null, 0, 0f, false))
-        s.clearAll(); assertEquals(ChatBg(), s.load(k)); assertEquals(ChatBg(), s.load(s.key("b", "2"))); assertFalse(s.imageFile(k).exists())
+        val s = store(); val k = s.key("atlas"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 0, 0.2f, true)); s.save(s.key("b"), ChatBg.normalize("Solid", "sky", null, 0, 0f, false))
+        s.clearAll(); assertEquals(ChatBg(), s.load(k)); assertEquals(ChatBg(), s.load(s.key("b"))); assertFalse(s.imageFile(k).exists())
     }
 
     // ---- owner: backgrounds survive sign-out, a different account or hub clears them ----
-    private fun seed(s: ChatBackgroundStore): String { val k = s.key("atlas", "1"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 4, 0.2f, true)); return k }
+    private fun seed(s: ChatBackgroundStore): String { val k = s.key("atlas"); assertTrue(s.savePicked(ctx, k, jpegUri(400, 300))); s.save(k, ChatBg.normalize("Image", "", null, 4, 0.2f, true)); return k }
     private val a1 = ChatBgOwner.key("acct-1", "https://hub.example.com")
 
     @Test fun legacyDataWithNoOwnerIsAdopted() {
@@ -142,7 +162,7 @@ class ChatBackgroundsTest {
     // ---- transparency ----
     private fun argb(alpha: Int): Bitmap = Bitmap.createBitmap(40, 30, Bitmap.Config.ARGB_8888).also { b -> b.eraseColor(android.graphics.Color.argb(alpha, 200, 40, 40)); b.setHasAlpha(true) }
     @Test fun transparentPictureKeepsItsAlphaOpaqueOneBecomesJpeg() {
-        val s = store(); val k = s.key("a", "t")
+        val s = store(); val k = s.key("a")
         s.writeImage(k, argb(0)); var head = s.imageFile(k).readBytes().take(4).map { it.toInt() and 0xff }
         assertEquals(listOf(0x89, 0x50, 0x4e, 0x47), head)                         // PNG
         assertEquals(0, s.loadBitmap(k)!!.getPixel(5, 5) ushr 24)                  // still see-through, not black
