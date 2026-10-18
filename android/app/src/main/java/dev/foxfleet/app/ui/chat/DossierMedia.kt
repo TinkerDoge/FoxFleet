@@ -48,4 +48,35 @@ object DossierMedia {
     /** Whether two refs point at the same media (cache identity first, then URL). Used to find a tap in the list. */
     fun matches(a: MediaRef, b: MediaRef): Boolean =
         if (a.ref != null && b.ref != null) a.ref == b.ref && a.agent == b.agent else a.url == b.url
+
+    /** Documents and audio the agent sent, for the dossier Files tab. */
+    fun files(agent: String, messages: List<AgentMessage>): List<DossierFile> {
+        val out = LinkedHashMap<String, DossierFile>()
+        for (cm in messages) {
+            MediaTags.parse(cm.message.content).media.forEach { t ->
+                if (t.kind == TagMedia.Kind.File || t.kind == TagMedia.Kind.Audio) {
+                    out.putIfAbsent(t.ref, DossierFile(t.name, agent, t.ref, if (MediaTags.isUrl(t.ref)) t.ref else ""))
+                }
+            }
+        }
+        return out.values.toList()
+    }
+
+    /** Bare http(s) links that are not pictures or videos, for the dossier Links tab. */
+    fun links(messages: List<AgentMessage>): List<DossierLink> {
+        val out = LinkedHashSet<String>()
+        for (cm in messages) {
+            val parsed = MediaTags.parse(cm.message.content)
+            LINK.findAll(parsed.text).forEach { m ->
+                val u = m.value.trimEnd('.', ',', ';', ':', '!', '?')
+                if (mediaKind(u) == null) out.add(u)
+            }
+        }
+        return out.map { DossierLink(it) }
+    }
+
+    private val LINK = Regex("""(?<![(\[])\bhttps?://[^\s)<>"']+""")
 }
+
+data class DossierFile(val name: String, val agent: String? = null, val ref: String? = null, val url: String = "")
+data class DossierLink(val url: String)
