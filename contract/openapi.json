@@ -4173,6 +4173,78 @@
             "$ref": "#/components/responses/Error"
           }
         }
+      },
+      "delete": {
+        "operationId": "deleteMedia",
+        "summary": "Delete this file for everyone (0.4.3): the hub forgets the offer, so a later resolve 404s and any already-issued link stops serving. The agent's original file is untouched. Idempotent: deleting an already-gone ref is still 200.",
+        "tags": [
+          "agents"
+        ],
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": ""
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ref"
+                ],
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "maxLength": 2000,
+                    "description": "The exact ref the agent wrote (the same string POST /media resolved), e.g. /home/me/chart.png"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The offer is revoked (deleted true) or was already gone (deleted false)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "deleted"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "deleted": {
+                      "type": "boolean",
+                      "description": "true when this call revoked a live offer, false when it was already gone (idempotent)"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "429": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
       }
     },
     "/api/media/{token}": {

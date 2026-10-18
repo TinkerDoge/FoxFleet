@@ -206,12 +206,12 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             dossierLinks = dossierLinks + (agent to dev.foxfleet.app.ui.chat.DossierMedia.links(msgs))
         }
     }
-    /** Device-only delete of one message's media (the viewer's trash action). */
-    fun deleteMedia(agent: String, ref: String, instance: String) {
-        viewModelScope.launch {
-            try { withContext(kotlinx.coroutines.Dispatchers.IO) { mediaHost?.delete(agent, ref, instance) }; coil3.SingletonImageLoader.get(getApplication<Application>()).memoryCache?.clear() }
-            catch (e: CancellationException) { throw e } catch (_: Exception) {}
-        }
+    /** Delete for everyone (0.4.3): revoke on the hub, then drop the phone copy. A hub error keeps the local file and is rethrown. */
+    suspend fun deleteMedia(agent: String, ref: String, instance: String) {
+        try { api.deleteMedia(agent, ref) } catch (e: HubApiException) { if (e.status != 404) throw e }
+        withContext(kotlinx.coroutines.Dispatchers.IO) { mediaHost?.delete(agent, ref, instance) }
+        coil3.SingletonImageLoader.get(getApplication<Application>()).memoryCache?.clear()
+        if (dossierMedia.containsKey(agent)) loadDossier(agent)
     }
     /** Device-only delete of every cached media file of [agent], then reload its grid. */
     fun clearAgentMedia(agent: String) {

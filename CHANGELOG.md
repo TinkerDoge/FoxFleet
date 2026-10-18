@@ -2,9 +2,11 @@
 
 All notable changes to Foxfleet. The format follows [Keep a Changelog](https://keepachangelog.com/); versions follow [Semantic Versioning](https://semver.org/) (`0.x` is alpha: breaking changes can happen between releases; `config.json` v3 is the stable part).
 
-## Unreleased (0.4.2-alpha)
+## Unreleased (0.4.3-alpha)
 
-Android versionCode 38. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+Android versionCode 39. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
+
+- Feature (Android / hub, 0.4.3): save to gallery and delete for everyone. A Save button in the viewer copies a picture or video to `Pictures/FoxFleet`, `Movies/FoxFleet` or `Download/FoxFleet` (scoped storage, no permission). The viewer's Delete now revokes the file on the hub too, so the next open 404s instead of redownloading; dossier Clear and Settings cache clear stay device-only. Tests: `MediaStoreSaverTest`, `MediaDeleteTest`, `server/test/media.test.js`, `server/test/bot-media.test.js`.
 
 - Fix (Android / hub / plugin): bot model picker lists Hermes providers (`models.set` on connect). Picking works before the first message; `--global` sets the Hermes default. The Connected service line no longer badges. Steer / follow-up / redirect sit after the live reasoning and tool bubble.
 
@@ -14,7 +16,7 @@ Android versionCode 38. 0.4.3 Android slice merged: dark grey theme, per-agent b
 
 - Change (Android, 0.4.3): the dark theme is a cool dark grey rather than warm brown (`bg`, surfaces, offline, muted/faint text), and a chat background is now saved **per agent**, not per chat: opening any session of an agent shows that agent's look, and setting it in one chat updates them all. Old per-chat looks are migrated to the agent on first read (an entry with a picture wins; the old keys are left in place). Test: `ChatBackgroundsTest`.
 - Feature (Android, 0.4.3): `/model` is a card in the chat (same family as request cards), not a system sheet. A compact chip under the agent name opens it. Bot agents get the same card; picking sends `/model <id>` as a message. Per-chat only. Tests: `ModelChipTest`, `ModelPickerRegressionTest`.
-- Feature (Android, 0.4.3): media and chat pages stay on the phone. Cached media lives in `filesDir/media-cache` (Android will not evict it). Opening a chat shows the cached transcript immediately. The viewer can delete a file from this device only (hub copy stays). Tap an agent's avatar for a dossier (identity, recent chats, cached media grid); swipe between media in the viewer. Settings: Check for updates — HTTPS manifest, sha256, PackageInstaller. Manifest URL is a constant (`UpdateManifests.DEFAULT_URL`) the parent still has to point at a live DogeDrive direct file. Tests: `MediaRepositoryTest`, `UpdateTest`.
+- Feature (Android, 0.4.3): media and chat pages stay on the phone. Cached media lives in `filesDir/media-cache` (Android will not evict it). Opening a chat shows the cached transcript immediately. The viewer can delete a file from both this phone and the hub (the next open no longer downloads it); dossier Clear and Settings cache clear stay device-only. Tap an agent's avatar for a dossier (identity, recent chats, cached media grid); swipe between media in the viewer. Settings: Check for updates — HTTPS manifest, sha256, PackageInstaller. Manifest URL is a constant (`UpdateManifests.DEFAULT_URL`) the parent still has to point at a live DogeDrive direct file. Tests: `MediaRepositoryTest`, `UpdateTest`.
 - Fix (Android): a labelled agent's pictures, files and voice notes load again. vc31 passed the display name to the transcript as the agent id, so every `MEDIA:` card called `/api/agents/<label>/media` (404 "Unknown agent") and the transcript avatars took their colour and custom picture from the label. The transcript now gets the id for media, avatars and hub calls, and the label only for text: the live status line (`SUMI is working…`), "Start a conversation with …" and the permission/question card titles. Test: `fix042/DisplayNameTest`.
 
 Follow-ups from Soran's vc31 check (N1 to N3). Hub and connector only: no Android, web or contract change, so no APK rebuild.

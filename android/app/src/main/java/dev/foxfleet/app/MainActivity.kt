@@ -194,7 +194,10 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 skills = vm.skills[agent.name].orEmpty(),
                 onAvatarLongPress = { vm.avatarTarget = it },
                 httpClient = vm.api.httpClient,
-                onDeleteMedia = { ref -> ref.agent?.let { a -> ref.ref?.let { r -> vm.deleteMedia(a, r, ref.instance) } } },
+                onDeleteMedia = { ref ->
+                    val a = ref.agent; val r = ref.ref
+                    if (a != null && r != null) vm.deleteMedia(a, r, ref.instance)
+                },
                 // Features follow the agent's capabilities from the hub registry.
                 allowImages = agent.capabilities.images,
                 onUploadFile = if (agent.capabilities.files) ({ uri, progress -> vm.uploadFile(agent.name, uri, progress) }) else null,
@@ -223,6 +226,10 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
                 onStop = { vm.stop(agent.name) },
                 onOpenSession = { id -> vm.navigate(Route.Chat(agent.name)); vm.openSession(agent.name, id) },
                 onMediaDeleted = { vm.loadDossier(agent.name) },
+                onDeleteMedia = { ref ->
+                    val a = ref.agent; val r = ref.ref
+                    if (a != null && r != null) vm.deleteMedia(a, r, ref.instance)
+                },
                 onClearMedia = { vm.clearAgentMedia(agent.name) },
                 httpClient = vm.api.httpClient,
             )

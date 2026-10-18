@@ -251,8 +251,8 @@ fun ChatScreen(
     onUploadFile: (suspend (Uri, (Float) -> Unit) -> FileRef)? = null,
     onOpenScreen: (() -> Unit)? = null,
     initialFiles: List<FileRef> = emptyList(),
-    /** Delete a cached media file from this device (0.4.3 C2); null hides the viewer's trash action. */
-    onDeleteMedia: ((MediaRef) -> Unit)? = null,
+    /** Delete this media for everyone (0.4.3): revoke on the hub, then drop the phone copy; null hides the viewer's trash action. */
+    onDeleteMedia: (suspend (MediaRef) -> Unit)? = null,
     /** Reactions (agents whose hub keeps them): re-read after replies and every 30 s while the chat is on screen. */
     onSyncReactions: () -> Unit = {},
     /** A chip under a message: [present] = what tapping it makes (add yours, or take it back). */

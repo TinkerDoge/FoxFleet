@@ -58,6 +58,37 @@ test('hub: only mentioned refs resolve; tokens are user-bound, expiring and tamp
   assert.ok(hub._cache().bytes <= 100, 'cache stays within its limit');
 });
 
+test('hub: revoke forgets a ref forever — transcript reload cannot resurrect it, a newer reply can re-offer it', async () => {
+  const t = { n: 1_000_000 };
+  const hub = mediaHub({ connectors: stubConnectors({ '/tmp/a.png': { body: PNG, mime: 'image/png', name: 'a.png' } }), now: () => t.n });
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', 100);
+  const r = hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }); const token = r.url.split('/').pop();
+  await hub.revoke({ scope: 'u', agent: 'a', ref: '/tmp/a.png', at: 200 });
+  assert.equal(hub.revoked('u', 'a', '/tmp/a.png'), 200);
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'revoked: resolve 404s');
+  await assert.rejects(hub.serve({ token, scope: 'u', req: { headers: {}, method: 'GET' }, res: mkRes() }), (e) => e.status === 404, 'an already-issued token stops serving');
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', 100); // reload the old transcript (same timestamp)
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'reloading the old message does not resurrect');
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', 300); // a newer reply tags the same path again
+  assert.equal(hub.revoked('u', 'a', '/tmp/a.png'), null, 'newer reply drops the tombstone');
+  assert.ok(hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }).url, 'newer reply can be resolved again');
+});
+
+test('hub: a missing timestamp cannot resurrect a revoked ref; the revoke file reloads', async (t) => {
+  const dir = tmp(); t.after(() => fs.rmSync(dir, { recursive: true, force: true })); const file = path.join(dir, 'media-revoked.json');
+  const clock = { n: 1_000_000 };
+  const hub = mediaHub({ connectors: stubConnectors({ '/tmp/a.png': { body: PNG, mime: 'image/png', name: 'a.png' } }), now: () => clock.n, revokePath: file });
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', 100);
+  await hub.revoke({ scope: 'u', agent: 'a', ref: '/tmp/a.png', at: 200 });
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', undefined);
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'undefined at is treated as old, not newer');
+  hub.note('u', 'a', 'MEDIA:/tmp/a.png', NaN);
+  assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'NaN at is treated as old');
+  const again = mediaHub({ connectors: stubConnectors({ '/tmp/a.png': { body: PNG, mime: 'image/png', name: 'a.png' } }), now: () => clock.n, revokePath: file });
+  again.note('u', 'a', 'MEDIA:/tmp/a.png', 100);
+  assert.throws(() => again.resolve({ scope: 'u', agent: 'a', machineId: 'm', ref: '/tmp/a.png' }), /not offered/, 'a new hub instance reloads the tombstone');
+});
+
 test('hub: URL refs go through the SSRF-guarded fetcher with the media allowlist, and only if the agent mentioned them', async () => {
   const calls = []; const hub = mediaHub({ connectors: {}, fetchUrl: async (u, o) => { calls.push([u, o]); return { type: 'video/mp4', body: Buffer.from('v') }; } });
   assert.throws(() => hub.resolve({ scope: 'u', agent: 'a', ref: 'https://evil.example/x.mp4' }), /not offered/, 'not an open proxy');
@@ -80,6 +111,31 @@ test('end to end: the agent says MEDIA:<file> -> chat reply -> media link -> byt
   assert.equal((await post(`/api/agents/${agent.name}/media`, { ref: other })).status, 404, 'a real file the agent never mentioned');
   const etc = await post(`/api/agents/${agent.name}/media`, { ref: '/etc/hostname.txt' }); assert.equal(etc.status, 200, 'mentioned, so a link exists...'); assert.ok([403, 404].includes((await fetch(x.base + (await etc.json()).url)).status), '...but the machine refuses a file outside its roots');
   assert.equal((await fetch(x.base + '/api/media/not-a-token')).status, 404);
+});
+
+test('end to end: delete for everyone — resolve, delete, resolve 404, old token 404, other agent and invalid ref refused', async (t) => {
+  const dir = tmp(); t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const png = path.join(dir, 'chart.png'); fs.writeFileSync(png, PNG);
+  const frame = (c) => `data: ${JSON.stringify({ choices: [{ delta: { content: c } }] })}\n\n`;
+  const x = await setup(t, { gateway: false, mock: { streamFrames: [frame('Here is the chart\n'), frame(`MEDIA:${png}\n`)] } });
+  const post = (route, data) => fetch(x.base + route, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const del = (route, data) => fetch(x.base + route, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) });
+  const agent = await waitFor(async () => { const a = (await (await fetch(x.base + '/api/agents')).json()).agents.find((q) => q.chatReady); return a ?? null; }); assert.ok(agent, x.run.out);
+  const chat = await post(`/api/agents/${agent.name}/chat`, { messages: [{ role: 'user', content: 'chart please' }] }); assert.equal(chat.status, 200); assert.ok((await chat.text()).includes('MEDIA:'), 'the reply mentions the file');
+  const r1 = await post(`/api/agents/${agent.name}/media`, { ref: png }); assert.equal(r1.status, 200); const info = await r1.json();
+  assert.equal((await fetch(x.base + info.url)).status, 200);
+  assert.equal((await del(`/api/agents/nope/media`, { ref: png })).status, 404, 'an unknown agent cannot delete');
+  const d = await del(`/api/agents/${agent.name}/media`, { ref: png }); assert.equal(d.status, 200); assert.deepEqual(await d.json(), { ok: true, deleted: true });
+  assert.equal((await post(`/api/agents/${agent.name}/media`, { ref: png })).status, 404, 'resolve 404s after delete');
+  assert.equal((await fetch(x.base + info.url)).status, 404, 'an old token stops serving');
+  const d2 = await (await del(`/api/agents/${agent.name}/media`, { ref: png })).json(); assert.deepEqual(d2, { ok: true, deleted: false }, 'idempotent second delete');
+  assert.equal((await del(`/api/agents/${agent.name}/media`, { ref: '' })).status, 400, 'empty ref');
+  const ghost = '/tmp/never-mentioned.png';
+  const d3 = await del(`/api/agents/${agent.name}/media`, { ref: ghost });
+  assert.equal(d3.status, 200, 'deleting a ref this process has not noted still tombstones it');
+  assert.deepEqual(await d3.json(), { ok: true, deleted: true });
+  const later = await post(`/api/agents/${agent.name}/media`, { ref: ghost });
+  assert.equal(later.status, 404, 'a later resolve of that ghost ref stays 404');
 });
 
 test('security: nothing that can run in a browser is deliverable; hostile names cannot break headers; documents are attachments, never inline', async () => {

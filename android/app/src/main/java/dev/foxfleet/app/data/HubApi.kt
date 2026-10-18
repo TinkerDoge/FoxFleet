@@ -531,6 +531,11 @@ class HubApi(private val store: SettingsStore) {
         MediaLink(store.baseUrl.trimEnd('/') + path, kind, r["name"]?.jsonPrimitive?.contentOrNull ?: "file")
     }
 
+    /** Delete this media for everyone (0.4.3): the hub forgets the offer. Throws on failure, including 404 (already gone). */
+    suspend fun deleteMedia(agent: String, ref: String): Unit = withContext(Dispatchers.IO) {
+        request(agentPath(agent) + "/media", "DELETE", buildJsonObject { put("ref", ref) }.toString())
+    }
+
     /** First byte of a media link, to learn WHY a card cannot load. Null when it works; otherwise what the hub said. */
     suspend fun mediaDiagnose(url: String): dev.foxfleet.app.ui.components.HubFailure? = withContext(Dispatchers.IO) {
         try {
