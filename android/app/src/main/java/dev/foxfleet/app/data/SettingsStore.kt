@@ -109,6 +109,13 @@ class SettingsStore(private val prefs: SharedPreferences) {
     }
     private fun forgetSeen() { val e = prefs.edit(); prefs.all.keys.filter { it.startsWith("seen_${activeHubId}_") || it.startsWith("last_${activeHubId}_") }.forEach { e.remove(it) }; e.apply() }
 
+    /** Refs the user deleted for everyone on this device (agent\\0ref). Cards for these are omitted, not shown broken. */
+    fun hiddenMedia(): Set<String> = HashSet(prefs.getStringSet("hidden_media_$activeHubId", emptySet()) ?: emptySet())
+    fun hideMedia(key: String) {
+        if (key.isBlank()) return
+        prefs.edit().putStringSet("hidden_media_$activeHubId", hiddenMedia() + key).apply()
+    }
+
     companion object {
         const val ACCENT_COUNT = 5
         private inline fun <reified E : Enum<E>> enumOr(name: String?, fallback: E): E =

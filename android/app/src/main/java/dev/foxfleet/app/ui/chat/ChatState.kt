@@ -208,6 +208,16 @@ class ChatState {
         messages = messages.filterNot { it.hubId in ids }
     }
 
+    /** Strip one MEDIA: ref from every on-screen reply so the card disappears instead of going broken. */
+    fun dropMedia(ref: String) {
+        if (ref.isBlank()) return
+        val next = messages.map { m ->
+            val c = MediaTags.withoutRef(m.content, ref)
+            if (c == m.content) m else m.copy(content = c)
+        }
+        if (next !== messages && next != messages) messages = next
+    }
+
     /** The rows on screen came from the device cache and the hub has not confirmed them yet. */
     var fromCache by mutableStateOf(false)
         private set

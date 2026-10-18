@@ -45,4 +45,15 @@ class MediaTagsTest {
         assertEquals("Really good", MediaTags.parseStreaming("Really good").text)
     }
     @Test fun aHugeReplyIsBounded() { assertTrue(MediaTags.parse((0 until 5000).joinToString("\n") { "MEDIA:/tmp/f$it.png" }).media.size <= 24) }
+    @Test fun withoutRefDropsThatCardAndKeepsTheRest() {
+        val src = "Here is the chart\nMEDIA:/tmp/a.png\nMEDIA:/tmp/b.png"
+        val gone = MediaTags.withoutRef(src, "/tmp/a.png")
+        val p = MediaTags.parse(gone)
+        assertEquals("Here is the chart", p.text)
+        assertEquals(listOf("/tmp/b.png"), p.media.map { it.ref })
+        assertEquals(src, MediaTags.withoutRef(src, "/tmp/missing.png"))
+        val only = MediaTags.parse(MediaTags.withoutRef("Here is the chart\nMEDIA:/tmp/a.png", "/tmp/a.png"))
+        assertEquals("Here is the chart", only.text)
+        assertTrue(only.media.isEmpty())
+    }
 }

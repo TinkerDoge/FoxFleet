@@ -201,16 +201,23 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     fun loadDossier(agent: String) {
         viewModelScope.launch {
             val msgs = fromCache { messages(agent) }.orEmpty()
-            dossierMedia = dossierMedia + (agent to dev.foxfleet.app.ui.chat.DossierMedia.refs(agent, msgs))
-            dossierFiles = dossierFiles + (agent to dev.foxfleet.app.ui.chat.DossierMedia.files(agent, msgs))
+            val hidden = hiddenMedia
+            dossierMedia = dossierMedia + (agent to dev.foxfleet.app.ui.chat.DossierMedia.refs(agent, msgs).filter { it.ref == null || "$agent\u0000${it.ref}" !in hidden })
+            dossierFiles = dossierFiles + (agent to dev.foxfleet.app.ui.chat.DossierMedia.files(agent, msgs).filter { it.ref == null || "$agent\u0000${it.ref}" !in hidden })
             dossierLinks = dossierLinks + (agent to dev.foxfleet.app.ui.chat.DossierMedia.links(msgs))
         }
     }
-    /** Delete for everyone (0.4.3): revoke on the hub, then drop the phone copy. A hub error keeps the local file and is rethrown. */
+    /** Refs this device has deleted for everyone (`agent\\0ref`). Cards for these are omitted. */
+    var hiddenMedia by mutableStateOf(settings.hiddenMedia()); private set
+    /** Delete for everyone (0.4.3): revoke on the hub, drop the phone copy, and hide the card (no broken placeholder). */
     suspend fun deleteMedia(agent: String, ref: String, instance: String) {
         try { api.deleteMedia(agent, ref) } catch (e: HubApiException) { if (e.status != 404) throw e }
         withContext(kotlinx.coroutines.Dispatchers.IO) { mediaHost?.delete(agent, ref, instance) }
         coil3.SingletonImageLoader.get(getApplication<Application>()).memoryCache?.clear()
+        val key = "$agent\u0000$ref"
+        settings.hideMedia(key)
+        hiddenMedia = settings.hiddenMedia()
+        chatFor(agent).dropMedia(ref)
         if (dossierMedia.containsKey(agent)) loadDossier(agent)
     }
     /** Device-only delete of every cached media file of [agent], then reload its grid. */
