@@ -30,6 +30,17 @@ Implemented in this version, and nothing else:
 | User side | the existing agent routes: list/detail, sessions, transcript, `/messages`, `/chat`, `/runs`, `/queue`, `/commands`, `/pin`, `/reactions`, `/hidden` |
 | Content | text only, direct chats (`chat_type: "dm"`) |
 
+**Reply conventions (0.4.2).** A bot reply's `REACT: <emoji>` line is not shown as text: the hub
+removes the line from the stored message and, on the reply's `final` frame, records the emoji as the
+agent's reaction on the user message that started the turn (announced as a `message.reaction` live
+event). A reply that is only a `REACT:` line keeps the emoji as its text so the turn still ends.
+`sessions/{id}/reactions` and `sessions/{id}/hidden` work for bot chats on the bot store's `fm_`
+message ids, with the same request/response shape as the other agents.
+
+An empty native stream is closed by Hermes with a lone `✅` finalize frame. The adapter stores that
+tick non-final so the turn stays open: the authoritative text (if any) then replaces that message,
+and with no text the tick stays as the answer.
+
 Reserved names, **not implemented** (frozen so later versions do not collide). A bot that sends one gets
 `error.code = "unsupported"`; the hub never emits the hub → bot ones in v1:
 

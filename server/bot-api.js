@@ -8,7 +8,7 @@ import { acceptBotSocket, checkHandshake } from './bot-ws.js';
 import { PROTOCOL_V11, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateHttpRequest, validateMediaRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { flattenContent } from './transcript.js';
 import { takeReact } from './media-tags.js';
-import { agentReactions, reactionView } from './reactions.js';
+import { agentReactions, reactionView, replyReaction } from './reactions.js';
 
 export const BOT_DISABLED = 'The bot API is disabled on this hub';
 
@@ -88,19 +88,19 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     throw new BotError('rate_limited', 'Too many requests', { retry_after_ms: Math.ceil(((1 - b.tokens) / perSec) * 1000) });
   }
   const agentName = (session) => agentOf(session.reg, session.botId)?.name;
-  // 0.4.2: what a bot reply's REACT: line does (same contract as every other agent). The line is
-  // removed from the stored text whenever something else remains; a reply that is nothing else
-  // keeps the emoji as its text so the run still ends, and the emoji lands on the newest user
-  // message as a stored reaction plus a message.reaction live event.
+  // 0.4.2: what a bot reply's REACT: line does — the same normalisation and reaction-only rule as
+  // every other agent (reactions.js replyReaction). The line is removed from the stored text
+  // whenever something else remains; a reply that is nothing else keeps the emoji as its text so
+  // the run still ends. The emoji is applied once, on the final frame, to the message being answered.
   function botReactOf(text, final) {
     const t = typeof text === 'string' ? text : '';
-    const { text: stripped, react } = takeReact(t);
-    if (!react) return { text: t, react: null };
-    if (stripped.trim()) return { text: stripped, react };
-    return { text: final ? react : t, react: final ? react : null };
+    const { react: emoji, only } = replyReaction(t);
+    if (!emoji) return { text: t, react: null };          // no REACT: line (or not an emoji): untouched
+    if (only) return { text: final ? emoji : t, react: final ? emoji : null };
+    return { text: takeReact(t).text, react: final ? emoji : null };
   }
-  async function applyBotReact(session, m, chatId, emoji) {
-    const target = session.store.lastUserMessage(chatId);
+  async function applyBotReact(session, m, chatId, emoji, answered) {
+    const target = answered ?? session.store.lastUserMessage(chatId);
     if (!target) return;
     const actor = { id: 'agent:' + m.name, name: m.label || m.name, kind: 'agent' };
     try {
@@ -119,9 +119,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const out = await store.send(v.req, guard(session));
         if (!out.replayed) {
           const m = agentOf(session.reg, session.botId);
+          const answered = liveRun(session.botId, v.req.chat_id)?.userMsgId ?? null; // the message this turn answers
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
           await botActivity(session, v.req.chat_id, { kind: 'send', id: out.result.message_id, text: store.messageText(v.req.chat_id, out.result.message_id), final: v.req.final });
-          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react);
+          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react, answered);
         }
         return out;
       }
@@ -131,9 +132,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const out = await store.edit(v.req, guard(session));
         if (!out.replayed) {
           const m = agentOf(session.reg, session.botId);
+          const answered = liveRun(session.botId, v.req.chat_id)?.userMsgId ?? null;
           session.reg.activity.touch(agentName(session), { role: 'assistant', text: v.req.text, session: v.req.chat_id });
           await botActivity(session, v.req.chat_id, { kind: 'edit', id: v.req.message_id, text: store.messageText(v.req.chat_id, v.req.message_id), final: v.req.final });
-          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react);
+          if (reactOf.react && m) await applyBotReact(session, m, v.req.chat_id, reactOf.react, answered);
         }
         return out;
       }
@@ -292,10 +294,10 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     try { st.ctl.enqueue(enc.encode('data: [DONE]\n\n')); st.ctl.close(); } catch { /* already closed */ }
   }
   const liveRun = (botId, chatId) => live.get(`${botId}\0${chatId}`);
-  function startRun(scope, m, chatId) {
+  function startRun(scope, m, chatId, userMsgId) {
     const key = `${m.botId}\0${chatId}`, cur = live.get(key); if (cur) return Promise.resolve(cur);
     if (starting.has(key)) return starting.get(key);
-    const st = { key, botId: m.botId, chatId, parts: [], ended: false, wrote: false, timer: null, ctl: null, run: null, link: null };
+    const st = { key, botId: m.botId, chatId, userMsgId: userMsgId ?? null, parts: [], ended: false, wrote: false, timer: null, ctl: null, run: null, link: null };
     st.link = { runId: 'bot', stop: () => interruptRun(st) };
     const p = runs.start({ scope, agent: m.name, session: chatId, timeoutMs: 5000, link: st.link, check: () => ({ 'X-Hermes-Session-Id': chatId }), onFinish: (r) => { r.text = composed(st); },
       open: async () => new Response(new ReadableStream({ start(c) { st.ctl = c; } }), { status: 200, headers: { 'Content-Type': 'text/event-stream' } }) })
@@ -404,7 +406,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   async function postMessages(c) {
     const input = chatBody(await c.readJson(c.req), c.m.botId), result = await accept(c, input, input.sessionId ? undefined : freshChatId());
     let runId = liveRun(c.m.botId, result.chat_id)?.run.id;
-    if (!runId && !result.duplicate) { try { runId = (await startRun(c.scope, c.m, result.chat_id)).run.id; } catch { /* too many live runs: the message is stored, there is just nothing to follow */ } }
+    if (!runId && !result.duplicate) { try { runId = (await startRun(c.scope, c.m, result.chat_id, result.message.id)).run.id; } catch { /* too many live runs: the message is stored, there is just nothing to follow */ } }
     c.sendJson(c.res, result.duplicate ? 200 : 202, { message: messageView(result, input.text, result.chat_id), session_id: result.chat_id, ...(runId ? { run_id: runId } : {}), bot: { online: sessions.has(c.m.botId) }, ...(result.duplicate ? { duplicate: true } : {}) });
   }
   async function postChat(c) {
@@ -439,7 +441,15 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   }
   async function sessionRoutes(c) {
     const { req, res, parts, url } = c, store = await readyStore(c);
-    if (parts.length === 4 && req.method === 'GET') return c.sendJson(res, 200, store.chats({ q: (url.searchParams.get('q') || '').slice(0, 200), limit: page(url.searchParams.get('limit'), 1, 100, 30), offset: page(url.searchParams.get('offset'), 0, 100000, 0) }));
+    if (parts.length > 4 && !CHAT_ID.test(parts[4])) throw fault(404, 'Unknown session');
+    if (parts.length === 4 && req.method === 'GET') {
+      // 0.4.2 "delete for me": hidden messages never match `q` and never become the preview
+      return c.sendJson(res, 200, store.chats({
+        q: (url.searchParams.get('q') || '').slice(0, 200), limit: page(url.searchParams.get('limit'), 1, 100, 30),
+        offset: page(url.searchParams.get('offset'), 0, 100000, 0),
+        hiddenOf: (chatId) => new Set(c.reg.reactions.hidden(c.m.name, chatId)),
+      }));
+    }
     if (parts.length === 6 && parts[5] === 'messages' && req.method === 'GET') {
       const out = store.transcript(parts[4], { limit: page(url.searchParams.get('limit'), 1, 200, 80), offset: page(url.searchParams.get('offset'), 0, 100000, 0) });
       const hidden = new Set(c.reg.reactions.hidden(c.m.name, parts[4]));
@@ -479,7 +489,8 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       return c.sendJson(res, 200, await store.renameChat(parts[4], b.title.trim()));
     }
     if (parts.length === 5 && req.method === 'DELETE') {
-      await store.deleteChat(parts[4]); await blobs.removeChat(c.reg, c.m.botId, store, parts[4]); const st = liveRun(c.m.botId, parts[4]); if (st) end(st, 'stopped');
+      await store.deleteChat(parts[4]); await c.reg.reactions.remove(c.m.name, parts[4]);
+      await blobs.removeChat(c.reg, c.m.botId, store, parts[4]); const st = liveRun(c.m.botId, parts[4]); if (st) end(st, 'stopped');
       return c.sendJson(res, 200, { ok: true });
     }
     throw fault(404, 'Not found');

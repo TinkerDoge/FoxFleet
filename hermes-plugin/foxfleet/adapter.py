@@ -291,7 +291,6 @@ def _jittered(delay: float) -> float:
 # (stream_consumer's `_accumulated or "✅"`): a bubble close, never a reply the user should see.
 _EMPTY_FINALIZE_PLACEHOLDER = "✅"
 
-
 @dataclass
 class _Stream:
     chunks: list[tuple[str, str]] = field(default_factory=list)  # only this turn's (id, text)
@@ -306,6 +305,10 @@ class _Stream:
     owed: Optional[str] = None
     owed_at: float = 0.0
     handed_off: bool = False
+    # Hermes closed this stream with the empty-finalize placeholder: the tick is on the hub but
+    # the turn is not finished. A later send() with real text edits that message in place.
+    placeholder: bool = False
+    placeholder_at: float = 0.0
     touched: float = field(default_factory=time.monotonic)
 
     def text(self) -> str:
@@ -327,6 +330,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
     SUPPORTS_NATIVE_STREAMING = True
     MAX_STREAMS = 256
     HANDOFF_TTL = 3600.0  # how long a failed turn final may still be completed in place
+    # How long an empty-stream placeholder tick may still be replaced by the turn's real text.
+    # The gateway's stale-finalize recovery sends it seconds later; a long, generous window costs
+    # nothing because only the chat's NEWEST stream can match, so a later turn cannot hijack it.
+    PLACEHOLDER_TTL = 300.0
     # A cancelled native turn never sends its final frame. When the cache is full, a turn idle this
     # long is treated as abandoned (evicted) instead of refusing native streaming to new turns.
     STREAM_IDLE_EVICT = 1800.0
@@ -1444,14 +1451,19 @@ class FoxFleetAdapter(BasePlatformAdapter):
             if (finalize and text.strip() == _EMPTY_FINALIZE_PLACEHOLDER
                     and not state.chunks and state.unconfirmed is None):
                 # Hermes closes a native stream that never showed content with a lone placeholder
-                # ("_accumulated or ✅", stream_consumer). Nothing was ever written to the hub, so
-                # there is no message to complete and no live run to end here: swallowing it keeps
-                # the hub's run open, and Hermes' stale-finalize recovery (#71643) then delivers the
-                # authoritative text through send(), which streams into that still-open run. Sending
-                # the placeholder instead would persist a bare "✅" reply whose final flag ends the
-                # run early — the reply then lands in a run the client is no longer following.
-                state.finalized = True
-                return True
+                # ("_accumulated or ✅", stream_consumer). It may be exactly that — a bubble close
+                # whose real text arrives moments later by the gateway's #71643 stale-finalize
+                # recovery — or it may be the agent's actual one-character reply ("✅"); the frame
+                # alone cannot tell them apart, and answering True while sending nothing would make
+                # Hermes suppress the recovery (the reply would vanish).
+                # So store the tick but do NOT finalize the turn: the reply run stays open, and when
+                # the authoritative text arrives, send() edits this message in place and ends the
+                # turn with it. If nothing arrives, the hub's own idle timer ends the run and the
+                # tick simply stays as the reply, which is exactly what it was.
+                if await self._push_snapshot(state, str(chat_id), text, reply_to, False) is None:
+                    state.placeholder, state.placeholder_at = True, time.monotonic()
+                    return True
+                return False  # not delivered: Hermes rolls back and re-sends through send()
             pushed = (await self._push_final(state, str(chat_id), text, reply_to) if finalize
                       else await self._push_snapshot(state, str(chat_id), text, reply_to, False) is None)
             if pushed:
@@ -1492,6 +1504,37 @@ class FoxFleetAdapter(BasePlatformAdapter):
                     and now - state.owed_at <= self.HANDOFF_TTL):
                 return state
         return None
+
+    def _pending_placeholder(self, chat_id: str) -> Optional[_Stream]:
+        """The newest stream in ``chat_id``, when it is still waiting on its placeholder's real text.
+
+        Only the newest stream can match: once a later turn seeds a stream for the same chat, an old
+        tick can never be mistaken for that turn's reply target.
+        """
+        newest = None
+        for (chat, _turn), state in self._streams.items():
+            if chat == chat_id and (newest is None or state.touched >= newest.touched):
+                newest = state
+        if (newest is None or not newest.placeholder or newest.finalized
+                or time.monotonic() - newest.placeholder_at > self.PLACEHOLDER_TTL):
+            return None
+        return newest
+
+    async def _complete_placeholder(self, state: _Stream, chat_id: str, text: str) -> SendResult:
+        """Replace the stored tick with the turn's real answer and end the turn with it."""
+        async with state.lock:
+            state.placeholder = False
+            if not state.finalized:
+                if not await self._push_final(state, chat_id, text, state.reply_to):
+                    state.placeholder = True
+                    return SendResult(success=False,
+                                      error="FoxFleet: the reply replacing the placeholder was not confirmed by the hub",
+                                      error_kind="transient", retryable=True)
+                state.finalized = True
+            ids = state.ids()
+        logger.info("FoxFleet: replaced the empty-stream placeholder in chat %s with the reply", chat_id)
+        return SendResult(success=True, message_id=ids[-1], continuation_message_ids=tuple(ids[:-1]),
+                          raw_response={"message_ids": ids} if len(ids) > 1 else None)
 
     async def _complete_owed(self, state: _Stream, chat_id: str, text: str) -> SendResult:
         async with state.lock:
@@ -1744,6 +1787,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not text.strip():
             return _blank_result()
         meta = metadata or {}
+        pending = self._pending_placeholder(str(chat_id))
+        if pending is not None:
+            return await self._complete_placeholder(pending, str(chat_id), text)
         owed = None if (self._notice_send.get() or meta.get("_interim_send")) else self._owed_stream(str(chat_id), text)
         if owed is not None:
             return await self._complete_owed(owed, str(chat_id), text)

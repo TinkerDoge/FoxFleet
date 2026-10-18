@@ -80,3 +80,74 @@ test('old stored replies that still contain a REACT: line derive their reaction 
   const snap = await snapshot(b, id);
   assert.ok((snap.messages[msgs[0].id] ?? snap.by_hub_id?.[msgs[0].id])?.some((g) => g.emoji === '🖤'), 'derived on read');
 });
+
+test('the agent reaction is applied once, on the final frame, and never mid-stream', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'target me');
+  await rpc(b, { t: 'message.send', id: 'm1', chat_id: id, text: 'REACT: 🖤\nthinking' });
+  let snap = await snapshot(b, id);
+  assert.equal(Object.keys(snap.messages ?? {}).length + Object.keys(snap.by_hub_id ?? {}).length, 0, 'no reaction before the final');
+  assert.deepEqual((await transcript(b, id)).map((m) => m.content), ['target me', 'thinking'], 'the line is still stripped mid-stream');
+  await rpc(b, { t: 'message.send', id: 'm2', chat_id: id, text: 'REACT: 🖤\nthinking — done.', final: true });
+  snap = await snapshot(b, id);
+  const target = (await transcript(b, id))[0].id;
+  assert.ok((snap.messages[target] ?? snap.by_hub_id?.[target])?.some((g) => g.emoji === '🖤'));
+  assert.equal((snap.messages[target] ?? snap.by_hub_id?.[target]).filter((g) => g.emoji === '🖤').length, 1, 'applied once');
+});
+
+test('the reaction lands on the message the turn answers, not a message sent mid-turn', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'first question');
+  await rpc(b, { t: 'message.send', id: 'q1', chat_id: id, text: 'REACT: 🖤\nstreaming…' }); // the run is live
+  const mid = await b.h.call(`/api/agents/${b.name}/messages`, { data: { messages: [{ role: 'user', content: 'second question' }], session_id: id } });
+  assert.equal(mid.status, 202);
+  await rpc(b, { t: 'message.send', id: 'q2', chat_id: id, text: 'REACT: 🖤\nanswer', final: true });
+  const msgs = await transcript(b, id);
+  const first = msgs.find((m) => m.content === 'first question').id;
+  const second = msgs.find((m) => m.content === 'second question').id;
+  const snap = await snapshot(b, id);
+  assert.ok((snap.messages[first] ?? snap.by_hub_id?.[first])?.some((g) => g.emoji === '🖤'), 'reacts to the answered message');
+  assert.ok(!((snap.messages[second] ?? snap.by_hub_id?.[second]) ?? []).some((g) => g.emoji === '🖤'), 'not the mid-turn one');
+});
+
+test('a bare-symbol REACT: (❤ without the variation selector) is normalised and applied', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'love it');
+  await rpc(b, { t: 'message.send', id: 'v1', chat_id: id, text: 'REACT: ❤\nThere.', final: true });
+  assert.deepEqual((await transcript(b, id)).map((m) => m.content), ['love it', 'There.']);
+  const target = (await transcript(b, id))[0].id, snap = await snapshot(b, id);
+  assert.ok((snap.messages[target] ?? snap.by_hub_id?.[target])?.some((g) => g.emoji === '❤️'), 'asEmoji parity');
+});
+
+test('a hidden message does not leak into the chat preview or search', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'preview seed');
+  await rpc(b, { t: 'message.send', id: 'p1', chat_id: id, text: 'visible reply', final: true });
+  await rpc(b, { t: 'message.send', id: 'p2', chat_id: id, text: 'secret reply', final: true });
+  const victim = (await transcript(b, id)).at(-1).id;
+  await b.h.call(`/api/agents/${b.name}/sessions/${id}/hidden`, { method: 'PUT', data: { message_id: victim } });
+  const page = await (await b.h.call(`/api/agents/${b.name}/sessions`)).json();
+  const row = page.sessions.find((x) => x.id === id);
+  assert.equal(row.preview, 'visible reply');
+  const search = await (await b.h.call(`/api/agents/${b.name}/sessions?q=secret`)).json();
+  assert.equal(search.sessions.length, 0, 'hidden text does not match search');
+});
+
+test('deleting a chat drops its reaction and hidden rows', async (t) => {
+  const b = await bootBot(t), id = await chat(b, 'bye');
+  await rpc(b, { t: 'message.send', id: 'd1', chat_id: id, text: 'reply', final: true });
+  const reply = (await transcript(b, id)).at(-1).id;
+  await snapshot(b, id, 'PUT', { message_id: reply, emoji: '🎉' });
+  await b.h.call(`/api/agents/${b.name}/sessions/${id}/hidden`, { method: 'PUT', data: { message_id: reply } });
+  assert.equal((await b.h.call(`/api/agents/${b.name}/sessions/${id}`, { method: 'DELETE' })).status, 200);
+  const { readFile } = await import('node:fs/promises');
+  const raw = JSON.parse(await readFile(`${b.h.dir}/reactions.json`, 'utf8'));
+  assert.deepEqual(raw.rows ?? [], []);
+  assert.deepEqual(raw.hidden ?? [], []);
+});
+
+test('a nonsense session id is a 404, never a 500', async (t) => {
+  const b = await bootBot(t);
+  for (const bad of ['__proto__', 'constructor', 'not-a-chat']) {
+    for (const route of [`sessions/${bad}/messages`, `sessions/${bad}/reactions`]) {
+      const r = await b.h.call(`/api/agents/${b.name}/${route}`);
+      assert.equal(r.status, 404, `${route} => ${r.status}`);
+    }
+  }
+});

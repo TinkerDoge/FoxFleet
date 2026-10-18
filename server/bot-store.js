@@ -255,11 +255,17 @@ export function botStore(file, options = {}) {
     messageAuthor: (chatId, messageId) => st().messages[chatId]?.find((x) => x.id === messageId)?.role ?? null,
     /** The id of the newest user message in the chat (0.4.2: the target of an agent's REACT: line). */
     lastUserMessage: (chatId) => { const list = st().messages[chatId] ?? []; for (let i = list.length - 1; i >= 0; i--) if (list[i].role === 'user') return list[i].id; return null; },
-    /** Chats, newest activity first; `q` matches the title or any message text. */
-    chats({ q = '', limit = 30, offset = 0 } = {}) {
+    /** Chats, newest activity first; `q` matches the title or any message text. `hiddenOf(chatId)`
+     *  returns this account's "delete for me" ids for a chat (0.4.2): hidden messages never match
+     *  `q` and never become the preview. */
+    chats({ q = '', limit = 30, offset = 0, hiddenOf = null } = {}) {
       const d = st(), needle = q.toLowerCase();
-      const rows = Object.values(d.chats).filter((c) => !needle || (c.title ?? '').toLowerCase().includes(needle) || d.messages[c.id].some((m) => m.text.toLowerCase().includes(needle)))
-        .sort((a, b) => b.updated - a.updated).map((c) => { const list = d.messages[c.id], last = list.at(-1); return { id: c.id, title: c.title, updated: c.updated, started: c.created, messages: list.length, preview: last ? last.text.replace(/\s+/g, ' ').trim().slice(0, 140) : '' }; });
+      const vis = (chatId) => {
+        const list = d.messages[chatId]; if (!hiddenOf) return list;
+        const hidden = hiddenOf(chatId); return hidden.size ? list.filter((m) => !hidden.has(String(m.id))) : list;
+      };
+      const rows = Object.values(d.chats).filter((c) => !needle || (c.title ?? '').toLowerCase().includes(needle) || vis(c.id).some((m) => m.text.toLowerCase().includes(needle)))
+        .sort((a, b) => b.updated - a.updated).map((c) => { const list = vis(c.id), last = list.at(-1); return { id: c.id, title: c.title, updated: c.updated, started: c.created, messages: list.length, preview: last ? last.text.replace(/\s+/g, ' ').trim().slice(0, 140) : '' }; });
       return { sessions: rows.slice(offset, offset + limit), total: rows.length, limit, offset };
     },
     /** One page of a chat's messages, counted from the end, oldest first. */
