@@ -24,12 +24,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
@@ -315,6 +317,15 @@ fun ChatScreen(
     val scope = rememberCoroutineScope()
     var history by remember { mutableStateOf(historyOpen) }
     var picker by remember { mutableStateOf<PickerCard?>(null) }
+    // 0.4.3: /model is a card in the chat (not a sheet), opened from the header chip or from typing /model. Only where the hub has a model list.
+    val modelControls = nativeControls?.takeIf { agent.capabilities.modelsMode != "none" }
+    val modelCard = picker?.takeIf { it.kind == "model" && it.valid(state.sessionId) }
+    var chipModel by remember(agent.name, state.sessionId) { mutableStateOf<String?>(null) }
+    fun openModelCard(ask: Triple<String, String?, String>? = null) { picker = PickerCard(state.sessionId, "model", ask = ask) }
+    // What the chip names before anything has been picked in this chat: the provider the hub marks current. Read once per chat, as the card does.
+    LaunchedEffect(modelControls, agent.name, state.sessionId) {
+        chipModel = modelControls?.let { c -> runCatching { c.models() }.getOrNull() }?.firstOrNull { it.current }?.name
+    }
     // Per-chat background (kept on this phone only); a new chat's look moves to the chat when the hub gives it an id.
     val bgState = rememberChatBackground(agent.name, state.sessionId, state.messages.isNotEmpty() || state.streaming)
     var bgSheet by remember { mutableStateOf(false) }
@@ -335,6 +346,8 @@ fun ChatScreen(
                         Text(agent.label ?: agent.name, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
                         agent.badge?.let { Spacer(Modifier.width(6.dp)); KindBadge(it) }
                     }
+                    // 0.4.3: the model of this chat, under the name so a long name keeps its room. Tapped, it opens the /model card.
+                    if (modelControls != null) { Spacer(Modifier.height(2.dp)); ModelChip(chipModel, { picker = if (modelCard == null) PickerCard(state.sessionId, "model") else null }) }
                     // Connection here; what the agent is doing shows once, under the reply it is writing.
                     val linkText = dev.foxfleet.app.ui.ChatRows.linkLabel(link)
                     if (state.reconnecting) ShimmerStatusText("Reconnecting…", style = MaterialTheme.typography.bodySmall)
@@ -365,10 +378,16 @@ fun ChatScreen(
             Box(Modifier.weight(1f).fillMaxWidth()) {
                 ChatBackgroundLayer(bgState.bg, bgState.bitmap)
                 Transcript(agent.name, state, Modifier.fillMaxSize(), onLoadOlder, onResumeQueue, onCancelQueued, onAnswerRequest, reactionsOn = reactionsOn, reactStateOf = reactStateOf, onReact = onReact, onPickReaction = { reactingTo = it }, gestures = gestures, agentLabel = agent.displayName) { viewing = it }
+                // The /model card sits in the chat, above the composer, on the request cards' shape. It takes at most most of the chat and scrolls rather than clip.
+                if (modelControls != null && modelCard != null) BoxWithConstraints(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
+                    ModelCard(modelControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null },
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 8.dp).heightIn(max = maxHeight * 0.92f).verticalScroll(rememberScrollState()),
+                        startAsk = modelCard.ask, onPicked = { chipModel = it })
+                }
             }
             Composer(
                 agent.name, state.streaming, skills, onSendMode ?: { t, i, _ -> onSend(t, i) }, onStop, initialInput, initialAttachments,
-                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, models = agent.capabilities.modelsMode, modelsKnown = agent.capabilities.models != null, onModel = { args -> modelCommand(args, nativeControls, state, picker = { picker = PickerCard(state.sessionId, "model") }, onConfirm = { m, p, r -> picker = PickerCard(state.sessionId, "model", ask = Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
+                modes = agent.capabilities.busy, native = agent.capabilities.nativeUi, models = agent.capabilities.modelsMode, modelsKnown = agent.capabilities.models != null, onModel = { args -> modelCommand(args, nativeControls, state, picker = { openModelCard() }, onConfirm = { m, p, r -> openModelCard(Triple(m, p, r)) }) }, onChoices = { cmd, opts -> picker = PickerCard(state.sessionId, "choice", cmd, opts) }, defs = commandDefs, waiting = state.queue.count { it.state == "queued" || it.state == "awaiting_stop" },
                 allowImages = allowImages, onUploadFile = onUploadFile, initialFiles = initialFiles,
                 agentCommands = agent.capabilities.skills,
                 reply = reply, onClearReply = { reply = null }, disabled = state.loading,
@@ -387,9 +406,9 @@ fun ChatScreen(
     }
     // A choice card belongs to the chat that opened it: another chat, a new chat or five minutes later and it is gone.
     LaunchedEffect(state.sessionId) { picker = null }
-    picker?.takeIf { it.valid(state.sessionId) }?.let { pc ->
-        if (pc.kind == "model" && nativeControls != null) ModelPickerSheet(nativeControls, state.sessionId != null, { state.addNotice(it); picker = null }, { picker = null }, startAsk = pc.ask)
-        else if (pc.kind == "choice") ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
+    // The model card is in the chat itself (above); only a command's choices are a sheet.
+    picker?.takeIf { it.kind == "choice" }?.let { pc ->
+        ChoiceSheet(pc.command.orEmpty(), pc.options, { picker = null; (onSendMode ?: { t, i, _ -> onSend(t, i) })(it, emptyList(), "interrupt") }, { picker = null })
     }
     // The menu follows its message: a reloaded copy (same hub id) keeps it open; a message that went away (or was hidden) closes it.
     val menuMsg = menuFor?.let { mf ->

@@ -19,6 +19,7 @@ import dev.foxfleet.app.data.local.CapsCodec
 import dev.foxfleet.app.ui.FoxfleetTheme
 import dev.foxfleet.app.ui.chat.ChatState
 import dev.foxfleet.app.ui.screens.ChatScreen
+import dev.foxfleet.app.ui.screens.MODEL_CHIP_LABEL
 import dev.foxfleet.app.ui.screens.NativeControls
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
@@ -52,6 +53,25 @@ class ModelPickerRegressionTest {
         assertTrue("not sent to the agent as text", sent.isEmpty())
         compose.onNodeWithText("Choose a provider").assertExists()
         compose.onNodeWithText("OpenRouter · 2").assertExists()
+        // 0.4.3: a card in the chat, on the request cards' shape, not a bottom sheet.
+        compose.onNodeWithContentDescription("Close the model card").assertExists()
+    }
+
+    /** 0.4.3: the chip in the header opens the same card, without typing anything. */
+    @Test fun theHeaderChipOpensTheSameCard() {
+        val sent = mutableListOf<String>()
+        val a = agent(Capabilities(sessions = true, models = "request")); val state = ChatState().apply { load(listOf(UiMessage("user", "hi", hubId = "h.1", n = 1)), "s1") }
+        compose.setContent { FoxfleetTheme(AppPrefs(theme = ThemeMode.Light)) { Box(Modifier.fillMaxSize()) {
+            ChatScreen(a, listOf(a), state, emptyList(), { false }, { t, _ -> sent += t }, {}, {}, {}, {}, {}, {}, nativeControls = controls)
+        } } }
+        compose.onNodeWithContentDescription(MODEL_CHIP_LABEL, substring = true).performClick(); compose.waitForIdle()
+        assertTrue("the chip sent something to the agent", sent.isEmpty())
+        compose.onNodeWithContentDescription("Close the model card").assertExists()
+        compose.onNodeWithText("Choose a provider").assertExists()
+        compose.onNodeWithText("OpenRouter · 2").assertExists()
+        // Tapping it again takes the card away.
+        compose.onNodeWithContentDescription(MODEL_CHIP_LABEL, substring = true).performClick(); compose.waitForIdle()
+        compose.onNodeWithText("Choose a provider").assertDoesNotExist()
     }
 
     @Test fun nativeAgentOnAnOlderHubStillOpensThePicker() {
