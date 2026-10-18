@@ -4,9 +4,11 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 ## Unreleased (0.4.2-alpha)
 
-Android versionCode 34 on main (this merge does not bump it). Display-name / media-id fix from vc32, plus hub+connector N1–N3.
+Android versionCode 35. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
 
 - Change (Android, 0.4.3): the dark theme is a cool dark grey rather than warm brown (`bg`, surfaces, offline, muted/faint text), and a chat background is now saved **per agent**, not per chat: opening any session of an agent shows that agent's look, and setting it in one chat updates them all. Old per-chat looks are migrated to the agent on first read (an entry with a picture wins; the old keys are left in place). Test: `ChatBackgroundsTest`.
+- Feature (Android, 0.4.3): `/model` is a card in the chat (same family as request cards), not a system sheet. A compact chip under the agent name opens it when the hub has a model list (`native` or `request`). Hidden for bot agents (`models: none`); typing `/model` still goes to the agent. Per-chat only. Tests: `ModelChipTest`, `ModelPickerRegressionTest`.
+- Feature (Android, 0.4.3): media and chat pages stay on the phone. Cached media lives in `filesDir/media-cache` (Android will not evict it). Opening a chat shows the cached transcript immediately. The viewer can delete a file from this device only (hub copy stays). Tap an agent's avatar for a dossier (identity, recent chats, cached media grid); swipe between media in the viewer. Settings: Check for updates — HTTPS manifest, sha256, PackageInstaller. Manifest URL is a constant (`UpdateManifests.DEFAULT_URL`) the parent still has to point at a live DogeDrive direct file. Tests: `MediaRepositoryTest`, `UpdateTest`.
 - Fix (Android): a labelled agent's pictures, files and voice notes load again. vc31 passed the display name to the transcript as the agent id, so every `MEDIA:` card called `/api/agents/<label>/media` (404 "Unknown agent") and the transcript avatars took their colour and custom picture from the label. The transcript now gets the id for media, avatars and hub calls, and the label only for text: the live status line (`SUMI is working…`), "Start a conversation with …" and the permission/question card titles. Test: `fix042/DisplayNameTest`.
 
 Follow-ups from Soran's vc31 check (N1 to N3). Hub and connector only: no Android, web or contract change, so no APK rebuild.
