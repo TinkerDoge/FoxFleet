@@ -78,6 +78,7 @@ const ENV = {
   FOXFLEET_HUB: ['Hub address for `pair` (same as `--hub`).', 'required for `pair`', 'connector'],
   FOXFLEET_CODE: ['Pairing code for `pair` (same as `--code`).', 'required for `pair`', 'connector'],
   HERMES_REAL_GATEWAY_TEST: ['Tests only: JSON with a real Hermes gateway command (`cmd`, `cwd`, `config`) so the native-session tests run against it instead of the built-in fake.', 'unset', 'tests'],
+  HERMES_HOME: ['Tests only (`server/test/fake-gateway.mjs`): directory where the fake gateway persists stored sessions across a restart. Hermes itself uses this for the profile root; the connector reads it via `env.HERMES_HOME`, not this scan.', 'unset', 'tests'],
   FOXFLEET_ALLOW_INSECURE_HUB: ['Allow plain `http://` to a non-loopback hub. Trusted LAN only.', 'unset', 'connector'],
   FOXFLEET_LINK_SILENT_MS: ['Connector: close and reopen the hub link when nothing (not even a ping) arrived for this long. The hub pings every 25 s.', '75000', 'connector'],
   DEMO_SLOW: ['Test helper only (`server/test/media-demo-hub.js`): stream a long reply so a network blip can be shown mid-turn.', '-', 'tests'],

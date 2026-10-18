@@ -153,7 +153,11 @@ export async function nativeHub({ connectors, file, now = () => Date.now() }) {
       return { message: msgView(m) };
     },
     async interrupt(scope, machineId, agent, stored) { own(scope, stored); const ui = ensureSub(machineId), s = st(machineId, agent, stored, scope); if (!s.runtime) await this.attach(scope, machineId, agent, stored); return ui.call(agent, 'interrupt', { session_id: s.runtime }); },
-    async setModel(scope, machineId, agent, stored, value, confirm = false) { own(scope, stored); const ui = ensureSub(machineId), s = st(machineId, agent, stored, scope); if (!s.runtime) await this.attach(scope, machineId, agent, stored); const r = await ui.call(agent, 'setmodel', { value, session_id: s.runtime, ...(confirm === true ? { confirm: true } : {}) }); return { model: String(r.value ?? value), scope: r.scope ?? 'session', ...(r.warning ? { warning: String(r.warning).slice(0, 300) } : {}), ...(r.confirm_required ? { confirm_required: true, confirm_message: String(r.confirm_message ?? '').slice(0, 300) } : {}) }; },
+    async setModel(scope, machineId, agent, stored, value, confirm = false) { own(scope, stored); const ui = ensureSub(machineId), s = st(machineId, agent, stored, scope); if (!s.runtime) await this.attach(scope, machineId, agent, stored);
+      const go = () => ui.call(agent, 'setmodel', { value, session_id: s.runtime, ...(confirm === true ? { confirm: true } : {}) });
+      // 4007: the runtime id is from a gateway that has since restarted (the connector restarted, and the re-attach on link-up has not
+      // landed yet). Attach once for the new runtime and send again; the connector then has no confirm token and Hermes asks again.
+      let r; try { r = await go(); } catch (e) { if (e?.rpc !== 4007) throw e; await this.attach(scope, machineId, agent, stored); r = await go(); } return { model: String(r.value ?? value), scope: r.scope ?? 'session', ...(r.warning ? { warning: String(r.warning).slice(0, 300) } : {}), ...(r.confirm_required ? { confirm_required: true, confirm_message: String(r.confirm_message ?? '').slice(0, 300) } : {}) }; },
     // Answer a server request once, by id, for a session the account owns.
     async respond(scope, machineId, agent, stored, requestId, { result, error }) {
       own(scope, stored); const s = st(machineId, agent, stored, scope), q = s.requests.get(requestId); if (!q) throw fault(404, 'That question is no longer open');

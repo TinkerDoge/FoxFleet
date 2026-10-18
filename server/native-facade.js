@@ -9,6 +9,13 @@ const enc = new TextEncoder();
 const frame = (obj, event) => enc.encode(`${event ? `event: ${event}\n` : ''}data: ${JSON.stringify(obj)}\n\n`);
 const MODE_IN = { queue: 'queue', steer: 'steer', interrupt: 'interrupt', auto: 'auto' };
 
+/** Drops the lines that are only `MEDIA:<ref>` for a ref in `sent`. Other files, inline tags and the rest of the text stay as they are. */
+function withoutSent(text, sent) {
+  if (!sent?.size || !text.includes('MEDIA:')) return text;
+  const lines = text.split('\n'), keep = lines.filter((l) => { const m = /^\s*MEDIA:\s*(\S+)\s*$/.exec(l); return !(m && sent.has(m[1])); });
+  return keep.length === lines.length ? text : keep.join('\n').replace(/\n{3,}/g, '\n\n').replace(/\s+$/, '');
+}
+
 export function toFrames(e) {
   switch (e.type) {
     case 'message.delta': return [frame({ choices: [{ delta: { content: e.text } }] })];
@@ -17,9 +24,11 @@ export function toFrames(e) {
       // message.complete lands here. handle() used to close the run *before* these frames, so a
       // profile with streaming.enabled=false (no message.delta) showed a finished tick and no reply
       // until the chat was reopened from history. streamed=true means deltas already carried the text.
-      const out = [];
+      // e.sent: MEDIA refs tool.end already put on this run. message.complete's text carries them again (withMediaLines appends tool
+      // files, and an agent may name them on a line of their own), so with streaming off they would be listed twice (vc31 N1).
+      const out = [], text = e.text && e.streamed !== true ? withoutSent(e.text, e.sent) : '';
       if (e.reasoning) out.push(frame({ choices: [{ delta: { reasoning_content: e.reasoning } }] }));
-      if (e.text && e.streamed !== true) out.push(frame({ choices: [{ delta: { content: e.text } }] }));
+      if (text) out.push(frame({ choices: [{ delta: { content: text } }] }));
       return out;
     }
     case 'tool.start': case 'tool.progress': return [frame({ tool: e.name }, 'hermes.tool.progress'), frame({ type: e.type, turn_id: e.turn_id, tool_id: e.tool_id, name: e.name, ...(e.preview ? { preview: e.preview } : {}) }, 'foxfleet.tool')];
@@ -51,12 +60,13 @@ export function nativeFacade({ runs }) {
       if (needRunning && !nat.isRunning(m.machineId, m.profile, stored)) throw new Error('no turn in flight');
       let ctl; const body = new ReadableStream({ start(c) { ctl = c; }, cancel() { unsub(); } });
       const end = (state, error) => { if (closed) return; closed = true; link.terminal = state; if (error) link.error = error; ctl.enqueue(frame({ state, ...(error ? { error } : {}) }, 'foxfleet.upstream')); ctl.enqueue(enc.encode('data: [DONE]\n\n')); ctl.close(); unsub(); };
-      let streamed = false;
+      let streamed = false; const sent = new Set(); // sent: MEDIA refs tool.end delivered on this run
       const handle = (e) => {
         if (closed) return;
         if (e.type === 'message.delta' && e.text) streamed = true;
+        if (e.type === 'tool.end') for (const m of e.media ?? []) if (m?.ref) sent.add(m.ref);
         if (e.type === 'turn.end') {
-          for (const f of toFrames({ ...e, streamed })) ctl.enqueue(f);
+          for (const f of toFrames({ ...e, streamed, sent })) ctl.enqueue(f);
           return end(e.status === 'interrupted' ? 'stopped' : e.status === 'failed' ? 'failed' : 'completed', e.status === 'failed' ? 'The agent turn failed' : undefined);
         }
         if (e.type === 'owner.down') return end('failed', 'The Hermes process on the machine stopped');
