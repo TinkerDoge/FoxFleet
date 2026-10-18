@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
@@ -16,7 +17,9 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Text
+import dev.foxfleet.app.ui.FoxIcons
 import dev.foxfleet.app.ui.components.SoftButton
+import dev.foxfleet.app.ui.components.SoftIconButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -26,6 +29,9 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.ui.LocalHubColors
@@ -118,26 +124,63 @@ internal fun <T> pageOf(items: List<T>, page: Int, size: Int = 8): Triple<List<T
 }
 internal fun modelSetMessage(model: String) = "Model for this chat is now $model. Your Hermes default is unchanged."
 
+/** What the header chip says and what a test looks for. */
+internal const val MODEL_CHIP_LABEL = "Model for this chat"
+
 /**
- * /model: step 1 the providers, step 2 that provider's models (paged, searchable). Choosing sets the model for this chat only.
- * Back and Cancel are always there. Opened as a bottom sheet so the keyboard and the composer stay usable.
+ * /model as a card in the chat, in the same family as [RequestCard]: providers, then that provider's models (paged, searchable), and the
+ * confirmation Hermes asks for on a guarded model. Back and Cancel stay. Choosing sets the model for this chat only, never the profile default.
+ * It is not a system sheet: it sits above the composer, so the chat and the composer stay visible.
  */
-@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-internal fun ModelPickerSheet(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startAsk: Triple<String, String?, String>? = null) {
-    androidx.compose.material3.ModalBottomSheet(onDismissRequest = onDismiss, containerColor = LocalHubColors.current.surface) { ModelPickerContent(controls, hasSession, onDone, onDismiss, startAsk = startAsk) }
+internal fun ModelCard(
+    controls: NativeControls,
+    hasSession: Boolean,
+    onDone: (String) -> Unit,
+    onDismiss: () -> Unit,
+    modifier: Modifier = Modifier,
+    title: String = "Model for this chat",
+    startAsk: Triple<String, String?, String>? = null,
+    onPicked: (String) -> Unit = {},
+) {
+    val c = LocalHubColors.current
+    Column(modifier.fillMaxWidth().padding(vertical = 6.dp).clip(RoundedCornerShape(16.dp)).background(c.surfaceAlt).padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = c.text, modifier = Modifier.weight(1f))
+            SoftIconButton(FoxIcons.get("close"), "Close the model card", onDismiss, tint = c.textMuted)
+        }
+        ModelPickerSteps(controls, hasSession, onDone, onDismiss, startAsk = startAsk, onPicked = onPicked)
+    }
 }
 
-/** The two steps themselves (also what the screenshots render, since a sheet window is not part of the root). */
+/** The header chip: the model of this chat, where the hub has a list for it. Tapped, it opens the same /model card. */
 @Composable
-internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "", startAsk: Triple<String, String?, String>? = null) {
+internal fun ModelChip(current: String?, onClick: () -> Unit) {
+    val c = LocalHubColors.current
+    Row(Modifier.clip(RoundedCornerShape(50)).background(c.surfaceAlt).clickable(onClick = onClick).padding(horizontal = 10.dp, vertical = 5.dp)
+        .semantics { contentDescription = if (current == null) MODEL_CHIP_LABEL else "$MODEL_CHIP_LABEL: $current" },
+        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Text("Model", style = MaterialTheme.typography.labelMedium, color = c.textMuted, maxLines = 1)
+        current?.let { Spacer(Modifier.width(6.dp)); Text(it, style = MaterialTheme.typography.labelMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+    }
+}
+
+/** The two steps themselves (also what the screenshots render, since a card in the chat is not the root). */
+@Composable
+internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "", startAsk: Triple<String, String?, String>? = null, onPicked: (String) -> Unit = {}) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) { ModelPickerSteps(controls, hasSession, onDone, onDismiss, startProvider, startQuery, startAsk, onPicked) }
+}
+
+/** Providers, then models. [onPicked] gets the model that was set, so the header chip can name it. */
+@Composable
+private fun ModelPickerSteps(controls: NativeControls, hasSession: Boolean, onDone: (String) -> Unit, onDismiss: () -> Unit, startProvider: String? = null, startQuery: String = "", startAsk: Triple<String, String?, String>? = null, onPicked: (String) -> Unit = {}) {
     val c = LocalHubColors.current; val scope = rememberCoroutineScope()
     var providers by remember { mutableStateOf<List<HubApi.ModelProvider>?>(null) }; var err by remember { mutableStateOf<String?>(null) }
     var ask by remember { mutableStateOf<Triple<String, String?, String>?>(startAsk) }; var sel by remember { mutableStateOf(startProvider) }; var q by remember { mutableStateOf(startQuery) }; var page by remember { mutableStateOf(0) }; var busy by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { runCatching { providers = controls.models() }.onFailure { err = it.message ?: "Could not load the models" } }
     val p = providers?.firstOrNull { it.slug == sel }
     run {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(if (p == null) "Choose a provider" else "Models from ${p.name}", style = MaterialTheme.typography.titleMedium, color = c.text)
             if (!hasSession) Text("Send the first message first: the model is set per conversation.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
             val pending = ask
@@ -147,7 +190,7 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                     Text(pending.third, style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                     SoftButton({
                         busy = true; err = null
-                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message ?: "Could not switch the model"; busy = false } }
+                        scope.launch { runCatching { (controls.confirmModel ?: controls.setModel)(pending.first, pending.second) }.onSuccess { onPicked(pending.first); onDone(modelSetMessage(pending.first)) }.onFailure { err = it.message ?: "Could not switch the model"; busy = false } }
                     }, enabled = hasSession && !busy) { Text("Switch anyway", color = c.accent) }
                     SoftButton({ ask = null; err = null }, enabled = !busy) { Text("Cancel", color = c.textMuted) }
                 }
@@ -155,7 +198,7 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                 providers.isNullOrEmpty() -> Text("This agent did not list any models.", style = MaterialTheme.typography.bodySmall, color = c.textMuted)
                 else -> {
                     OutlinedTextField(q, { q = it; page = 0 }, singleLine = true, label = { Text(if (p == null) "Search providers" else "Search models") }, modifier = Modifier.fillMaxWidth())
-                    // one fixed-height list for both steps: six rows tall whatever is in it, so the sheet does not jump between pages or while searching
+                    // one fixed-height list for both steps: six rows tall whatever is in it, so the card does not jump between pages or while searching
                     val needle = q.trim()
                     val (rows, pages, shown) = if (p == null) pageOf(providers!!.filter { "${it.name} ${it.slug}".contains(needle, ignoreCase = true) }, page, PICKER_PAGE)
                         else pageOf(p.models.filter { it.contains(needle, ignoreCase = true) }, page, PICKER_PAGE)
@@ -165,7 +208,7 @@ internal fun ModelPickerContent(controls: NativeControls, hasSession: Boolean, o
                             if (row is HubApi.ModelProvider) ChoiceRow("${row.name} · ${row.models.size}", true) { sel = row.slug; q = ""; page = 0 }
                             else { val m = row.toString(); ChoiceRow(m, hasSession && !busy) {
                                 busy = true
-                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onDone(modelSetMessage(m)) }.onFailure { if (it is HubApi.ModelConfirmRequired) ask = Triple(m, p!!.slug, it.reason) else err = it.message; busy = false } }
+                                scope.launch { runCatching { controls.setModel(m, p!!.slug) }.onSuccess { onPicked(m); onDone(modelSetMessage(m)) }.onFailure { if (it is HubApi.ModelConfirmRequired) ask = Triple(m, p!!.slug, it.reason) else err = it.message; busy = false } }
                             } }
                         }
                     }
