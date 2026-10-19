@@ -343,6 +343,7 @@ class RoomDispatch:
     text: str
     mentions: tuple[dict, ...]
     date: int
+    media: tuple[dict, ...] = ()
     reply_to: str | None = None
     root_id: str | None = None
     deadline_at: int | None = None
@@ -354,7 +355,7 @@ def parse_dispatch(frame: dict) -> RoomDispatch:
     if frame.get("t") != "dispatch.run":
         raise ProtocolError("bad_frame", "not a dispatch.run")
     allowed = {"t", "dispatch_id", "run_token", "chat_id", "thread_id", "message_id", "actor", "mentions",
-               "text", "date", "reply_to", "root_id", "deadline_at", "owner_id", "target_agent_id"}
+               "text", "date", "media", "reply_to", "root_id", "deadline_at", "owner_id", "target_agent_id"}
     if set(frame) - allowed:
         raise ProtocolError("bad_frame", "unexpected dispatch field")
     dispatch_id = _match(frame, "dispatch_id", DISPATCH_ID)
@@ -387,10 +388,24 @@ def parse_dispatch(frame: dict) -> RoomDispatch:
     target_agent_id = frame.get("target_agent_id")
     if target_agent_id is not None:
         target_agent_id = _match(frame, "target_agent_id", AGENT_REF)
+    media = frame.get("media", [])
+    if not isinstance(media, list) or len(media) > 10:
+        raise ProtocolError("bad_media", "invalid room attachment list")
+    attachments = []
+    for item in media:
+        if (not isinstance(item, dict) or not isinstance(item.get("id"), str)
+                or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"])
+                or item.get("kind") not in ("image", "audio", "video", "file")
+                or not isinstance(item.get("mime"), str) or len(item["mime"]) > 100
+                or not isinstance(item.get("name"), str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,120}", item["name"])
+                or isinstance(item.get("size"), bool) or not isinstance(item.get("size"), int)
+                or item["size"] < 1 or item["size"] > 1024 * 1024 * 1024):
+            raise ProtocolError("bad_media", "invalid room attachment metadata")
+        attachments.append({k: item[k] for k in ("id", "kind", "mime", "name", "size")})
     return RoomDispatch(dispatch_id=dispatch_id, run_token=token, chat_id=chat_id, thread_id=thread_id,
                         message_id=message_id, actor_kind=kind, actor_id=user_id, actor_name=user_name,
-                        is_bot=is_bot, text=text, mentions=mentions, date=date, reply_to=reply_to,
-                        root_id=root_id, deadline_at=deadline, owner_id=owner_id,
+                        is_bot=is_bot, text=text, mentions=mentions, date=date, media=tuple(attachments),
+                        reply_to=reply_to, root_id=root_id, deadline_at=deadline, owner_id=owner_id,
                         target_agent_id=target_agent_id)
 
 

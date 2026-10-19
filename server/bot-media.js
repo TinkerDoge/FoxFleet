@@ -43,6 +43,30 @@ export function sniffBotMedia(b) {
   return { ext: type[0], mime: type[1] };
 }
 
+/** Serve one stored blob with the bot-media response contract (octet-stream, sniffed MIME header, Range, no-store). */
+export async function serveFile({ file, name, mime, req, res }) {
+  const fd = await open(file, 'r').catch(() => { throw fault(404, 'Not found'); });
+  try {
+    const size = (await fd.stat()).size;
+    const headers = { 'Content-Type': 'application/octet-stream', 'X-Foxfleet-Mime': mime, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'bytes', 'Content-Disposition': `attachment; filename="${name}"` };
+    let start = 0, end = size - 1, status = 200;
+    if (req.headers.range) {
+      const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
+      if (!r || !(r[1] || r[2])) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
+      start = r[1] ? Number(r[1]) : Math.max(0, size - Number(r[2]));
+      end = r[1] && r[2] ? Math.min(Number(r[2]), size - 1) : size - 1;
+      if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
+      status = 206; headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
+    }
+    res.writeHead(status, { ...headers, 'Content-Length': end - start + 1 });
+    if (req.method === 'HEAD') { res.end(); return; }
+    await new Promise((resolve, reject) => {
+      const stream = fd.createReadStream({ start, end, autoClose: false });
+      stream.on('error', reject); res.on('close', () => { stream.destroy(); resolve(); }); stream.on('end', resolve); stream.pipe(res);
+    });
+  } finally { await fd.close(); }
+}
+
 export function botMedia({ maxBytes = MEDIA_MAX, quotaBytes = MEDIA_QUOTA } = {}) {
   for (const v of [maxBytes, quotaBytes]) if (!Number.isSafeInteger(v) || v <= 0) throw new TypeError('Invalid bot media limit');
   const queues = new Map();
@@ -101,27 +125,7 @@ export function botMedia({ maxBytes = MEDIA_MAX, quotaBytes = MEDIA_QUOTA } = {}
   async function serve({ reg, botId, store, id, req, res }) {
     const m = MEDIA_ID.test(id) && store.mediaRows().find((m) => m.id === id && (m.attached || m.created + HOUR > Date.now()));
     if (!m) throw fault(404, 'Not found');
-    const file = path.join(dirOf(reg, botId), id);
-    const fd = await open(file, 'r').catch(() => { throw fault(404, 'Not found'); });
-    try {
-      const size = (await fd.stat()).size;
-      const headers = { 'Content-Type': 'application/octet-stream', 'X-Foxfleet-Mime': m.mime, 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Accept-Ranges': 'bytes', 'Content-Disposition': `attachment; filename="${m.name}"` };
-      let start = 0, end = size - 1, status = 200;
-      if (req.headers.range) {
-        const r = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
-        if (!r || !(r[1] || r[2])) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
-        start = r[1] ? Number(r[1]) : Math.max(0, size - Number(r[2]));
-        end = r[1] && r[2] ? Math.min(Number(r[2]), size - 1) : size - 1;
-        if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start > end || start >= size) { res.writeHead(416, { 'Content-Range': `bytes */${size}` }); res.end(); return; }
-        status = 206; headers['Content-Range'] = `bytes ${start}-${end}/${size}`;
-      }
-      res.writeHead(status, { ...headers, 'Content-Length': end - start + 1 });
-      if (req.method === 'HEAD') { res.end(); return; }
-      await new Promise((resolve, reject) => {
-        const stream = fd.createReadStream({ start, end, autoClose: false });
-        stream.on('error', reject); res.on('close', () => { stream.destroy(); resolve(); }); stream.on('end', resolve); stream.pipe(res);
-      });
-    } finally { await fd.close(); }
+    await serveFile({ file: path.join(dirOf(reg, botId), id), name: m.name, mime: m.mime, req, res });
   }
   return { upload, serve, sweep: (reg, botId, store) => serial(botId, () => sweep(reg, botId, store)),
     fromBytes: (args, bytes) => upload({ ...args, body: Readable.from([bytes]), length: bytes.length }),

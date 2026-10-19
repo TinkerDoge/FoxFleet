@@ -17,7 +17,10 @@ import { randomBytes } from 'node:crypto';
 import { fault } from './config.js';
 
 export const LIVE2_CONTRACT = 'foxfleet.live/2';
-export const LIVE2_TYPES = ['message.new', 'message.edited', 'message.deleted', 'message.status', 'read', 'chat.updated', 'chat.removed', 'run.started', 'run.finished', 'approval', 'message.reaction'];
+export const LIVE2_TYPES = ['message.new', 'message.edited', 'message.deleted', 'message.status', 'read', 'chat.updated', 'chat.removed', 'run.started', 'run.finished', 'approval', 'message.reaction',
+  // Rooms (Task 6): each carries conversation_id, so the same log can be replayed for one room only.
+  'conversation.created', 'conversation.updated', 'conversation.member.joined', 'conversation.member.left',
+  'conversation.message.new', 'conversation.message.edited', 'conversation.message.deleted', 'conversation.read', 'conversation.handoff'];
 export const RETAIN_EVENTS = 5000, RETAIN_DAYS = 7, RETAIN_BYTES = 32 * 1024 * 1024, PULL_MAX = 500, PULL_DEFAULT = 200;
 const BLOCK = 1000, RETRY_MS = 2000, HEARTBEAT_MS = 15_000, MAX_BACKLOG = 1024 * 1024, MAX_STREAMS = 8, FLUSH_MS = 25, DAY = 86_400_000, DRAIN_MS = 60_000;
 const bytesOf = (line) => Buffer.byteLength(line, 'utf8') + 1; // + the newline on disk
@@ -43,7 +46,8 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
           if (!line) continue; diskLines++;
           let e; try { e = JSON.parse(line); } catch { continue; } // a torn last line after a crash
           if (!e || !Number.isInteger(e.seq) || e.seq <= last || !LIVE2_TYPES.includes(e.type)) continue;
-          last = e.seq; const b = bytesOf(line); events.push({ seq: e.seq, type: e.type, at: Number(e.at) || 0, line, bytes: b }); bytes += b;
+          last = e.seq; const b = bytesOf(line);
+          events.push({ seq: e.seq, type: e.type, at: Number(e.at) || 0, line, bytes: b, cid: typeof e.conversation_id === 'string' ? e.conversation_id : null }); bytes += b;
         }
       } catch { /* no events yet */ }
       const clean = meta.clean === true && Number.isInteger(meta.seq);
@@ -99,14 +103,14 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
       const t = now(), ev = { seq: ++seq, type, at: t };
       for (const [k, v] of Object.entries(fields)) if (v !== undefined && v !== null && !(k in ev)) ev[k] = v;
       if (seq > reserved) { reserved = seq + BLOCK; metaDirty = true; }
-      const line = JSON.stringify(ev), entry = { seq: ev.seq, type, at: t, line, bytes: bytesOf(line) };
+      const line = JSON.stringify(ev), entry = { seq: ev.seq, type, at: t, line, bytes: bytesOf(line), cid: typeof ev.conversation_id === 'string' ? ev.conversation_id : null };
       events.push(entry); bytes += entry.bytes; prune(t); pending.push(line); later();
       for (const fn of [...subs]) { try { fn(entry); } catch { /* a broken viewer never breaks the emitter */ } }
       return ev;
     },
-    typing(data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: 'typing', typing: true, line }); } catch { /* ignore */ } } },
+    typing(data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: 'typing', typing: true, line, cid: data?.conversation_id ?? null }); } catch { /* ignore */ } } },
     /** Ephemeral frame (typing, run.step) to every open stream in its live phase: not stored, no seq, never replayed. */
-    ephemeral(type, data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: type, typing: type === 'typing', line }); } catch { /* ignore */ } } },
+    ephemeral(type, data) { const line = JSON.stringify(data); for (const fn of [...subs]) { try { fn({ ephemeral: type, typing: type === 'typing', line, cid: data?.conversation_id ?? null }); } catch { /* ignore */ } } },
     /** Parse a client cursor: none | invalid | reset | expired | ok (with seq). */
     parse(v) {
       prune(); // age out first: on an idle hub nothing else has dropped old events yet
@@ -117,12 +121,15 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
       if (n < floor) return { kind: 'expired' };
       return { kind: 'ok', seq: n };
     },
-    /** Events after `after` (oldest first), at most `limit`. `expired`: events after `after` were already dropped. */
-    since(after, limit = PULL_MAX) {
+    /** Events after `after` (oldest first), at most `limit`; `conversationId` keeps one room only. */
+    since(after, limit = PULL_MAX, conversationId = null) {
       prune(); if (after < floor) return { entries: [], hasMore: false, expired: true };
-      let i = 0; while (i < events.length && events[i].seq <= after) i++;
-      const out = events.slice(i, i + limit);
-      return { entries: out, hasMore: i + limit < events.length, expired: false };
+      const matches = (e) => !conversationId || e.cid === conversationId;
+      const out = [];
+      for (let i = 0; i < events.length && out.length < limit; i++) if (events[i].seq > after && matches(events[i])) out.push(events[i]);
+      const last = out.length ? out[out.length - 1].seq : after;
+      const hasMore = events.some((e) => e.seq > last && matches(e));
+      return { entries: out, hasMore, expired: false };
     },
     subscribe(fn) { subs.add(fn); return () => subs.delete(fn); },
     flush,
@@ -135,7 +142,7 @@ export async function liveLog(base, { now = () => Date.now(), retainEvents = RET
 /** The v2 SSE stream. `counter` holds the account's stream count shared with v1 (8 in total).
  *  The replay is sent page by page from the log and waits for the socket to drain, however large it is; events emitted meanwhile
  *  are part of the log and follow in order. The 1 MiB backlog limit applies only once the stream is live (a viewer that stops reading is dropped). */
-export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HEARTBEAT_MS, alive = () => true, counter = log, maxStreams = MAX_STREAMS, drainMs = DRAIN_MS } = {}) {
+export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HEARTBEAT_MS, alive = () => true, counter = log, maxStreams = MAX_STREAMS, drainMs = DRAIN_MS, conversationId = null } = {}) {
   if (counter.streams >= maxStreams) throw fault(429, 'Too many live streams open for this account', 'too_many_streams');
   const c = log.parse(cursor);
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no', 'X-Content-Type-Options': 'nosniff' });
@@ -147,10 +154,11 @@ export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HE
     if (reason && !res.destroyed) { res.write(`event: foxfleet.auth\ndata: ${JSON.stringify({ reason })}\n\n`); res.end(); } else if (destroy) res.destroy(); else res.end();
   };
   const frame = (entry) => `id: ${log.store}:${entry.seq}\nevent: ${entry.type}\ndata: ${entry.line}\n\n`;
+  const matches = (entry) => !conversationId || entry.cid === conversationId;
   const send = (entry) => { // live phase only
     if (closed) return;
-    if (entry.ephemeral) res.write(`event: ${entry.ephemeral}\ndata: ${entry.line}\n\n`);
-    else { if (entry.seq <= last) return; last = entry.seq; res.write(frame(entry)); }
+    if (entry.ephemeral) { if (matches(entry)) res.write(`event: ${entry.ephemeral}\ndata: ${entry.line}\n\n`); }
+    else { if (entry.seq <= last) return; last = entry.seq; if (matches(entry)) res.write(frame(entry)); }
     if (res.writableLength > MAX_BACKLOG) end(true); // it resumes by id
   };
   const unsub = log.subscribe((entry) => { if (live) send(entry); }); // before going live everything comes from the log itself
@@ -169,7 +177,7 @@ export function attachLive2Stream(req, res, log, { cursor = '', keepAliveMs = HE
     // so nothing emitted meanwhile is missed or sent twice.
     for (;;) {
       if (closed) return;
-      const { entries, expired } = log.since(last, PULL_MAX);
+      const { entries, expired } = log.since(last, PULL_MAX, conversationId);
       if (expired) { await gap('expired'); continue; } // retention overtook a very slow replay: a gap, never a hole
       if (!entries.length) break;
       for (const e of entries) { if (closed) return; if (e.seq > last) { last = e.seq; await write(frame(e)); } }

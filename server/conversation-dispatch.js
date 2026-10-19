@@ -29,6 +29,7 @@
 import { randomBytes, createHash } from 'node:crypto';
 import { fault, ROOM_LIMITS } from './config.js';
 import { routeRoomMessage } from './conversation-routing.js';
+import { attachGrantedMedia } from './conversation-media.js';
 
 export const DISPATCH_LIMITS = Object.freeze({
   max_handoff_dispatches_per_root: 4,
@@ -494,12 +495,12 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     return { rule: routed.rule, dispatches };
   }
 
-  async function submit(roomId, { actor, text, format, mentions, reply_to, client_id } = {}) {
+  async function submit(roomId, { actor, text, format, mentions, reply_to, client_id, media } = {}) {
     if (!actor || actor.kind !== 'human' || !HUMAN_ID.test(actor.id ?? '')) throw fault(403, 'A human actor is required', 'actor_forbidden');
     const head = await store.snapshot(roomId);
     if (head.owner_id !== actor.id) throw notOwner();
     const sent = await store.send(roomId, {
-      actor, text, format, mentions, reply_to, client_id,
+      actor, text, format, mentions, reply_to, client_id, media,
       // This callback runs inside the same room mutation as the message append. A crash or disk failure
       // commits neither the addressed message nor its routing intent.
       admit: (d, message, duplicate) => admitHuman(actor, d, message, duplicate),
@@ -597,7 +598,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       // message projection or to the result of submit/retry/handoff.
       attempt: Object.freeze({ dispatch_id: running.id, token }),
       /** A partial, in-progress message. It is never a valid handoff source. */
-      async say(text) {
+      async say(text, { media } = {}) {
         if (!validAgentText(text)) throw invalidText();
         const result = await store.transact(roomId, (d) => {
           ensure(d);
@@ -614,9 +615,12 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
             }
             throw rejectStale(row, reason);
           }
-          return { message: clone(addAgentMessage(d, row, text, 'running', now())) };
+          const message = addAgentMessage(d, row, text, 'running', now());
+          attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, now());
+          return { message: clone(message) };
         });
         if (result?.held) throw rejectStale(null, result.reason);
+        store.announce?.('conversation.message.new', roomId, result.message);
         return result.message;
       },
       /**
@@ -624,7 +628,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
        * transport's final frame). The canonical final slot is that message, so a retry still revises it in
        * place and a handoff sources exactly the message the agent finished.
        */
-      async finalizeMessage(messageId, text) {
+      async finalizeMessage(messageId, text, { media } = {}) {
         if (!validAgentText(text)) throw invalidText();
         if (typeof messageId !== 'string' || !messageId) throw fault(400, 'Invalid message id', 'invalid_request');
         const result = await store.transact(roomId, (d) => {
@@ -653,6 +657,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
             throw fault(404, 'Unknown message', 'not_found');
           }
           const at = now();
+          attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, at);
           if (message.body !== text) {
             message.body = text;
             message.revision = (message.revision ?? 1) + 1;
@@ -666,10 +671,11 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           return { message: clone(message) };
         });
         if (result?.held) throw rejectStale(null, result.reason);
+        store.announce?.('conversation.message.edited', roomId, result.message);
         return result.message;
       },
       /** Publish the turn's committed public message; only this (or a settled outcome) can source a handoff. */
-      async finalize(text) {
+      async finalize(text, { media } = {}) {
         if (!validAgentText(text)) throw invalidText();
         const result = await store.transact(roomId, (d) => {
           ensure(d);
@@ -691,9 +697,12 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
             if (prior && prior.body === text) return { message: clone(prior) };
             throw fault(409, 'This attempt already published its final message', 'dispatch_finalized');
           }
-          return { message: clone(publishFinal(d, row, text, now(), token)) };
+          const message = publishFinal(d, row, text, now(), token);
+          attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, now());
+          return { message: clone(message) };
         });
         if (result?.held) throw rejectStale(null, result.reason);
+        store.announce?.('conversation.message.new', roomId, result.message);
         return result.message;
       },
       async handoff(request = {}) {
