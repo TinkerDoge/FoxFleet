@@ -603,7 +603,9 @@ test('pause during running holds the turn queued; late publication is refused an
   release.resolve();
   await submitting;
   await engine.drain(room.id);
-  assert.deepEqual(errors, { say: 'room_paused', handoff: 'room_paused', finalize: 'room_paused' });
+  assert.equal(errors.say, 'room_paused');
+  assert.equal(errors.handoff, 'dispatch_stale', 'pause drops the attempt token before later context calls');
+  assert.equal(errors.finalize, 'dispatch_stale');
   let [row] = await dispatches(store, room);
   assert.equal(row.state, 'queued', 'pause during running holds the turn instead of killing it');
   assert.equal(row.code, null);
@@ -620,6 +622,44 @@ test('pause during running holds the turn queued; late publication is refused an
   page = await publicMessages(store, room);
   assert.deepEqual(agentAnswers(page).map((m) => m.text), ['resumed answer']);
   assert.equal(page.filter((m) => m.id === finalId).length, 1, 'the resumed attempt revises the one canonical final in place');
+});
+
+test('pause observed by a running turn drops the attempt token so a resume cannot settle that outcome', async (t) => {
+  const { store, room, engine } = await setup(t);
+  const reached = deferred(), release = deferred();
+  t.after(() => release.resolve());
+  const errors = {};
+  let runs = 0;
+  engine.register(SUMI.actor_id, {
+    async run(ctx) {
+      runs += 1;
+      if (runs === 1) {
+        await ctx.finalize('committed before pause');
+        reached.resolve();
+        await release.promise;
+        try { await ctx.say('late partial'); } catch (e) { errors.say = e.code; }
+        try { await ctx.finalize('late final'); } catch (e) { errors.finalize = e.code; }
+        await store.transact(room.id, (d) => { d.paused = false; });
+        return { text: 'late outcome after resume' };
+      }
+      return { text: 'resumed answer' };
+    },
+  });
+  const text = '@Sumi start';
+  const submitting = submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  assert.equal(await arrival(submitting, reached), 'reached', 'the run must reach the controlled stage');
+  await store.transact(room.id, (d) => { d.paused = true; });
+  release.resolve();
+  await submitting;
+  await engine.drain(room.id);
+  assert.equal(errors.say, 'room_paused');
+  assert.equal(errors.finalize, 'dispatch_stale');
+  const [row] = await dispatches(store, room);
+  assert.equal(row.state, 'completed');
+  assert.equal(runs, 2, 'the paused attempt cannot settle after resume; a new attempt completes');
+  const page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['resumed answer']);
+  assert.equal(page.some((m) => m.text === 'late outcome after resume'), false);
 });
 
 test('handoff idempotency is scoped to caller and dispatch; conflicting reuse and partial sources are refused', async (t) => {

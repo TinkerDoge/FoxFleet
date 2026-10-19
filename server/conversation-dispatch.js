@@ -181,6 +181,13 @@ function executionReason(d, row, nowMs) {
   if (d.paused) return { code: 'room_paused', text: 'The room queue is paused.' };
   return reservationReason(d, row, nowMs);
 }
+/** Pause must drop the live attempt immediately. Throwing inside a mutate rolls the write back. */
+function holdPausedTurn(row, at) {
+  if (!['offered', 'accepted', 'running'].includes(row.state)) return;
+  row.state = 'queued';
+  row.run_token = null;
+  row.updated_at = at;
+}
 function admissionReason(d, row, nowMs) {
   return row.state === 'queued' ? executionReason(d, row, nowMs) : null;
 }
@@ -504,11 +511,23 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   async function runHandoff(roomId, request = {}) {
     const actor = request.actor;
     if (!actor || actor.kind !== 'agent' || !AGENT_REF.test(actor.id ?? '')) throw forbidden();
-    const result = await store.transact(roomId, (d) => handoffInDraft(d, {
-      actor, dispatchId: request.dispatch_id, runToken: request.run_token,
-      sourceMessageId: request.source_message_id, targetAgentId: request.target_agent_id,
-      text: request.text, idempotencyKey: request.idempotency_key, nowMs: now(),
-    }));
+    const result = await store.transact(roomId, (d) => {
+      ensure(d);
+      const parent = d.dispatches.find((x) => x.id === request.dispatch_id);
+      if (parent && parent.run_token === request.run_token && parent.state === 'running') {
+        const reason = executionReason(d, parent, now());
+        if (reason?.code === 'room_paused') {
+          holdPausedTurn(parent, now());
+          return { held: true, reason };
+        }
+      }
+      return handoffInDraft(d, {
+        actor, dispatchId: request.dispatch_id, runToken: request.run_token,
+        sourceMessageId: request.source_message_id, targetAgentId: request.target_agent_id,
+        text: request.text, idempotencyKey: request.idempotency_key, nowMs: now(),
+      });
+    });
+    if (result?.held) throw fault(409, result.reason.text, result.reason.code);
     if (!result.refused && !result.duplicate) void schedule(roomId).catch(() => {});
     return result;
   }
@@ -522,6 +541,11 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       if (!row) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
       if (row.run_token !== running.run_token) throw stale();
       if (row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+      const paused = executionReason(d, row, now());
+      if (paused?.code === 'room_paused') {
+        holdPausedTurn(row, now());
+        return { held: true, reason: paused };
+      }
       const member = activeAgent(d, row.target_agent_id);
       if (!member) throw forbidden();
       const sourceId = request.source_message_id ?? row.final_message_id;
@@ -533,6 +557,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         idempotencyKey: request.idempotency_key, nowMs: now(),
       });
     });
+    if (result?.held) throw fault(409, result.reason.text, result.reason.code);
     if (!result.refused && !result.duplicate) void schedule(roomId).catch(() => {});
     return result;
   }
@@ -570,7 +595,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       /** A partial, in-progress message. It is never a valid handoff source. */
       async say(text) {
         if (!validAgentText(text)) throw invalidText();
-        return store.transact(roomId, (d) => {
+        const result = await store.transact(roomId, (d) => {
           ensure(d);
           if (!alive(epoch)) throw stale();
           const row = d.dispatches.find((x) => x.id === running.id);
@@ -578,14 +603,22 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           if (row.run_token !== token) throw stale();
           if (!['accepted', 'running'].includes(row.state)) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
           const reason = executionReason(d, row, now());
-          if (reason) throw rejectStale(row, reason);
-          return clone(addAgentMessage(d, row, text, 'running', now()));
+          if (reason) {
+            if (reason.code === 'room_paused') {
+              holdPausedTurn(row, now());
+              return { held: true, reason };
+            }
+            throw rejectStale(row, reason);
+          }
+          return { message: clone(addAgentMessage(d, row, text, 'running', now())) };
         });
+        if (result?.held) throw rejectStale(null, result.reason);
+        return result.message;
       },
       /** Publish the turn's committed public message; only this (or a settled outcome) can source a handoff. */
       async finalize(text) {
         if (!validAgentText(text)) throw invalidText();
-        return store.transact(roomId, (d) => {
+        const result = await store.transact(roomId, (d) => {
           ensure(d);
           if (!alive(epoch)) throw stale();
           const row = d.dispatches.find((x) => x.id === running.id);
@@ -593,14 +626,22 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           if (row.run_token !== token) throw stale();
           if (row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
           const reason = executionReason(d, row, now());
-          if (reason) throw rejectStale(row, reason);
+          if (reason) {
+            if (reason.code === 'room_paused') {
+              holdPausedTurn(row, now());
+              return { held: true, reason };
+            }
+            throw rejectStale(row, reason);
+          }
           if (row.final_message_id && row.final_run_token === token) {
             const prior = d.messages.find((m) => m.id === row.final_message_id);
-            if (prior && prior.body === text) return clone(prior);
+            if (prior && prior.body === text) return { message: clone(prior) };
             throw fault(409, 'This attempt already published its final message', 'dispatch_finalized');
           }
-          return clone(publishFinal(d, row, text, now(), token));
+          return { message: clone(publishFinal(d, row, text, now(), token)) };
         });
+        if (result?.held) throw rejectStale(null, result.reason);
+        return result.message;
       },
       async handoff(request = {}) {
         return handoffForDispatch(roomId, running, request, epoch);
@@ -619,7 +660,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       const reason = executionReason(d, row, at);
       if (reason) {
         if (reason.code === 'room_paused') {
-          row.state = 'queued'; row.run_token = null; row.updated_at = at;
+          holdPausedTurn(row, at);
           return clone(row);
         }
         return clone(markFailed(d, row, reason.code, reason.text, at));
@@ -778,7 +819,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         const at = now();
         const reason = executionReason(d, current, at);
         if (reason) {
-          if (reason.code === 'room_paused') { current.state = 'queued'; current.run_token = null; current.updated_at = at; return { ok: false, paused: true }; }
+          if (reason.code === 'room_paused') { holdPausedTurn(current, at); return { ok: false, paused: true }; }
           return { ok: false, row: clone(markFailed(d, current, reason.code, reason.text, at)) };
         }
         current.state = 'accepted'; current.accepted_at = at; current.updated_at = at;
@@ -797,7 +838,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         const at = now();
         const reason = executionReason(d, current, at);
         if (reason) {
-          if (reason.code === 'room_paused') { current.state = 'queued'; current.run_token = null; current.updated_at = at; return { ok: false, paused: true }; }
+          if (reason.code === 'room_paused') { holdPausedTurn(current, at); return { ok: false, paused: true }; }
           return { ok: false, row: clone(markFailed(d, current, reason.code, reason.text, at)) };
         }
         current.state = 'running'; current.started_at = at; current.updated_at = at;
