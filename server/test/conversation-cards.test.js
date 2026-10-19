@@ -301,3 +301,51 @@ test('no room card can be minted during or after Stop until a new attempt', asyn
   const fresh = await c.request({ t: 'card.send', id: 'card-new-attempt', chat_id: room.id, kind: 'approval', instance: 'in', command: 'new', actor_kind: 'agent' });
   assert.equal(fresh.ok, true, JSON.stringify(fresh));
 });
+
+test('the room owner lists only that target agent\'s open cards on the queue; answer and stop remove them', async (t) => {
+  const boot = await bootBot(t);
+  await addBot(t, boot.h, 'reviewer');
+  const room = await createRoom(boot.h, 'Queue cards', ['helper', 'reviewer']);
+  const c = await boot.connect({ headers: V12_HEADERS });
+  await c.next((x) => x.t === 'hello');
+  await roomSend(boot.h, room.id, '@helper ask me');
+  await c.next((x) => x.t === 'dispatch.run');
+
+  const approval = await c.request({
+    t: 'card.send', id: 'card-listed', chat_id: room.id, kind: 'approval', instance: 'queue-1',
+    command: 'rm -rf build', description: 'Deploy cleanup', actor_kind: 'agent',
+  });
+  const clarify = await c.request({
+    t: 'card.send', id: 'card-clarify', chat_id: room.id, kind: 'clarify', instance: 'queue-2', actor_kind: 'agent',
+    questions: [{ id: 'q1', question: 'Which host?', choices: ['prod', 'staging'], multi_select: false }],
+  });
+  assert.equal(approval.ok, true, JSON.stringify(approval));
+  assert.equal(clarify.ok, true, JSON.stringify(clarify));
+  const approvalId = approval.result.request_id, clarifyId = clarify.result.request_id;
+
+  const listed = await (await boot.h.call(`/api/agents/helper/queue?session_id=${room.id}`)).json();
+  assert.deepEqual(listed.open_requests.map((r) => r.request_id).sort(), [approvalId, clarifyId].sort());
+  const approvalCard = listed.open_requests.find((r) => r.request_id === approvalId);
+  assert.equal(approvalCard.kind, 'approval');
+  assert.equal(approvalCard.command, 'rm -rf build');
+  assert.equal(approvalCard.description, 'Deploy cleanup');
+  const clarifyCard = listed.open_requests.find((r) => r.request_id === clarifyId);
+  assert.equal(clarifyCard.kind, 'clarify');
+  assert.deepEqual(clarifyCard.questions, [{ id: 'q1', question: 'Which host?', choices: ['prod', 'staging'], multi_select: false }]);
+
+  const reviewerQueue = await (await boot.h.call(`/api/agents/reviewer/queue?session_id=${room.id}`)).json();
+  assert.deepEqual(reviewerQueue.open_requests, [], 'another target agent never sees these cards');
+  const unknown = await (await boot.h.call(`/api/agents/helper/queue?session_id=fc_ZZZZZZZZZZZZZZZZ`)).json();
+  assert.deepEqual(unknown.open_requests, [], 'an id that is not a room on this account is empty, not a leak');
+
+  assert.equal((await apiAnswer(boot.h, 'helper', room.id, approvalId, { choice: 'deny' })).status, 200);
+  const afterAnswer = await (await boot.h.call(`/api/agents/helper/queue?session_id=${room.id}`)).json();
+  assert.deepEqual(afterAnswer.open_requests.map((r) => r.request_id), [clarifyId], 'answered cards leave the queue');
+
+  const stopping = boot.h.call(`/api/conversations/${room.id}/stop`, { method: 'POST', data: {} });
+  const stopFrame = await c.next((x) => x.t === 'chat.stop' && x.chat_id === room.id);
+  await c.request({ t: 'callback.answer', id: 'queue-stop-ack', callback_id: stopFrame.stop_id, chat_id: room.id, thread_id: stopFrame.thread_id, outcome: 'stopped' });
+  assert.equal((await stopping).status, 200);
+  const afterStop = await (await boot.h.call(`/api/agents/helper/queue?session_id=${room.id}`)).json();
+  assert.deepEqual(afterStop.open_requests, [], 'Stop closes the remaining card');
+});

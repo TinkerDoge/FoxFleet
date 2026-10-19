@@ -8,7 +8,8 @@ import { clock } from '../lib/time';
 import { humanSize } from '../lib/files';
 import { t } from '../i18n/t';
 import { ConversationDetails } from './ConversationDetails';
-import { applyLiveEvent, connectLive, loadOlderRoom, loadRoom, markRoomRead, mentionToken, mentionsIn, roomView, sendRoomMessage, setActiveRoom, stopRoom, resumeRoom, useConversations } from './store';
+import { RequestCards } from '../chat/RequestCards';
+import { answerRoomRequest, applyLiveEvent, connectLive, loadOlderRoom, loadRoom, markRoomRead, mentionToken, mentionsIn, refreshRoomRequests, roomView, sendRoomMessage, setActiveRoom, stopRoom, resumeRoom, useConversations } from './store';
 
 const isMine = (m: ConversationMessage, me?: ConversationMember) => Boolean(me && m.sender.id === me.id);
 const memberFor = (c: Conversation | undefined, id: string) => c?.members.find((m) => m.id === id || m.name === id);
@@ -92,6 +93,7 @@ export function ConversationView({ client, info, agents, conversationId, details
     return () => setActiveRoom(undefined);
   }, [client, conversationId]);
   useEffect(() => { if (!room.loading && c && readAt.current !== (c.updated_at ?? 0)) { readAt.current = c.updated_at ?? 0; void markRoomRead(client, conversationId, onAuthLost); } }, [client, conversationId, c?.updated_at, room.loading]);
+  useEffect(() => { const timer = setInterval(() => { void refreshRoomRequests(client, conversationId, onAuthLost); }, 15_000); return () => clearInterval(timer); }, [client, conversationId]);
   useEffect(() => { const el = scroller.current; if (el && !room.loading) el.scrollTop = el.scrollHeight; }, [room.loading, room.messages.length]);
   useEffect(() => { if (focusMessage) void jump(focusMessage); }, [focusMessage, room.loading]);
 
@@ -125,8 +127,8 @@ export function ConversationView({ client, info, agents, conversationId, details
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(); }
   }
   async function submit() {
-    const body = text.trim();
-    if ((!body && !attach.length) || room.sending) return;
+    const body = text.trim(), named = attach.some((m) => m.name.trim().length > 0);
+    if ((!body && !named) || room.sending) return;
     const mentions = mentionsIn(body, c?.members ?? []);
     const sent = await sendRoomMessage(client, conversationId, body, { me, mentions, reply_to: reply?.id, media: attach.length ? attach : undefined });
     if (sent) { setText(''); setReply(null); setAttach([]); setCaret(0); }
@@ -169,6 +171,7 @@ export function ConversationView({ client, info, agents, conversationId, details
         {jumping && <p class="muted small pad-sm" role="status">{t('rooms.jumping')}</p>}
       </div>
     </div>
+    {owner && agentMembers.map((m) => <RequestCards key={m.name} requests={room.requests[m.name] ?? []} agent={m.name} onAnswer={(id, result) => answerRoomRequest(client, conversationId, m.name, id, result, onAuthLost)} />)}
     <div class="composer room-composer">
       {reply && <div class="reply-chip" role="status"><span class="reply-bar" aria-hidden="true" /><div class="grow"><small class="reply-who">{t('msg.replyingTo', { name: reply.sender.id === me?.id ? t('rooms.you') : reply.sender.name })}</small><p class="reply-text">{reply.text.slice(0, 160)}</p></div><button type="button" class="icon-btn" aria-label={t('msg.cancelReply')} onClick={() => { setReply(null); ta.current?.focus(); }}><Icon name="close" size={16} /></button></div>}
       {attach.length > 0 && <div class="attachments">{attach.map((m) => <div class="att file" key={m.id}><Icon name="file" size={16} /><span class="chip-name">{m.name}</span><small>{humanSize(m.size)}</small><button type="button" aria-label={t('chat.remove')} onClick={() => setAttach((list) => list.filter((x) => x.id !== m.id))}><Icon name="close" size={14} /></button></div>)}</div>}
@@ -183,7 +186,7 @@ export function ConversationView({ client, info, agents, conversationId, details
           onInput={(e) => { setText((e.currentTarget as HTMLTextAreaElement).value); setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart ?? 0); }}
           onClick={(e) => setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart ?? 0)}
           onKeyUp={(e) => setCaret((e.currentTarget as HTMLTextAreaElement).selectionStart ?? 0)} onKeyDown={key} />
-        <button type="button" class="send" aria-label={t('chat.send')} disabled={room.sending || uploading || (!text.trim() && attach.length === 0)} onClick={() => void submit()}><Icon name="send" size={22} /></button>
+        <button type="button" class="send" aria-label={t('chat.send')} disabled={room.sending || uploading || (!text.trim() && !attach.some((m) => m.name.trim().length > 0))} onClick={() => void submit()}><Icon name="send" size={22} /></button>
       </div>
     </div>
     {detailsOpen && <ConversationDetails client={client} conversation={c} me={me} agents={agents} onAuthLost={onAuthLost} onClose={() => navigate('conversations', { id: conversationId })} />}

@@ -1,8 +1,9 @@
 import { render } from 'preact';
 import { act } from 'preact/test-utils';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { Client } from '../src/api/client';
+import type { Client, OpenRequest } from '../src/api/client';
 import type { AuthInfo, Conversation, ConversationMessage } from '../src/api/types';
+import { ApiError } from '../src/api/errors';
 import { ConversationList } from '../src/conversations/ConversationList';
 import { CreateConversation } from '../src/conversations/CreateConversation';
 import { ConversationView } from '../src/conversations/ConversationView';
@@ -22,11 +23,16 @@ const message = (over: Partial<ConversationMessage> = {}): ConversationMessage =
 const info: AuthInfo = { required: true, authenticated: true, setupRequired: false, setupCodeRequired: false, registration: 'closed', user: { id: 'u1', username: 'Ada', role: 'owner' } };
 const flush = async () => { for (let i = 0; i < 10; i++) await act(async () => { await Promise.resolve(); }); };
 const owner = { id: 'u1', name: 'Ada', kind: 'human' as const, is_bot: false };
+const emptyQueue = { items: [], recent: [], halted: false, activeRun: null, modes: ['queue'], openRequests: [] as OpenRequest[], canCancel: false };
+const approvalCard: OpenRequest = { id: 'frq_aaaaaaaaaaaaaaaa', kind: 'approval', questions: [], command: 'rm -rf build', description: 'Deploy cleanup' };
+const clarifyCard: OpenRequest = { id: 'frq_cccccccccccccccc', kind: 'clarify', questions: [{ id: 'q1', question: 'Which host?', choices: ['prod', 'staging'], multi: false }] };
 let host: HTMLDivElement;
 
 function makeClient(over: Record<string, unknown> = {}) {
   return {
     conversation: vi.fn(async () => room()),
+    queue: vi.fn(async () => ({ ...emptyQueue })),
+    answerRequest: vi.fn(async () => ({ ok: true })),
     conversationMessages: vi.fn(async () => ({ messages: [], has_more: false })),
     conversationMessage: vi.fn(async () => message({ id: 'fm_2', sender: { id: 'agent:helper', name: 'helper', kind: 'agent', is_bot: true }, text: 'On it.' })),
     conversations: vi.fn(async () => ({ conversations: [room()], total: 1 })),
@@ -94,7 +100,10 @@ describe('the group scenario', () => {
 
   it.each([390, 1280])('renders named authors, mentions, reply jump, handoff markers, cards and media at %ipx', async (width) => {
     (window as any).innerWidth = width;
-    const client = makeClient({ conversationMessages: vi.fn(async () => ({ messages: transcript, has_more: false })) });
+    const client = makeClient({
+      conversationMessages: vi.fn(async () => ({ messages: transcript, has_more: false })),
+      queue: vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? [approvalCard] : [] })),
+    });
     await view(client); await flush();
     const authors = [...host.querySelectorAll('.room-author b')].map((n) => n.textContent);
     expect(authors).toContain('Ada'); expect(authors).toContain('helper'); expect(authors).toContain('reviewer'); expect(host.querySelector('.room-author .room-tag')!.textContent).toBe('You');
@@ -103,6 +112,7 @@ describe('the group scenario', () => {
     expect(host.querySelectorAll('.room-tag.handoff').length).toBe(1);
     expect(host.querySelector<HTMLImageElement>('.room-media img')!.getAttribute('src')).toContain('/api/conversations/fc_abcdefghijklmnop/media/fbm_img');
     expect(text('.room-file')).toContain('notes.txt');
+    expect(text('.request.approval')).toContain('rm -rf build');
     const quote = host.querySelector<HTMLButtonElement>('.reply-quote')!;
     await act(() => { quote.click(); }); await flush();
     expect((HTMLElement.prototype.scrollIntoView as any)).toHaveBeenCalled();
@@ -185,6 +195,88 @@ describe('the group scenario', () => {
     expect(host.querySelector('.chat')!.getAttribute('aria-label')).toBe('Launch room');
     expect(conversationsState().list.some((c) => c.id === room().id)).toBe(true);
     expect((conversationsState().list[0] as any).name).toBeUndefined();
+  });
+});
+
+describe('room media captions', () => {
+  const attachFile = async (name: string) => {
+    const input = host.querySelector<HTMLInputElement>('.room-composer input[type=file]')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['some notes'], name, { type: 'text/plain' })] });
+    await act(() => { input.dispatchEvent(new Event('change', { bubbles: true })); }); await flush();
+  };
+
+  it('sends a non-empty caption taken from the first attachment name', async () => {
+    const client = makeClient({ conversationMessages: vi.fn(async () => ({ messages: [], has_more: false })) });
+    await view(client); await flush();
+    await attachFile('notes.txt');
+    const send = host.querySelector<HTMLButtonElement>('.room-composer .send')!;
+    expect(send.disabled).toBe(false);
+    await act(() => { send.click(); }); await flush();
+    const body = clientOf(client).sendConversationMessage.mock.calls[0][1];
+    expect(body.text).toBe('notes.txt');
+    expect(body.text).not.toBe('');
+    expect(body.media).toEqual(['fbm_1']);
+  });
+
+  it('disables send when there is neither text nor a named attachment', async () => {
+    const client = makeClient({
+      conversationMessages: vi.fn(async () => ({ messages: [], has_more: false })),
+      uploadConversationMedia: vi.fn(async () => ({ id: 'fbm_blank', kind: 'file', mime: 'text/plain', name: '   ', size: 12 })),
+    });
+    await view(client); await flush();
+    await attachFile('notes.txt');
+    expect(host.querySelector<HTMLButtonElement>('.room-composer .send')!.disabled).toBe(true);
+    expect(clientOf(client).sendConversationMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('room request cards', () => {
+  it.each([['Allow once', 'once'], ['Deny', 'deny']])('answers an approval with %s and then refreshes the queues', async (label, choice) => {
+    let open = [approvalCard];
+    const queue = vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? open : [] }));
+    const answerRequest = vi.fn(async () => { open = []; return { ok: true }; });
+    const client = makeClient({ queue, answerRequest });
+    await view(client); await flush();
+    expect(text('.request.approval')).toContain('Deploy cleanup');
+    const button = [...host.querySelectorAll<HTMLButtonElement>('.request.approval button')].find((b) => b.textContent === label)!;
+    await act(() => { button.click(); }); await flush();
+    expect(answerRequest).toHaveBeenCalledWith('helper', room().id, approvalCard.id, { choice });
+    expect(queue.mock.calls.length).toBeGreaterThan(1);
+    expect(host.querySelector('.request.approval')).toBeNull();
+  });
+
+  it('answers a clarify card with the chosen values', async () => {
+    let open = [clarifyCard];
+    const queue = vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? open : [] }));
+    const answerRequest = vi.fn(async () => { open = []; return { ok: true }; });
+    const client = makeClient({ queue, answerRequest });
+    await view(client); await flush();
+    expect(text('.request.clarify')).toContain('Which host?');
+    const prod = [...host.querySelectorAll<HTMLInputElement>('.request.clarify input[type=radio]')].find((i) => i.parentElement?.textContent?.includes('prod'))!;
+    await act(() => { prod.click(); });
+    const send = [...host.querySelectorAll<HTMLButtonElement>('.request.clarify button')].find((b) => b.textContent === 'Send answer')!;
+    await act(() => { send.click(); }); await flush();
+    expect(answerRequest).toHaveBeenCalledWith('helper', room().id, clarifyCard.id, { answers: { q1: 'prod' } });
+    expect(host.querySelector('.request.clarify')).toBeNull();
+  });
+
+  it('drops a card when the hub says it is already closed', async () => {
+    let open = [approvalCard];
+    const queue = vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? open : [] }));
+    const answerRequest = vi.fn(async () => { open = []; throw new ApiError(404, 'That question is no longer open'); });
+    const client = makeClient({ queue, answerRequest });
+    await view(client); await flush();
+    const deny = [...host.querySelectorAll<HTMLButtonElement>('.request.approval button')].find((b) => b.textContent === 'Deny')!;
+    await act(() => { deny.click(); }); await flush();
+    expect(answerRequest).toHaveBeenCalled();
+    expect(host.querySelector('.request.approval')).toBeNull();
+  });
+
+  it('shows request cards only to the conversation owner', async () => {
+    const client = makeClient({ queue: vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? [approvalCard] : [] })) });
+    await view(client, { info: { ...info, user: { id: 'u2', username: 'Bob', role: 'user' } } }); await flush();
+    expect(host.querySelector('.request')).toBeNull();
+    expect(text('.room-view')).toContain('Launch room');
   });
 });
 

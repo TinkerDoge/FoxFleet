@@ -1341,7 +1341,22 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const store = await readyStore(c);
         const expired = await store.expireCards();
         for (const row of expired) noteClosed(m.botId, row.chat_id, row.id, 'expired');
-        return c.sendJson(res, 200, { items: [], recent: [], halted: false, active_run: liveRun(m.botId, session)?.run.id ?? null, modes: ['queue'], open_requests: CHAT_ID.test(session) ? store.openRequests(session) : [], can_cancel: false });
+        // A room id is not a bot-store chat: its cards live in the account's conversation store. Only the
+        // room owner sees them, and only the cards addressed to this agent; anything else is empty, never
+        // another account's or another agent's card.
+        let openRequests = CHAT_ID.test(session) ? store.openRequests(session) : [];
+        if (CHAT_ID.test(session) && c.user?.id && c.reg?.conversations) {
+          try {
+            const room = await c.reg.conversations.snapshot(session);
+            if (room) {
+              if (room.owner_id === String(c.user.id) && !room.paused) {
+                const target = 'agent:' + m.name, now = Date.now();
+                openRequests = (room.cards ?? []).filter((card) => card.state === 'open' && card.expires_at > now && card.target_agent_id === target).map(cardView);
+              } else openRequests = [];
+            }
+          } catch { /* not a room on this account: keep this bot's own DM cards */ }
+        }
+        return c.sendJson(res, 200, { items: [], recent: [], halted: false, active_run: liveRun(m.botId, session)?.run.id ?? null, modes: ['queue'], open_requests: openRequests, can_cancel: false });
       }
       if (parts[3] === 'commands' && parts.length === 4 && req.method === 'GET') {
         const store = await readyStore(c), mine = store.commands().map((x) => ({ name: x.name, aliases: [], description: x.description, category: 'Bot', args: '', subcommands: [], availability: 'chat', handler: 'chat', busy: 'queue', executable: true, verified: false }));

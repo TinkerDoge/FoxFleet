@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'preact/hooks';
-import type { Client } from '../api/client';
+import type { Client, OpenRequest } from '../api/client';
 import type { Conversation, ConversationMedia, ConversationMention, ConversationMessage, ConversationPreferences } from '../api/types';
 import { ApiError, AuthRequiredError, NetworkError } from '../api/errors';
 
@@ -15,6 +15,8 @@ export interface RoomView {
   error?: string;
   preferences?: ConversationPreferences;
   typing: Record<string, number>;
+  /** Open Task-5 cards per agent member, keyed by the agent name the answer route expects. */
+  requests: Record<string, OpenRequest[]>;
 }
 export interface ConversationsState {
   list: Conversation[];
@@ -25,7 +27,7 @@ export interface ConversationsState {
   live: 'idle' | 'connecting' | 'live' | 'offline';
   cursor?: string;
 }
-const emptyRoom = (): RoomView => ({ messages: [], hasMore: false, loading: false, loadingOlder: false, sending: false, typing: {} });
+const emptyRoom = (): RoomView => ({ messages: [], hasMore: false, loading: false, loadingOlder: false, sending: false, typing: {}, requests: {} });
 let state: ConversationsState = { list: [], total: 0, loading: false, rooms: {}, live: 'idle' };
 const subs = new Set<() => void>();
 let activeRoom: string | undefined;
@@ -67,6 +69,18 @@ export async function loadConversations(client: Client, onAuthLost: () => void):
   } catch (e) { if (auth(e, onAuthLost)) return; set({ loading: false, error: friendly(e) }); }
 }
 
+/** Reads the room cards of every agent member. A failed agent fetch keeps what that agent showed before. */
+export async function refreshRoomRequests(client: Client, id: string, onAuthLost: () => void): Promise<void> {
+  const room = roomView(id), conversation = room.conversation;
+  if (!conversation) return;
+  const agents = conversation.members.filter((m) => m.kind === 'agent');
+  const rows = await Promise.all(agents.map(async (m) => {
+    try { return [m.name, (await client.queue(m.name, id)).openRequests] as const; }
+    catch (e) { if (e instanceof AuthRequiredError) onAuthLost(); return [m.name, room.requests[m.name] ?? []] as const; }
+  }));
+  setRoom(id, { requests: Object.fromEntries(rows) });
+}
+
 export async function loadRoom(client: Client, id: string, onAuthLost: () => void, force = false): Promise<void> {
   const cur = roomView(id);
   if (cur.loading && !force) return;
@@ -78,7 +92,22 @@ export async function loadRoom(client: Client, id: string, onAuthLost: () => voi
       loading: false, error: undefined,
     });
     set({ list: mergeConversation(state.list, conversation) });
+    await refreshRoomRequests(client, id, onAuthLost);
   } catch (e) { if (auth(e, onAuthLost)) return; setRoom(id, { loading: false, error: friendly(e) }); }
+}
+
+/** Answers one room card as the exact agent it belongs to; a 404 means it is already closed. */
+export async function answerRoomRequest(client: Client, id: string, agent: string, requestId: string, result: Record<string, unknown>, onAuthLost: () => void): Promise<string | null> {
+  let error: string | null = null;
+  try { await client.answerRequest(agent, id, requestId, result); }
+  catch (e) {
+    if (auth(e, onAuthLost)) return 'sign-in';
+    if (!(e instanceof ApiError && e.status === 404)) error = friendly(e);
+  }
+  const room = roomView(id), current = room.requests[agent] ?? [];
+  setRoom(id, { requests: { ...room.requests, [agent]: current.filter((x) => x.id !== requestId) } });
+  await refreshRoomRequests(client, id, onAuthLost);
+  return error;
 }
 
 export async function loadOlderRoom(client: Client, id: string, onAuthLost: () => void): Promise<void> {
@@ -106,13 +135,15 @@ function addMessage(id: string, message: ConversationMessage) {
 export async function sendRoomMessage(client: Client, id: string, text: string, opts: { me?: ConversationMessage['sender']; mentions?: ConversationMention[]; reply_to?: string; media?: ConversationMedia[] } = {}): Promise<ConversationMessage | undefined> {
   const room = roomView(id);
   const body = text.trim();
-  if (!body && !opts.media?.length) return undefined;
+  // The hub requires at least one character: an attachment-only message uses its first named file as the caption.
+  const caption = body || ((opts.media ?? []).map((m) => m.name.trim()).find((name) => name.length > 0) ?? '');
+  if (!caption) return undefined;
   const clientId = uid(), localId = `local:${clientId}`, at = Date.now();
   const sender = opts.me ?? room.conversation?.owner ?? { id: '', name: 'You', kind: 'human' as const, is_bot: false };
-  const placeholder: ConversationMessage = { id: localId, conversation_id: id, sender, text: body, created_at: at, mentions: opts.mentions ?? [], ...(opts.reply_to ? { reply_to: opts.reply_to } : {}), ...(opts.media?.length ? { media: opts.media } : {}) };
+  const placeholder: ConversationMessage = { id: localId, conversation_id: id, sender, text: caption, created_at: at, mentions: opts.mentions ?? [], ...(opts.reply_to ? { reply_to: opts.reply_to } : {}), ...(opts.media?.length ? { media: opts.media } : {}) };
   setRoom(id, { sending: true, messages: [...room.messages, placeholder], error: undefined });
   try {
-    const r = await client.sendConversationMessage(id, { text: body, mentions: opts.mentions, reply_to: opts.reply_to, media: opts.media?.map((m) => m.id), client_id: clientId });
+    const r = await client.sendConversationMessage(id, { text: caption, mentions: opts.mentions, reply_to: opts.reply_to, media: opts.media?.map((m) => m.id), client_id: clientId });
     setRoom(id, { sending: false, messages: roomView(id).messages.map((m) => (m.id === localId ? r.message : m)) });
     const conversation = roomView(id).conversation;
     if (conversation) set({ list: mergeConversation(state.list, { ...conversation, last_message_at: r.message.created_at, updated_at: Math.max(conversation.updated_at, r.message.created_at) }) });
@@ -168,6 +199,7 @@ export async function stopRoom(client: Client, id: string, onAuthLost: () => voi
       setRoom(id, { conversation: updated });
       set({ list: mergeConversation(state.list, updated) });
     }
+    await refreshRoomRequests(client, id, onAuthLost);
   } catch (e) { if (auth(e, onAuthLost)) return; setRoom(id, { error: friendly(e) }); }
 }
 export async function resumeRoom(client: Client, id: string, onAuthLost: () => void): Promise<void> {
