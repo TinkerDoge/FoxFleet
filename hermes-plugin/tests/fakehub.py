@@ -31,8 +31,8 @@ _MESSAGE_ID = re.compile(r"^fm_[A-Za-z0-9_-]{16}$")
 _COMMAND_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key"},
-    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "dispatch_id", "run_token"},
+    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "dispatch_id", "run_token"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},

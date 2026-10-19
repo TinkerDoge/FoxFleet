@@ -397,6 +397,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._queue: Optional[asyncio.Queue] = None
         self._seen_dispatches: OrderedDict[str, float] = OrderedDict()
         self._room_chats: dict[str, str] = {}
+        self._room_members: dict[str, dict[str, str]] = {}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._side_tasks: set[asyncio.Task] = set()
@@ -1039,6 +1040,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
                 or frame.get("action") not in ("join", "leave")):
             logger.warning("FoxFleet: ignoring malformed chat.member")
             return
+        self._room_chats[chat_id] = thread_id
+        live = self._room_members.setdefault(chat_id, {})
+        if frame["action"] == "join":
+            name = member.get("name") if isinstance(member.get("name"), str) and member["name"] else member["id"]
+            live[member["id"]] = name
+        else:
+            live.pop(member["id"], None)
         if isinstance(member.get("name"), str) and member["name"]:
             self._remember(self._chat_names, member["id"], member["name"], self.MAX_CHAT_CACHE)
 
@@ -1068,6 +1076,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def _room_request(self, op: str, **params: Any) -> protocol.RpcResponse:
         return await self._request(op, retry_unknown=True, **params)
+
+    def _room_attempt(self, chat_id: str) -> dict[str, str]:
+        """The exact attempt credentials for a room turn, or nothing outside that turn."""
+        turn = rooms.current_turn()
+        if turn is None or turn.chat_id != str(chat_id):
+            return {}
+        return turn.attempt
 
     def _enqueue_message(self, conn: _Conn, frame: dict) -> None:
         try:
@@ -2070,7 +2085,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
             res = await self._request("message.send", retry_unknown=True, chat_id=chat_id, text=text,
                                       format="markdown", reply_to=reply_to, final=final,
                                       idempotency_key=key,
-                                      **({"reasoning": reasoning} if reasoning else {}))
+                                      **({"reasoning": reasoning} if reasoning else {}),
+                                      **self._room_attempt(str(chat_id)))
         except _OutcomeUnknown as exc:
             # Same content retried later (e.g. by _send_with_retry) reuses this key: the hub dedupes.
             self._remember_unknown(fingerprint, key)
@@ -2148,7 +2164,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
             res = await self._request("message.edit", retry_unknown=True, chat_id=str(chat_id),
                                       message_id=str(message_id), text=content, format="markdown",
                                       final=bool(finalize),
-                                      **({"reasoning": reasoning} if reasoning else {}))
+                                      **({"reasoning": reasoning} if reasoning else {}),
+                                      **self._room_attempt(str(chat_id)))
         except (_OutcomeUnknown, _NotSent) as exc:
             return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="transient", retryable=True)
         except _BadResponse as exc:
@@ -2175,9 +2192,12 @@ class FoxFleetAdapter(BasePlatformAdapter):
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         chat_id = str(chat_id)
         conn = self._conn
-        room = bool(conn is not None and getattr(conn, "groups_enabled", False)
-                    and protocol.CHAT_ID.match(chat_id) and chat_id in self._room_chats)
-        return {"name": self._chat_names.get(chat_id, chat_id), "type": "group" if room else "dm", "chat_id": chat_id}
+        room = bool(protocol.CHAT_ID.match(chat_id) and chat_id in self._room_chats
+                    and (conn is None or getattr(conn, "groups_enabled", False)))
+        info = {"name": self._chat_names.get(chat_id, chat_id), "type": "group" if room else "dm", "chat_id": chat_id}
+        if room and self._room_members.get(chat_id):
+            info["members"] = [{"id": mid, "name": name} for mid, name in self._room_members[chat_id].items()]
+        return info
 
     # -- commands.set ----------------------------------------------------
     async def _sync_commands(self) -> None:

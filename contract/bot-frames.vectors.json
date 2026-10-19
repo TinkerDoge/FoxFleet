@@ -1696,7 +1696,9 @@
      "source_message_id": "fm_BBBBBBBBBBBBBBBB",
      "target_agent_id": "agent:helper",
      "text": "please take this",
-     "idempotency_key": "h:1"
+     "idempotency_key": "h:1",
+     "dispatch_id": "fd_DDDDDDDDDDDDDDDD",
+     "run_token": "fr_attempt"
     }
    },
    {
@@ -1732,7 +1734,9 @@
        "offset": 5,
        "length": 7
       }
-     ]
+     ],
+     "dispatch_id": "fd_DDDDDDDDDDDDDDDD",
+     "run_token": "fr_attempt"
     },
     "context": {
      "members": [
@@ -1748,7 +1752,9 @@
      "chat_id": "fc_AAAAAAAAAAAAAAAA",
      "message_id": "fm_BBBBBBBBBBBBBBBB",
      "text": "fixed",
-     "final": true
+     "final": true,
+     "dispatch_id": "fd_DDDDDDDDDDDDDDDD",
+     "run_token": "fr_attempt"
     }
    },
    {
@@ -2972,6 +2978,32 @@
      "thread_id": "fcr_BBBBBBBBBBBBBBBB",
      "target_agent_id": "agent:helper",
      "text": "go"
+    },
+    "code": "invalid_request"
+   },
+   {
+    "name": "handoff.request with a dispatch id but no attempt token",
+    "frame": {
+     "t": "handoff.request",
+     "id": "h1",
+     "chat_id": "fc_AAAAAAAAAAAAAAAA",
+     "thread_id": "fcr_BBBBBBBBBBBBBBBB",
+     "source_message_id": "fm_BBBBBBBBBBBBBBBB",
+     "target_agent_id": "agent:helper",
+     "text": "go",
+     "dispatch_id": "fd_DDDDDDDDDDDDDDDD"
+    },
+    "code": "invalid_request"
+   },
+   {
+    "name": "message.send with an invalid attempt token",
+    "frame": {
+     "t": "message.send",
+     "id": "r1",
+     "chat_id": "fc_AAAAAAAAAAAAAAAA",
+     "text": "go",
+     "dispatch_id": "fd_DDDDDDDDDDDDDDDD",
+     "run_token": "not a token"
     },
     "code": "invalid_request"
    },

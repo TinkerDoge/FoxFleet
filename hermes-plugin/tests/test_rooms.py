@@ -126,3 +126,36 @@ async def test_dispatch_run_admits_exactly_one_room_turn_with_the_bound_source(m
     assert event.source.thread_id == THREAD_A
     assert event.source.chat_id == CHAT_A
     assert event.text == "please review"
+
+
+@pytest.mark.asyncio
+async def test_room_member_frames_track_room_identity_and_membership():
+    a = adapter()
+    conn = type("C", (), {"groups_enabled": True})()
+    join = {
+        "t": "chat.member", "event_id": 46, "chat_id": CHAT_A, "chat_type": "group",
+        "thread_id": THREAD_A, "action": "join",
+        "actor": {"kind": "human", "id": "u1", "name": "owner", "is_bot": False},
+        "member": {"kind": "agent", "id": "agent:helper", "name": "Helper", "is_bot": True},
+        "date": 1,
+    }
+    a._on_room_member(conn, join)
+    assert a._room_chats[CHAT_A] == THREAD_A
+    assert a._room_members[CHAT_A] == {"agent:helper": "Helper"}
+    info = await a.get_chat_info(CHAT_A)
+    assert info["type"] == "group"
+
+    a._on_room_member(conn, {**join, "event_id": 47, "action": "leave"})
+    assert a._room_members[CHAT_A] == {}
+
+    a._on_room_member(conn, {**join, "action": "unknown"})
+    assert a._room_members[CHAT_A] == {}
+
+
+@pytest.mark.asyncio
+async def test_room_member_frames_are_ignored_on_a_1_1_socket():
+    a = adapter()
+    calls = []
+    conn = type("C", (), {"groups_enabled": False})()
+    a._on_room_member(conn, {"t": "chat.member", "event_id": 46})
+    assert a._room_members == {}

@@ -563,8 +563,8 @@ def error_kind_for(code: str) -> str:
 
 
 _REQUEST_FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media", "reasoning", "mentions"},
-    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "reasoning", "mentions"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media", "reasoning", "mentions", "dispatch_id", "run_token"},
+    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "reasoning", "mentions", "dispatch_id", "run_token"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
@@ -572,7 +572,7 @@ _REQUEST_FIELDS = {
     "callback.answer": {"callback_id", "chat_id", "thread_id", "outcome"},
     "card.send": {"chat_id", "kind", "instance", "card_key", "ttl_ms", "idempotency_key", "command", "description", "questions", "actor_kind"},
     "card.close": {"request_id", "all_except_instance", "reason", "actor_kind"},
-    "handoff.request": {"chat_id", "thread_id", "source_message_id", "target_agent_id", "text", "idempotency_key"},
+    "handoff.request": {"chat_id", "thread_id", "source_message_id", "target_agent_id", "text", "idempotency_key", "dispatch_id", "run_token"},
     "chat.get": {"chat_id", "thread_id"},
     "chat.cancel": {"chat_id", "thread_id", "dispatch_id"},
 }

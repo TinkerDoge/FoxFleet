@@ -323,6 +323,7 @@ export function validateMediaRequest(frame) {
 // negotiation, reserved fields). The frozen vectors are exercised against this code in conversation-bot.test.js.
 export const THREAD_ID = /^fcr_[A-Za-z0-9_-]{16}$/;
 export const DISPATCH_ID = /^fd_[A-Za-z0-9_-]{16}$/;
+export const RUN_TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
 export const AGENT_REF = /^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const HUMAN_ACTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const PRINTABLE = /^[^\u0000-\u001f\u007f]+$/;
@@ -333,6 +334,7 @@ const ROOM_ID_FIELDS = [
   ['source_message_id', MESSAGE_ID, 'not_found', 'Unknown source_message_id'],
   ['reply_to', MESSAGE_ID, 'not_found', 'Unknown reply_to'],
   ['dispatch_id', DISPATCH_ID, 'not_found', 'Unknown dispatch_id'],
+  ['run_token', RUN_TOKEN, 'invalid_request', 'Invalid run_token'],
   ['target_agent_id', AGENT_REF, 'not_found', 'Unknown target_agent_id'],
 ];
 const ROOM_FORBIDDEN_FIELDS = ['owner_id', 'owner', 'is_owner', 'ownerId'];
@@ -401,6 +403,12 @@ function requiredProblem(frame, required) {
 }
 function integerProblem(value, name, minimum = 0) {
   return Number.isSafeInteger(value) && value >= minimum ? null : roomFail('invalid_request', `${name} must be an integer >= ${minimum}`);
+}
+function attemptProblem(frame) {
+  const hasDispatch = 'dispatch_id' in frame, hasToken = 'run_token' in frame;
+  if (hasDispatch !== hasToken) return roomFail('invalid_request', 'dispatch_id and run_token travel together');
+  if (hasToken && (typeof frame.run_token !== 'string' || !RUN_TOKEN.test(frame.run_token))) return roomFail('invalid_request', 'Invalid run_token');
+  return null;
 }
 function idProblem(frame, fields = ROOM_ID_FIELDS) {
   for (const [field, pattern, code, message] of fields) {
@@ -497,10 +505,11 @@ function roomShapeProblem(frame, context = {}) {
       return null;
     }
     case 'handoff.request': {
-      const shape = check(['id', 'chat_id', 'thread_id', 'source_message_id', 'target_agent_id', 'text'], ['idempotency_key']);
+      const shape = check(['id', 'chat_id', 'thread_id', 'source_message_id', 'target_agent_id', 'text'], ['idempotency_key', 'dispatch_id', 'run_token']);
       if (shape) return shape;
       if (typeof frame.id !== 'string' || !REQUEST_ID.test(frame.id)) return roomFail('invalid_request', 'Invalid request id');
       const ids = idProblem(frame); if (ids) return ids;
+      const attempt = attemptProblem(frame); if (attempt) return attempt;
       const text = roomTextProblem(frame.text); if (text) return text;
       if (frame.idempotency_key !== undefined && (typeof frame.idempotency_key !== 'string' || !KEY.test(frame.idempotency_key))) return roomFail('invalid_request', 'Invalid idempotency_key');
       return null;
@@ -518,10 +527,11 @@ function roomShapeProblem(frame, context = {}) {
       return idProblem(frame, ROOM_ID_FIELDS.filter(([f]) => ['chat_id', 'thread_id', 'dispatch_id'].includes(f)));
     }
     case 'message.send': {
-      const shape = check(['id', 'chat_id', 'text'], ['format', 'reply_to', 'mentions', 'final', 'idempotency_key', 'media', 'reasoning']);
+      const shape = check(['id', 'chat_id', 'text'], ['format', 'reply_to', 'mentions', 'final', 'idempotency_key', 'media', 'reasoning', 'dispatch_id', 'run_token']);
       if (shape) return shape;
       if (typeof frame.id !== 'string' || !REQUEST_ID.test(frame.id)) return roomFail('invalid_request', 'Invalid request id');
-      const ids = idProblem(frame, ROOM_ID_FIELDS.filter(([f]) => ['chat_id', 'reply_to'].includes(f))); if (ids) return ids;
+      const ids = idProblem(frame, ROOM_ID_FIELDS.filter(([f]) => ['chat_id', 'reply_to', 'dispatch_id', 'run_token'].includes(f))); if (ids) return ids;
+      const attempt = attemptProblem(frame); if (attempt) return attempt;
       const text = roomTextProblem(frame.text); if (text) return text;
       if (frame.format !== undefined && frame.format !== 'markdown' && frame.format !== 'text') return roomFail('invalid_request', 'format is markdown or text');
       if (frame.final !== undefined && typeof frame.final !== 'boolean') return roomFail('invalid_request', 'final must be a boolean');
@@ -535,10 +545,11 @@ function roomShapeProblem(frame, context = {}) {
       return null;
     }
     case 'message.edit': {
-      const shape = check(['id', 'chat_id', 'message_id', 'text'], ['format', 'mentions', 'final', 'idempotency_key', 'reasoning']);
+      const shape = check(['id', 'chat_id', 'message_id', 'text'], ['format', 'mentions', 'final', 'idempotency_key', 'reasoning', 'dispatch_id', 'run_token']);
       if (shape) return shape;
       if (typeof frame.id !== 'string' || !REQUEST_ID.test(frame.id)) return roomFail('invalid_request', 'Invalid request id');
-      const ids = idProblem(frame, ROOM_ID_FIELDS.filter(([f]) => ['chat_id', 'message_id'].includes(f))); if (ids) return ids;
+      const ids = idProblem(frame, ROOM_ID_FIELDS.filter(([f]) => ['chat_id', 'message_id', 'dispatch_id', 'run_token'].includes(f))); if (ids) return ids;
+      const attempt = attemptProblem(frame); if (attempt) return attempt;
       const text = roomTextProblem(frame.text); if (text) return text;
       if (frame.format !== undefined && frame.format !== 'markdown' && frame.format !== 'text') return roomFail('invalid_request', 'format is markdown or text');
       if (frame.final !== undefined && typeof frame.final !== 'boolean') return roomFail('invalid_request', 'final must be a boolean');

@@ -579,7 +579,9 @@ Hub → bot, room variants (existing 1.0/1.1 frames are byte-identical):
 ```
 
 Only the human owner changes membership; members are agents. A join gives the agent access to all retained room
-history.
+history. A 1.2 socket receives `chat.member` for each live join/leave in a room it belongs to, and a truthful
+membership picture on connect: every current agent member is replayed as a `join` event. A 1.1 socket never
+receives these frames.
 
 `chat.stop` and card `callback` keep the existing callback/answer pattern and add the room carriers plus an
 authenticated actor:
@@ -609,8 +611,14 @@ Bot → hub, room variants:
 ```json
 { "t": "handoff.request", "id": "…", "chat_id": "fc_…", "thread_id": "fcr_…",
   "source_message_id": "fm_…", "target_agent_id": "agent:<id>", "text": "please take this",
-  "idempotency_key"?: "…" }
+  "idempotency_key"?: "…", "dispatch_id"?: "fd_…", "run_token"?: "…" }
 ```
+
+`dispatch_id` and `run_token` are optional together on `handoff.request` and on room `message.send` /
+`message.edit`. When present they name the exact live attempt (`dispatch.run` carries the same pair). The hub
+never infers the current `(bot, room)` turn: a missing or mismatched pair on an output frame while a turn is
+live is refused with `dispatch_not_running` (no exact attempt) or `dispatch_stale` (the attempt was replaced).
+The attempt token never appears in a public message projection or on the HTTP RPC path.
 
 `handoff.request` is the plugin-registered, room-scoped handoff tool. The hub authenticates the bot token,
 attributes the dispatch to that agent, checks the committed `source_message_id` is in this room, applies the

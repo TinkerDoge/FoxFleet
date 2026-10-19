@@ -32,6 +32,7 @@
     {"id": "mention_is_member", "description": "Every mention id names an agent member of this room."},
     {"id": "reply_same_room", "description": "reply_to names an fm_ message committed in this same chat_id; a reply to another room is not_found."},
     {"id": "handoff_source_committed", "description": "handoff.request.source_message_id is a committed fm_ message in this room and this bot's authenticated actor is the dispatcher."},
+    {"id": "attempt_binding", "description": "dispatch_id and run_token are optional together on handoff.request and room message.send/message.edit. When present they name the exact running attempt; the hub fails closed (dispatch_stale or dispatch_not_running) instead of binding to the current (bot, room) run. They are never added to public message projections or HTTP."},
     {"id": "handoff_chain", "description": "At most max_handoff_dispatches_per_root dispatches per root message and the chain expires after handoff_chain_ttl_ms."},
     {"id": "owner_only", "description": "Cards and stop are owner-only; agent actors never satisfy an owner check."},
     {"id": "group_id_reserved", "description": "group_id and thread_id stay reserved fields on message.send/message.edit. Rooms are addressed by chat_id."},
@@ -43,6 +44,7 @@
     "thread_id": {"type": "string", "pattern": "^fcr_[A-Za-z0-9_-]{16}$"},
     "message_id": {"type": "string", "pattern": "^fm_[A-Za-z0-9_-]{16}$"},
     "dispatch_id": {"type": "string", "pattern": "^fd_[A-Za-z0-9_-]{16}$"},
+    "run_token": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
     "stop_id": {"type": "string", "pattern": "^fs_[A-Za-z0-9_-]{16}$"},
     "card_request_id": {"type": "string", "pattern": "^frq_[A-Za-z0-9_-]{16}$"},
     "card_callback_id": {"type": "string", "pattern": "^fcb_[A-Za-z0-9_-]{16}$"},
@@ -202,7 +204,9 @@
         "source_message_id": {"$ref": "#/definitions/message_id"},
         "target_agent_id": {"$ref": "#/definitions/agent_ref"},
         "text": {"type": "string", "minLength": 1, "maxLength": 65536},
-        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"},
+        "dispatch_id": {"$ref": "#/definitions/dispatch_id"},
+        "run_token": {"$ref": "#/definitions/run_token"}
       }
     },
     "chat.get": {
@@ -241,7 +245,9 @@
         "reply_to": {"$ref": "#/definitions/message_id"},
         "mentions": {"$ref": "#/definitions/mentions"},
         "final": {"type": "boolean"},
-        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"},
+        "dispatch_id": {"$ref": "#/definitions/dispatch_id"},
+        "run_token": {"$ref": "#/definitions/run_token"}
       }
     },
     "message.edit": {
@@ -257,7 +263,9 @@
         "format": {"enum": ["markdown", "text"]},
         "mentions": {"$ref": "#/definitions/mentions"},
         "final": {"type": "boolean"},
-        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"},
+        "dispatch_id": {"$ref": "#/definitions/dispatch_id"},
+        "run_token": {"$ref": "#/definitions/run_token"}
       }
     },
     "message.delete": {

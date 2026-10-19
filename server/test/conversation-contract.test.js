@@ -135,6 +135,10 @@ function checkRoomFrame(frame, context = {}) {
   for (const [field, re, code] of ID_FIELDS) if (field in frame && typeof frame[field] === 'string' && !re.test(frame[field])) out.push({ code, message: `invalid ${field}` });
   if (typeof frame.text === 'string' && Buffer.byteLength(frame.text) > LIMITS.max_text_bytes) out.push({ code: 'too_large', message: 'text is over max_text_bytes' });
   if ((frame.t === 'message.send' || frame.t === 'message.edit') && ('group_id' in frame || 'thread_id' in frame)) out.push({ code: 'unsupported', message: 'group_id/thread_id stay reserved on message send/edit' });
+  if (['handoff.request', 'message.send', 'message.edit'].includes(frame.t)) {
+    if (('dispatch_id' in frame) !== ('run_token' in frame)) out.push({ code: 'invalid_request', message: 'dispatch_id and run_token travel together' });
+    if ('run_token' in frame && (typeof frame.run_token !== 'string' || !/^[A-Za-z0-9._:-]{1,128}$/.test(frame.run_token))) out.push({ code: 'invalid_request', message: 'invalid run_token' });
+  }
   for (const k of ['owner_id', 'owner', 'is_owner', 'ownerId']) if (k in frame) out.push({ code: 'forbidden', message: `${k} is never client-supplied` });
 
   out.push(...actorErrors(frame.actor, 'actor'), ...actorErrors(frame.member, 'member'));
@@ -201,6 +205,20 @@ test('rooms vectors: every rejected frame is refused with its documented code', 
   for (const rule of ['actor_mismatch', 'forged_owner', 'mention_span', 'mention_surrogate', 'mention_overlap', 'mention_member', 'cross_room_reply', 'negotiation', 'reserved_field']) {
     assert.ok(vectors.rooms.invalid.some((x) => x.context?.rule === rule), `an invalid room vector for ${rule}`);
   }
+});
+
+test('rooms contract: attempt credentials are additive optional fields on handoff and turn output', () => {
+  for (const name of ['handoff.request', 'message.send', 'message.edit']) {
+    const frame = schema?.frames?.[name];
+    assert.ok(frame, `${name} is in the frozen schema`);
+    assert.equal(frame.properties?.dispatch_id?.$ref, '#/definitions/dispatch_id', `${name}.dispatch_id`);
+    assert.equal(frame.properties?.run_token?.$ref, '#/definitions/run_token', `${name}.run_token`);
+    assert.ok(!(frame.required ?? []).includes('dispatch_id'), `${name}.dispatch_id stays optional`);
+    assert.ok(!(frame.required ?? []).includes('run_token'), `${name}.run_token stays optional`);
+  }
+  assert.ok(vectors.rooms.valid.some((x) => x.frame.t === 'handoff.request' && x.frame.dispatch_id && x.frame.run_token));
+  assert.ok(vectors.rooms.valid.some((x) => x.frame.t === 'message.send' && x.frame.dispatch_id && x.frame.run_token));
+  assert.ok(vectors.rooms.invalid.some((x) => x.frame.t === 'handoff.request' && x.frame.dispatch_id && !x.frame.run_token));
 });
 
 test('rooms vectors: mention spans are UTF-16 code units, including a surrogate-pair spoiler', () => {

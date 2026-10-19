@@ -53,8 +53,24 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   // HTTP sends enter through engine.submit (the store's own send is wrapped once per account), so routing,
   // serial turns and the handoff budget are the policy that already exists. Bot I/O is a socket transport:
   // dispatch offers/runs are transient frames; room message.new is the frozen contract event.
-  const roomHubs = new Map(), roomRuns = new Map();
+  const roomHubs = new Map(), roomRuns = new Map(), staleRuns = new Set();
   const roomThread = (chatId) => 'fcr_' + String(chatId).slice(3);
+  const attemptKey = (botId, dispatchId, runToken) => `${botId}\0${dispatchId}\0${runToken}`;
+  const rememberStale = (key) => {
+    if (!key) return;
+    staleRuns.add(key);
+    if (staleRuns.size > 2000) staleRuns.delete(staleRuns.values().next().value);
+  };
+  /** Drop one live binding. The pending run() settles as failed so an overlapping pump never completes it. */
+  function staleRoomRun(run, code = 'dispatch_stale', reason = 'superseded by a newer attempt') {
+    if (!run) return;
+    if (roomRuns.get(run.key) === run) roomRuns.delete(run.key);
+    rememberStale(run.key);
+    run.stale = true;
+    const resolve = run.resolve;
+    run.resolve = null;
+    resolve?.({ failed: true, code, reason });
+  }
   const roomActor = (m) => (m.author_kind === 'agent'
     ? { kind: 'agent', id: m.author_id, name: m.author_name, is_bot: true }
     : { kind: 'human', id: m.author_id, name: m.author_name, is_bot: false });
@@ -72,7 +88,77 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     // Owner HTTP room sends route exactly once; the engine's own write passes `admit` and goes straight through.
     store.send = (id, opts = {}) => (opts?.actor?.kind === 'human' && typeof opts.admit !== 'function'
       ? engine.submit(id, opts) : originalSend(id, opts));
+    if (typeof store.addMember === 'function') {
+      const originalAdd = store.addMember.bind(store);
+      store.addMember = async (id, opts = {}) => {
+        const out = await originalAdd(id, opts);
+        await notifyRoomMember(hub, id, 'join', opts?.agent?.actor_id).catch(() => {});
+        return out;
+      };
+    }
+    if (typeof store.removeMember === 'function') {
+      const originalRemove = store.removeMember.bind(store);
+      store.removeMember = async (id, opts = {}) => {
+        const out = await originalRemove(id, opts);
+        await notifyRoomMember(hub, id, 'leave', opts?.agentId).catch(() => {});
+        return out;
+      };
+    }
     return hub;
+  }
+
+  const roomMemberRef = (memberId) => {
+    const value = String(memberId ?? '');
+    return value.startsWith('agent:') ? value : 'agent:' + value;
+  };
+  function roomMemberFrame(snap, action, row, eventId, date) {
+    return {
+      t: 'chat.member', event_id: Math.max(1, eventId), chat_id: snap.id, chat_type: 'group',
+      thread_id: roomThread(snap.id), action,
+      actor: { kind: 'human', id: snap.owner_id, name: snap.owner_name, is_bot: false },
+      member: { kind: 'agent', id: row.actor_id, name: row.name, is_bot: true },
+      date,
+    };
+  }
+  /** A durable membership change is live for every 1.2 member; a removed agent still gets its own leave. */
+  async function notifyRoomMember(hub, roomId, action, memberId) {
+    const snap = await roomSnapshot(hub, roomId);
+    if (!snap) return;
+    const ref = roomMemberRef(memberId);
+    const row = snap.members.find((m) => m.actor_kind === 'agent' && m.actor_id === ref);
+    if (!row) return;
+    const prior = [...snap.outbox].reverse().find((e) => e.type === 'chat.member'
+      && e.action === action && e.member_id === ref);
+    const at = prior?.at ?? Date.now();
+    const frame = roomMemberFrame(snap, action, row, at, at);
+    for (const session of sessions.values()) {
+      if (session.protocol !== PROTOCOL_V12 || !session.conn || session.reg !== hub.reg) continue;
+      const agent = agentOf(session.reg, session.botId);
+      if (!agent) continue;
+      const self = 'agent:' + agent.name;
+      const member = snap.members.some((m) => m.actor_kind === 'agent' && m.actor_id === self && m.removed_at === null);
+      if (!member && !(action === 'leave' && self === ref)) continue;
+      try { session.conn.send(frame); } catch { /* a closed socket gets the snapshot on reconnect */ }
+    }
+  }
+  /** Connect-time truth: every active agent member of every room this bot is in appears as a join. */
+  async function replayRoomMembers(session, hub) {
+    if (session.protocol !== PROTOCOL_V12 || !session.conn) return;
+    const agent = agentOf(session.reg, session.botId);
+    if (!agent) return;
+    const self = 'agent:' + agent.name;
+    const rooms = await hub.store.roomIds();
+    for (const roomId of rooms) {
+      if (!session.conn || session.protocol !== PROTOCOL_V12) return;
+      const snap = await roomSnapshot(hub, roomId);
+      if (!snap) continue;
+      if (!snap.members.some((m) => m.actor_kind === 'agent' && m.actor_id === self && m.removed_at === null)) continue;
+      for (const row of snap.members) {
+        if (row.actor_kind !== 'agent' || row.removed_at !== null) continue;
+        const at = row.joined_at ?? snap.created_at ?? 1;
+        try { session.conn.send(roomMemberFrame(snap, 'join', row, at, at)); } catch { return; }
+      }
+    }
   }
 
   function roomTarget(hub, agentId) {
@@ -117,9 +203,14 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       ...(message.reply_to ? { reply_to: message.reply_to } : {}),
       root_id: ctx.dispatch.root_id, deadline_at: ctx.dispatch.root_deadline,
     };
-    const key = `${target.botId}\0${snap.id}`;
+    const key = attemptKey(target.botId, ctx.dispatch.id, ctx.attempt.token);
+    // A newer attempt owns this room slot; the old Promise must settle so an overlapping pump can never
+    // complete the newer dispatch through the old binding.
+    for (const prior of [...roomRuns.values()]) {
+      if (prior.botId === target.botId && prior.roomId === snap.id) staleRoomRun(prior);
+    }
     const run = {
-      session, target, botId: target.botId, roomId: snap.id, chatId: snap.id, threadId,
+      key, session, target, botId: target.botId, roomId: snap.id, chatId: snap.id, threadId,
       ctx, dispatchId: ctx.dispatch.id, runToken: ctx.attempt.token, frame,
       resolve: null, handoff: null, parts: [],
     };
@@ -173,14 +264,53 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const actorId = 'agent:' + agent.name;
     const member = snap.members.find((m) => m.actor_kind === 'agent' && m.actor_id === actorId && m.role === 'member' && m.removed_at === null);
     if (!member) throw new BotError('forbidden', 'Agent is not an active member of this room');
-    const key = `${session.botId}\0${snap.id}`;
-    const run = roomRuns.get(key);
-    const active = run && run.session === session ? run : null;
+    const requestedDispatch = v.req.dispatch_id;
+    const requestedToken = v.req.run_token;
+    const hasAttempt = requestedDispatch !== undefined || requestedToken !== undefined;
+    const both = typeof requestedDispatch === 'string' && typeof requestedToken === 'string';
+    const exactKey = both ? attemptKey(session.botId, requestedDispatch, requestedToken) : null;
+    const exact = exactKey ? roomRuns.get(exactKey) : null;
+    const active = exact && exact.roomId === snap.id && exact.session === session && !exact.stale ? exact : null;
+    const live = [...roomRuns.values()].find((r) => r.botId === session.botId && r.roomId === snap.id && !r.stale) ?? null;
+    const sameDispatch = both
+      ? [...roomRuns.values()].find((r) => r.botId === session.botId && r.dispatchId === requestedDispatch && !r.stale)
+      : null;
+    const stale = both && (Boolean(exact) || Boolean(sameDispatch) || staleRuns.has(exactKey));
+    const refusal = stale
+      ? new BotError('dispatch_stale', 'That dispatch was replaced')
+      : new BotError('dispatch_not_running', 'That dispatch is no longer running');
+    // Never infer the current (bot, room) turn: an output frame binds only by its exact attempt pair.
+    const needsBinding = v.t === 'handoff.request'
+      || (v.t === 'message.send' && (hasAttempt || Boolean(live)))
+      || (v.t === 'message.edit' && (hasAttempt || Boolean(live)));
+    if (!active && needsBinding) throw refusal;
     const actor = { kind: 'agent', id: actorId, name: member.name };
+
+    async function completeRoomTurn(run, message) {
+      let handoff = null;
+      if (run.handoff) {
+        try {
+          handoff = await run.ctx.handoff({ source_message_id: message?.id, ...run.handoff });
+          roomReceipt(session, run, 'handoff', null);
+        } catch (e) {
+          const code = e?.code ?? 'handoff_failed';
+          roomReceipt(session, run, 'handoff_failed', code);
+          log('bot.room.handoff_failed', { bot: session.botId, room: snap.id, code });
+        }
+      }
+      if (roomRuns.get(run.key) === run) {
+        roomRuns.delete(run.key);
+        rememberStale(run.key);
+        const resolve = run.resolve;
+        run.resolve = null;
+        resolve?.({});
+      }
+      return handoff;
+    }
 
     switch (v.t) {
       case 'handoff.request': {
-        if (!active) throw new BotError('not_found', 'No running dispatch is bound to this handoff');
+        if (!active) throw refusal;
         if (v.req.source_message_id) {
           const source = snap.messages.find((m) => m.id === v.req.source_message_id && !m.deleted_at);
           if (source && source.author_kind === 'agent' && source.author_id !== actorId) {
@@ -210,19 +340,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           let message;
           try { message = await active.ctx.finalize(v.req.text); }
           catch (e) { throw roomBotError(e); }
-          let handoff = null;
-          if (active.handoff) {
-            try {
-              handoff = await active.ctx.handoff({ source_message_id: message.id, ...active.handoff });
-              roomReceipt(session, active, 'handoff', null);
-            } catch (e) {
-              const code = e?.code ?? 'handoff_failed';
-              roomReceipt(session, active, 'handoff_failed', code);
-              log('bot.room.handoff_failed', { bot: session.botId, room: snap.id, code });
-            }
-          }
-          roomRuns.delete(key);
-          active.resolve?.({});
+          const handoff = await completeRoomTurn(active, message);
           return { result: { message_id: message.id, chat_id: snap.id, date: message.created_at },
             ...(handoff?.dispatch ? { handoff: { dispatch_id: handoff.dispatch.id, target_agent_id: handoff.dispatch.target_agent_id } } : {}) };
         }
@@ -236,6 +354,14 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         break;
       }
       case 'message.edit': {
+        if (active && v.req.final === true) {
+          let message;
+          try { message = await active.ctx.finalizeMessage(v.req.message_id, v.req.text); }
+          catch (e) { throw roomBotError(e); }
+          const handoff = await completeRoomTurn(active, message);
+          return { result: { message_id: message.id, chat_id: snap.id, edited: true },
+            ...(handoff?.dispatch ? { handoff: { dispatch_id: handoff.dispatch.id, target_agent_id: handoff.dispatch.target_agent_id } } : {}) };
+        }
         await hub.store.transact(snap.id, (d) => {
           const m = d.messages.find((x) => x.id === v.req.message_id && !x.deleted_at);
           if (!m) throw new BotError('not_found', 'Unknown message');
@@ -877,6 +1003,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
               session.roomTarget = target;
             }
             resumeRoomRuns(session);
+            if (hub) void replayRoomMembers(session, hub).catch(() => {});
           }
           log('bot.connected', { bot: id.botId });
         },

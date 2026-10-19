@@ -23,14 +23,14 @@ def turn(request=None, source_message_id=SOURCE) -> rooms.RoomTurn:
                           run_token="fr_attempt", source_message_id=source_message_id, request=request)
 
 
-def test_frame_carries_the_frozen_fields_and_never_dispatch_credentials():
+def test_frame_carries_the_frozen_fields_and_the_bound_attempt():
     frame = rooms.handoff_frame(turn(), target_agent_id="reviewer", text="check this",
                                 idempotency_key="h:1")
     assert frame["t"] == "handoff.request"
     assert frame["chat_id"] == CHAT and frame["thread_id"] == THREAD
     assert frame["source_message_id"] == SOURCE and frame["target_agent_id"] == "agent:reviewer"
     assert frame["text"] == "check this" and frame["idempotency_key"] == "h:1"
-    assert "dispatch_id" not in frame and "run_token" not in frame
+    assert frame["dispatch_id"] == "fd_" + "D" * 16 and frame["run_token"] == "fr_attempt"
     with pytest.raises(protocol.ProtocolError):
         rooms.handoff_frame(turn(), target_agent_id="not an agent", text="x")
     with pytest.raises(protocol.ProtocolError):
@@ -52,8 +52,8 @@ async def test_tool_calls_the_hub_with_the_room_scoped_payload():
     op, params = calls[0]
     assert op == "handoff.request"
     assert params == {"chat_id": CHAT, "thread_id": THREAD, "source_message_id": SOURCE,
-                      "target_agent_id": "agent:reviewer", "text": "verify", "idempotency_key": "k1"}
-    assert "dispatch_id" not in params and "run_token" not in params
+                      "target_agent_id": "agent:reviewer", "text": "verify", "idempotency_key": "k1",
+                      "dispatch_id": "fd_" + "D" * 16, "run_token": "fr_attempt"}
 
 
 @pytest.mark.asyncio
@@ -214,3 +214,28 @@ def test_platform_registration_names_allow_bots_only_when_the_host_supports_it()
     if any(f.name == "allow_bots_env" for f in fields(PlatformEntry)):
         assert ctx.platform["allow_bots_env"] == "FOXFLEET_ALLOW_BOTS"
     assert [t["name"] for t in ctx.tools] == [rooms.TOOL_NAME]
+
+
+@pytest.mark.asyncio
+async def test_room_send_and_final_edit_carry_the_bound_attempt(monkeypatch):
+    seen = []
+
+    async def request(op, *, retry_unknown, **params):
+        seen.append((op, params))
+        return RpcResponse(id="r1", ok=True, result={"message_id": SOURCE})
+
+    adapter = FoxFleetAdapter(PlatformConfig(enabled=True, extra={"hub_url": "http://127.0.0.1:1"}))
+    monkeypatch.setattr(adapter, "_request", request)
+    bound = turn(request)
+    with rooms.bind_turn(bound):
+        sent = await adapter.send(CHAT, "first draft")
+        edited = await adapter.edit_message(CHAT, SOURCE, "final draft", finalize=True)
+    assert isinstance(sent, SendResult) and sent.success is True
+    assert isinstance(edited, SendResult) and edited.success is True
+    op, params = seen[0]
+    assert op == "message.send"
+    assert params["dispatch_id"] == bound.dispatch_id and params["run_token"] == bound.run_token
+    op, params = seen[1]
+    assert op == "message.edit"
+    assert params["dispatch_id"] == bound.dispatch_id and params["run_token"] == bound.run_token
+    assert params["final"] is True

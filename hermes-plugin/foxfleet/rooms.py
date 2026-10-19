@@ -46,8 +46,8 @@ HANDOFF_SCHEMA = {
 class RoomTurn:
     """One admitted room dispatch, as the tool needs to see it.
 
-    ``dispatch_id`` and ``run_token`` are the local attempt credentials; the frozen handoff frame carries
-    the room and source message, and the hub binds the authenticated agent to the running attempt itself.
+    ``dispatch_id`` and ``run_token`` identify the exact live attempt. Every room output frame carries both
+    so the hub can fail closed instead of binding a delayed frame to a newer turn in the same room.
     """
     chat_id: str
     thread_id: str
@@ -99,7 +99,7 @@ def _agent_ref(value: Any) -> Optional[str]:
 def handoff_frame(turn: RoomTurn, *, target_agent_id: str, text: str,
                   source_message_id: Optional[str] = None,
                   idempotency_key: Optional[str] = None) -> dict[str, Any]:
-    """The contract frame for one handoff. Never carries dispatch/run credentials on the wire."""
+    """The contract frame for one handoff, bound to the exact dispatch attempt."""
     target = _agent_ref(target_agent_id)
     if target is None:
         raise protocol.ProtocolError("invalid_request", "target_agent_id must be agent:<id>")
@@ -114,6 +114,7 @@ def handoff_frame(turn: RoomTurn, *, target_agent_id: str, text: str,
         "handoff.request", "handoff", chat_id=turn.chat_id, thread_id=turn.thread_id,
         source_message_id=source, target_agent_id=target, text=text,
         idempotency_key=idempotency_key,
+        dispatch_id=turn.dispatch_id, run_token=turn.run_token,
     )
 
 
