@@ -195,7 +195,7 @@ test('read/preferences are per device and reflect in the conversation view', asy
   }
 });
 
-test('restart keeps the shared transcript; stop/resume stay unregistered (Task 5)', async (t) => {
+test('restart keeps the shared transcript; stop/resume are registered owner controls (Task 5)', async (t) => {
   const h = await bootHub(t);
   await addAgent(h, h.token, 'alpha');
   const room = await createRoom(h, { title: 'Durable', member_ids: ['alpha'] });
@@ -207,8 +207,14 @@ test('restart keeps the shared transcript; stop/resume stay unregistered (Task 5
   assert.deepEqual(again.body.members.map((m) => m.id), ['agent:alpha']);
   const page = await json(await h.call(`/api/conversations/${room.id}/messages`));
   assert.deepEqual(page.body.messages.map((m) => m.text), ['survives restart']);
-  assert.equal((await h.call(`/api/conversations/${room.id}/stop`, { method: 'POST', data: {} })).status, 404);
-  assert.equal((await h.call(`/api/conversations/${room.id}/resume`, { method: 'POST', data: {} })).status, 404);
+  const stopped = await h.call(`/api/conversations/${room.id}/stop`, { method: 'POST', data: {} });
+  assert.equal(stopped.status, 200);
+  const stoppedBody = await stopped.json();
+  assert.equal(stoppedBody.confirmed, true);
+  assert.equal(stoppedBody.paused, true);
+  const resumed = await h.call(`/api/conversations/${room.id}/resume`, { method: 'POST', data: {} });
+  assert.equal(resumed.status, 200);
+  assert.equal((await resumed.json()).title, 'Durable');
 });
 
 test('corrupt room file is refused at the HTTP boundary too (503, no repair)', async (t) => {

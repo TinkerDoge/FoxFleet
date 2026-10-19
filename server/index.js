@@ -739,7 +739,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           if (!agent) throw fault(404, 'Unknown agent for this account', 'agent_not_in_account');
           return { actor_id: 'agent:' + agent.name, name: agent.label || agent.name };
         };
-        return await conversationsHttp({ req, res, url, parts, auth, store: ctx.reg.conversations, agentOf, sendJson, readJson });
+        const roomControl = bot ? {
+          stop: (id, actor) => bot.roomStop(scopeOf(ctx), id, actor),
+          resume: (id, actor) => bot.roomResume(scopeOf(ctx), id, actor),
+        } : null;
+        return await conversationsHttp({ req, res, url, parts, auth, store: ctx.reg.conversations, agentOf, sendJson, readJson, roomControl });
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await (parts[2].startsWith('bot.') && bot ? bot.serveMediaToken({ token: parts[2], scope: scopeOf(ctx), req, res }) : media.serve({ token: parts[2], scope: scopeOf(ctx), req, res }));
       if (req.method === 'GET' && url.pathname === '/api/media-proxy') {

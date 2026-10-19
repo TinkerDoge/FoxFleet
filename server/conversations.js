@@ -4,6 +4,28 @@ import { fault, ROOM_LIMITS } from './config.js';
 
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
+/** Durable-only Stop when no bot transport is mounted: cancellation can be requested from nowhere. */
+async function durableStop(store, id, owner) {
+  const result = await store.stop(id, { ownerId: owner.id });
+  const agents = {}, dispatches = [];
+  for (const row of result.active) {
+    agents[row.target_agent_id] = 'uncertain';
+    dispatches.push({ dispatch_id: row.id, target_agent_id: row.target_agent_id, status: 'uncertain' });
+  }
+  for (const row of result.cancelled) {
+    if (!(row.target_agent_id in agents)) agents[row.target_agent_id] = 'stopped';
+    dispatches.push({ dispatch_id: row.id, target_agent_id: row.target_agent_id, status: 'stopped', kind: row.kind });
+  }
+  const confirmed = result.active.length === 0;
+  return {
+    stopped: confirmed, confirmed, state: confirmed ? (dispatches.length ? 'stopped' : 'idle') : 'running',
+    epoch: result.epoch, paused: true, agents, dispatches,
+    cancelled_queued: result.cancelled.filter((row) => row.kind === 'queued').length,
+    cancelled_approvals: result.cancelled.filter((row) => row.kind === 'approval').length,
+    cancelled_cards: result.cards_closed,
+  };
+}
+
 function queryInt(value, name) {
   if (value === null || value === undefined || value === '') return undefined;
   if (!/^\d{1,15}$/.test(value)) throw fault(400, `Invalid ${name}`);
@@ -12,10 +34,10 @@ function queryInt(value, name) {
 
 /**
  * Handle any `/api/conversations…` request for one authenticated account. Returns the response (the caller
- * passes `sendJson`) or throws a hub fault; unknown children are a plain 404, and stop/resume are not
- * registered yet (Task 5).
+ * passes `sendJson`) or throws a hub fault; unknown children are a plain 404. Owner Stop/Resume go through
+ * the account's dispatch engine when the bot API is on; the durable store remains the fallback control plane.
  */
-export async function conversationsHttp({ req, res, url, parts, auth, store, agentOf, sendJson, readJson }) {
+export async function conversationsHttp({ req, res, url, parts, auth, store, agentOf, sendJson, readJson, roomControl }) {
   const owner = { id: auth.user.id, name: auth.user.username };
   const device = auth.device ?? '';
   const id = parts[2];
@@ -101,6 +123,18 @@ export async function conversationsHttp({ req, res, url, parts, auth, store, age
     return sendJson(res, 200, await store.setPreferences(id, { device, preferences: body }));
   }
 
-  // `/stop` and `/resume` belong to Task 5 and stay unregistered for now.
+  if (parts.length === 4 && action === 'stop' && method === 'POST') {
+    const human = { kind: 'human', ...owner };
+    const result = roomControl?.stop ? await roomControl.stop(id, human) : await durableStop(store, id, human);
+    return sendJson(res, 200, result);
+  }
+
+  if (parts.length === 4 && action === 'resume' && method === 'POST') {
+    const human = { kind: 'human', ...owner };
+    if (roomControl?.resume) await roomControl.resume(id, human);
+    else await store.resume(id, { ownerId: owner.id });
+    return sendJson(res, 200, await store.get(id, { device }));
+  }
+
   throw fault(404, 'Not found');
 }
