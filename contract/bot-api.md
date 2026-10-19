@@ -470,3 +470,182 @@ Plugins download these ids into their own media cache before handing local paths
 Bot replies expose attachments as `MEDIA:/bot-media/<id>/<safe-name.ext>` in transcripts and live replies.
 This is a hub namespace. An account's `POST /api/agents/:name/media {ref}` resolves only attachments
 in that bot's messages to a short-lived, account-bound `/api/media/<token>` URL.
+
+## 8. Groups (foxfleet.bot/1.2)
+
+Release A adds **groups before channels**, and groups only. A room is one conversation with one human owner;
+agents belong to that account. Routing is mention/reply-driven: there is no `@everyone` and no automatic leader.
+Serial agent turns. A multi-target human request queues in stable agent-id order. A bounded handoff chain has
+at most **4 dispatches** per root and a **5-minute** (`300000` ms) chain deadline. New members may read all retained
+room history. Nothing here changes global models, profiles, permissions or memory policies.
+
+The machine-readable single source is `contract/rooms-frames.schema.json` (JSON Schema 2020-12 plus the
+`invariants` list). `contract/bot-frames.vectors.json` has the accepted and rejected examples in its additive
+`rooms` block. This section, and that schema, are what the hub, plugin, web and Android build against.
+
+### Negotiation and features
+
+Protocol `foxfleet.bot/1.2`, subprotocol `foxfleet.bot.v1.2`. A 1.2 client offers all three subprotocols:
+
+```
+Sec-WebSocket-Protocol: foxfleet.bot.v1.2, foxfleet.bot.v1.1, foxfleet.bot.v1
+```
+
+The hub selects the highest it supports: `foxfleet.bot.v1.2` > `foxfleet.bot.v1.1` > `foxfleet.bot.v1`. A 1.2 client
+therefore still connects at 1.1 to an old hub. Old clients never offer v1.2, so they never receive group frames.
+A 1.2 `hello` is:
+
+```json
+{ "t": "hello", "protocol": "foxfleet.bot/1.2", "bot": "<botId>", "resume_from": 41, "latest_event_id": 44,
+  "heartbeat_ms": 25000,
+  "features": ["stop", "cards", "media", "groups"],
+  "limits": { "max_frame_bytes": 1048576, "max_text_bytes": 65536, "window": 100, "max_unacked": 1000,
+    "max_mentions": 64, "max_actor_name_chars": 256, "max_conversation_title_chars": 256,
+    "max_room_members": 100, "max_handoff_dispatches_per_root": 4, "handoff_chain_ttl_ms": 300000,
+    "max_rooms": 500 } }
+```
+
+Group frames exist only on a negotiated 1.2 socket whose features include `groups`. `POST /api/bot/rpc` stays the
+DM/text subset: there are no groups over HTTP in Release A. The user-side conversation routes are in
+`contract/openapi.json` (`/api/conversations`, `/api/conversations/{id}`, members, messages, stop, resume, read,
+preferences).
+
+### Identity carriers
+
+Room id, thread id, chat type and the authenticated actor travel in frame/source fields, never in
+`event.metadata` (native admission has a closed metadata contract):
+
+| field | value |
+|---|---|
+| `chat_id` | room id, same `fc_` grammar as a DM chat (`^fc_[A-Za-z0-9_-]{16}$`) |
+| `thread_id` | stable room-scoped thread, `fcr_` + 16 URL-safe characters; with `chat_type: "group"` this yields one shared session per agent with zero global config change |
+| `chat_type` | `"group"` |
+| `message_id` | `fm_` + 16 URL-safe characters |
+| `dispatch_id` | `fd_` + 16 URL-safe characters |
+| `stop_id` | `fs_` + 16 (unchanged) |
+| card ids | `frq_` request, `fcb_` callback (unchanged) |
+
+Rooms are addressed by `chat_id`. `group_id` and `thread_id` stay **reserved fields** on `message.send` /
+`message.edit` under 1.2 as well; a client never sends either on a send.
+
+An `actor` is the authenticated sender and is always filled by the hub, never trusted from a request body:
+
+```json
+{ "kind": "human", "id": "<hub account id>", "name": "<username>", "is_bot": false }
+{ "kind": "agent", "id": "agent:<agentId>", "name": "<display name>", "is_bot": true }
+```
+
+`kind` is `human` or `agent`. An agent actor always has `is_bot: true` and an `agent:<agentId>` id; a human actor
+always has `is_bot: false` and a hub account id. Agent-origin messages are admitted as bot senders
+(per-profile `FOXFLEET_ALLOW_BOTS=mentions`, owner-approved) with `user.id = "agent:<id>"`, `is_bot = true`, and
+`allow_gateway_control = false`. The authenticated `kind` is what lets the plugin enforce owner-only cards and stop.
+`actor.name` is 1 … 256 printable characters.
+
+### Mentions
+
+`mentions` is an array of typed agent entities (0 … 64 entries). Each entity is:
+
+```json
+{ "kind": "agent", "id": "agent:<agentId>", "offset": 6, "length": 11 }
+```
+
+`offset` and `length` are **UTF-16 code units** into `text` (the same units as JavaScript string indices and
+Android/Java `String`), not Unicode scalar values or bytes. `0 <= offset`, `1 <= length`, and
+`offset + length <= text.length`. A span never starts on a low surrogate or ends on a high surrogate, so a
+surrogate-pair emoji (for example `🤖`) is covered by both code units. Spans do not overlap. Every id names an agent
+member of that room; an unknown id, a non-member, a malformed id or a bad span is refused (`not_found` or
+`invalid_request`) and the message is not stored.
+
+### Frames
+
+Hub → bot, room variants (existing 1.0/1.1 frames are byte-identical):
+
+```json
+{ "t": "message.new", "event_id": 45, "chat_id": "fc_…", "chat_type": "group", "thread_id": "fcr_…",
+  "message_id": "fm_…", "actor": { "kind": "human", "id": "…", "name": "owner", "is_bot": false },
+  "mentions": [{ "kind": "agent", "id": "agent:researcher", "offset": 6, "length": 11 }],
+  "text": "hello @researcher", "date": 1760000000000, "reply_to"?: "fm_…" }
+```
+
+`reply_to` must name an `fm_` message committed in this same room; a reply to another room is `not_found`.
+`message.new` is a durable event, acknowledged and replayed exactly like a DM event.
+
+```json
+{ "t": "chat.member", "event_id": 46, "chat_id": "fc_…", "chat_type": "group", "thread_id": "fcr_…",
+  "action": "join" | "leave",
+  "actor": { "kind": "human", "id": "…", "name": "owner", "is_bot": false },
+  "member": { "kind": "agent", "id": "agent:<id>", "name": "<display name>", "is_bot": true },
+  "date": 1760000000000 }
+```
+
+Only the human owner changes membership; members are agents. A join gives the agent access to all retained room
+history.
+
+`chat.stop` and card `callback` keep the existing callback/answer pattern and add the room carriers plus an
+authenticated actor:
+
+```json
+{ "t": "chat.stop", "stop_id": "fs_…", "chat_id": "fc_…", "chat_type": "group", "thread_id": "fcr_…",
+  "actor": { "kind": "human", "id": "…", "name": "owner", "is_bot": false },
+  "date": 1760000000000, "expires_at": 1760000010000 }
+{ "t": "callback", "callback_id": "fcb_…", "request_id": "frq_…", "chat_id": "fc_…", "chat_type": "group",
+  "thread_id": "fcr_…", "actor": { "kind": "human", "id": "…", "name": "owner", "is_bot": false },
+  "kind": "approval" | "confirm" | "clarify", "value": { … } }
+```
+
+Stop and card taps are owner-only: an agent actor never satisfies an owner check. `callback.answer` for a room
+carries the room too:
+
+```json
+{ "t": "callback.answer", "id": "…", "callback_id": "fs_…" | "fcb_…", "chat_id": "fc_…",
+  "thread_id": "fcr_…", "outcome": "stopped" | "idle" | "refused" | "expired" | "resolved" }
+```
+
+A `fs_` id accepts only stop outcomes; an `fcb_` id accepts only card outcomes. The existing rules (one outstanding
+stop per chat, 10-second expiry, first accepted tap wins) still apply.
+
+Bot → hub, room variants:
+
+```json
+{ "t": "handoff.request", "id": "…", "chat_id": "fc_…", "thread_id": "fcr_…",
+  "source_message_id": "fm_…", "target_agent_id": "agent:<id>", "text": "please take this",
+  "idempotency_key"?: "…" }
+```
+
+`handoff.request` is the plugin-registered, room-scoped handoff tool. The hub authenticates the bot token,
+attributes the dispatch to that agent, checks the committed `source_message_id` is in this room, applies the
+chain limits (4 dispatches per root, 5 minutes), and fans out. It is **not** `inject_message`. On success the result
+is `{ "dispatch_id": "fd_…", "chat_id", "target_agent_id", "root_id", "depth", "deadline_at" }`
+(`handoff_limit` / `handoff_expired` otherwise).
+
+```json
+{ "t": "chat.get", "id": "…", "chat_id": "fc_…", "thread_id": "fcr_…" }
+{ "t": "chat.cancel", "id": "…", "chat_id": "fc_…", "thread_id": "fcr_…", "dispatch_id": "fd_…" }
+```
+
+`chat.get` reads one room's committed state; `chat.cancel` cancels a queued dispatch before it starts. Under 1.0
+and 1.1 validators all three of `chat.member`, `chat.get` and `chat.cancel` stay reserved (`unsupported`); they
+become real only under the 1.2 validator, the same pattern as `validateStopAnswer` for 1.1.
+
+`message.send`, `message.edit`, `message.delete` and `chat.action` keep their 1.0/1.1 fields in a room and add an
+optional `mentions` array; `group_id` and `thread_id` remain reserved. Room `card.send` / `card.close` add
+`actor_kind: "agent"` (cards are authored by an agent; a human value is `forbidden`). `ack`, `ping`, `pong`,
+`res` and `error` are unchanged.
+
+### Limits
+
+Reused bounds are unchanged: frame 1 MiB (`max_frame_bytes` 1048576), text 64 KiB (`max_text_bytes` 65536), the
+100-event window, 1000 unacked events, and the existing id regexes. Groups add:
+
+| limit | value | meaning |
+|---|---|---|
+| `max_mentions` | 64 | typed mention entities per message |
+| `max_actor_name_chars` | 256 | printable characters in `actor.name` |
+| `max_conversation_title_chars` | 256 | printable characters in a conversation title |
+| `max_room_members` | 100 | agent members per room |
+| `max_handoff_dispatches_per_root` | 4 | dispatches in one chain (at most 4 dispatches) |
+| `handoff_chain_ttl_ms` | 300000 | 5-minute chain deadline |
+| `max_rooms` | 500 | rooms per account |
+
+Rejected group frames use the existing protocol codes `invalid_request`, `not_found`, `forbidden`, `unsupported`
+and `too_large`. A group frame on a v1.1 socket is `unsupported`.

@@ -1,0 +1,358 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://foxfleet.dev/contract/rooms-frames.schema.json",
+  "title": "FoxFleet room frames, protocol foxfleet.bot/1.2",
+  "description": "The single frozen room contract for the hub, plugin, web and Android clients. JSON Schema covers frame shape; `invariants` covers the cross-field rules JSON Schema cannot express (authenticated actor kind, UTF-16 mention spans, same-room replies).",
+  "protocol": "foxfleet.bot/1.2",
+  "subprotocol": "foxfleet.bot.v1.2",
+  "features": ["stop", "cards", "media", "groups"],
+  "negotiation": {
+    "client_offers": ["foxfleet.bot.v1.2", "foxfleet.bot.v1.1", "foxfleet.bot.v1"],
+    "hub_preference": ["foxfleet.bot.v1.2", "foxfleet.bot.v1.1", "foxfleet.bot.v1"],
+    "rule": "The hub selects the first subprotocol it supports from the client's ordered offer. A 1.2 client offers all three, so an old 1.1 hub still connects at 1.1. Old clients never offer v1.2 and therefore never receive group frames."
+  },
+  "limits": {
+    "max_frame_bytes": 1048576,
+    "max_text_bytes": 65536,
+    "window": 100,
+    "max_unacked": 1000,
+    "max_mentions": 64,
+    "max_actor_name_chars": 256,
+    "max_conversation_title_chars": 256,
+    "max_room_members": 100,
+    "max_handoff_dispatches_per_root": 4,
+    "handoff_chain_ttl_ms": 300000,
+    "max_rooms": 500
+  },
+  "invariants": [
+    {"id": "actor_kind_is_bot", "description": "kind=agent requires is_bot=true and id=agent:<agentId>; kind=human requires is_bot=false and a hub account id."},
+    {"id": "authenticated_actor", "description": "The hub, not the client, fills actor, kinds and is_bot from the authenticated socket or session."},
+    {"id": "mention_utf16_span", "description": "offset and length are UTF-16 code units into text; 0 <= offset, 1 <= length, offset+length <= text.length; a span never starts on a low surrogate or ends on a high surrogate."},
+    {"id": "mentions_no_overlap", "description": "Mention spans do not overlap and there are at most max_mentions entries."},
+    {"id": "mention_is_member", "description": "Every mention id names an agent member of this room."},
+    {"id": "reply_same_room", "description": "reply_to names an fm_ message committed in this same chat_id; a reply to another room is not_found."},
+    {"id": "handoff_source_committed", "description": "handoff.request.source_message_id is a committed fm_ message in this room and this bot's authenticated actor is the dispatcher."},
+    {"id": "handoff_chain", "description": "At most max_handoff_dispatches_per_root dispatches per root message and the chain expires after handoff_chain_ttl_ms."},
+    {"id": "owner_only", "description": "Cards and stop are owner-only; agent actors never satisfy an owner check."},
+    {"id": "group_id_reserved", "description": "group_id and thread_id stay reserved fields on message.send/message.edit. Rooms are addressed by chat_id."},
+    {"id": "group_capability", "description": "Group frames exist only on a negotiated foxfleet.bot/1.2 socket whose hello features include groups."}
+  ],
+  "definitions": {
+    "request_id": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,64}$"},
+    "chat_id": {"type": "string", "pattern": "^fc_[A-Za-z0-9_-]{16}$"},
+    "thread_id": {"type": "string", "pattern": "^fcr_[A-Za-z0-9_-]{16}$"},
+    "message_id": {"type": "string", "pattern": "^fm_[A-Za-z0-9_-]{16}$"},
+    "dispatch_id": {"type": "string", "pattern": "^fd_[A-Za-z0-9_-]{16}$"},
+    "stop_id": {"type": "string", "pattern": "^fs_[A-Za-z0-9_-]{16}$"},
+    "card_request_id": {"type": "string", "pattern": "^frq_[A-Za-z0-9_-]{16}$"},
+    "card_callback_id": {"type": "string", "pattern": "^fcb_[A-Za-z0-9_-]{16}$"},
+    "agent_ref": {"type": "string", "pattern": "^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"},
+    "idempotency_key": {"type": "string", "pattern": "^[A-Za-z0-9._:-]{1,128}$"},
+    "printable_name": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^\\u0000-\\u001f\\u007f]+$"},
+    "human_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name", "is_bot"],
+      "properties": {
+        "kind": {"enum": ["human"]},
+        "id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$"},
+        "name": {"$ref": "#/definitions/printable_name"},
+        "is_bot": {"enum": [false]}
+      }
+    },
+    "agent_actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "name", "is_bot"],
+      "properties": {
+        "kind": {"enum": ["agent"]},
+        "id": {"$ref": "#/definitions/agent_ref"},
+        "name": {"$ref": "#/definitions/printable_name"},
+        "is_bot": {"enum": [true]}
+      }
+    },
+    "actor": {
+      "oneOf": [{"$ref": "#/definitions/human_actor"}, {"$ref": "#/definitions/agent_actor"}]
+    },
+    "mention": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id", "offset", "length"],
+      "properties": {
+        "kind": {"enum": ["agent"]},
+        "id": {"$ref": "#/definitions/agent_ref"},
+        "offset": {"type": "integer", "minimum": 0},
+        "length": {"type": "integer", "minimum": 1, "maximum": 256}
+      }
+    },
+    "mentions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/definitions/mention"}
+    },
+    "hello_limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_frame_bytes", "max_text_bytes", "window", "max_unacked", "max_mentions", "max_actor_name_chars", "max_conversation_title_chars", "max_room_members", "max_handoff_dispatches_per_root", "handoff_chain_ttl_ms", "max_rooms"],
+      "properties": {
+        "max_frame_bytes": {"type": "integer", "minimum": 1},
+        "max_text_bytes": {"type": "integer", "minimum": 1},
+        "window": {"type": "integer", "minimum": 1},
+        "max_unacked": {"type": "integer", "minimum": 1},
+        "max_mentions": {"type": "integer", "minimum": 1},
+        "max_actor_name_chars": {"type": "integer", "minimum": 1},
+        "max_conversation_title_chars": {"type": "integer", "minimum": 1},
+        "max_room_members": {"type": "integer", "minimum": 1},
+        "max_handoff_dispatches_per_root": {"type": "integer", "minimum": 1},
+        "handoff_chain_ttl_ms": {"type": "integer", "minimum": 1},
+        "max_rooms": {"type": "integer", "minimum": 1}
+      }
+    }
+  },
+  "frames": {
+    "hello": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "protocol", "bot", "resume_from", "latest_event_id", "heartbeat_ms", "features", "limits"],
+      "properties": {
+        "t": {"enum": ["hello"]},
+        "protocol": {"enum": ["foxfleet.bot/1.2"]},
+        "bot": {"type": "string", "minLength": 1, "maxLength": 128},
+        "resume_from": {"type": "integer", "minimum": 0},
+        "latest_event_id": {"type": "integer", "minimum": 0},
+        "heartbeat_ms": {"type": "integer", "minimum": 1},
+        "features": {"type": "array", "minItems": 4, "maxItems": 4, "uniqueItems": true, "items": {"enum": ["stop", "cards", "media", "groups"]}},
+        "limits": {"$ref": "#/definitions/hello_limits"}
+      }
+    },
+    "message.new": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "event_id", "chat_id", "chat_type", "thread_id", "message_id", "actor", "mentions", "text", "date"],
+      "properties": {
+        "t": {"enum": ["message.new"]},
+        "event_id": {"type": "integer", "minimum": 1},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "chat_type": {"enum": ["group"]},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "message_id": {"$ref": "#/definitions/message_id"},
+        "actor": {"$ref": "#/definitions/actor"},
+        "mentions": {"$ref": "#/definitions/mentions"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "reply_to": {"$ref": "#/definitions/message_id"},
+        "date": {"type": "integer", "minimum": 0}
+      }
+    },
+    "chat.member": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "event_id", "chat_id", "chat_type", "thread_id", "action", "actor", "member", "date"],
+      "properties": {
+        "t": {"enum": ["chat.member"]},
+        "event_id": {"type": "integer", "minimum": 1},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "chat_type": {"enum": ["group"]},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "action": {"enum": ["join", "leave"]},
+        "actor": {"$ref": "#/definitions/human_actor"},
+        "member": {"$ref": "#/definitions/agent_actor"},
+        "date": {"type": "integer", "minimum": 0}
+      }
+    },
+    "chat.stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "stop_id", "chat_id", "chat_type", "thread_id", "actor", "date", "expires_at"],
+      "properties": {
+        "t": {"enum": ["chat.stop"]},
+        "stop_id": {"$ref": "#/definitions/stop_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "chat_type": {"enum": ["group"]},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "actor": {"$ref": "#/definitions/human_actor"},
+        "date": {"type": "integer", "minimum": 0},
+        "expires_at": {"type": "integer", "minimum": 0}
+      }
+    },
+    "callback": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "callback_id", "request_id", "chat_id", "chat_type", "thread_id", "actor", "kind", "value"],
+      "properties": {
+        "t": {"enum": ["callback"]},
+        "callback_id": {"$ref": "#/definitions/card_callback_id"},
+        "request_id": {"$ref": "#/definitions/card_request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "chat_type": {"enum": ["group"]},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "actor": {"$ref": "#/definitions/human_actor"},
+        "kind": {"enum": ["approval", "confirm", "clarify"]},
+        "value": {"type": "object"}
+      }
+    },
+    "handoff.request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "thread_id", "source_message_id", "target_agent_id", "text"],
+      "properties": {
+        "t": {"enum": ["handoff.request"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "source_message_id": {"$ref": "#/definitions/message_id"},
+        "target_agent_id": {"$ref": "#/definitions/agent_ref"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+      }
+    },
+    "chat.get": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "thread_id"],
+      "properties": {
+        "t": {"enum": ["chat.get"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "thread_id": {"$ref": "#/definitions/thread_id"}
+      }
+    },
+    "chat.cancel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "thread_id", "dispatch_id"],
+      "properties": {
+        "t": {"enum": ["chat.cancel"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "dispatch_id": {"$ref": "#/definitions/dispatch_id"}
+      }
+    },
+    "message.send": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "text"],
+      "properties": {
+        "t": {"enum": ["message.send"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "format": {"enum": ["markdown", "text"]},
+        "reply_to": {"$ref": "#/definitions/message_id"},
+        "mentions": {"$ref": "#/definitions/mentions"},
+        "final": {"type": "boolean"},
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+      }
+    },
+    "message.edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "message_id", "text"],
+      "properties": {
+        "t": {"enum": ["message.edit"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "message_id": {"$ref": "#/definitions/message_id"},
+        "text": {"type": "string", "minLength": 1, "maxLength": 65536},
+        "format": {"enum": ["markdown", "text"]},
+        "mentions": {"$ref": "#/definitions/mentions"},
+        "final": {"type": "boolean"},
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+      }
+    },
+    "message.delete": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "message_id"],
+      "properties": {
+        "t": {"enum": ["message.delete"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "message_id": {"$ref": "#/definitions/message_id"},
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"}
+      }
+    },
+    "chat.action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "action"],
+      "properties": {
+        "t": {"enum": ["chat.action"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "action": {"enum": ["typing"]}
+      }
+    },
+    "callback.answer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "callback_id", "chat_id", "thread_id", "outcome"],
+      "properties": {
+        "t": {"enum": ["callback.answer"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "callback_id": {"type": "string", "pattern": "^(fs|fcb)_[A-Za-z0-9_-]{16}$"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "thread_id": {"$ref": "#/definitions/thread_id"},
+        "outcome": {"enum": ["stopped", "idle", "refused", "expired", "resolved"]}
+      }
+    },
+    "card.send": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "chat_id", "kind", "instance", "actor_kind"],
+      "properties": {
+        "t": {"enum": ["card.send"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "chat_id": {"$ref": "#/definitions/chat_id"},
+        "kind": {"enum": ["approval", "confirm", "clarify"]},
+        "instance": {"type": "string", "minLength": 1, "maxLength": 128},
+        "actor_kind": {"enum": ["agent"]},
+        "card_key": {"type": "string", "minLength": 1, "maxLength": 128},
+        "ttl_ms": {"type": "integer", "minimum": 5000, "maximum": 1800000},
+        "idempotency_key": {"$ref": "#/definitions/idempotency_key"},
+        "command": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "description": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "questions": {"type": "array", "minItems": 1, "maxItems": 6, "items": {"type": "object"}}
+      }
+    },
+    "card.close": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "id", "actor_kind"],
+      "properties": {
+        "t": {"enum": ["card.close"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "actor_kind": {"enum": ["agent"]},
+        "request_id": {"$ref": "#/definitions/card_request_id"},
+        "all_except_instance": {"type": "string", "minLength": 1, "maxLength": 128},
+        "reason": {"type": "string", "minLength": 1, "maxLength": 64}
+      },
+      "oneOf": [
+        {"required": ["request_id"]},
+        {"required": ["all_except_instance"]}
+      ]
+    },
+    "ack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t", "event_id"],
+      "properties": {
+        "t": {"enum": ["ack"]},
+        "id": {"$ref": "#/definitions/request_id"},
+        "event_id": {"type": "integer", "minimum": 0}
+      }
+    },
+    "ping": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t"],
+      "properties": {"t": {"enum": ["ping"]}, "id": {"$ref": "#/definitions/request_id"}}
+    },
+    "pong": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["t"],
+      "properties": {"t": {"enum": ["pong"]}, "id": {"$ref": "#/definitions/request_id"}}
+    }
+  }
+}
