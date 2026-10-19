@@ -937,6 +937,7 @@ class HubApi(private val store: SettingsStore) {
                 system = o.bool("system") == true, code = o.str("code"), deliveryState = o.str("delivery_state"),
                 dispatchId = o.str("dispatch_id"), rootId = o.str("root_id"),
                 seq = o["seq"]?.jsonPrimitive?.intOrNull, deleted = o.bool("deleted") == true,
+                reasoning = o.str("reasoning").orEmpty(),
             )
         }
 

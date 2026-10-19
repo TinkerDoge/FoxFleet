@@ -47,6 +47,8 @@ export interface ConversationMessage {
   reply_to?: string | null; mentions?: ConversationMention[]; edited?: boolean; media?: ConversationMedia[];
   system?: boolean; code?: string | null; delivery_state?: string | null; dispatch_id?: string | null; root_id?: string | null;
   seq?: number; deleted?: boolean;
+  /** The agent's thinking, when it sent any: a display field, never part of the answer. */
+  reasoning?: string; reasoning_truncated?: boolean;
 }
 export interface ConversationMessagePage { messages: ConversationMessage[]; has_more: boolean; next_cursor?: number | null; total?: number }
 export interface ConversationList { conversations: Conversation[]; total?: number }

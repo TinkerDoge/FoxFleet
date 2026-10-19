@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import type { JSX } from 'preact';
 import type { Client } from '../api/client';
 import type { AgentSummary, AuthInfo, Conversation, ConversationMedia, ConversationMember, ConversationMessage } from '../api/types';
@@ -6,14 +6,54 @@ import { Icon } from '../components/Icon';
 import { navigate } from '../router';
 import { clock } from '../lib/time';
 import { humanSize } from '../lib/files';
+import { avatarSeed } from '../lib/agentList';
 import { t } from '../i18n/t';
 import { ConversationDetails } from './ConversationDetails';
 import { RequestCards } from '../chat/RequestCards';
+import { Reasoning } from '../chat/Reasoning';
+import { Markdown } from '../chat/Message';
 import { answerRoomRequest, applyLiveEvent, connectLive, loadOlderRoom, loadRoom, markRoomRead, mentionToken, mentionsIn, refreshRoomRequests, roomView, sendRoomMessage, setActiveRoom, stopRoom, resumeRoom, useConversations } from './store';
 
 const isMine = (m: ConversationMessage, me?: ConversationMember) => Boolean(me && m.sender.id === me.id);
 const memberFor = (c: Conversation | undefined, id: string) => c?.members.find((m) => m.id === id || m.name === id);
 
+/** The names a message mentions, as they are written in the room. */
+const mentionNames = (message: ConversationMessage, conversation?: Conversation): string[] =>
+  (message.mentions ?? []).map((s) => memberFor(conversation, s.id)?.name ?? s.id.replace(/^agent:/, '')).filter(Boolean);
+
+/**
+ * Pick the room's @mentions out of rendered markdown: the accent run the plain text path used.
+ * The offsets of a mention are offsets in the source text, so the rendered text is matched by name.
+ */
+function markMentions(root: HTMLElement, names: string[]) {
+  if (!names.length) return;
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(`@(${names.map(escape).join('|')})`, 'g');
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  for (let n = walker.nextNode(); n; n = walker.nextNode()) nodes.push(n as Text);
+  for (const node of nodes) {
+    const text = node.nodeValue ?? '';
+    if (!text.includes('@')) continue;
+    re.lastIndex = 0;
+    const frag = document.createDocumentFragment();
+    let at = 0, hit = false, m: RegExpExecArray | null;
+    while ((m = re.exec(text))) {
+      hit = true;
+      if (m.index > at) frag.append(text.slice(at, m.index));
+      const span = document.createElement('span');
+      span.className = 'mention';
+      span.textContent = m[0];
+      frag.append(span);
+      at = m.index + m[0].length;
+    }
+    if (!hit) continue;
+    if (at < text.length) frag.append(text.slice(at));
+    node.parentNode?.replaceChild(frag, node);
+  }
+}
+
+/** My own words: plain text like the DM bubble, with the room's mentions picked out. */
 function MentionText({ message, conversation }: { message: ConversationMessage; conversation?: Conversation }) {
   const spans = (message.mentions ?? []).filter((s) => s.offset >= 0 && s.length > 0 && s.offset + s.length <= message.text.length).sort((a, b) => a.offset - b.offset);
   const parts: JSX.Element[] = [];
@@ -26,7 +66,13 @@ function MentionText({ message, conversation }: { message: ConversationMessage; 
     at = s.offset + s.length;
   });
   if (at < message.text.length) parts.push(<span key="tail">{message.text.slice(at)}</span>);
-  return <p class="room-text">{parts.length ? parts : message.text}</p>;
+  return <p class="user-text">{parts.length ? parts : message.text}</p>;
+}
+
+/** One member of the room, as a small coloured face: every agent keeps its own. */
+function RoomAvatar({ name }: { name: string }) {
+  const { initials, hue } = useMemo(() => avatarSeed(name), [name]);
+  return <span class="avatar room-avatar" style={{ '--hue': hue } as any} aria-hidden="true"><span class="avatar-face">{initials}</span></span>;
 }
 
 function Media({ m, conversation, client }: { m: ConversationMedia; conversation: Conversation; client: Client }) {
@@ -37,8 +83,12 @@ function Media({ m, conversation, client }: { m: ConversationMedia; conversation
   return <a class="media-card room-file" href={url} download={m.name}><Icon name="file" size={20} /><span class="grow"><b>{m.name}</b><small class="muted">{humanSize(m.size)}</small></span><Icon name="download" size={18} /></a>;
 }
 
-function RoomMessage({ message, conversation, me, target, onJump, onReply, client }: {
-  message: ConversationMessage; conversation: Conversation; me?: ConversationMember; target?: ConversationMessage;
+/**
+ * One room message, in the same chat as a DM: a bubble for me on the right, and for every agent its own
+ * avatar, name and card on the left, with the thinking it published above the answer.
+ */
+function RoomMessage({ message, conversation, me, target, grouped, onJump, onReply, client }: {
+  message: ConversationMessage; conversation: Conversation; me?: ConversationMember; target?: ConversationMessage; grouped?: boolean;
   onJump: (id: string) => void; onReply: (m: ConversationMessage) => void; client: Client;
 }) {
   const mine = isMine(message, me);
@@ -49,28 +99,53 @@ function RoomMessage({ message, conversation, me, target, onJump, onReply, clien
   </div>;
   const author = message.sender.name || message.sender.id;
   const handoff = message.sender.kind === 'agent' && Boolean(message.reply_to);
-  return <article id={`room-msg-${message.id}`} data-mid={message.id} class={`msg room-msg${mine ? ' mine' : ''}${message.sender.kind === 'agent' ? ' from-agent' : ''}`}>
+  // The mentions are picked out of the rendered markdown; the callback stays stable so the body is not re-rendered.
+  const names = useMemo(() => mentionNames(message, conversation), [message.mentions, conversation]);
+  const namesRef = useRef(names);
+  namesRef.current = names;
+  const mark = useCallback((root: HTMLElement) => markMentions(root, namesRef.current), []);
+  const quote = message.reply_to ? <button type="button" class="reply-quote" onClick={() => onJump(message.reply_to!)} title={t('rooms.jumpToReply')}>
+    <span class="reply-bar" aria-hidden="true" />
+    <span class="grow"><b>{target ? (target.sender.id === me?.id ? t('rooms.you') : target.sender.name) : t('rooms.message')}</b><small>{target ? target.text.replace(/\s+/g, ' ').slice(0, 140) : t('rooms.jumpToReply')}</small></span>
+  </button> : null;
+  const body = mine
+    ? <MentionText message={message} conversation={conversation} />
+    : message.text ? <Markdown text={message.text} onMedia={() => {}} after={mark} /> : null;
+  const media = message.media?.length ? <div class="media-cards">{message.media.map((m) => <Media key={m.id} m={m} conversation={conversation} client={client} />)}</div> : null;
+  const footer = <span class="room-msg-foot">
+    <time class="msg-time muted">{clock(message.created_at)}</time>
+    {message.edited && <small class="muted">{t('rooms.edited')}</small>}
+  </span>;
+  const reply = <div class="room-msg-actions">
+    <button type="button" class="btn text" aria-label={t('msg.reply')} title={t('msg.reply')} onClick={() => onReply(message)}><Icon name="reply" size={16} />{t('msg.reply')}</button>
+  </div>;
+  if (mine) return <article id={`room-msg-${message.id}`} data-mid={message.id} class={`msg user room-msg${grouped ? ' grouped' : ''}`}>
     <div class="msg-row">
-      <div class="room-msg-body">
-        <div class="room-author">
-          <b>{author}</b>
-          {mine && <span class="room-tag">{t('rooms.you')}</span>}
-          {message.sender.kind === 'agent' && <span class="room-tag">{t('rooms.agent')}</span>}
+      <div class="bubble">
+        {quote}
+        {body}
+        {media}
+        {footer}
+      </div>
+    </div>
+    {reply}
+  </article>;
+  return <article id={`room-msg-${message.id}`} data-mid={message.id} class={`msg assistant room-msg${grouped ? ' grouped' : ''}`}>
+    <div class="msg-row">
+      <RoomAvatar name={author} />
+      <div class="room-col">
+        {(!grouped || handoff) && <div class="room-author">
+          {!grouped && <b>{author}</b>}
           {handoff && <span class="room-tag handoff" title={t('rooms.handoffHint')}><Icon name="share" size={12} />{t('rooms.handoff')}</span>}
-          <time class="msg-time muted">{clock(message.created_at)}</time>
-          {message.edited && <small class="muted">{t('rooms.edited')}</small>}
+        </div>}
+        <div class="msg-card">
+          {message.reasoning ? <Reasoning text={message.reasoning} id={message.id} /> : null}
+          {quote}
+          {body}
+          {media}
+          {footer}
         </div>
-        <div class="bubble room-bubble">
-          {message.reply_to && <button type="button" class="reply-quote" onClick={() => onJump(message.reply_to!)} title={t('rooms.jumpToReply')}>
-            <span class="reply-bar" aria-hidden="true" />
-            <span class="grow"><b>{target ? (target.sender.id === me?.id ? t('rooms.you') : target.sender.name) : t('rooms.message')}</b><small>{target ? target.text.replace(/\s+/g, ' ').slice(0, 140) : t('rooms.jumpToReply')}</small></span>
-          </button>}
-          <MentionText message={message} conversation={conversation} />
-          {message.media?.length ? <div class="media-cards">{message.media.map((m) => <Media key={m.id} m={m} conversation={conversation} client={client} />)}</div> : null}
-        </div>
-        <div class="room-msg-actions">
-          <button type="button" class="btn text" aria-label={t('msg.reply')} title={t('msg.reply')} onClick={() => onReply(message)}><Icon name="reply" size={16} />{t('msg.reply')}</button>
-        </div>
+        {reply}
       </div>
     </div>
   </article>;
@@ -164,9 +239,14 @@ export function ConversationView({ client, info, agents, conversationId, details
         {room.hasMore && <button type="button" class="btn text older" disabled={room.loadingOlder} onClick={() => void loadOlderRoom(client, conversationId, onAuthLost)}>{room.loadingOlder ? t('home.loading') : t('chat.loadOlder')}</button>}
         {room.loading && <p class="muted pad-sm" role="status">{t('home.loading')}</p>}
         {!room.loading && room.messages.length === 0 && <div class="empty"><Icon name="users" size={48} class="icon-hero" /><p>{t('rooms.emptyThread')}</p></div>}
-        {room.messages.map((m) => <div key={m.id} ref={(el) => { node.current[m.id] = el; }} class={flash === m.id ? 'room-jump-flash' : undefined}>
-          <RoomMessage message={m} conversation={c} me={me} target={m.reply_to ? byId.get(m.reply_to) : undefined} onJump={(id) => void jump(id)} onReply={(target) => { setReply(target); ta.current?.focus(); }} client={client} />
-        </div>)}
+        {room.messages.map((m, i) => {
+          // Consecutive messages from one sender group; a new sender always shows its name and face.
+          const prev = room.messages[i - 1];
+          const grouped = Boolean(prev && !prev.system && !m.system && prev.sender.id === m.sender.id);
+          return <div key={m.id} ref={(el) => { node.current[m.id] = el; }} class={flash === m.id ? 'room-jump-flash' : undefined}>
+            <RoomMessage message={m} conversation={c} me={me} target={m.reply_to ? byId.get(m.reply_to) : undefined} grouped={grouped} onJump={(id) => void jump(id)} onReply={(target) => { setReply(target); ta.current?.focus(); }} client={client} />
+          </div>;
+        })}
         {typing.length > 0 && <p class="status shimmer" role="status">{typing.join(', ')} {t('rooms.typing')}<span class="typing-dots" aria-hidden="true"><i /><i /><i /></span></p>}
         {jumping && <p class="muted small pad-sm" role="status">{t('rooms.jumping')}</p>}
       </div>

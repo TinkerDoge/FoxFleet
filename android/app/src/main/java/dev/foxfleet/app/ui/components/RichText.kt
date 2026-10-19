@@ -7,11 +7,13 @@ import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
 import androidx.compose.material3.MaterialTheme
+import com.mikepenz.markdown.model.MarkdownAnnotator
+import com.mikepenz.markdown.model.markdownAnnotator
 import dev.foxfleet.app.ui.LocalHubColors
 
 /** Markdown for agent replies: headings, lists, code, tables, links, inline images (Coil 3). */
 @Composable
-fun RichText(text: String, modifier: Modifier = Modifier, muted: Boolean = false) {
+fun RichText(text: String, modifier: Modifier = Modifier, muted: Boolean = false, annotator: MarkdownAnnotator = markdownAnnotator()) {
     val c = LocalHubColors.current
     Markdown(
         content = text,
@@ -33,6 +35,7 @@ fun RichText(text: String, modifier: Modifier = Modifier, muted: Boolean = false
             paragraph = if (muted) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
         ),
         imageTransformer = Coil3ImageTransformerImpl,
+        annotator = annotator,
         modifier = modifier,
     )
 }

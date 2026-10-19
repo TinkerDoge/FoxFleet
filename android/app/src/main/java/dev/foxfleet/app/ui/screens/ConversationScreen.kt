@@ -4,6 +4,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -47,6 +48,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import com.mikepenz.markdown.model.MarkdownAnnotator
+import com.mikepenz.markdown.model.markdownAnnotator
+import com.mikepenz.markdown.utils.getUnescapedTextInNode
 import dev.foxfleet.app.ConversationRoomState
 import dev.foxfleet.app.data.AgentStatus
 import dev.foxfleet.app.data.Conversation
@@ -60,15 +64,19 @@ import dev.foxfleet.app.ui.LocalHubColors
 import dev.foxfleet.app.ui.chat.ChatBackgroundLayer
 import dev.foxfleet.app.ui.chat.ChatBackgroundSheet
 import dev.foxfleet.app.ui.chat.LocalChatBgActive
+import dev.foxfleet.app.ui.chat.MediaTags
 import dev.foxfleet.app.ui.chat.bgChip
 import dev.foxfleet.app.ui.chat.rememberConversationBackground
 import dev.foxfleet.app.ui.components.FoxIcon
+import dev.foxfleet.app.ui.components.ReasoningBlock
+import dev.foxfleet.app.ui.components.RichText
 import dev.foxfleet.app.ui.components.SoftButton
 import dev.foxfleet.app.ui.components.SoftIconButton
 import dev.foxfleet.app.ui.components.presence
 import dev.foxfleet.app.ui.components.AgentAvatar
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import org.intellij.markdown.MarkdownTokenTypes
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -135,7 +143,11 @@ fun ConversationScreen(
         Box(Modifier.fillMaxSize().background(c.bg)) {
             ChatBackgroundLayer(bg.bg, bg.bitmap)
             Column(Modifier.fillMaxSize().statusBarsPadding()) {
-                Row(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp)
+                        .clip(RoundedCornerShape(28.dp)).background(c.surface.copy(alpha = 0.82f)).padding(horizontal = 4.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     SoftIconButton(FoxIcons.get("back"), "Back to rooms", onBack, tint = c.text)
                     Column(Modifier.weight(1f).padding(horizontal = 6.dp)) {
                         Text(room?.title ?: "Room", style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1)
@@ -266,6 +278,10 @@ private fun CompositionLocalScope(bg: dev.foxfleet.app.ui.chat.ChatBackgroundSta
     androidx.compose.runtime.CompositionLocalProvider(LocalChatBgActive provides !bg.bg.isDefault, content = content)
 }
 
+/**
+ * One room message in the same chat as a DM: my own words on the right, every agent on the left with its own
+ * face, name and bubble, and the thinking it published above the answer.
+ */
 @Composable
 private fun RoomMessageRow(
     m: ConversationMessage,
@@ -285,41 +301,100 @@ private fun RoomMessageRow(
     }
     val mine = m.isMine(me)
     val author = m.sender.name.ifBlank { m.sender.id }
+    val isAgent = m.sender.isAgent
+    val names = remember(m.mentions, room) { m.mentions.mapNotNull { s -> room?.memberFor(s.id)?.name }.filter { it.isNotBlank() } }
+    val annotator = remember(names) { mentionAnnotator(names, c.accent) }
     Column(Modifier.fillMaxWidth().padding(vertical = 3.dp).then(if (flashing) Modifier.background(c.accent.copy(alpha = 0.12f)) else Modifier)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (m.sender.isAgent) AgentAvatar(author, dev.foxfleet.app.ui.components.Presence.Online, 24.dp)
-            Spacer(Modifier.width(6.dp))
-            Text(author, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = if (mine) c.accent else c.text)
-            if (mine) Text(" · you", style = MaterialTheme.typography.labelSmall, color = c.textMuted)
-            Text("  " + time(m.createdAt), style = MaterialTheme.typography.labelSmall, color = c.textFaint)
-            if (m.edited) Text(" · edited", style = MaterialTheme.typography.labelSmall, color = c.textFaint)
-            m.dispatchId?.let { Text(" · dispatch", style = MaterialTheme.typography.labelSmall, color = c.textFaint) }
-        }
-        Column(Modifier.fillMaxWidth().padding(start = if (m.sender.isAgent) 30.dp else 0.dp)) {
-            m.replyTo?.let { id ->
-                Row(Modifier.clip(RoundedCornerShape(10.dp)).background(c.surfaceAlt).clickable { onJump(id) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(Modifier.width(3.dp).height(28.dp).background(c.accent))
-                    Spacer(Modifier.width(8.dp))
-                    Column {
-                        Text(target?.sender?.name ?: "Earlier message", style = MaterialTheme.typography.labelSmall, color = c.textMuted)
-                        Text((target?.text ?: "Tap to jump").replace(Regex("\\s+"), " ").take(110), style = MaterialTheme.typography.bodySmall, color = c.text, maxLines = 1)
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
+            if (isAgent) {
+                AgentAvatar(author, dev.foxfleet.app.ui.components.Presence.Online, 28.dp)
+                Spacer(Modifier.width(10.dp))
+            }
+            Column(Modifier.weight(1f)) {
+                if (isAgent) {
+                    // Every agent keeps its own name above its bubble, like a group chat.
+                    Row(Modifier.padding(start = 2.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(author, style = MaterialTheme.typography.labelMedium, fontWeight = FontWeight.SemiBold, color = c.text)
+                        Spacer(Modifier.width(6.dp))
+                        Text(time(m.createdAt), style = MaterialTheme.typography.labelSmall, color = c.textFaint)
+                        if (m.edited) {
+                            Spacer(Modifier.width(4.dp))
+                            Text("edited", style = MaterialTheme.typography.labelSmall, color = c.textFaint)
+                        }
                     }
                 }
-                Spacer(Modifier.height(4.dp))
-            }
-            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-                Box(Modifier.weight(1f, fill = false).clip(RoundedCornerShape(16.dp)).background(if (mine) c.userBubble else c.surface).padding(horizontal = 12.dp, vertical = 8.dp)) {
-                    Text(mentionText(m, room), style = MaterialTheme.typography.bodyMedium, color = c.text)
+                m.replyTo?.let { id ->
+                    Row(Modifier.clip(RoundedCornerShape(10.dp)).background(c.surfaceAlt).clickable { onJump(id) }.padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.width(3.dp).height(28.dp).background(c.accent))
+                        Spacer(Modifier.width(8.dp))
+                        Column {
+                            Text(target?.sender?.name ?: "Earlier message", style = MaterialTheme.typography.labelSmall, color = c.textMuted)
+                            Text((target?.text ?: "Tap to jump").replace(Regex("\\s+"), " ").take(110), style = MaterialTheme.typography.bodySmall, color = c.text, maxLines = 1)
+                        }
+                    }
+                    Spacer(Modifier.height(4.dp))
                 }
-                Spacer(Modifier.width(4.dp))
-                SoftIconButton(FoxIcons.get("reply"), "Reply", { onReply(m) }, tint = c.textFaint)
-            }
-            if (m.media.isNotEmpty()) {
-                Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    m.media.forEach { media -> RoomMediaCard(media, mediaUrl(media.id)) }
+                val shape = if (mine) RoundedCornerShape(18.dp, 18.dp, 6.dp, 18.dp) else RoundedCornerShape(6.dp, 18.dp, 18.dp, 18.dp)
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start,
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Column(
+                        Modifier.weight(1f, fill = false).clip(shape)
+                            .background(if (mine) c.userBubble else c.surface)
+                            .border(1.dp, c.hairline, shape)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        if (isAgent && m.reasoning.isNotBlank()) {
+                            ReasoningBlock(
+                                MediaTags.parseStreaming(m.reasoning).text,
+                                live = false,
+                                stateKey = "r:" + m.id + ":" + m.reasoning.take(32).hashCode(),
+                            )
+                        }
+                        if (mine) Text(mentionText(m, room), style = MaterialTheme.typography.bodyLarge, color = c.text)
+                        else if (m.text.isNotBlank()) RichText(m.text, annotator = annotator)
+                        if (mine && m.createdAt > 0) {
+                            Spacer(Modifier.height(2.dp))
+                            Text(time(m.createdAt), style = MaterialTheme.typography.labelSmall, color = c.textFaint, modifier = Modifier.align(Alignment.End))
+                        }
+                    }
+                    Spacer(Modifier.width(4.dp))
+                    SoftIconButton(FoxIcons.get("reply"), "Reply", { onReply(m) }, tint = c.textFaint)
+                }
+                if (m.media.isNotEmpty()) {
+                    Column(Modifier.padding(top = 4.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        m.media.forEach { media -> RoomMediaCard(media, mediaUrl(media.id)) }
+                    }
                 }
             }
         }
+    }
+}
+
+/**
+ * The room's @mentions, picked out of a markdown body: the accent run the plain text path used.
+ * Only a plain text node that really carries a mention is taken over, so the rest of the markdown
+ * keeps the renderer's own handling.
+ */
+private fun mentionAnnotator(names: List<String>, accent: androidx.compose.ui.graphics.Color): MarkdownAnnotator {
+    if (names.isEmpty()) return markdownAnnotator()
+    val re = Regex("@(" + names.joinToString("|") { Regex.escape(it) } + ")")
+    return markdownAnnotator { content, child ->
+        if (child.type != MarkdownTokenTypes.TEXT) return@markdownAnnotator false
+        val raw = child.getUnescapedTextInNode(content)
+        if (!re.containsMatchIn(raw)) return@markdownAnnotator false
+        var at = 0
+        for (hit in re.findAll(raw)) {
+            if (hit.range.first > at) this.append(raw.substring(at, hit.range.first))
+            this.pushStyle(SpanStyle(color = accent, fontWeight = FontWeight.SemiBold))
+            this.append(hit.value)
+            this.pop()
+            at = hit.range.last + 1
+        }
+        if (at < raw.length) this.append(raw.substring(at))
+        true
     }
 }
 

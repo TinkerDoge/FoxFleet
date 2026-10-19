@@ -180,6 +180,8 @@ data class ConversationMessage(
     val rootId: String? = null,
     val seq: Int? = null,
     val deleted: Boolean = false,
+    /** The agent's thinking, when it sent any: a display field, never part of the answer. */
+    val reasoning: String = "",
 ) {
     fun isMine(meId: String?) = meId != null && sender.id == meId
 }
