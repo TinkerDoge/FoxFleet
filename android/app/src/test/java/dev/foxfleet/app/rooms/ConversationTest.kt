@@ -64,6 +64,19 @@ class ConversationTest {
         assertEquals(ConversationMention("agent", "agent:reviewer", 0, 10), m.mentions.single())
         assertEquals("shot.png", m.media.single().name)
         assertEquals("fd_aaaaaaaaaaaaaaaa", m.dispatchId)
+        // No thinking was published: the block is simply empty.
+        assertEquals("", m.reasoning)
+    }
+
+    @Test fun theThinkingAnAgentPublishedIsRead() {
+        val json = """
+            {"id":"fm_aaaaaaaaaaaaaaaa","conversation_id":"fc_abcdefghijklmnop","sender":{"id":"agent:helper","name":"helper","kind":"agent","is_bot":true},
+             "text":"Looks good.","created_at":$now,"seq":9,"reasoning":"Let me read the logs first."}
+        """.trimIndent()
+        val m = HubApi.parseConversationMessage(Contract.obj(json)!!)!!
+        assertEquals("Let me read the logs first.", m.reasoning)
+        // The thinking is a display field: the answer stands on its own.
+        assertEquals("Looks good.", m.text)
     }
 
     @Test fun liveV2HasConversationEventsAndEphemeralTyping() {

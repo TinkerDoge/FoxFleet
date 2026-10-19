@@ -17,6 +17,7 @@ import { jsonFile, unavailable } from './bot-store.js';
 import { validateCardAnswer } from './bot-protocol.js';
 import { fault, ROOM_LIMITS, roomTitle, roomActorName } from './config.js';
 import { attachGrantedMedia, revokeMessageMedia, roomMediaView, ROOM_MEDIA_LIMIT } from './conversation-media.js';
+import { reasoningFields } from './steps.js';
 import { MEDIA_ID } from './bot-media.js';
 
 const ID_RE = /^fc_[A-Za-z0-9_-]{16}$/;
@@ -107,6 +108,9 @@ function messageView(d, m) {
     reply_to: m.reply_to ?? null, mentions: m.mentions ?? [], seq: m.seq,
     root_id: m.root_id ?? null, dispatch_id: m.dispatch_id ?? null, delivery_state: m.delivery_state ?? null,
     ...(media.length ? { media } : {}),
+    // The agent's thinking, when it sent any: a display field, never part of the answer.
+    ...(m.reasoning ? { reasoning: m.reasoning } : {}),
+    ...(m.reasoning_truncated ? { reasoning_truncated: true } : {}),
     ...(m.system ? { system: true } : {}), ...(m.code ? { code: m.code } : {}),
     ...(m.revision > 1 ? { edited: true } : {}), ...(m.deleted_at ? { deleted: true } : {}),
   };
@@ -552,7 +556,7 @@ export function conversationStore(dir, { onEvent } = {}) {
     },
 
 
-    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, media, admit } = {}) {
+    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, media, reasoning, admit } = {}) {
       if (!actor || !['human', 'agent'].includes(actor.kind)) throw fault(400, 'Invalid actor');
       if (actor.kind === 'human' ? !HUMAN_ID.test(actor.id ?? '') : !AGENT_REF.test(actor.id ?? '')) throw fault(400, 'Invalid actor');
       if (admit !== undefined && typeof admit !== 'function') throw new TypeError('admit must be a function');
@@ -613,6 +617,9 @@ export function conversationStore(dir, { onEvent } = {}) {
           body: text, format, mentions: parsed, reply_to: reply_to ?? null, created_at: at, revision: 1,
           deleted_at: null, root_id: target ? (target.root_id ?? target.id) : null, dispatch_id: null, delivery_state: 'queued',
           client_id: client_id ?? null, client_fp: fingerprint,
+          // Only an agent thinks out loud: a human message never carries a thinking block. The reasoning is
+          // display-only, so it is clipped, never part of the idempotency fingerprint and never worth a failed write.
+          ...(actor.kind === 'agent' ? reasoningFields(reasoning) : {}),
         };
         attachGrantedMedia(d, uploads, actor, message, at);
         d.messages.push(message);

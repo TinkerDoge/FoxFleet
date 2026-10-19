@@ -8,6 +8,7 @@ import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } fro
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
 import { PROTOCOL, PROTOCOL_V11, PROTOCOL_V12, ROOM_FEATURES, ROOM_LIMITS, LIMITS, CHAT_ID, CARD_ID, parseBotFrame, validateRequest, validateRequestV12, validateHttpRequest, validateMediaRequest, validateStopAnswer, validateCardRequest, validateCardCallback, cardView, selectSubprotocol, protocolForSubprotocol } from './bot-protocol.js';
 import { createDispatchEngine } from './conversation-dispatch.js';
+import { applyReasoning } from './steps.js';
 import { flattenContent } from './transcript.js';
 import { takeReact } from './media-tags.js';
 import { agentReactions, reactionView, replyReaction } from './reactions.js';
@@ -467,7 +468,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       case 'message.send': {
         if (active && v.req.final === true) {
           let message;
-          try { message = await active.ctx.finalize(v.req.text, { media: v.req.media }); }
+          try { message = await active.ctx.finalize(v.req.text, { media: v.req.media, reasoning: v.req.reasoning }); }
           catch (e) { throw roomBotError(e); }
           const handoff = await completeRoomTurn(active, message);
           return { result: { message_id: message.id, chat_id: snap.id, date: message.created_at },
@@ -475,7 +476,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         }
         if (active) {
           let message;
-          try { message = await active.ctx.say(v.req.text, { media: v.req.media }); }
+          try { message = await active.ctx.say(v.req.text, { media: v.req.media, reasoning: v.req.reasoning }); }
           catch (e) { throw roomBotError(e); }
           active.parts.push(message.id);
           return { result: { message_id: message.id, chat_id: snap.id, date: message.created_at } };
@@ -485,7 +486,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       case 'message.edit': {
         if (active && v.req.final === true) {
           let message;
-          try { message = await active.ctx.finalizeMessage(v.req.message_id, v.req.text, { media: v.req.media }); }
+          try { message = await active.ctx.finalizeMessage(v.req.message_id, v.req.text, { media: v.req.media, reasoning: v.req.reasoning }); }
           catch (e) { throw roomBotError(e); }
           const handoff = await completeRoomTurn(active, message);
           return { result: { message_id: message.id, chat_id: snap.id, edited: true },
@@ -498,6 +499,8 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           if (!m) throw new BotError('not_found', 'Unknown message');
           if (m.author_kind !== 'agent' || m.author_id !== actorId) throw new BotError('forbidden', 'Only this agent may edit its message');
           m.body = v.req.text; m.format = v.req.format ?? m.format ?? 'text';
+          // The thinking rides on the message: the plugin flushes it with a non-final edit.
+          applyReasoning(m, v.req.reasoning);
           m.revision = (m.revision ?? 1) + 1;
           d.updated_at = Date.now();
           d.outbox.push({ type: 'message.edited', message_id: m.id, seq: m.seq, at: d.updated_at });
@@ -530,7 +533,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (v.t === 'message.send') {
       const sent = await hub.store.send(snap.id, {
         actor, text: v.req.text, format: v.req.format ?? 'markdown', mentions: v.req.mentions,
-        reply_to: v.req.reply_to, media: v.req.media,
+        reply_to: v.req.reply_to, media: v.req.media, reasoning: v.req.reasoning,
         // The snapshot above may predate a Stop that commits while this send is in flight. The same
         // mutation re-checks the durable pause, so an unbound late completion can never land as chatter.
         admit: (d) => {

@@ -11,10 +11,10 @@ import { ReactButton, ReactionBar, type ReactionGroup } from './Reactions';
 import { createDoubleTap, splitQuote } from './messageActions';
 import { t } from '../i18n/t';
 
-export function Markdown({ text, onMedia }: { text: string; onMedia: (m: MediaItem) => void }) {
+export function Markdown({ text, onMedia, after }: { text: string; onMedia: (m: MediaItem) => void; after?: (root: HTMLElement) => void }) {
   const html = useMemo(() => renderMarkdown(text), [text]);
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (ref.current) { ref.current.innerHTML = html; enhance(ref.current); } }, [html]);
+  useEffect(() => { if (ref.current) { ref.current.innerHTML = html; enhance(ref.current); after?.(ref.current); } }, [html, after]);
   function click(e: MouseEvent) {
     const el = e.target as HTMLElement;
     const copy = el.closest('[data-copy]') as HTMLButtonElement | null;

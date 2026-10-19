@@ -92,7 +92,7 @@ describe('rooms list and creation', () => {
 describe('the group scenario', () => {
   const transcript = [
     message({ id: 'fm_1', text: 'Hello @helper, take a look', mentions: [{ kind: 'agent', id: 'agent:helper', offset: 6, length: 7 }], created_at: now }),
-    message({ id: 'fm_2', seq: 2, sender: { id: 'agent:helper', name: 'helper', kind: 'agent', is_bot: true }, text: 'On it.', created_at: now + 1 }),
+    message({ id: 'fm_2', seq: 2, sender: { id: 'agent:helper', name: 'helper', kind: 'agent', is_bot: true }, text: 'On it.', reasoning: 'Let me read the logs first.', created_at: now + 1 }),
     message({ id: 'fm_3', seq: 3, sender: { id: 'agent:helper', name: 'helper', kind: 'agent', is_bot: true }, text: 'Reviewer, please check.', reply_to: 'fm_2', created_at: now + 2 }),
     message({ id: 'fm_4', seq: 4, sender: { id: 'agent:reviewer', name: 'reviewer', kind: 'agent', is_bot: true }, text: '', created_at: now + 3, media: [{ id: 'fbm_img', kind: 'image', mime: 'image/png', name: 'shot.png', size: 10 }, { id: 'fbm_file', kind: 'file', mime: 'text/plain', name: 'notes.txt', size: 12 }] }),
     message({ id: 'fm_5', seq: 5, sender: { id: 'agent:reviewer', name: 'reviewer', kind: 'agent', is_bot: true }, system: true, code: 'handoff_limit', text: 'Handoff refused: the chain used its dispatches.', created_at: now + 4 }),
@@ -105,8 +105,14 @@ describe('the group scenario', () => {
       queue: vi.fn(async (agent: string) => ({ ...emptyQueue, openRequests: agent === 'helper' ? [approvalCard] : [] })),
     });
     await view(client); await flush();
+    // Every agent keeps its own name; mine is the bubble on the right, not a name tag.
     const authors = [...host.querySelectorAll('.room-author b')].map((n) => n.textContent);
-    expect(authors).toContain('Ada'); expect(authors).toContain('helper'); expect(authors).toContain('reviewer'); expect(host.querySelector('.room-author .room-tag')!.textContent).toBe('You');
+    expect(authors).toContain('helper'); expect(authors).toContain('reviewer');
+    expect(host.querySelectorAll('.room-msg.user .bubble').length).toBe(1);
+    expect(host.querySelectorAll('.room-msg.assistant .msg-card').length).toBe(3);
+    // The only tag left is the handoff marker: no "agent"/"you" chrome.
+    expect(host.querySelectorAll('.room-author .room-tag').length).toBe(1);
+    expect(host.querySelector('.room-author .room-tag')!.textContent).toBe('Handoff');
     expect(host.querySelector('.mention')!.textContent).toBe('@helper');
     expect(text('.room-notice')).toContain('Handoff refused');
     expect(host.querySelectorAll('.room-tag.handoff').length).toBe(1);
@@ -116,6 +122,22 @@ describe('the group scenario', () => {
     const quote = host.querySelector<HTMLButtonElement>('.reply-quote')!;
     await act(() => { quote.click(); }); await flush();
     expect((HTMLElement.prototype.scrollIntoView as any)).toHaveBeenCalled();
+  });
+
+  it('shows the thinking an agent published, and no block when it published none', async () => {
+    const client = makeClient({ conversationMessages: vi.fn(async () => ({ messages: transcript, has_more: false })) });
+    await view(client); await flush();
+    const blocks = host.querySelectorAll('[data-testid="reasoning"]');
+    expect(blocks.length).toBe(1);
+    expect(blocks[0].textContent).toContain('Reasoning');
+    // The reviewer never thought out loud: its card carries no reasoning block.
+    const cards = [...host.querySelectorAll('.room-msg.assistant .msg-card')];
+    expect(cards[0].querySelector('[data-testid="reasoning"]')).toBeTruthy();
+    expect(cards[2].querySelector('[data-testid="reasoning"]')).toBeNull();
+    // A message that never had thinking stays without one.
+    const plain = makeClient({ conversationMessages: vi.fn(async () => ({ messages: [transcript[3]], has_more: false })) });
+    await view(plain); await flush();
+    expect(host.querySelectorAll('[data-testid="reasoning"]').length).toBe(0);
   });
 
   it('marks read when opened and appends a live message without re-fetching', async () => {

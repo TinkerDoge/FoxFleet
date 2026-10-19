@@ -30,6 +30,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { fault, ROOM_LIMITS } from './config.js';
 import { routeRoomMessage } from './conversation-routing.js';
 import { attachGrantedMedia } from './conversation-media.js';
+import { applyReasoning } from './steps.js';
 
 export const DISPATCH_LIMITS = Object.freeze({
   max_handoff_dispatches_per_root: 4,
@@ -148,7 +149,7 @@ function addNotice(d, dispatch, text, at, code) {
   return message;
 }
 
-function addAgentMessage(d, dispatch, body, deliveryState, at, final = false) {
+function addAgentMessage(d, dispatch, body, deliveryState, at, final = false, extra = {}) {
   const member = activeAgent(d, dispatch.target_agent_id);
   if (!member) throw forbidden();
   const seq = d.next_seq++;
@@ -157,6 +158,7 @@ function addAgentMessage(d, dispatch, body, deliveryState, at, final = false) {
     body, format: 'text', mentions: [], reply_to: null, created_at: at, revision: 1, deleted_at: null,
     root_id: dispatch.root_id, dispatch_id: dispatch.id, delivery_state: deliveryState,
     ...(final ? { final: true } : {}),
+    ...extra,
     client_id: null, client_fp: null,
   };
   d.messages.push(message); trimMessages(d);
@@ -567,11 +569,13 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     return result;
   }
 
-  function publishFinal(d, row, text, at, token) {
+  function publishFinal(d, row, text, at, token, reasoning) {
     const prior = row.final_message_id ? d.messages.find((m) => m.id === row.final_message_id) : null;
     if (prior && !prior.deleted_at && prior.final === true && prior.dispatch_id === row.id
       && prior.author_kind === 'agent' && prior.author_id === row.target_agent_id) {
-      if (prior.body !== text) {
+      // A retry revises the retained message in place: the text and the thinking it published with it.
+      const reasonChanged = applyReasoning(prior, reasoning);
+      if (prior.body !== text || reasonChanged) {
         prior.body = text;
         prior.revision = (prior.revision ?? 1) + 1;
         pushOutbox(d, { type: 'message.edited', message_id: prior.id, seq: prior.seq, at });
@@ -582,6 +586,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       return prior;
     }
     const message = addAgentMessage(d, row, text, 'completed', at, true);
+    applyReasoning(message, reasoning);
     row.final_message_id = message.id;
     row.final_run_token = token;
     row.updated_at = at;
@@ -598,7 +603,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       // message projection or to the result of submit/retry/handoff.
       attempt: Object.freeze({ dispatch_id: running.id, token }),
       /** A partial, in-progress message. It is never a valid handoff source. */
-      async say(text, { media } = {}) {
+      async say(text, { media, reasoning } = {}) {
         if (!validAgentText(text)) throw invalidText();
         const result = await store.transact(roomId, (d) => {
           ensure(d);
@@ -616,6 +621,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
             throw rejectStale(row, reason);
           }
           const message = addAgentMessage(d, row, text, 'running', now());
+          applyReasoning(message, reasoning);
           attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, now());
           return { message: clone(message) };
         });
@@ -628,7 +634,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
        * transport's final frame). The canonical final slot is that message, so a retry still revises it in
        * place and a handoff sources exactly the message the agent finished.
        */
-      async finalizeMessage(messageId, text, { media } = {}) {
+      async finalizeMessage(messageId, text, { media, reasoning } = {}) {
         if (!validAgentText(text)) throw invalidText();
         if (typeof messageId !== 'string' || !messageId) throw fault(400, 'Invalid message id', 'invalid_request');
         const result = await store.transact(roomId, (d) => {
@@ -658,7 +664,9 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           }
           const at = now();
           attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, at);
-          if (message.body !== text) {
+          // The thinking rides on the message: an edit may publish it, replace it or leave it as it was.
+          const reasonChanged = applyReasoning(message, reasoning);
+          if (message.body !== text || reasonChanged) {
             message.body = text;
             message.revision = (message.revision ?? 1) + 1;
             pushOutbox(d, { type: 'message.edited', message_id: message.id, seq: message.seq, at });
@@ -675,7 +683,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         return result.message;
       },
       /** Publish the turn's committed public message; only this (or a settled outcome) can source a handoff. */
-      async finalize(text, { media } = {}) {
+      async finalize(text, { media, reasoning } = {}) {
         if (!validAgentText(text)) throw invalidText();
         const result = await store.transact(roomId, (d) => {
           ensure(d);
@@ -697,7 +705,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
             if (prior && prior.body === text) return { message: clone(prior) };
             throw fault(409, 'This attempt already published its final message', 'dispatch_finalized');
           }
-          const message = publishFinal(d, row, text, now(), token);
+          const message = publishFinal(d, row, text, now(), token, reasoning);
           attachGrantedMedia(d, media, { kind: 'agent', id: row.target_agent_id }, message, now());
           return { message: clone(message) };
         });
