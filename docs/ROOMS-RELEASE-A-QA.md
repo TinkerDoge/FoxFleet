@@ -2,13 +2,15 @@
 
 This is the recorded manual canary for **Release A only** (rooms, two agents, Stop, cards, media,
 reconnect). The automated fake-model acceptance suite is `server/test/conversation-e2e.test.js`.
-This script is how Doge runs **test-SUMI ↔ test-Sora** on an **isolated hub after the flip**.
-It is not a production rollout and it does not authorize one.
+This script is how Doge runs **test-SUMI ↔ test-Sora** on an **isolated hub**.
+It is not a production rollout and it does not authorize one. The live
+`FOXFLEET_ALLOW_BOTS` flip is a separate operator step after Task 9 is merged; this
+checklist never runs against production, even after that flip.
 
 ## Hard stops
 
-- **Do not run this against production** until Doge flips `FOXFLEET_ALLOW_BOTS` and restarts the
-  gateway himself. This document never writes that variable and never changes a live profile.
+- **Never run this against production.** Isolated hub, isolated profiles, isolated tokens only.
+  This document never writes `FOXFLEET_ALLOW_BOTS` and never changes a live profile.
 - Use only the isolated hub data directory, port, owner account, profiles and bot tokens listed
   below. Do not point `test-SUMI` or `test-Sora` at production, and do not touch live SUMI/Sora.
 - Do not paste bot tokens, owner passwords or profile secrets into git, chat, tickets or logs.
@@ -37,17 +39,16 @@ Never leave a profile on Auto and never auto-select GLM. If a model cannot be pi
 ## Isolated setup
 
 1. Start the hub from the Release A commit with a fresh data directory and a non-production port:
-   `FOXFLEET_DATA=<isolated dir> FOXFLEET_PORT=<isolated port> FOXFLEET_BOT_API=1
-   FOXFLEET_BOT_AGENTS='test-sumi,test-sora'` (or the exact isolated agent names you use).
-   Use `*` only on the isolated hub if the exact names are awkward.
+   `FOXFLEET_DATA=<isolated dir> FOXFLEET_PORT=<isolated port> FOXFLEET_BOT_API=1 FOXFLEET_BOT_AGENTS='test-sumi,test-sora'`
+   (exact isolated names only — never `*`).
 2. Complete owner setup on the isolated hub. Confirm `GET /api/auth` advertises `botApi`.
 3. Create two **bot** agents (for example `test-sumi` and `test-sora`) and mint one token for each.
 4. Install the same plugin commit into two isolated Hermes profiles, `test-SUMI` and `test-Sora`.
    Put each token only in that profile's private `.env`, set `FOXFLEET_ALLOWED_USERS` to the
    isolated owner id, and point both profiles at the isolated hub URL.
-5. Only after Doge's flip and gateway restart: verify each test profile has
-   `FOXFLEET_ALLOW_BOTS=mentions` in its isolated profile environment. Do **not** write it from
-   this checklist; if it is absent, stop and ask Doge.
+5. On the **isolated** test profiles only, confirm Doge has already set
+   `FOXFLEET_ALLOW_BOTS=mentions` himself. Do **not** write it from this checklist. If it is
+   absent, stop. Do not copy that value onto a live profile.
 6. Restart both isolated gateways. Confirm both bot agents are online and both profiles show the
    pinned model from the table above.
 7. Create a room with both test agents. Confirm both see the room and its members.

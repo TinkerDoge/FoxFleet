@@ -81,7 +81,14 @@ test('Release A e2e: one human mention runs one fake-model turn and one visible 
   await socket.next((x) => x.t === 'hello');
 
   const text = '@sumi review the release gates';
-  await roomSend(sumi.h, room.id, { text, mentions: [mentionOf(text, 'sumi')] });
+  const forged = await sumi.h.call(`/api/conversations/${room.id}/messages`, {
+    data: { text, mentions: [mentionOf(text, 'sumi')], actor: { kind: 'human', id: 'forged', name: 'Eve' }, admit: true },
+  });
+  assert.equal(forged.status, 202);
+  const forgedBody = await forged.json();
+  assert.equal(forgedBody.message.sender.kind, 'human');
+  assert.notEqual(forgedBody.message.sender.id, 'forged');
+  assert.equal(forgedBody.message.sender.name, 'owner1');
   const run = await socket.next((x) => x.t === 'dispatch.run');
   assert.equal(run.chat_id, room.id);
   assert.equal(run.thread_id, 'fcr_' + room.id.slice(3));
@@ -166,7 +173,14 @@ test('Release A e2e: a handoff after the five-minute root deadline is refused an
   const realNow = Date.now;
   Date.now = () => realNow() + 300_001;
   try {
-    await fakeHandoff(r, child, source, 'sumi', 'too late', 'h-exp-2');
+    // The hub accepts the handoff frame (it is still this attempt), then refuses to complete
+    // the turn after the root deadline — that is the fail-closed gate the target never sees.
+    const queued = await r.request({
+      t: 'handoff.request', id: 'handoff-expired', chat_id: room.id, thread_id: child.thread_id,
+      source_message_id: source, target_agent_id: 'agent:sumi', text: 'too late',
+      idempotency_key: 'h-exp-2', ...attemptOf(child),
+    });
+    assert.equal(queued.ok, true, JSON.stringify(queued));
     const final = await r.request({
       t: 'message.send', id: 'late-handoff-final', chat_id: room.id, text: 'sora cannot continue',
       final: true, ...attemptOf(child),
@@ -334,7 +348,7 @@ test('Release A e2e: another account and a non-member bot cannot read, download,
   assert.equal(reply.ok, false, JSON.stringify(reply));
   assert.equal(reply.error.code, 'forbidden');
   assert.equal((await botDownload(sumi.h, media.id, outsider.token)).status, 404);
-  assert.equal((await apiAnswer(sumi.h, 'outsider', room.id, requestId, { choice: 'once' })).status, 404);
+  assert.ok([401, 403, 404].includes((await apiAnswer(sumi.h, 'sumi', room.id, requestId, { choice: 'once' }, outsider.token)).status));
   const outsiderStop = await fetch(sumi.h.base + `/api/conversations/${room.id}/stop`, {
     method: 'POST', headers: { Authorization: `Bot ${outsider.token}` },
   });
@@ -374,6 +388,8 @@ test('Release A e2e: an agent cannot answer owner cards or issue an HTTP Stop', 
   assert.equal(guessed.ok, false);
   assert.equal(guessed.error.code, 'not_found');
   assert.equal(socket.texts.filter((x) => x && x.t === 'callback').length, 0);
+  const botHttpAnswer = await apiAnswer(sumi.h, 'sumi', room.id, requestId, { choice: 'once' }, sumi.token);
+  assert.ok([401, 403, 404].includes(botHttpAnswer.status), `bot token card answer: ${botHttpAnswer.status}`);
 
   const conversationStop = await fetch(sumi.h.base + `/api/conversations/${room.id}/stop`, {
     method: 'POST', headers: { Authorization: `Bot ${sumi.token}` },
@@ -450,6 +466,11 @@ test('Release A e2e: a 1.1 socket never receives a group frame', async (t) => {
   await s.next((x) => x.t === 'hello');
   const oldHello = await old.next((x) => x.t === 'hello');
   assert.ok(!(oldHello.features ?? []).includes('groups'));
+
+  const tagged = '@legacy should never see a group turn';
+  await roomSend(sumi.h, room.id, { text: tagged, mentions: [mentionOf(tagged, 'legacy')] });
+  await sleep(200);
+  assert.equal(old.texts.filter((x) => x && (x.chat_type === 'group' || ['dispatch.offer', 'dispatch.run', 'chat.member', 'chat.stop', 'callback', 'message.new'].includes(x.t))).length, 0);
 
   const text = '@sumi modern only';
   await roomSend(sumi.h, room.id, { text, mentions: [mentionOf(text, 'sumi')] });
