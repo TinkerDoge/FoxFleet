@@ -197,6 +197,8 @@ function blockedAncestor(d, row) {
     if (parent.state !== 'completed') return true;
     // A descendant created from a superseded source is not revived by an unrelated later final message.
     if (parent.final_message_id && child.parent_message_id && child.parent_message_id !== parent.final_message_id) return true;
+    if (!Number.isSafeInteger(child.source_attempt) || !Number.isSafeInteger(parent.completed_attempt)
+      || child.source_attempt !== parent.completed_attempt) return true;
     child = parent; id = parent.source_dispatch_id;
   }
   return false;
@@ -218,6 +220,13 @@ function markUncertain(d, row, at, code = 'uncertain_after_restart', text = null
   addNotice(d, row, body, at, safeCodeValue);
   return row;
 }
+function failSupersededChildren(d, parent, at) {
+  for (const child of d.dispatches) {
+    if (!child.handoff || child.source_dispatch_id !== parent.id || child.state !== 'queued') continue;
+    if (child.source_attempt === parent.completed_attempt) continue;
+    markFailed(d, child, 'handoff_superseded', 'This handoff was superseded by a newer attempt of its parent turn.', at);
+  }
+}
 
 function statusText(code, target, reason) {
   if (code === 'handoff_limit') return `Handoff refused: this conversation chain has used its ${DISPATCH_LIMITS.max_handoff_dispatches_per_root} dispatches. Send a new message to continue.`;
@@ -233,7 +242,7 @@ function newDispatch(d, { state, rootId, rootSeq, requestMessageId, sourceDispat
     source_dispatch_id: sourceDispatchId ?? null, parent_message_id: parentMessageId ?? null,
     target_agent_id: target, epoch: d.epoch, membership_generation: null, context_through_seq: d.next_seq - 1,
     root_deadline: deadline, created_at: nowMs, updated_at: nowMs, attempts: 0, attempt: 0,
-    run_token: null, final_message_id: null, final_run_token: null,
+    run_token: null, final_message_id: null, final_run_token: null, completed_attempt: null,
     dedupe_key: dedupeKey ?? null, dedupe_fingerprint: dedupeFingerprint ?? null, idempotency_key: idempotencyKey ?? null,
     counts_toward_budget: counts !== false, code: null, error: null,
     ...(sourceDispatchId ? { handoff: true } : {}),
@@ -278,14 +287,15 @@ function handoffInDraft(d, { actor, dispatchId, runToken, sourceMessageId, targe
 
   const explicitKey = typeof idempotencyKey === 'string' && idempotencyKey.length > 0;
   const key = explicitKey
-    ? `handoff:${actor.id}:${parent.id}:${fingerprint('idempotency', idempotencyKey)}`
-    : `handoff-keyless:${actor.id}:${parent.id}:${fingerprint(source.id, target, text)}`;
+    ? `handoff:${actor.id}:${parent.id}:${parent.attempt}:${fingerprint('idempotency', idempotencyKey)}`
+    : `handoff-keyless:${actor.id}:${parent.id}:${parent.attempt}:${fingerprint(source.id, target, text)}`;
   const storedIdempotencyKey = explicitKey ? (truncateUtf8(safeText(idempotencyKey, ''), 256) || null) : null;
   const dedupeFingerprint = fingerprint(source.id, target, text);
   let prior = d.dispatches.find((x) => x.dedupe_key === key);
   if (!prior) {
     // A keyless repeat of an explicitly-keyed handoff is still the same turn asking for the same thing.
     prior = d.dispatches.find((x) => x.handoff && x.source_dispatch_id === parent.id
+      && x.source_attempt === parent.attempt
       && x.parent_message_id === source.id && x.target_agent_id === target
       && x.dedupe_fingerprint === dedupeFingerprint);
   }
@@ -395,7 +405,9 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   const pendingTimers = new Set();
   let closed = false;
   let localEpoch = 0;
+  let pumpEpoch = 0;
   const alive = (epoch) => !closed && localEpoch === epoch;
+  const pumpAlive = (epoch) => !closed && pumpEpoch === epoch;
   const TIMED_OUT = Symbol('dispatch_deadline_timeout');
   const stale = () => fault(409, 'That dispatch was replaced', 'dispatch_stale');
 
@@ -599,13 +611,19 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   async function settle(roomId, dispatchId, outcome, runToken = null, epoch = undefined) {
     return store.transact(roomId, (d) => {
       ensure(d);
-      if (epoch !== undefined && !alive(epoch)) return null;
+      if (epoch !== undefined && !pumpAlive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row || row.state !== 'running') return null;
       if (!runToken || row.run_token !== runToken) return null;
       const at = now();
       const reason = executionReason(d, row, at);
-      if (reason) return clone(markFailed(d, row, reason.code, reason.text, at));
+      if (reason) {
+        if (reason.code === 'room_paused') {
+          row.state = 'queued'; row.run_token = null; row.updated_at = at;
+          return clone(row);
+        }
+        return clone(markFailed(d, row, reason.code, reason.text, at));
+      }
       if (outcome?.waiting_approval) {
         row.state = 'waiting_approval'; row.updated_at = at; row.approval_reason = safeText(outcome.reason, '') || null;
         return clone(row);
@@ -640,7 +658,9 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           throw e;
         }
       }
-      row.state = 'completed'; row.code = null; row.error = null; row.updated_at = at; row.finished_at = at;
+      row.state = 'completed'; row.completed_attempt = row.attempt; row.code = null; row.error = null;
+      row.updated_at = at; row.finished_at = at;
+      failSupersededChildren(d, row, at);
       return clone(row);
     });
   }
@@ -648,7 +668,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   async function fail(roomId, dispatchId, code, text, { states = null, token = null, epoch = undefined } = {}) {
     return store.transact(roomId, (d) => {
       ensure(d);
-      if (epoch !== undefined && !alive(epoch)) return null;
+      if (epoch !== undefined && !pumpAlive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row) return null;
       if (token !== null && row.run_token !== token) return null;
@@ -660,7 +680,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   async function uncertain(roomId, dispatchId, token, code = 'uncertain_after_restart', epoch = undefined) {
     return store.transact(roomId, (d) => {
       ensure(d);
-      if (epoch !== undefined && !alive(epoch)) return null;
+      if (epoch !== undefined && !pumpAlive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row || TERMINAL_STATES.has(row.state)) return row ? clone(row) : null;
       if (!token || row.run_token !== token) return null;
@@ -670,11 +690,11 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
   }
 
   async function pump(roomId) {
-    const epoch = localEpoch;
+    const epoch = pumpEpoch;
     for (;;) {
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       const snap = await store.snapshot(roomId);
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (snap.paused) return;
       const rows = snap.dispatches ?? [];
       // A waiting approval consumes wall clock: expiry needs a fresh human message.
@@ -692,9 +712,11 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
 
       const claimed = await store.transact(roomId, (d) => {
         ensure(d);
-        if (!alive(epoch)) return null;
+        if (!pumpAlive(epoch)) return null;
         const row = d.dispatches.find((x) => x.id === next.id);
         if (!row || row.state !== 'queued') return null;
+        if (d.dispatches.some((x) => x.id !== row.id && ACTIVE_STATES.has(x.state))) return { ok: false, held: true };
+        if (blockedAncestor(d, row)) return { ok: false, blocked: true };
         const reason = admissionReason(d, row, now());
         if (reason) {
           if (reason.code === 'room_paused') return { ok: false, paused: true };
@@ -707,8 +729,9 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         row.run_token = newId('fr_');
         return { ok: true, row: clone(row) };
       });
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (!claimed) continue;
+      if (claimed.held) return;
       if (claimed.paused) return;
       if (!claimed.ok) continue;
 
@@ -729,7 +752,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       }
       let offered;
       const offerResult = await bounded(offerCall, row.root_deadline);
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (offerResult === TIMED_OUT) {
         await uncertain(roomId, row.id, token, 'uncertain_timeout', epoch);
         continue;
@@ -749,7 +772,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       // Mutations after the asynchronous offer must not turn a stale reservation into execution.
       const accepted = await store.transact(roomId, (d) => {
         ensure(d);
-        if (!alive(epoch)) return null;
+        if (!pumpAlive(epoch)) return null;
         const current = d.dispatches.find((x) => x.id === row.id);
         if (!current || current.state !== 'offered' || current.run_token !== token) return null;
         const at = now();
@@ -761,14 +784,14 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         current.state = 'accepted'; current.accepted_at = at; current.updated_at = at;
         return { ok: true, row: clone(current) };
       });
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (!accepted) continue;
       if (accepted.paused) return;
       if (!accepted.ok) continue;
 
       const running = await store.transact(roomId, (d) => {
         ensure(d);
-        if (!alive(epoch)) return null;
+        if (!pumpAlive(epoch)) return null;
         const current = d.dispatches.find((x) => x.id === row.id);
         if (!current || current.state !== 'accepted' || current.run_token !== token) return null;
         const at = now();
@@ -780,20 +803,20 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         current.state = 'running'; current.started_at = at; current.updated_at = at;
         return { ok: true, row: clone(current) };
       });
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (!running) continue;
       if (running.paused) return;
       if (!running.ok) continue;
 
       let runCall;
       try {
-        runCall = target.run ? target.run(contextFor(roomId, running.row, epoch)) : {};
+        runCall = target.run ? target.run(contextFor(roomId, running.row, localEpoch)) : {};
       } catch {
         await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
         continue;
       }
       const runResult = await bounded(runCall, row.root_deadline);
-      if (!alive(epoch)) return;
+      if (!pumpAlive(epoch)) return;
       if (runResult === TIMED_OUT) {
         await uncertain(roomId, row.id, token, 'uncertain_timeout', epoch);
         continue;
@@ -843,6 +866,8 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     drain,
     /** Mark every in-flight turn uncertain and expire queued/waiting turns past their deadline. Never runs an agent. */
     async recover() {
+      pumpEpoch += 1;
+      for (const record of [...pendingTimers]) record.cancel();
       const rooms = await store.roomIds();
       const marked = [];
       for (const roomId of rooms) {
@@ -910,6 +935,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       if (closed) return;
       closed = true;
       localEpoch += 1;
+      pumpEpoch += 1;
       for (const record of [...pendingTimers]) record.cancel();
     },
   };

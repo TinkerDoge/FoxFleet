@@ -574,21 +574,28 @@ test('stale execution cannot publish after an epoch change', async (t) => {
   assert.equal(page.find((m) => m.system && m.dispatch_id === row.id).system, true);
 });
 
-test('stale execution cannot publish while the room queue is paused', async (t) => {
+test('pause during running holds the turn queued; late publication is refused and a resume completes it', async (t) => {
   const { store, room, engine } = await setup(t);
   const reached = deferred(), release = deferred();
   t.after(() => release.resolve());
   const errors = {};
+  let runs = 0, finalId = null, soraRuns = 0;
   engine.register(SUMI.actor_id, {
     async run(ctx) {
-      await ctx.finalize('committed before pause');
-      reached.resolve();
-      await release.promise;
-      try { await ctx.say('late partial'); } catch (e) { errors.say = e.code; }
-      try { await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'late handoff' }); } catch (e) { errors.handoff = e.code; }
-      return { text: 'late outcome' };
+      runs += 1;
+      if (runs === 1) {
+        finalId = (await ctx.finalize('committed before pause')).id;
+        reached.resolve();
+        await release.promise;
+        try { await ctx.say('late partial'); } catch (e) { errors.say = e.code; }
+        try { await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'late handoff' }); } catch (e) { errors.handoff = e.code; }
+        try { await ctx.finalize('late final'); } catch (e) { errors.finalize = e.code; }
+        return { text: 'late outcome', handoff: { target_agent_id: SORA.actor_id, text: 'late outcome handoff' } };
+      }
+      return { text: 'resumed answer' };
     },
   });
+  engine.register(SORA.actor_id, { run: async () => { soraRuns += 1; return { text: 'sora answer' }; } });
   const text = '@Sumi start';
   const submitting = submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
   assert.equal(await arrival(submitting, reached), 'reached', 'the run must reach the controlled stage');
@@ -596,12 +603,23 @@ test('stale execution cannot publish while the room queue is paused', async (t) 
   release.resolve();
   await submitting;
   await engine.drain(room.id);
-  assert.deepEqual(errors, { say: 'room_paused', handoff: 'room_paused' });
-  const [row] = await dispatches(store, room);
-  assert.equal(row.state, 'failed');
-  assert.equal(row.code, 'room_paused');
-  const page = await publicMessages(store, room);
+  assert.deepEqual(errors, { say: 'room_paused', handoff: 'room_paused', finalize: 'room_paused' });
+  let [row] = await dispatches(store, room);
+  assert.equal(row.state, 'queued', 'pause during running holds the turn instead of killing it');
+  assert.equal(row.code, null);
+  assert.equal(runs, 1);
+  let page = await publicMessages(store, room);
   assert.deepEqual(agentAnswers(page).map((m) => m.text), ['committed before pause']);
+
+  await store.transact(room.id, (d) => { d.paused = false; });
+  await engine.drain(room.id);
+  [row] = await dispatches(store, room);
+  assert.equal(row.state, 'completed');
+  assert.equal(runs, 2, 'a resume continues the held turn');
+  assert.equal(soraRuns, 0, 'the late handoff after pause never became executable');
+  page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['resumed answer']);
+  assert.equal(page.filter((m) => m.id === finalId).length, 1, 'the resumed attempt revises the one canonical final in place');
 });
 
 test('handoff idempotency is scoped to caller and dispatch; conflicting reuse and partial sources are refused', async (t) => {
@@ -800,7 +818,7 @@ test('submission returns a durable receipt before a deferred run finishes; drain
   assert.equal(done.state, 'completed');
 });
 
-test('recovery does not run queued descendants of an uncertain dispatch without owner continuation', async (t) => {
+test('recovery does not revive a queued child when the owner retry completes without a new handoff', async (t) => {
   const { store, room, engine } = await setup(t);
   let soraCalls = 0;
   engine.register(SUMI.actor_id, { async run(ctx) {
@@ -830,9 +848,13 @@ test('recovery does not run queued descendants of an uncertain dispatch without 
   restarted.register(SUMI.actor_id, { run: async () => ({ text: 'owner continued the root' }) });
   await restarted.retry(parent.id, { actor: HUMAN });
   await restarted.drain(room.id);
-  assert.equal(soraCalls, 1, 'the owner continuation unblocks the dependent child');
+  assert.equal(soraCalls, 0, 'a retry without a new handoff does not authorise the old child');
   assert.equal((await rowById(store, room, parent.id)).state, 'completed');
-  assert.equal((await rowById(store, room, child.id)).state, 'completed');
+  const stale = await rowById(store, room, child.id);
+  assert.equal(stale.state, 'failed');
+  assert.equal(stale.code, 'handoff_superseded');
+  assert.equal(stale.source_attempt, 1);
+  assert.equal((await rowById(store, room, parent.id)).completed_attempt, 2);
 });
 
 test('queue fairness: target-id order only orders recipients inside one root, never older unrelated roots', async (t) => {
@@ -982,7 +1004,7 @@ test('R1 attempt identity: public and context handoffs require the current dispa
   assert.equal(JSON.stringify(retried.messages).includes(oldToken), false, 'the token never leaks into message projections');
 });
 
-test('R2 descendants wait for a successful ancestor completion, independent of equal queue keys', async (t) => {
+test('R2 a retry re-handoff is a child of the new attempt; equal queue keys cannot run it before the ancestor', async (t) => {
   const { store, room, engine } = await setup(t);
   const log = [];
   let parentRuns = 0, childRuns = 0;
@@ -991,9 +1013,11 @@ test('R2 descendants wait for a successful ancestor completion, independent of e
     log.push(`sumi:${parentRuns}`);
     if (parentRuns === 1) {
       await ctx.finalize('parent final');
-      await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'child work' });
+      await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'child work one' });
       throw new Error('lost after handoff');
     }
+    await ctx.finalize('parent retry final');
+    await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'child work two' });
     return { text: 'parent retry final' };
   } });
   engine.register(SORA.actor_id, { async run() { childRuns += 1; log.push(`sora:${childRuns}`); return { text: 'child done' }; } });
@@ -1003,14 +1027,14 @@ test('R2 descendants wait for a successful ancestor completion, independent of e
   await engine.drain(room.id);
   let rows = await dispatches(store, room);
   const parent = rows.find((d) => d.target_agent_id === SUMI.actor_id && !d.source_dispatch_id);
-  const child = rows.find((d) => d.source_dispatch_id === parent.id);
+  const firstChild = rows.find((d) => d.source_dispatch_id === parent.id);
   assert.equal(parent.state, 'uncertain');
-  assert.equal(child.state, 'queued');
+  assert.equal(firstChild.state, 'queued');
   assert.equal(childRuns, 0);
 
   await store.transact(room.id, (d) => {
     const p = d.dispatches.find((x) => x.id === parent.id);
-    const c = d.dispatches.find((x) => x.id === child.id);
+    const c = d.dispatches.find((x) => x.id === firstChild.id);
     c.root_seq = p.root_seq;
     c.created_at = p.created_at;
     c.updated_at = p.updated_at;
@@ -1018,10 +1042,17 @@ test('R2 descendants wait for a successful ancestor completion, independent of e
 
   await engine.retry(parent.id, { actor: HUMAN });
   await engine.drain(room.id);
-  assert.deepEqual(log, ['sumi:1', 'sumi:2', 'sora:1'], 'the retried ancestor completes before its descendant is eligible');
+  assert.deepEqual(log, ['sumi:1', 'sumi:2', 'sora:1'], 'the retried ancestor completes before the new attempt child is eligible');
   rows = await dispatches(store, room);
+  const newChild = rows.find((d) => d.handoff && d.source_dispatch_id === parent.id && d.id !== firstChild.id);
+  assert.ok(newChild, 'the re-handoff created a second attempt child');
+  assert.equal(newChild.source_attempt, 2);
+  assert.equal(newChild.root_seq, parent.root_seq);
+  assert.equal(newChild.created_at, parent.created_at, 'queue keys could not reorder the child ahead of the ancestor');
   assert.equal(rows.find((d) => d.id === parent.id).state, 'completed');
-  assert.equal(rows.find((d) => d.id === child.id).state, 'completed');
+  assert.equal(rows.find((d) => d.id === firstChild.id).state, 'failed');
+  assert.equal(rows.find((d) => d.id === firstChild.id).code, 'handoff_superseded');
+  assert.equal(rows.find((d) => d.id === newChild.id).state, 'completed');
 });
 
 test('R2 descendants never run when the ancestor retry fails or is offline', async (t) => {
@@ -1048,6 +1079,54 @@ test('R2 descendants never run when the ancestor retry fails or is offline', asy
   assert.equal(after.find((d) => d.id === parent.id).code, 'agent_offline');
   assert.equal(after.find((d) => d.id === child.id).state, 'queued');
   assert.equal(childRuns, 0);
+});
+
+test('R2 the claim mutation re-checks the attempt binding under the room lock', async (t) => {
+  const { store, room, engine } = await setup(t);
+  let soraRuns = 0;
+  engine.register(SUMI.actor_id, { run: async () => ({ text: 'attempt one complete' }) });
+  engine.register(SORA.actor_id, { run: async () => { soraRuns += 1; return { text: 'must not run' }; } });
+  await store.transact(room.id, (d) => { d.paused = true; });
+  const text = '@Sumi root';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await store.transact(room.id, (d) => { d.paused = false; });
+  await engine.drain(room.id);
+  const [parent] = await dispatches(store, room);
+  assert.equal(parent.state, 'completed');
+  assert.equal(parent.completed_attempt, 1);
+  assert.ok(parent.final_message_id);
+
+  const childId = 'fd_stalechild000001';
+  await store.transact(room.id, (d) => {
+    const p = d.dispatches.find((x) => x.id === parent.id);
+    d.dispatches.push({
+      id: childId, state: 'queued', root_id: p.root_id, root_seq: p.root_seq,
+      request_message_id: null, source_dispatch_id: p.id, parent_message_id: p.final_message_id,
+      target_agent_id: SORA.actor_id, epoch: p.epoch, membership_generation: p.membership_generation,
+      context_through_seq: p.context_through_seq, root_deadline: p.root_deadline, created_at: p.created_at,
+      updated_at: p.created_at, attempts: 0, attempt: 0, run_token: null, final_message_id: null,
+      final_run_token: null, completed_attempt: null, counts_toward_budget: true, handoff: true,
+      source_attempt: 1, code: null, error: null,
+    });
+  });
+
+  const originalTransact = store.transact.bind(store);
+  let injected = false;
+  store.transact = async (id, fn) => {
+    if (!injected && id === room.id) {
+      injected = true;
+      await originalTransact(id, (d) => {
+        const p = d.dispatches.find((x) => x.id === parent.id);
+        p.completed_attempt = 2;
+        p.final_run_token = 'fr_replacement_attempt';
+      });
+    }
+    return originalTransact(id, fn);
+  };
+  t.after(() => { store.transact = originalTransact; });
+  await engine.drain(room.id);
+  assert.equal(soraRuns, 0, 'the claim transaction refused a child bound to a superseded attempt');
+  assert.equal((await rowById(store, room, childId)).state, 'queued');
 });
 
 test('R3 a hung offer is bounded by the root deadline, becomes uncertain, and releases other roots', async (t) => {
@@ -1147,6 +1226,101 @@ test('R3 same-engine recovery + owner retry fences the old hung run and never au
   assert.deepEqual(agentAnswers(page).map((m) => m.text), ['recovered answer'], 'the late first attempt is fenced out');
   assert.equal(await capture(ctx.finalize('stale after retry')), 'dispatch_stale');
   assert.equal(timers.size, 0, 'settled attempts leave no deadline timer behind');
+});
+
+test('R3 same-engine recover cancels an in-flight bounded wait so an independent root runs before the old deadline', { timeout: 5000 }, async (t) => {
+  const { store, room, engine, timers } = await setup(t, { timersFactory: fakeTimersFactory });
+  const reached = deferred(), late = deferred();
+  let sumiRuns = 0, soraRuns = 0;
+  engine.register(SUMI.actor_id, {
+    async offer() { reached.resolve(); return late.promise; },
+    async run() { sumiRuns += 1; return { text: 'never' }; },
+  });
+  engine.register(SORA.actor_id, { async run() { soraRuns += 1; return { text: 'independent answer' }; } });
+
+  const aText = '@Sumi hung offer';
+  const a = await submit(engine, room, aText, { mentions: [mention(SUMI.actor_id, aText)] });
+  await reached.promise;
+  assert.equal(timers.size, 1, 'the hung offer holds a bounded wait');
+
+  await engine.recover();
+  assert.equal(timers.size, 0, 'recover cancels the in-flight bounded wait');
+  let aRow = await rowById(store, room, a.dispatch_ids[0]);
+  assert.equal(aRow.state, 'uncertain');
+
+  const bText = '@Sora independent';
+  const b = await submit(engine, room, bText, { mentions: [mention(SORA.actor_id, bText)] });
+  await engine.drain(room.id);
+  assert.equal(soraRuns, 1, 'the new independent root runs without advancing to the old deadline');
+  assert.equal((await rowById(store, room, b.dispatch_ids[0])).state, 'completed');
+  assert.equal((await rowById(store, room, a.dispatch_ids[0])).state, 'uncertain');
+
+  late.resolve({ accepted: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  await engine.drain(room.id);
+  aRow = await rowById(store, room, a.dispatch_ids[0]);
+  assert.equal(aRow.state, 'uncertain', 'a late offer result cannot revive the recovered row');
+  assert.equal(sumiRuns, 0);
+  assert.equal((await publicMessages(store, room)).filter((m) => m.dispatch_id === aRow.id && m.system === undefined).length, 0);
+});
+
+test('one active turn even when two engines race the same queued room', { timeout: 5000 }, async (t) => {
+  const { store, room, clock } = await setup(t);
+  const engineA = createDispatchEngine({ store, now: () => clock.t });
+  const engineB = createDispatchEngine({ store, now: () => clock.t });
+  t.after(() => { engineA.close(); engineB.close(); });
+  let active = 0, maxActive = 0, runs = 0;
+  const offerReached = deferred();
+  const offerRelease = deferred();
+  t.after(() => offerRelease.resolve());
+  const target = () => ({
+    async offer() {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      offerReached.resolve();
+      await offerRelease.promise;
+      active -= 1;
+      return { accepted: true };
+    },
+    async run() { runs += 1; return { text: 'done' }; },
+  });
+  for (const engine of [engineA, engineB]) {
+    engine.register(SUMI.actor_id, target());
+    engine.register(SORA.actor_id, target());
+  }
+
+  await store.transact(room.id, (d) => { d.paused = true; });
+  const aText = '@Sumi root a';
+  const bText = '@Sora root b';
+  const a = await submit(engineA, room, aText, { mentions: [mention(SUMI.actor_id, aText)] });
+  const b = await submit(engineB, room, bText, { mentions: [mention(SORA.actor_id, bText)] });
+  await new Promise((resolve) => setImmediate(resolve));
+  await store.transact(room.id, (d) => { d.paused = false; });
+
+  const originalSnapshot = store.snapshot.bind(store);
+  let views = 0;
+  store.snapshot = async (id) => {
+    const snap = await originalSnapshot(id);
+    if (id !== room.id) return snap;
+    views += 1;
+    if (views === 1) return { ...snap, dispatches: (snap.dispatches ?? []).filter((d) => d.id === a.dispatch_ids[0]) };
+    if (views === 2) return { ...snap, dispatches: (snap.dispatches ?? []).filter((d) => d.id === b.dispatch_ids[0]) };
+    return snap;
+  };
+  t.after(() => { store.snapshot = originalSnapshot; });
+
+  const drains = Promise.all([engineA.drain(room.id), engineB.drain(room.id)]);
+  await Promise.race([
+    offerReached.promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error('no offer reached the controlled stage')), 2000)),
+  ]);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(maxActive, 1, 'the claim mutation refuses a second active turn');
+  offerRelease.resolve();
+  await drains;
+  assert.equal(runs, 2, 'both independent roots eventually run');
+  const rows = await dispatches(store, room);
+  assert.deepEqual(rows.map((d) => d.state), ['completed', 'completed']);
 });
 
 test('R8 an offer token is minted at claim: late results from an overlapping engine cannot touch the replacement attempt', async (t) => {
