@@ -72,3 +72,5 @@ This is **not** a fleet migration or a physical-device acceptance test. Public-h
 - Release lint reproduces the same **2 errors, 55 warnings, 5 hints** on unchanged main and this candidate: NotifyNotifier.kt:90 MissingPermission and AvatarStore.kt:61 NewApi (WEBP_LOSSY on API 29). Not new regressions; not claimed green. Signed assembly, certificate, version and APK asset verification succeeded.
 - Canary gateway and sidecar were stopped after verification; production hub/connector remained active and bot-flag-off. Auto-update remains intentionally paused pending a separate production deployment decision.
 - Groups, threads, reactions and arbitrary buttons are out of this bot protocol slice.
+
+- Contract alignment (2026-10-19): `models.set` documented in contract/bot-api.md, valid+invalid vectors and a limits test added (merged from fix/rooms-contract-baseline). Repairs the two pre-existing bot-contract baseline failures; no production source changed.
