@@ -153,15 +153,15 @@ async def test_real_hub_close_codes_mid_session_are_fatal_and_not_retried(hub, m
 
 
 async def test_connect_offers_the_bot_subprotocol_and_requires_the_echo(hub, make_adapter):
-    from fakehub import SUBPROTOCOL, SUBPROTOCOL_V11
+    from fakehub import SUBPROTOCOL, SUBPROTOCOL_V11, SUBPROTOCOL_V12
     adapter = make_adapter()
     assert await adapter.connect() is True
-    assert hub.subprotocol_offers == [f"{SUBPROTOCOL_V11},{SUBPROTOCOL}"] and adapter._conn.ws.subprotocol == SUBPROTOCOL
+    assert hub.subprotocol_offers == [f"{SUBPROTOCOL_V12},{SUBPROTOCOL_V11},{SUBPROTOCOL}"] and adapter._conn.ws.subprotocol == SUBPROTOCOL
     await adapter.disconnect()
     hub.echo_subprotocol = False  # hub accepts the upgrade but never selects foxfleet.bot.v1
     other = make_adapter()
     assert await other.connect() is False
-    assert hub.subprotocol_offers[-1] == f"{SUBPROTOCOL_V11},{SUBPROTOCOL}"  # both were offered; the missing echo is what fails
+    assert hub.subprotocol_offers[-1] == f"{SUBPROTOCOL_V12},{SUBPROTOCOL_V11},{SUBPROTOCOL}"  # all were offered; the missing echo is what fails
     assert (other.fatal_error_code, other.fatal_error_retryable) == ("foxfleet_protocol", False)
     await asyncio.sleep(0.1)
     assert len(hub.subprotocol_offers) == 2  # no retry
@@ -578,11 +578,12 @@ async def test_long_text_split_by_utf8_bytes_without_loss(hub, make_adapter):
 async def test_unsupported_thread_and_oversized_edit_are_refused_explicitly(hub, make_adapter):
     adapter = make_adapter()
     assert await adapter.connect() is True
-    threaded = await adapter.send(chat(1), "x", metadata={"thread_id": "t1"})
-    assert threaded.success is False and "thread" in threaded.error
+    threaded = await adapter.send(chat(1), "x", metadata={"thread_id": "fcr_" + "A" * 16})
+    assert threaded.success is True and threaded.message_id
+    assert not any("thread_id" in f for f in hub.frames)
     big = await adapter.edit_message(chat(1), bot_msg(1), "a" * (64 * 1024 + 1))
     assert (big.success, big.error_kind) == (False, "too_long")
-    assert hub.ops("message.send") == [] and hub.ops("message.edit") == []
+    assert len(hub.ops("message.send")) == 1 and hub.ops("message.edit") == []
 
 
 async def test_rpc_errors_map_to_send_result_kinds(hub, make_adapter):

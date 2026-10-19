@@ -16,16 +16,23 @@ from typing import Any, Optional
 
 PROTOCOL = "foxfleet.bot/1"
 PROTOCOL_V11 = "foxfleet.bot/1.1"
+PROTOCOL_V12 = "foxfleet.bot/1.2"
 SUBPROTOCOL = "foxfleet.bot.v1"
 SUBPROTOCOL_V11 = "foxfleet.bot.v1.1"
-OFFERED_SUBPROTOCOLS = (SUBPROTOCOL_V11, SUBPROTOCOL)
-ACCEPTED_PROTOCOLS = frozenset({PROTOCOL, PROTOCOL_V11})
+SUBPROTOCOL_V12 = "foxfleet.bot.v1.2"
+OFFERED_SUBPROTOCOLS = (SUBPROTOCOL_V12, SUBPROTOCOL_V11, SUBPROTOCOL)
+ACCEPTED_PROTOCOLS = frozenset({PROTOCOL, PROTOCOL_V11, PROTOCOL_V12})
+ROOM_FEATURES = ("stop", "cards", "media", "groups")
 STOP_ID = re.compile(r"^fs_[A-Za-z0-9_-]{16}$")
 STOP_OUTCOMES = frozenset({"stopped", "idle", "refused", "expired"})
 _FEATURE = re.compile(r"^[a-z]{1,32}$")
 BOT_ID = re.compile(r"^[0-9a-f]{24}$")
 CHAT_ID = re.compile(r"^fc_[A-Za-z0-9_-]{16}$")
+THREAD_ID = re.compile(r"^fcr_[A-Za-z0-9_-]{16}$")
 MESSAGE_ID = re.compile(r"^fm_[A-Za-z0-9_-]{16}$")
+DISPATCH_ID = re.compile(r"^fd_[A-Za-z0-9_-]{16}$")
+AGENT_REF = re.compile(r"^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+MAX_MENTIONS = 64
 MAX_FRAME_BYTES = 1024 * 1024  # hub frame / aggregate message cap (1 MiB)
 MAX_TEXT_BYTES = 64 * 1024  # message text cap, UTF-8 bytes, both directions
 
@@ -183,6 +190,10 @@ class InboundMessage:
     reply_to: str | None = None
     chat_type: str = "dm"
     media: tuple[dict, ...] = ()
+    thread_id: str | None = None
+    actor_kind: str = "human"
+    is_bot: bool = False
+    mentions: tuple[dict, ...] = ()
 
 
 def parse_message_new(frame: dict) -> InboundMessage:
@@ -229,6 +240,150 @@ def parse_message_new(frame: dict) -> InboundMessage:
     return InboundMessage(event_id=event_id, chat_id=chat_id, message_id=message_id, user_id=user_id,
                           user_name=(name or "").strip() or None, text=text, reply_to=reply_to, media=tuple(attachments))
 
+def _utf16_units(text: str) -> bytes:
+    return text.encode("utf-16-le", "surrogatepass")
+
+
+def _utf16_len(text: str) -> int:
+    return len(_utf16_units(text)) // 2
+
+
+def _parse_mentions(value: Any, text: str) -> tuple[dict, ...]:
+    """1.2 mentions use UTF-16 code-unit spans (JS string indices), never UTF-8 bytes."""
+    if value is None:
+        return ()
+    if not isinstance(value, list) or len(value) > MAX_MENTIONS:
+        raise ProtocolError("bad_mentions", "mentions is an array of at most 64 entries")
+    units = _utf16_units(text)
+    total = len(units) // 2
+    spans: list[tuple[int, int]] = []
+    out: list[dict] = []
+    for item in value:
+        if not isinstance(item, dict) or set(item) - {"kind", "id", "offset", "length"}:
+            raise ProtocolError("bad_mentions", "invalid mention")
+        if item.get("kind") != "agent" or not isinstance(item.get("id"), str) or not AGENT_REF.match(item["id"]):
+            raise ProtocolError("bad_mentions", "mention ids are agent:<id>")
+        offset, length = item.get("offset"), item.get("length")
+        if (isinstance(offset, bool) or isinstance(length, bool) or not isinstance(offset, int)
+                or not isinstance(length, int) or offset < 0 or not 1 <= length <= 256 or offset + length > total):
+            raise ProtocolError("bad_mentions", "mention span is out of range")
+        start = int.from_bytes(units[offset * 2:offset * 2 + 2], "little")
+        end = int.from_bytes(units[(offset + length - 1) * 2:(offset + length - 1) * 2 + 2], "little")
+        if 0xDC00 <= start <= 0xDFFF or 0xD800 <= end <= 0xDBFF:
+            raise ProtocolError("bad_mentions", "mention span splits a surrogate pair")
+        spans.append((offset, offset + length))
+        out.append({"kind": "agent", "id": item["id"], "offset": offset, "length": length})
+    spans.sort()
+    for left, right in zip(spans, spans[1:]):
+        if right[0] < left[1]:
+            raise ProtocolError("bad_mentions", "mention spans overlap")
+    return tuple(out)
+
+
+def _parse_actor(value: Any) -> tuple[str, str, str, bool]:
+    if not isinstance(value, dict) or set(value) != {"kind", "id", "name", "is_bot"}:
+        raise ProtocolError("bad_actor", "actor must be an object")
+    kind, ident, name, is_bot = value.get("kind"), value.get("id"), value.get("name"), value.get("is_bot")
+    if kind not in ("human", "agent") or not isinstance(is_bot, bool):
+        raise ProtocolError("bad_actor", "actor kind is human or agent")
+    if not isinstance(ident, str) or not isinstance(name, str) or not name or len(name) > 256 or not name.isprintable():
+        raise ProtocolError("bad_actor", "actor name is 1 to 256 printable characters")
+    if kind == "agent":
+        if is_bot is not True or not AGENT_REF.match(ident):
+            raise ProtocolError("bad_actor", "an agent actor is agent:<id> and is_bot")
+    elif is_bot is not False or ident.startswith("agent:") or not ident or len(ident) > 128:
+        raise ProtocolError("bad_actor", "a human actor has a hub account id and is not a bot")
+    return kind, ident, name, is_bot
+
+
+def parse_room_message_new(frame: dict) -> InboundMessage:
+    """A foxfleet.bot/1.2 room message: room ids, actor kind and UTF-16 mentions are frame fields."""
+    if frame.get("t") != "message.new":
+        raise ProtocolError("bad_frame", "not a message.new")
+    allowed = {"t", "event_id", "chat_id", "chat_type", "thread_id", "message_id", "actor", "mentions", "text", "date", "reply_to"}
+    if set(frame) - allowed:
+        raise ProtocolError("bad_frame", "unexpected room message field")
+    if frame.get("chat_type") != "group":
+        raise ProtocolError("bad_frame", "not a room message")
+    event_id = _event_id(frame, "event_id")
+    if event_id == 0:
+        raise ProtocolError("bad_event_id", "event_id must be positive")
+    chat_id = _match(frame, "chat_id", CHAT_ID)
+    thread_id = _match(frame, "thread_id", THREAD_ID)
+    message_id = _match(frame, "message_id", MESSAGE_ID)
+    text = _text(frame.get("text"))
+    if not text:
+        raise ProtocolError("bad_text", "text must be non-empty")
+    _, user_id, user_name, is_bot = _parse_actor(frame.get("actor"))
+    kind = frame["actor"]["kind"]
+    mentions = _parse_mentions(frame.get("mentions"), text)
+    reply_to = frame.get("reply_to")
+    if reply_to is not None:
+        reply_to = _match(frame, "reply_to", MESSAGE_ID)
+    date = frame.get("date")
+    if isinstance(date, bool) or not isinstance(date, int) or date < 0:
+        raise ProtocolError("bad_frame", "date must be a non-negative integer")
+    return InboundMessage(event_id=event_id, chat_id=chat_id, message_id=message_id, user_id=user_id,
+                          user_name=user_name, text=text, reply_to=reply_to, chat_type="group",
+                          thread_id=thread_id, actor_kind=kind, is_bot=is_bot, mentions=mentions)
+
+
+@dataclass(frozen=True)
+class RoomDispatch:
+    """The transient hub->bot binding for one room turn (dispatch offer/run)."""
+    dispatch_id: str
+    run_token: str
+    chat_id: str
+    thread_id: str
+    message_id: str
+    actor_kind: str
+    actor_id: str
+    actor_name: str
+    is_bot: bool
+    text: str
+    mentions: tuple[dict, ...]
+    date: int
+    reply_to: str | None = None
+    root_id: str | None = None
+    deadline_at: int | None = None
+
+
+def parse_dispatch(frame: dict) -> RoomDispatch:
+    if frame.get("t") != "dispatch.run":
+        raise ProtocolError("bad_frame", "not a dispatch.run")
+    allowed = {"t", "dispatch_id", "run_token", "chat_id", "thread_id", "message_id", "actor", "mentions",
+               "text", "date", "reply_to", "root_id", "deadline_at"}
+    if set(frame) - allowed:
+        raise ProtocolError("bad_frame", "unexpected dispatch field")
+    dispatch_id = _match(frame, "dispatch_id", DISPATCH_ID)
+    thread_id = _match(frame, "thread_id", THREAD_ID)
+    chat_id = _match(frame, "chat_id", CHAT_ID)
+    message_id = _match(frame, "message_id", MESSAGE_ID)
+    token = frame.get("run_token")
+    if not isinstance(token, str) or not token or len(token) > MAX_ID_CHARS or not token.isprintable():
+        raise ProtocolError("bad_frame", "run_token must be a bounded string")
+    text = _text(frame.get("text"))
+    if not text:
+        raise ProtocolError("bad_text", "text must be non-empty")
+    kind, user_id, user_name, is_bot = _parse_actor(frame.get("actor"))
+    mentions = _parse_mentions(frame.get("mentions"), text)
+    date = frame.get("date")
+    if isinstance(date, bool) or not isinstance(date, int) or date < 0:
+        raise ProtocolError("bad_frame", "date must be a non-negative integer")
+    reply_to = frame.get("reply_to")
+    if reply_to is not None:
+        reply_to = _match(frame, "reply_to", MESSAGE_ID)
+    root_id = frame.get("root_id")
+    if root_id is not None:
+        root_id = _match(frame, "root_id", MESSAGE_ID)
+    deadline = frame.get("deadline_at")
+    if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, int) or deadline < 0):
+        raise ProtocolError("bad_frame", "deadline_at must be a non-negative integer")
+    return RoomDispatch(dispatch_id=dispatch_id, run_token=token, chat_id=chat_id, thread_id=thread_id,
+                        message_id=message_id, actor_kind=kind, actor_id=user_id, actor_name=user_name,
+                        is_bot=is_bot, text=text, mentions=mentions, date=date, reply_to=reply_to,
+                        root_id=root_id, deadline_at=deadline)
+
 
 @dataclass(frozen=True)
 class ChatStop:
@@ -240,6 +395,8 @@ class ChatStop:
     user_name: str | None
     date: int
     expires_at: int
+    thread_id: str | None = None
+    chat_type: str = "dm"
 
 
 def parse_chat_stop(frame: dict) -> ChatStop:
@@ -275,6 +432,8 @@ class CardCallback:
     user_name: Optional[str]
     kind: str
     value: dict
+    thread_id: str | None = None
+    chat_type: str = "dm"
 
 
 def parse_callback(frame: dict) -> CardCallback:
@@ -305,12 +464,52 @@ def parse_callback(frame: dict) -> CardCallback:
                         kind=kind, value=value)
 
 
+def parse_room_chat_stop(frame: dict) -> ChatStop:
+    """A 1.2 room stop: the authenticated human actor and room carriers replace `user`."""
+    if frame.get("t") != "chat.stop":
+        raise ProtocolError("bad_frame", "not a chat.stop")
+    allowed = {"t", "stop_id", "chat_id", "chat_type", "thread_id", "actor", "date", "expires_at"}
+    if set(frame) != allowed:
+        raise ProtocolError("bad_frame", "unexpected room chat.stop field")
+    kind, user_id, user_name, is_bot = _parse_actor(frame.get("actor"))
+    if kind != "human" or is_bot:
+        raise ProtocolError("bad_user", "stop is owner-only")
+    return ChatStop(stop_id=_match(frame, "stop_id", STOP_ID), chat_id=_match(frame, "chat_id", CHAT_ID),
+                    user_id=user_id, user_name=user_name, date=_event_id(frame, "date"),
+                    expires_at=_event_id(frame, "expires_at"),
+                    thread_id=_match(frame, "thread_id", THREAD_ID), chat_type="group")
+
+
+def parse_room_callback(frame: dict) -> CardCallback:
+    if frame.get("t") != "callback":
+        raise ProtocolError("bad_frame", "not a callback")
+    allowed = {"t", "callback_id", "request_id", "chat_id", "chat_type", "thread_id", "actor", "kind", "value"}
+    if set(frame) != allowed:
+        raise ProtocolError("bad_frame", "unexpected room callback field")
+    kind, user_id, user_name, is_bot = _parse_actor(frame.get("actor"))
+    if kind != "human" or is_bot:
+        raise ProtocolError("bad_user", "a card tap is human")
+    card_kind = frame.get("kind")
+    value = frame.get("value")
+    if card_kind not in CARD_KINDS or not isinstance(value, dict) or len(value) > 8:
+        raise ProtocolError("bad_frame", "invalid card callback")
+    return CardCallback(callback_id=_match(frame, "callback_id", CARD_CALLBACK_ID),
+                        request_id=_match(frame, "request_id", CARD_REQUEST_ID),
+                        chat_id=_match(frame, "chat_id", CHAT_ID), user_id=user_id, user_name=user_name,
+                        kind=card_kind, value=value,
+                        thread_id=_match(frame, "thread_id", THREAD_ID), chat_type="group")
+
+
 # Contract error codes plus the defensive codes the adapter treats as fatal; hub-supplied codes outside
 # this set are reported as "unrecognized" so hub-controlled text never reaches logs or results.
 KNOWN_ERROR_CODES = frozenset({
     "invalid_request", "unsupported", "unknown_type", "bad_frame", "not_found", "forbidden", "too_large",
     "rate_limited", "idempotency_conflict", "ack_out_of_range", "internal",
     "unauthorized", "token_revoked", "version_mismatch", "unsupported_protocol", "replaced",
+    "conversation_not_found", "not_conversation_owner", "actor_forbidden", "owner_only",
+    "group_not_available", "handoff_limit", "handoff_expired", "handoff_not_found", "handoff_self",
+    "handoff_not_final", "dispatch_not_running", "dispatch_stale", "dispatch_finalized",
+    "dispatch_context_required", "mentions_invalid", "unknown_mention", "cross_room_reply", "reply_not_found",
 })
 _FRAME_TYPE = re.compile(r"^[a-z][a-z0-9_.]{0,39}$")
 
@@ -364,15 +563,18 @@ def error_kind_for(code: str) -> str:
 
 
 _REQUEST_FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media", "reasoning"},
-    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "reasoning"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "media", "reasoning", "mentions", "dispatch_id", "run_token"},
+    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "reasoning", "mentions", "dispatch_id", "run_token"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},
     "models.set": {"providers"},
-    "callback.answer": {"callback_id", "outcome"},
-    "card.send": {"chat_id", "kind", "instance", "card_key", "ttl_ms", "idempotency_key", "command", "description", "questions"},
-    "card.close": {"request_id", "all_except_instance", "reason"},
+    "callback.answer": {"callback_id", "chat_id", "thread_id", "outcome"},
+    "card.send": {"chat_id", "kind", "instance", "card_key", "ttl_ms", "idempotency_key", "command", "description", "questions", "actor_kind"},
+    "card.close": {"request_id", "all_except_instance", "reason", "actor_kind"},
+    "handoff.request": {"chat_id", "thread_id", "source_message_id", "target_agent_id", "text", "idempotency_key", "dispatch_id", "run_token"},
+    "chat.get": {"chat_id", "thread_id"},
+    "chat.cancel": {"chat_id", "thread_id", "dispatch_id"},
 }
 
 

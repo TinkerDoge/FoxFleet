@@ -20,6 +20,7 @@ PROTOCOL = "foxfleet.bot/1"
 PROTOCOL_V11 = "foxfleet.bot/1.1"
 SUBPROTOCOL = "foxfleet.bot.v1"
 SUBPROTOCOL_V11 = "foxfleet.bot.v1.1"
+SUBPROTOCOL_V12 = "foxfleet.bot.v1.2"
 TOKEN = "ffb_" + "T" * 43
 BOT_ID = "0123456789abcdef01234567"
 
@@ -30,8 +31,8 @@ _MESSAGE_ID = re.compile(r"^fm_[A-Za-z0-9_-]{16}$")
 _COMMAND_NAME = re.compile(r"^[a-z0-9_]{1,32}$")
 _CONTROL = re.compile(r"[\x00-\x1f\x7f]")
 _FIELDS = {
-    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key"},
-    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key"},
+    "message.send": {"chat_id", "text", "format", "reply_to", "final", "idempotency_key", "dispatch_id", "run_token"},
+    "message.edit": {"chat_id", "message_id", "text", "format", "final", "idempotency_key", "dispatch_id", "run_token"},
     "message.delete": {"chat_id", "message_id", "idempotency_key"},
     "chat.action": {"chat_id", "action"},
     "commands.set": {"commands"},

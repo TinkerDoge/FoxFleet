@@ -44,7 +44,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, read_json_or_empty
 
-from . import protocol
+from . import protocol, rooms
 from .ownership import BotLock
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ HUB_URL_ENV = "FOXFLEET_HUB_URL"
 HOME_ENV = "FOXFLEET_HOME_CHANNEL"
 ALLOWED_USERS_ENV = "FOXFLEET_ALLOWED_USERS"
 ALLOW_ALL_ENV = "FOXFLEET_ALLOW_ALL_USERS"
+ALLOW_BOTS_ENV = "FOXFLEET_ALLOW_BOTS"
 
 try:
     from websockets.asyncio.client import connect as _ws_connect
@@ -239,9 +240,11 @@ class _Conn:
         self.overflowed = False  # intake paused: dispatch queue was full
         self.abandoned = False  # an admission failed: stop dispatching this socket's events
         self.close_reason: Optional[tuple[str, str]] = None  # (code, message) for fatal closes
+        self.protocol = hello.protocol
         self.media_enabled = False
         self.stop_enabled = False  # set from the negotiated hello; a 1.0 socket never interrupts
         self.cards_enabled = False
+        self.groups_enabled = False
 
 
 class _NoRedirectConnect(_ws_connect):  # type: ignore[misc,valid-type]
@@ -392,6 +395,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._card_instance = secrets.token_hex(8)
         self._rpc_counter = itertools.count(1)
         self._queue: Optional[asyncio.Queue] = None
+        self._seen_dispatches: OrderedDict[str, float] = OrderedDict()
+        self._room_chats: dict[str, str] = {}
+        self._room_members: dict[str, dict[str, str]] = {}
         self._supervisor_task: Optional[asyncio.Task] = None
         self._dispatcher_task: Optional[asyncio.Task] = None
         self._side_tasks: set[asyncio.Task] = set()
@@ -589,9 +595,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
         try:
             raw = await asyncio.wait_for(ws.recv(), timeout=self.HELLO_TIMEOUT)
             hello = protocol.parse_hello(protocol.parse_frame(raw))
-            negotiated_v11 = ws.subprotocol == protocol.SUBPROTOCOL_V11
-            if negotiated_v11 != (hello.protocol == protocol.PROTOCOL_V11):
+            negotiated = (protocol.PROTOCOL_V12 if ws.subprotocol == protocol.SUBPROTOCOL_V12
+                          else protocol.PROTOCOL_V11 if ws.subprotocol == protocol.SUBPROTOCOL_V11
+                          else protocol.PROTOCOL)
+            if hello.protocol != negotiated:
                 raise protocol.ProtocolError("version_mismatch", "hello protocol does not match the selected subprotocol")
+            if negotiated == protocol.PROTOCOL_V12 and "groups" not in hello.features:
+                raise protocol.ProtocolError("bad_hello", "a 1.2 hello must advertise groups")
         except protocol.ProtocolError as exc:
             await ws.close(code=1002, reason="bad hello")
             raise _FatalConnect("foxfleet_protocol", f"bad hub hello: {exc}",
@@ -611,9 +621,11 @@ class FoxFleetAdapter(BasePlatformAdapter):
             raise _FatalConnect("foxfleet_identity_changed", "the bot token now belongs to a different bot")
         self._generation += 1
         conn = _Conn(ws, hello, self._generation)
-        conn.stop_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "stop" in hello.features
-        conn.media_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "media" in hello.features
-        conn.cards_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V11 and "cards" in hello.features
+        modern = ws.subprotocol in (protocol.SUBPROTOCOL_V11, protocol.SUBPROTOCOL_V12)
+        conn.stop_enabled = modern and "stop" in hello.features
+        conn.media_enabled = modern and "media" in hello.features
+        conn.cards_enabled = modern and "cards" in hello.features
+        conn.groups_enabled = ws.subprotocol == protocol.SUBPROTOCOL_V12 and "groups" in hello.features
         self._bot_id = hello.bot
         self._load_state(hello)
         return conn
@@ -724,7 +736,21 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if kind == "res":
             self._resolve(frame)
         elif kind == "message.new":
-            self._enqueue_message(conn, frame)
+            if frame.get("chat_type") == "group" and conn.groups_enabled:
+                self._on_room_message(conn, frame)
+            else:
+                self._enqueue_message(conn, frame)
+        elif kind == "chat.member":
+            if conn.groups_enabled:
+                self._on_room_member(conn, frame)
+            elif "event_id" in frame:
+                event_id = protocol.parse_event_id(frame)
+                self._enqueue(conn, ("skip", event_id, "unsupported group membership event"), event_id)
+        elif kind == "dispatch.run":
+            if conn.groups_enabled:
+                self._spawn(self._admit_room(conn, frame))
+        elif kind in ("dispatch.offer", "dispatch.status"):
+            logger.debug("FoxFleet: room transport %s for %s", kind, protocol.safe_frame_type(frame.get("chat_id")))
         elif kind == "ping":
             await self._send_frame(conn, protocol.build_pong(frame))
         elif kind == "replay.gap":
@@ -765,15 +791,19 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def _handle_chat_stop(self, conn: _Conn, frame: dict) -> None:
         try:
-            stop = protocol.parse_chat_stop(frame)
+            stop = (protocol.parse_room_chat_stop(frame) if frame.get("chat_type") == "group"
+                    else protocol.parse_chat_stop(frame))
         except protocol.ProtocolError as exc:
             logger.warning("FoxFleet: ignoring malformed chat.stop (%s)", exc.code)
             return
+        room = {"chat_id": stop.chat_id, "thread_id": stop.thread_id} if stop.chat_type == "group" else None
+        answer = lambda outcome: self._answer_stop(conn, stop.stop_id, outcome, **({"room": room} if room else {}))
         if time.time() * 1000 > stop.expires_at:
-            await self._answer_stop(conn, stop.stop_id, "expired")
+            await answer("expired")
             return
-        if self._is_sender_authorized(stop.user_id, "dm", stop.chat_id) is not True:
-            await self._answer_stop(conn, stop.stop_id, "refused")
+        if self._is_sender_authorized(stop.user_id, stop.chat_type, stop.chat_id,
+                                      thread_id=stop.thread_id) is not True:
+            await answer("refused")
             return
         event = self._stop_event(stop)
         session_key = self._event_session_key(event)
@@ -787,27 +817,29 @@ class FoxFleetAdapter(BasePlatformAdapter):
         except Exception:
             logger.exception("FoxFleet: /stop dispatch failed")
             self._suppress_stop_reply.discard(str(event.source.chat_id))
-            await self._answer_stop(conn, stop.stop_id, "refused")
+            await answer("refused")
             return
         # handle_message swallows a failed /stop and restores the running turn.
         if was_active and task_before is not None and not task_before.done():
             logger.warning("FoxFleet: /stop left the running turn in place; not confirming")
             self._suppress_stop_reply.discard(str(event.source.chat_id))
-            await self._answer_stop(conn, stop.stop_id, "refused")
+            await answer("refused")
             return
-        await self._answer_stop(conn, stop.stop_id, "stopped" if was_active else "idle")
+        await answer("stopped" if was_active else "idle")
 
     def _stop_event(self, stop: protocol.ChatStop) -> MessageEvent:
         source = self.build_source(chat_id=stop.chat_id, chat_name=stop.user_name or stop.chat_id,
-                                   chat_type="dm", user_id=stop.user_id, user_name=stop.user_name)
+                                   chat_type=stop.chat_type, user_id=stop.user_id, user_name=stop.user_name,
+                                   thread_id=stop.thread_id)
         return MessageEvent(text="/stop", message_type=MessageType.TEXT, source=source,
                             user_id=stop.user_id, user_name=stop.user_name, reply_expected=False)
 
-    async def _answer_stop(self, conn: _Conn, stop_id: str, outcome: str) -> None:
+    async def _answer_stop(self, conn: _Conn, stop_id: str, outcome: str, room: Optional[dict] = None) -> None:
         if self._conn is not conn or outcome not in protocol.STOP_OUTCOMES:
             return
         try:
-            await self._request("callback.answer", retry_unknown=False, callback_id=stop_id, outcome=outcome)
+            await self._request("callback.answer", retry_unknown=False, callback_id=stop_id,
+                                outcome=outcome, **(room or {}))
         except Exception as exc:
             logger.warning("FoxFleet: stop answer %s was not confirmed (%s)", outcome, type(exc).__name__)
 
@@ -918,23 +950,27 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not getattr(conn, "cards_enabled", False) or self._conn is not conn:
             return
         try:
-            cb = protocol.parse_callback(frame)
+            cb = (protocol.parse_room_callback(frame) if frame.get("chat_type") == "group"
+                  else protocol.parse_callback(frame))
         except protocol.ProtocolError as exc:
             logger.warning("FoxFleet: ignoring malformed callback (%s)", exc.code)
             return
+        room = {"chat_id": cb.chat_id, "thread_id": cb.thread_id} if cb.chat_type == "group" else None
+        opts = {"room": room} if room else {}
         prior = self._answered_callbacks.get(cb.callback_id)
         if prior:
-            await self._answer_card(conn, cb.callback_id, prior)
+            await self._answer_card(conn, cb.callback_id, prior, **opts)
             return
-        if self._is_sender_authorized(cb.user_id, "dm", cb.chat_id) is not True:
-            await self._finish_card(conn, cb.callback_id, "refused")
+        if self._is_sender_authorized(cb.user_id, cb.chat_type, cb.chat_id,
+                                      thread_id=cb.thread_id) is not True:
+            await self._finish_card(conn, cb.callback_id, "refused", **opts)
             return
         pending = self._cards.pop(cb.request_id, None)
         if pending is None:
-            await self._finish_card(conn, cb.callback_id, "expired")
+            await self._finish_card(conn, cb.callback_id, "expired", **opts)
             return
         self._cards_by_clarify.pop(str(pending.get("clarify_id") or ""), None)
-        await self._finish_card(conn, cb.callback_id, await self._resolve_card(pending, cb))
+        await self._finish_card(conn, cb.callback_id, await self._resolve_card(pending, cb), **opts)
 
     async def _resolve_card(self, pending: dict, cb: protocol.CardCallback) -> str:
         try:
@@ -964,19 +1000,89 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return "refused"
         return "refused"
 
-    async def _finish_card(self, conn: _Conn, callback_id: str, outcome: str) -> None:
+    async def _finish_card(self, conn: _Conn, callback_id: str, outcome: str, room: Optional[dict] = None) -> None:
         self._answered_callbacks[callback_id] = outcome
         while len(self._answered_callbacks) > 256:
             self._answered_callbacks.popitem(last=False)
-        await self._answer_card(conn, callback_id, outcome)
+        await self._answer_card(conn, callback_id, outcome, room)
 
-    async def _answer_card(self, conn: _Conn, callback_id: str, outcome: str) -> None:
+    async def _answer_card(self, conn: _Conn, callback_id: str, outcome: str, room: Optional[dict] = None) -> None:
         if self._conn is not conn or outcome not in ("resolved", "expired", "refused"):
             return
         try:
-            await self._request("callback.answer", retry_unknown=False, callback_id=callback_id, outcome=outcome)
+            await self._request("callback.answer", retry_unknown=False, callback_id=callback_id,
+                                outcome=outcome, **(room or {}))
         except Exception as exc:
             logger.warning("FoxFleet: card answer %s was not confirmed (%s)", outcome, type(exc).__name__)
+
+    def _on_room_message(self, conn: _Conn, frame: dict) -> None:
+        """A contract room message is context, not a turn trigger: the dispatch frame starts the turn."""
+        if not conn.groups_enabled:
+            logger.debug("FoxFleet: ignoring room message.new; groups were not negotiated")
+            return
+        try:
+            msg = protocol.parse_room_message_new(frame)
+        except protocol.ProtocolError as exc:
+            logger.warning("FoxFleet: ignoring malformed room message (%s)", exc.code)
+            return
+        self._remember(self._chat_names, msg.chat_id, msg.user_name or msg.chat_id, self.MAX_CHAT_CACHE)
+        self._room_chats[msg.chat_id] = msg.thread_id or ""
+
+    def _on_room_member(self, conn: _Conn, frame: dict) -> None:
+        if not conn.groups_enabled:
+            return
+        chat_id, thread_id = frame.get("chat_id"), frame.get("thread_id")
+        member = frame.get("member")
+        if (not isinstance(chat_id, str) or not protocol.CHAT_ID.match(chat_id)
+                or not isinstance(thread_id, str) or not protocol.THREAD_ID.match(thread_id)
+                or not isinstance(member, dict) or not isinstance(member.get("id"), str)
+                or not protocol.AGENT_REF.match(member["id"])
+                or frame.get("action") not in ("join", "leave")):
+            logger.warning("FoxFleet: ignoring malformed chat.member")
+            return
+        self._room_chats[chat_id] = thread_id
+        live = self._room_members.setdefault(chat_id, {})
+        if frame["action"] == "join":
+            name = member.get("name") if isinstance(member.get("name"), str) and member["name"] else member["id"]
+            live[member["id"]] = name
+        else:
+            live.pop(member["id"], None)
+        if isinstance(member.get("name"), str) and member["name"]:
+            self._remember(self._chat_names, member["id"], member["name"], self.MAX_CHAT_CACHE)
+
+    async def _admit_room(self, conn: _Conn, frame: dict) -> None:
+        if conn is not self._conn or not conn.groups_enabled:
+            return
+        try:
+            dispatch = protocol.parse_dispatch(frame)
+        except protocol.ProtocolError as exc:
+            logger.warning("FoxFleet: ignoring malformed dispatch.run (%s)", exc.code)
+            return
+        key = f"{dispatch.dispatch_id}\x1f{dispatch.run_token}"
+        if key in self._seen_dispatches:
+            return  # a reconnect re-sent the same attempt; never run one dispatch twice
+        self._remember(self._seen_dispatches, key, time.monotonic(), 2048)
+        self._room_chats[dispatch.chat_id] = dispatch.thread_id
+        self._remember(self._chat_names, dispatch.chat_id, dispatch.actor_name or dispatch.chat_id,
+                       self.MAX_CHAT_CACHE)
+        event = self._build_room_event(dispatch)
+        turn = rooms.RoomTurn(
+            chat_id=dispatch.chat_id, thread_id=dispatch.thread_id,
+            dispatch_id=dispatch.dispatch_id, run_token=dispatch.run_token,
+            source_message_id=dispatch.message_id, request=self._room_request,
+        )
+        with rooms.bind_turn(turn):
+            await self.handle_message(event)
+
+    async def _room_request(self, op: str, **params: Any) -> protocol.RpcResponse:
+        return await self._request(op, retry_unknown=True, **params)
+
+    def _room_attempt(self, chat_id: str) -> dict[str, str]:
+        """The exact attempt credentials for a room turn, or nothing outside that turn."""
+        turn = rooms.current_turn()
+        if turn is None or turn.chat_id != str(chat_id):
+            return {}
+        return turn.attempt
 
     def _enqueue_message(self, conn: _Conn, frame: dict) -> None:
         try:
@@ -1292,6 +1398,21 @@ class FoxFleetAdapter(BasePlatformAdapter):
         state = self._text_debounce_store().get(session_key)
         if state is not None and (state.event is event or state.last_ts >= started):
             event._foxfleet_receipt = True
+
+    def _build_room_event(self, dispatch: protocol.RoomDispatch) -> MessageEvent:
+        """Room identity rides SessionSource (chat_type group + stable fcr_ thread), never metadata."""
+        source = self.build_source(
+            chat_id=dispatch.chat_id, chat_name=dispatch.actor_name or dispatch.chat_id,
+            chat_type="group", user_id=dispatch.actor_id, user_name=dispatch.actor_name,
+            thread_id=dispatch.thread_id, is_bot=dispatch.is_bot, message_id=dispatch.message_id,
+        )
+        return MessageEvent(
+            text=dispatch.text, message_type=MessageType.TEXT, source=source,
+            user_id=dispatch.actor_id, user_name=dispatch.actor_name, message_id=dispatch.message_id,
+            reply_to_message_id=dispatch.reply_to, reply_expected=True,
+            # An agent-origin turn is never telemetry, never a gateway command and never an owner.
+            allow_gateway_control=not dispatch.is_bot,
+        )
 
     def _build_event(self, msg: protocol.InboundMessage) -> MessageEvent:
         source = self.build_source(chat_id=msg.chat_id, chat_name=msg.user_name or msg.chat_id,
@@ -1921,9 +2042,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if trace is not None and runner is not None and (
                 getattr(runner, "_draining", False) or getattr(runner, "_external_drain_active", False)):
             trace[0] = True  # remember a drain notice even if drain clears during its RPC
-        if (metadata or {}).get("thread_id"):
-            return SendResult(success=False, error="FoxFleet v1 has no threads; send to the chat id",
-                              error_kind="not_found")
+        # 1.2 rooms carry their stable fcr_ thread in SessionSource; send() routes by chat_id only.
+        # A hub-supplied thread_id in metadata is accepted and ignored, never put on the wire.
         text = _clean_text(content)
         if not text.strip():
             return _blank_result()
@@ -1965,7 +2085,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
             res = await self._request("message.send", retry_unknown=True, chat_id=chat_id, text=text,
                                       format="markdown", reply_to=reply_to, final=final,
                                       idempotency_key=key,
-                                      **({"reasoning": reasoning} if reasoning else {}))
+                                      **({"reasoning": reasoning} if reasoning else {}),
+                                      **self._room_attempt(str(chat_id)))
         except _OutcomeUnknown as exc:
             # Same content retried later (e.g. by _send_with_retry) reuses this key: the hub dedupes.
             self._remember_unknown(fingerprint, key)
@@ -2043,7 +2164,8 @@ class FoxFleetAdapter(BasePlatformAdapter):
             res = await self._request("message.edit", retry_unknown=True, chat_id=str(chat_id),
                                       message_id=str(message_id), text=content, format="markdown",
                                       final=bool(finalize),
-                                      **({"reasoning": reasoning} if reasoning else {}))
+                                      **({"reasoning": reasoning} if reasoning else {}),
+                                      **self._room_attempt(str(chat_id)))
         except (_OutcomeUnknown, _NotSent) as exc:
             return SendResult(success=False, error=f"FoxFleet: {exc}", error_kind="transient", retryable=True)
         except _BadResponse as exc:
@@ -2069,7 +2191,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def get_chat_info(self, chat_id: str) -> dict[str, Any]:
         chat_id = str(chat_id)
-        return {"name": self._chat_names.get(chat_id, chat_id), "type": "dm", "chat_id": chat_id}
+        conn = self._conn
+        room = bool(protocol.CHAT_ID.match(chat_id) and chat_id in self._room_chats
+                    and (conn is None or getattr(conn, "groups_enabled", False)))
+        info = {"name": self._chat_names.get(chat_id, chat_id), "type": "group" if room else "dm", "chat_id": chat_id}
+        if room and self._room_members.get(chat_id):
+            info["members"] = [{"id": mid, "name": name} for mid, name in self._room_members[chat_id].items()]
+        return info
 
     # -- commands.set ----------------------------------------------------
     async def _sync_commands(self) -> None:
@@ -2260,6 +2388,16 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
 
 def register(ctx) -> None:
     """Plugin entry point (``ctx.register_platform``); zero Hermes core edits."""
+    kwargs: dict[str, Any] = {}
+    # Feature-detect the host's bot-admission field. The plugin only *names* the env var; it never writes
+    # a profile or config. A host without the field simply keeps its legacy authz behavior.
+    try:
+        from dataclasses import fields
+        from gateway.platform_registry import PlatformEntry
+        if any(f.name == "allow_bots_env" for f in fields(PlatformEntry)):
+            kwargs["allow_bots_env"] = ALLOW_BOTS_ENV
+    except Exception:
+        pass
     ctx.register_platform(
         name=PLATFORM_NAME, label="FoxFleet", adapter_factory=lambda cfg: FoxFleetAdapter(cfg),
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
@@ -2267,5 +2405,6 @@ def register(ctx) -> None:
         env_enablement_fn=_env_enablement, apply_yaml_config_fn=_apply_yaml_config,
         cron_deliver_env_var=HOME_ENV, standalone_sender_fn=_standalone_send,
         allowed_users_env=ALLOWED_USERS_ENV, allow_all_env=ALLOW_ALL_ENV,
-        emoji="🦊", platform_hint=PLATFORM_HINT,
+        emoji="🦊", platform_hint=PLATFORM_HINT, **kwargs,
     )
+    rooms.register(ctx)

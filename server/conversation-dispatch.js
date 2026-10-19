@@ -615,6 +615,55 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         if (result?.held) throw rejectStale(null, result.reason);
         return result.message;
       },
+      /**
+       * Complete the turn by promoting one of this attempt's already-visible partial messages (the edit
+       * transport's final frame). The canonical final slot is that message, so a retry still revises it in
+       * place and a handoff sources exactly the message the agent finished.
+       */
+      async finalizeMessage(messageId, text) {
+        if (!validAgentText(text)) throw invalidText();
+        if (typeof messageId !== 'string' || !messageId) throw fault(400, 'Invalid message id', 'invalid_request');
+        const result = await store.transact(roomId, (d) => {
+          ensure(d);
+          if (!alive(epoch)) throw stale();
+          const row = d.dispatches.find((x) => x.id === running.id);
+          if (!row) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+          if (row.run_token !== token) throw stale();
+          if (row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+          const reason = executionReason(d, row, now());
+          if (reason) {
+            if (reason.code === 'room_paused') {
+              holdPausedTurn(row, now());
+              return { held: true, reason };
+            }
+            throw rejectStale(row, reason);
+          }
+          if (row.final_message_id && row.final_run_token === token) {
+            const prior = d.messages.find((m) => m.id === row.final_message_id);
+            if (prior && prior.id === messageId && prior.body === text) return { message: clone(prior) };
+            throw fault(409, 'This attempt already published its final message', 'dispatch_finalized');
+          }
+          const message = d.messages.find((m) => m.id === messageId && !m.deleted_at);
+          if (!message || message.system || message.author_kind !== 'agent'
+            || message.author_id !== row.target_agent_id || message.dispatch_id !== row.id) {
+            throw fault(404, 'Unknown message', 'not_found');
+          }
+          const at = now();
+          if (message.body !== text) {
+            message.body = text;
+            message.revision = (message.revision ?? 1) + 1;
+            pushOutbox(d, { type: 'message.edited', message_id: message.id, seq: message.seq, at });
+          }
+          message.final = true;
+          message.delivery_state = 'completed';
+          row.final_message_id = message.id;
+          row.final_run_token = token;
+          row.updated_at = at;
+          return { message: clone(message) };
+        });
+        if (result?.held) throw rejectStale(null, result.reason);
+        return result.message;
+      },
       /** Publish the turn's committed public message; only this (or a settled outcome) can source a handoff. */
       async finalize(text) {
         if (!validAgentText(text)) throw invalidText();

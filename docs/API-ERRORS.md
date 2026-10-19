@@ -125,6 +125,9 @@ never on the text):
 | `handoff_limit` | 429 | the root chain already has 4 dispatches; `Retry-After` is not meaningful and the chain must end |
 | `handoff_expired` | 410 | the 5-minute (`300000` ms) chain deadline passed before dispatch |
 | `handoff_not_found` | 404 | the `dispatch_id` is unknown, already started, or belongs to another room |
+| `dispatch_stale` | 409 | the output frame named an attempt token that was replaced by a newer attempt |
+| `dispatch_not_running` | 409 | the output frame named no exact live attempt, or the dispatch already finished |
+| `dispatch_finalized` | 409 | this attempt already published its final message |
 | `group_not_available` | 400 | the request or frame needs a `foxfleet.bot/1.2` `groups` capability the client/hub did not negotiate |
 | `owner_only` | 403 | a card or stop tap came from an actor who is not the room's human owner |
 | `actor_forbidden` | 403 | a frame claimed an actor kind/id the authenticated socket does not own (agent spoofing a human or another agent) |
