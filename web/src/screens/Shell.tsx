@@ -21,6 +21,10 @@ import { navigate, useRoute } from '../router';
 import { forgetAll, lastAgent } from '../lib/persist';
 import { claimBgOwner, ownerKey } from '../lib/chatBg';
 import { t } from '../i18n/t';
+import { ConversationList } from '../conversations/ConversationList';
+import { ConversationView } from '../conversations/ConversationView';
+import { CreateConversation } from '../conversations/CreateConversation';
+import { connectLive, disconnectLive, resetConversations } from '../conversations/store';
 
 /** The signed-in frame: agent list + chat on desktop (sidebar), drawer on phones. */
 export function Shell({ client, info, onSignedOut }: { client: Client; info: AuthInfo; onSignedOut: () => void }) {
@@ -62,9 +66,10 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
       background.forEach((el) => el?.removeAttribute('inert')); menu.current?.focus({ preventScroll: true });
     };
   }, [modal, mobile, open]);
-  const lost = () => { resetChats(); onSignedOut(); };
+  const lost = () => { resetChats(); resetConversations(); onSignedOut(); };
   const load = () => { setError(null); client.agents().then(setAgents).catch((e) => { if (e instanceof AuthRequiredError) lost(); else setError(t('home.failed')); }); };
   useEffect(load, []);
+  useEffect(() => { connectLive(client, lost); return () => disconnectLive(); }, [client]);
   useEffect(() => { // keep the list fresh: every 12 s while the tab is visible, and soon after any chat sends or finishes (the hub records it first)
     const refresh = () => { if (document.visibilityState !== 'hidden') client.agents().then(setAgents).catch(() => {}); };
     let soon: ReturnType<typeof setTimeout> | undefined; const bump = () => { clearTimeout(soon); soon = setTimeout(refresh, 700); };
@@ -77,7 +82,7 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
     try { await client.pinAgent(a.name, on); load(); } catch (e) { if (e instanceof AuthRequiredError) lost(); else { setAgents(before); setError(t('list.pinFailed')); setTimeout(() => setError(null), 4000); } }
   }
   async function signOut() { try { await client.logout(); } catch { /* the cookie may already be gone */ } forgetAll(); forgetSeen(); forgetLast(); wipeDrafts(); lost(); }
-  const PAGES = ['manage', 'admin', 'account', 'settings'];
+  const PAGES = ['manage', 'admin', 'account', 'settings', 'conversations'];
   const requested = route.params.get('agent');
   const selected = !PAGES.includes(route.name) ? requested ? agents?.find((a) => a.name === requested) : agents?.find((a) => a.name === lastAgent()) ?? agents?.[0] : undefined;
   useEffect(() => { // opening a chat marks it read; an agent first seen on this device starts out read
@@ -92,6 +97,10 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         <button class="icon-btn drawer-close" aria-label={t('nav.closeMenu')} onClick={() => setOpen(false)}><Icon name="close" /></button>
         <Wordmark height={34} />
         <AgentList agents={agents} selectedName={selected?.name} onPick={go} onPin={pin} />
+        <div class="rooms-nav">
+          <div class="nav-label">{t('nav.rooms')}</div>
+          <a class={`room-link${route.name === 'conversations' ? ' active' : ''}`} href="#/conversations" aria-current={route.name === 'conversations' ? 'page' : undefined} onClick={go}><Icon name="users" size={20} /><span>{t('nav.rooms')}</span></a>
+        </div>
         <div class="sidebar-foot">
           <nav aria-label={t('nav.tools')} class="tools">
             {owner && <a class={`icon-btn round${route.name === 'manage' ? ' active' : ''}`} href="#/manage" aria-label={t('nav.manage')} title={t('nav.manage')} aria-current={route.name === 'manage' ? 'page' : undefined} onClick={go}><Icon name="agents" size={20} /></a>}
@@ -116,6 +125,9 @@ export function Shell({ client, info, onSignedOut }: { client: Client; info: Aut
         {route.name === 'admin' && owner && <Admin client={client} onAuthLost={lost} />}
         {route.name === 'account' && <Account client={client} onAuthLost={lost} />}
         {route.name === 'settings' && <Settings hub={loadHub()} hubInfo={info.hub} client={client} />}
+        {route.name === 'conversations' && !route.params.get('id') && route.params.get('new') !== '1' && <ConversationList client={client} onAuthLost={lost} />}
+        {route.name === 'conversations' && route.params.get('new') === '1' && <CreateConversation client={client} agents={agents} onAuthLost={lost} />}
+        {route.name === 'conversations' && route.params.get('id') && <ConversationView key={route.params.get('id')} client={client} info={info} agents={agents} conversationId={route.params.get('id')!} detailsOpen={route.params.get('details') === '1'} focusMessage={route.params.get('reply') ?? undefined} onAuthLost={lost} />}
         {!PAGES.includes(route.name) && agents && agents.length === 0 && (
           <div class="empty-home"><Icon name="agents" size={48} class="icon-hero" /><p class="muted">{t('home.empty')}</p>{owner && <button class="btn primary inline" onClick={() => navigate('manage')}>{t('home.addFirst')}</button>}</div>
         )}

@@ -265,3 +265,66 @@ pre.secret.small{font-size:0.8rem;white-space:pre-wrap;word-break:break-all}
 @media (prefers-reduced-motion: reduce) { .media-skel { animation: none; } }
 
 .row-check{display:flex;align-items:center;gap:10px;min-height:44px}.row-check input{width:20px;height:20px}
+
+/* ---- group rooms (separate from DMs) ---- */
+.rooms-nav{display:flex;flex-direction:column;gap:2px;flex-shrink:0}
+.room-link{display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:12px;color:var(--text);text-decoration:none;font-weight:500}
+.room-link .icon{color:var(--text-muted)}
+.room-link:hover,.room-link.active{background:var(--surface-alt)}.room-link.active .icon{color:var(--accent)}
+.rooms{width:100%;max-width:760px;margin-inline:auto;padding:28px clamp(16px,4vw,48px);display:flex;flex-direction:column;gap:14px}
+.rooms-head{display:flex;align-items:center;gap:12px}.rooms-head h1{margin:0;font-size:1.35rem}.rooms-head small{display:block}
+.rooms-search{max-width:420px}
+.rooms-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.room-row>a{display:flex;gap:12px;align-items:center;padding:11px 12px;border-radius:14px;color:var(--text);text-decoration:none}
+.room-row>a:hover,.room-row.active>a{background:var(--surface-alt)}
+.room-row.unread .row-name{font-weight:600}
+.room-avatar{width:40px;height:40px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;background:var(--surface-alt);color:var(--text-muted);flex:none}
+.room-avatar.small{width:30px;height:30px}.room-avatar.agent{color:var(--accent)}
+.room-row .row-body{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
+.room-row .row-top,.room-row .row-bottom{display:flex;align-items:center;gap:8px;min-width:0}
+.room-row .row-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.room-row .row-time{margin-left:auto;font-size:.8rem;color:var(--text-muted);flex:none}
+.room-row .row-preview{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-muted);font-size:.87rem;flex:1}
+.rooms-empty h2{font-size:1.1rem;margin:0}
+.room-form{width:100%;max-width:560px}.room-form .field{display:flex;flex-direction:column;gap:6px}.room-form .field input,select{font:inherit;background:var(--surface);border:1px solid var(--hairline);border-radius:var(--radius-control);color:var(--text);padding:10px 12px}
+.pick-list{list-style:none;margin:8px 0 0;padding:0;display:flex;flex-direction:column;border:1px solid var(--hairline);border-radius:var(--radius-control);overflow:hidden}
+.pick-list li+li{border-top:1px solid var(--hairline)}
+.pick-row{display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer}
+.pick-row input{width:18px;height:18px;accent-color:var(--accent)}
+.pick-row .grow{display:flex;flex-direction:column;min-width:0}.pick-row small{display:block}
+.room-view{height:100%;min-height:0;display:flex;flex-direction:column}
+.room-head .chat-identity{min-width:0}
+.room-msg{margin:0}.room-msg .msg-row{display:flex;margin-bottom:10px}
+.room-msg.mine .msg-row{justify-content:flex-end}
+.room-msg-body{max-width:min(86%,620px);min-width:0;display:flex;flex-direction:column;align-items:flex-start;gap:2px}
+.room-msg.mine .room-msg-body{align-items:flex-end}
+.room-author{display:flex;align-items:center;gap:6px;font-size:.8rem;color:var(--text-muted);padding:0 4px;flex-wrap:wrap}
+.room-author b{color:var(--text);font-weight:600}
+.room-tag{font-size:.68rem;border:1px solid var(--hairline);border-radius:999px;padding:1px 6px;display:inline-flex;align-items:center;gap:3px}
+.room-tag.handoff{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 40%,transparent)}
+.room-bubble{background:var(--surface);border:1px solid var(--hairline);border-radius:16px;padding:9px 12px;max-width:100%}
+.room-msg.mine .room-bubble{background:color-mix(in srgb,var(--accent) 14%,var(--surface));border-color:color-mix(in srgb,var(--accent) 26%,var(--hairline))}
+.room-msg.from-agent .room-bubble{background:var(--surface-alt)}
+.room-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.45}
+.mention{color:var(--accent);font-weight:600;background:color-mix(in srgb,var(--accent) 12%,transparent);border-radius:5px;padding:0 2px}
+.room-msg-actions{opacity:0;transition:opacity var(--motion-fast)}.room-msg:hover .room-msg-actions,.room-msg:focus-within .room-msg-actions{opacity:1}
+.room-msg-actions .btn{font-size:.75rem;padding:2px 6px;color:var(--text-muted);display:inline-flex;gap:4px;align-items:center}
+.room-notice{display:flex;align-items:center;gap:8px;margin:6px 0;padding:8px 12px;border:1px dashed var(--hairline);border-radius:12px;background:var(--surface-alt)}
+.room-jump-flash .room-bubble{outline:2px solid var(--accent);outline-offset:2px}
+.room-suggest{position:absolute;bottom:calc(100% + 6px);left:12px;right:12px;z-index:6}
+.room-composer{position:relative}
+.room-media{display:block;max-width:min(100%,420px);max-height:300px;border-radius:12px;object-fit:cover;margin-top:6px}
+.room-file{display:flex;align-items:center;gap:10px;margin-top:6px;padding:8px 10px;border-radius:12px;border:1px solid var(--hairline);color:var(--text);text-decoration:none;background:var(--surface)}
+.room-file small{display:block}
+.room-details{position:absolute;top:0;right:0;bottom:0;width:min(380px,92vw);z-index:8;background:var(--surface);border-left:1px solid var(--hairline);box-shadow:-12px 0 40px #0003;padding:16px;overflow-y:auto;display:flex;flex-direction:column;gap:18px}
+.room-details .page-head{margin:0;align-items:center}.room-details h2,.room-details h3{margin:0;font-size:1rem}
+.room-detail-section{display:flex;flex-direction:column;gap:8px}
+.member-list{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px}
+.member-list li{display:flex;align-items:center;gap:10px;padding:6px 0}.member-list .grow{display:flex;flex-direction:column;min-width:0}
+.room-add{display:flex;gap:8px;align-items:center}.room-add select{flex:1;min-width:0}
+.room-view{position:relative}
+@media (max-width:760px){
+  .rooms{padding:16px 12px}.rooms-head{flex-wrap:wrap}.rooms-head .btn{width:100%;justify-content:center}
+  .room-msg-body{max-width:92%}.room-msg-actions{opacity:1}
+  .room-details{position:fixed;inset:0;width:auto;border-left:0;box-shadow:none;padding:14px}
+  .room-head .btn.text{font-size:0;gap:0;min-width:44px;min-height:44px;justify-content:center}.room-head .btn.text .icon{font-size:1.2rem}
+}
