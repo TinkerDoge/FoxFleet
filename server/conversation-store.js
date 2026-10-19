@@ -35,6 +35,7 @@ const crossRoomReply = () => fault(404, 'Unknown reply target', 'cross_room_repl
 const invalidMentions = () => fault(400, 'Invalid mentions', 'mentions_invalid');
 const unknownMention = () => fault(404, 'Unknown room member in mentions', 'unknown_mention');
 const actorForbidden = () => fault(403, 'Agent is not an active member of this room', 'actor_forbidden');
+const notOwner = () => fault(403, 'Only the conversation owner may post to this room', 'not_conversation_owner');
 
 const validId = (id) => typeof id === 'string' && ID_RE.test(id);
 const validDevice = (value) => value === '' || (typeof value === 'string' && DEVICE_ID.test(value));
@@ -88,6 +89,7 @@ function messageView(d, m) {
     id: m.id, conversation_id: d.id, sender: senderOf(d, m), text: m.body, created_at: m.created_at,
     reply_to: m.reply_to ?? null, mentions: m.mentions ?? [], seq: m.seq,
     root_id: m.root_id ?? null, dispatch_id: m.dispatch_id ?? null, delivery_state: m.delivery_state ?? null,
+    ...(m.system ? { system: true } : {}), ...(m.code ? { code: m.code } : {}),
     ...(m.revision > 1 ? { edited: true } : {}), ...(m.deleted_at ? { deleted: true } : {}),
   };
 }
@@ -296,9 +298,10 @@ export function conversationStore(dir) {
       return view(room.state, device);
     },
 
-    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id } = {}) {
+    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, admit } = {}) {
       if (!actor || !['human', 'agent'].includes(actor.kind)) throw fault(400, 'Invalid actor');
       if (actor.kind === 'human' ? !HUMAN_ID.test(actor.id ?? '') : !AGENT_REF.test(actor.id ?? '')) throw fault(400, 'Invalid actor');
+      if (admit !== undefined && typeof admit !== 'function') throw new TypeError('admit must be a function');
       const authorName = roomActorName(actor.name);
       if (!validText(text)) throw fault(400, 'Invalid message text');
       if (!FORMATS.has(format)) throw fault(400, 'Invalid format');
@@ -306,17 +309,11 @@ export function conversationStore(dir) {
       const parsed = normalizeMentions(mentions, text);
       const room = await use(id);
       const state = room.state;
-      // Agents write into a room only while they are active members. This gate sits below the HTTP layer,
-      // because HTTP only ever sends as the owner; dispatch is the path that sends as an agent.
+      // Actor authority sits below HTTP: a human writes only as the room owner, and an agent only while it
+      // is an active member. Filesystem/account isolation is not an authority check.
+      if (actor.kind === 'human' && state.owner_id !== actor.id) throw notOwner();
       if (actor.kind === 'agent' && !activeAgent(state, actor.id)) throw actorForbidden();
       const fingerprint = sha256(JSON.stringify([text, format, parsed, reply_to ?? null, client_id ?? null]));
-      if (client_id !== undefined && client_id !== null) {
-        const prior = state.messages.find((m) => m.client_id === client_id);
-        if (prior) {
-          if (prior.client_fp !== fingerprint) throw fault(409, 'That client_id was used for a different message', 'idempotency_conflict');
-          return { message: messageView(state, prior), duplicate: true };
-        }
-      }
       if (reply_to !== undefined && reply_to !== null) {
         if (typeof reply_to !== 'string' || !MESSAGE_RE.test(reply_to)) throw replyNotFound();
         if (!state.messages.some((m) => m.id === reply_to && !m.deleted_at)) {
@@ -324,14 +321,23 @@ export function conversationStore(dir) {
           throw replyNotFound();
         }
       }
+      const callAdmit = (d, message, duplicate) => {
+        if (!admit) return undefined;
+        const admitted = admit(d, message, duplicate);
+        if (admitted && typeof admitted.then === 'function') throw new TypeError('admit must be synchronous');
+        return admitted;
+      };
       let result;
       await room.mutate((d) => {
+        if (actor.kind === 'human' && d.owner_id !== actor.id) throw notOwner();
         if (actor.kind === 'agent' && !activeAgent(d, actor.id)) throw actorForbidden();
         if (client_id !== undefined && client_id !== null) {
           const prior = d.messages.find((m) => m.client_id === client_id);
           if (prior) {
             if (prior.client_fp !== fingerprint) throw fault(409, 'That client_id was used for a different message', 'idempotency_conflict');
-            result = { message: messageView(d, prior), duplicate: true }; return;
+            const admitted = callAdmit(d, prior, true);
+            result = { message: messageView(d, prior), duplicate: true, ...(admitted === undefined ? {} : { admitted }) };
+            return;
           }
         }
         const members = new Set(activeMembers(d).map((m) => m.actor_id));
@@ -349,12 +355,13 @@ export function conversationStore(dir) {
           client_id: client_id ?? null, client_fp: fingerprint,
         };
         d.messages.push(message);
+        const admitted = callAdmit(d, message, false);
         // Generous local cap; Task 11 owns the real retention policy. next_seq stays monotonic.
         while (d.messages.length > MAX_MESSAGES) d.messages.shift();
         d.updated_at = at;
         d.outbox.push({ type: 'message.new', message_id: message.id, seq, at });
         if (d.outbox.length > MAX_OUTBOX) d.outbox.splice(0, d.outbox.length - MAX_OUTBOX);
-        result = { message: messageView(d, message), duplicate: false };
+        result = { message: messageView(d, message), duplicate: false, ...(admitted === undefined ? {} : { admitted }) };
       });
       return result;
     },
