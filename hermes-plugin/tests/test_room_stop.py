@@ -64,7 +64,7 @@ def test_room_stop_is_strict_and_owner_only():
 @pytest.mark.asyncio
 async def test_room_stop_answers_with_room_carriers_and_runs_hermes_stop(monkeypatch):
     a = adapter()
-    conn = types.SimpleNamespace(stop_enabled=True, cards_enabled=True)
+    conn = types.SimpleNamespace(stop_enabled=True, cards_enabled=True, groups_enabled=True)
     a._conn = conn
     seen = []
     calls = []
@@ -95,7 +95,7 @@ async def test_room_stop_answers_with_room_carriers_and_runs_hermes_stop(monkeyp
 @pytest.mark.asyncio
 async def test_an_unauthorised_room_stop_is_refused_without_dispatch(monkeypatch):
     a = adapter()
-    conn = types.SimpleNamespace(stop_enabled=True, cards_enabled=True)
+    conn = types.SimpleNamespace(stop_enabled=True, cards_enabled=True, groups_enabled=True)
     a._conn = conn
     seen, calls = [], []
 
@@ -138,3 +138,19 @@ async def test_agent_written_stop_text_is_never_control(monkeypatch):
     assert calls[0].allow_gateway_control is False
     assert calls[0].source.is_bot is True
     assert calls[0].internal is False
+
+
+@pytest.mark.asyncio
+async def test_a_1_1_socket_never_acts_on_a_group_chat_stop(monkeypatch):
+    a = adapter()
+    conn = types.SimpleNamespace(stop_enabled=True, cards_enabled=True, groups_enabled=False)
+    a._conn = conn
+    seen = []
+
+    async def handler(event):
+        seen.append(event)
+
+    monkeypatch.setattr(a, "handle_message", handler)
+    monkeypatch.setattr(a, "_is_sender_authorized", lambda *args, **kwargs: True)
+    await a._on_chat_stop(conn, stop_frame())
+    assert seen == []

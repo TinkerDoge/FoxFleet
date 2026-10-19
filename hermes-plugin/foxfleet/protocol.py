@@ -346,13 +346,15 @@ class RoomDispatch:
     reply_to: str | None = None
     root_id: str | None = None
     deadline_at: int | None = None
+    owner_id: str | None = None
+    target_agent_id: str | None = None
 
 
 def parse_dispatch(frame: dict) -> RoomDispatch:
     if frame.get("t") != "dispatch.run":
         raise ProtocolError("bad_frame", "not a dispatch.run")
     allowed = {"t", "dispatch_id", "run_token", "chat_id", "thread_id", "message_id", "actor", "mentions",
-               "text", "date", "reply_to", "root_id", "deadline_at"}
+               "text", "date", "reply_to", "root_id", "deadline_at", "owner_id", "target_agent_id"}
     if set(frame) - allowed:
         raise ProtocolError("bad_frame", "unexpected dispatch field")
     dispatch_id = _match(frame, "dispatch_id", DISPATCH_ID)
@@ -379,10 +381,17 @@ def parse_dispatch(frame: dict) -> RoomDispatch:
     deadline = frame.get("deadline_at")
     if deadline is not None and (isinstance(deadline, bool) or not isinstance(deadline, int) or deadline < 0):
         raise ProtocolError("bad_frame", "deadline_at must be a non-negative integer")
+    owner_id = frame.get("owner_id")
+    if owner_id is not None:
+        owner_id = _ident(frame, "owner_id")
+    target_agent_id = frame.get("target_agent_id")
+    if target_agent_id is not None:
+        target_agent_id = _match(frame, "target_agent_id", AGENT_REF)
     return RoomDispatch(dispatch_id=dispatch_id, run_token=token, chat_id=chat_id, thread_id=thread_id,
                         message_id=message_id, actor_kind=kind, actor_id=user_id, actor_name=user_name,
                         is_bot=is_bot, text=text, mentions=mentions, date=date, reply_to=reply_to,
-                        root_id=root_id, deadline_at=deadline)
+                        root_id=root_id, deadline_at=deadline, owner_id=owner_id,
+                        target_agent_id=target_agent_id)
 
 
 @dataclass(frozen=True)

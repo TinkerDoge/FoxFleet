@@ -213,7 +213,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     let target = hub.targets.get(agentId);
     if (target) return target;
     target = {
-      online: false, session: null, botId: null,
+      online: false, session: null, botId: null, agentId,
       offer: async ({ roomId, dispatch }) => {
         if (!target.online || !target.session?.conn) return { accepted: false, code: 'agent_offline', reason: 'the agent is offline' };
         target.session.conn.send({
@@ -255,6 +255,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const frame = {
       t: 'dispatch.run', dispatch_id: ctx.dispatch.id, run_token: ctx.attempt.token,
       chat_id: snap.id, thread_id: threadId, message_id: message.id, actor,
+      target_agent_id: target.agentId, owner_id: snap.owner_id,
       mentions: message.mentions ?? [], text: message.body, date: message.created_at,
       ...(message.reply_to ? { reply_to: message.reply_to } : {}),
       root_id: ctx.dispatch.root_id, deadline_at: ctx.dispatch.root_deadline,
@@ -352,21 +353,28 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const both = typeof requestedDispatch === 'string' && typeof requestedToken === 'string';
     const exactKey = both ? attemptKey(session.botId, requestedDispatch, requestedToken) : null;
     const exact = exactKey ? roomRuns.get(exactKey) : null;
-    const active = exact && exact.roomId === snap.id && exact.session === session && !exact.stale ? exact : null;
+    const attemptRow = both ? (snap.dispatches ?? []).find((d) => d.id === requestedDispatch) : null;
+    const epochAdvanced = Boolean(attemptRow && attemptRow.epoch !== snap.epoch);
+    const active = exact && exact.roomId === snap.id && exact.session === session && !exact.stale
+      && exact.ctx?.dispatch?.epoch === snap.epoch ? exact : null;
     const live = [...roomRuns.values()].find((r) => r.botId === session.botId && r.roomId === snap.id && !r.stale) ?? null;
     const sameDispatch = both
       ? [...roomRuns.values()].find((r) => r.botId === session.botId && r.dispatchId === requestedDispatch && !r.stale)
       : null;
     const stoppedRoom = stoppedRooms.has(`${session.botId}\0${snap.id}`);
-    const stale = (both && (Boolean(exact) || Boolean(sameDispatch) || staleRuns.has(exactKey)))
-      || (!both && stoppedRoom);
+    // The in-memory Stop marker is only a cache. The durable paused flag (and an advanced epoch on the
+    // named attempt) is the fence, so a hub restart or a fresh engine still refuses late chatter.
+    const paused = Boolean(snap.paused);
+    const stale = epochAdvanced
+      || (both && (Boolean(exact) || Boolean(sameDispatch) || staleRuns.has(exactKey)))
+      || (!both && (stoppedRoom || paused));
     const refusal = stale
       ? new BotError('dispatch_stale', 'That dispatch was replaced')
       : new BotError('dispatch_not_running', 'That dispatch is no longer running');
     // Never infer the current (bot, room) turn: an output frame binds only by its exact attempt pair.
     // After a Stop the room keeps a stale marker until a new run starts, so an unbound late completion
     // cannot be mistaken for a fresh plain room message.
-    const stopped = stoppedRoom;
+    const stopped = stoppedRoom || paused;
     const needsBinding = v.t === 'handoff.request'
       || (v.t === 'message.send' && (hasAttempt || Boolean(live) || stopped))
       || (v.t === 'message.edit' && (hasAttempt || Boolean(live) || stopped));
@@ -427,7 +435,8 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         let card;
         try {
           card = await hub.store.openRoomCard(snap.id, {
-            targetAgentId: actorId, dispatchId: live.dispatchId, runToken: live.runToken, req: base.req,
+            targetAgentId: actorId, dispatchId: live.dispatchId, runToken: live.runToken,
+            epoch: live.ctx.dispatch.epoch, req: base.req,
           });
         } catch (e) { throw roomBotError(e); }
         return { result: { request_id: card.request_id, expires_at: card.expires_at, ...(card.duplicate ? { duplicate: true } : {}) } };
@@ -477,6 +486,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
             ...(handoff?.dispatch ? { handoff: { dispatch_id: handoff.dispatch.id, target_agent_id: handoff.dispatch.target_agent_id } } : {}) };
         }
         await hub.store.transact(snap.id, (d) => {
+          if (d.paused) throw new BotError('dispatch_stale', 'The room is stopped; a late edit cannot be stored as plain agent chatter');
           const m = d.messages.find((x) => x.id === v.req.message_id && !x.deleted_at);
           if (!m) throw new BotError('not_found', 'Unknown message');
           if (m.author_kind !== 'agent' || m.author_id !== actorId) throw new BotError('forbidden', 'Only this agent may edit its message');
@@ -508,6 +518,11 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       const sent = await hub.store.send(snap.id, {
         actor, text: v.req.text, format: v.req.format ?? 'markdown', mentions: v.req.mentions,
         reply_to: v.req.reply_to,
+        // The snapshot above may predate a Stop that commits while this send is in flight. The same
+        // mutation re-checks the durable pause, so an unbound late completion can never land as chatter.
+        admit: (d) => {
+          if (d.paused) throw new BotError('dispatch_stale', 'The room is stopped; a late completion cannot be stored as plain agent chatter');
+        },
       });
       return { result: { message_id: sent.message.id, chat_id: snap.id, date: sent.message.created_at } };
     }
@@ -1299,7 +1314,9 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
             requestId, ownerId: user.id, targetAgentId: 'agent:' + m.name, result: body?.result, user,
           });
           const live = sessions.get(m.botId);
-          if (live?.conn) { try { live.conn.send(out.callback); } catch { /* replayed on the next hello */ } }
+          // A callback is a 1.2 room frame. A live 1.1/1.0 socket is not a delivery target: the tap stays
+          // durable and is replayed by pushRoomCallbacks when this bot speaks 1.2 again.
+          if (live?.protocol === PROTOCOL_V12 && live.conn) { try { live.conn.send(out.callback); } catch { /* replayed on the next hello */ } }
           return c.sendJson(res, 200, { ok: true });
         }
         const store = await readyStore(c);

@@ -55,6 +55,8 @@ class RoomTurn:
     run_token: str
     source_message_id: Optional[str] = None
     request: Optional[Callable[..., Any]] = None
+    owner_id: Optional[str] = None
+    target_agent_id: Optional[str] = None
 
     @property
     def attempt(self) -> dict[str, str]:

@@ -618,6 +618,8 @@ Bot → hub, room variants:
 `message.edit`. When present they name the exact live attempt (`dispatch.run` carries the same pair). The hub
 never infers the current `(bot, room)` turn: a missing or mismatched pair on an output frame while a turn is
 live is refused with `dispatch_not_running` (no exact attempt) or `dispatch_stale` (the attempt was replaced).
+A room `dispatch.run` also carries `target_agent_id` and `owner_id`, the same target and owner the hub stamps
+on a room card, so a plugin can bind a tap to that exact tuple.
 The attempt token never appears in a public message projection or on the HTTP RPC path.
 
 `handoff.request` is the plugin-registered, room-scoped handoff tool. The hub authenticates the bot token,

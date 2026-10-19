@@ -363,12 +363,26 @@ export function conversationStore(dir) {
     },
 
     /** Mint one room card bound to the owner, room, target agent and live dispatch. */
-    async openRoomCard(id, { targetAgentId, dispatchId = null, runToken = null, req, now = Date.now() } = {}) {
+    async openRoomCard(id, { targetAgentId, dispatchId = null, runToken = null, epoch = null, req, now = Date.now() } = {}) {
       if (!req || typeof req !== 'object') throw fault(400, 'Invalid card');
       const room = await use(id);
       let out;
       await room.mutate((d) => {
+        // Cards exist only inside one live attempt. Stop pauses the room and nulls every attempt token
+        // before it cancels remotely, so this check closes the window where a bot could mint a fresh
+        // card while Stop is still settling.
+        if (d.paused) throw fault(409, 'The room is stopped; no card can be minted', 'room_paused');
         if (!activeAgent(d, targetAgentId)) throw actorForbidden();
+        if (typeof dispatchId !== 'string' || typeof runToken !== 'string' || !dispatchId || !runToken) {
+          throw fault(409, 'A card requires a live room attempt', 'dispatch_not_running');
+        }
+        const dispatch = (d.dispatches ?? []).find((row) => row.id === dispatchId && row.target_agent_id === targetAgentId);
+        if (!dispatch) throw fault(409, 'A card requires a live room attempt', 'dispatch_not_running');
+        if (dispatch.epoch !== d.epoch || (epoch !== null && dispatch.epoch !== epoch)) {
+          throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+        }
+        if (dispatch.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+        if (dispatch.run_token !== runToken) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
         if (!Array.isArray(d.cards)) d.cards = [];
         for (const card of d.cards) {
           if (card.state === 'open' && card.expires_at <= now) { card.state = 'closed'; card.reason = 'expired'; card.closed_at = now; }

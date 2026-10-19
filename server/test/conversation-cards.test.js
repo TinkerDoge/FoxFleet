@@ -245,3 +245,59 @@ test('an owner tap that the bot never acknowledged is replayed on reconnect and 
   await new Promise((resolve) => setTimeout(resolve, 100));
   assert.equal(c.texts.filter((x) => x && x.t === 'callback' && x.request_id === requestId).length, 0);
 });
+
+test('a 1.1 reconnect never receives the group callback for a 1.2 room card', async (t) => {
+  const boot = await bootBot(t);
+  const room = await createRoom(boot.h, 'Reconnect cards', ['helper']);
+  const c = await boot.connect({ headers: V12_HEADERS });
+  await c.next((x) => x.t === 'hello');
+  await roomSend(boot.h, room.id, '@helper card for reconnect');
+  await c.next((x) => x.t === 'dispatch.run');
+  const sent = await c.request({ t: 'card.send', id: 'card-reconnect', chat_id: room.id, kind: 'approval', instance: 'ir', command: 'reconnect', actor_kind: 'agent' });
+  assert.equal(sent.ok, true, JSON.stringify(sent));
+  const requestId = sent.result.request_id;
+  c.end();
+
+  const old = await boot.connect({ headers: V11_HEADERS });
+  await old.next((x) => x.t === 'hello');
+  assert.equal((await apiAnswer(boot.h, 'helper', room.id, requestId, { choice: 'once' })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(old.texts.filter((x) => x && x.t === 'callback').length, 0,
+    'a 1.1 socket is never handed a group callback');
+  old.end();
+
+  const back = await boot.connect({ headers: V12_HEADERS });
+  await back.next((x) => x.t === 'hello');
+  const callback = await back.next((x) => x.t === 'callback' && x.request_id === requestId);
+  assert.ok(callback, 'the durable callback is replayed to the next 1.2 socket');
+});
+
+test('no room card can be minted during or after Stop until a new attempt', async (t) => {
+  const boot = await bootBot(t);
+  const room = await createRoom(boot.h, 'Stop race cards', ['helper']);
+  const c = await boot.connect({ headers: V12_HEADERS });
+  await c.next((x) => x.t === 'hello');
+  await roomSend(boot.h, room.id, '@helper hold the turn');
+  const held = await c.next((x) => x.t === 'dispatch.run');
+
+  const stopping = boot.h.call(`/api/conversations/${room.id}/stop`, { method: 'POST', data: {} });
+  const stopFrame = await c.next((x) => x.t === 'chat.stop' && x.chat_id === room.id);
+  const during = await c.request({ t: 'card.send', id: 'card-during-stop', chat_id: room.id, kind: 'approval', instance: 'id', command: 'during', actor_kind: 'agent' });
+  assert.equal(during.ok, false, 'a card minted while Stop is settling must be refused');
+  await c.request({
+    t: 'callback.answer', id: 'stop-race-ack', callback_id: stopFrame.stop_id,
+    chat_id: room.id, thread_id: stopFrame.thread_id, outcome: 'stopped',
+  });
+  assert.equal((await stopping).status, 200);
+
+  const after = await c.request({ t: 'card.send', id: 'card-after-stop', chat_id: room.id, kind: 'approval', instance: 'ia', command: 'after', actor_kind: 'agent' });
+  assert.equal(after.ok, false, 'no live attempt means no card after Stop');
+  assert.equal((await boot.h.call(`/api/conversations/${room.id}/resume`, { method: 'POST', data: {} })).status, 200);
+  const resumed = await c.request({ t: 'card.send', id: 'card-after-resume', chat_id: room.id, kind: 'approval', instance: 'ir', command: 'resume', actor_kind: 'agent' });
+  assert.equal(resumed.ok, false, 'resume alone is not a new attempt');
+
+  await roomSend(boot.h, room.id, '@helper fresh attempt');
+  await c.next((x) => x.t === 'dispatch.run' && x.dispatch_id !== held.dispatch_id);
+  const fresh = await c.request({ t: 'card.send', id: 'card-new-attempt', chat_id: room.id, kind: 'approval', instance: 'in', command: 'new', actor_kind: 'agent' });
+  assert.equal(fresh.ok, true, JSON.stringify(fresh));
+});

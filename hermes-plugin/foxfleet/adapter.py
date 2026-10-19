@@ -787,9 +787,15 @@ class FoxFleetAdapter(BasePlatformAdapter):
         if not getattr(conn, "stop_enabled", False):
             logger.debug("FoxFleet: ignoring chat.stop; stop was not negotiated")
             return
+        if frame.get("chat_type") == "group" and not getattr(conn, "groups_enabled", False):
+            logger.debug("FoxFleet: ignoring group chat.stop; groups were not negotiated")
+            return
         await self._handle_chat_stop(conn, frame)
 
     async def _handle_chat_stop(self, conn: _Conn, frame: dict) -> None:
+        if frame.get("chat_type") == "group" and not getattr(conn, "groups_enabled", False):
+            logger.debug("FoxFleet: ignoring group chat.stop; groups were not negotiated")
+            return
         try:
             stop = (protocol.parse_room_chat_stop(frame) if frame.get("chat_type") == "group"
                     else protocol.parse_chat_stop(frame))
@@ -853,12 +859,26 @@ class FoxFleetAdapter(BasePlatformAdapter):
         return cleaned[:n]
 
     @staticmethod
-    def _room_card_fields(chat_id: str) -> dict[str, Any]:
-        """The plugin-side binding recorded for a card minted inside a room turn."""
+    def _room_card_fields(chat_id: str, request_id: Optional[str] = None) -> dict[str, Any]:
+        """The plugin-side binding recorded for a card minted inside a room turn.
+
+        The names match the hub card record (``answerRoomCard`` checks the same tuple):
+        request, room, target agent, dispatch and the human owner. Fields the hub did
+        not send stay absent, so the tap check never guesses them.
+        """
         turn = rooms.current_turn()
         if turn is None or turn.chat_id != str(chat_id):
             return {}
-        return {"chat_id": str(chat_id), "dispatch_id": turn.dispatch_id, "run_token": turn.run_token}
+        fields: dict[str, Any] = {
+            "chat_id": str(chat_id), "dispatch_id": turn.dispatch_id, "run_token": turn.run_token,
+        }
+        if isinstance(request_id, str) and request_id:
+            fields["request_id"] = request_id
+        if turn.owner_id:
+            fields["owner_id"] = turn.owner_id
+        if turn.target_agent_id:
+            fields["target_agent_id"] = turn.target_agent_id
+        return fields
 
     async def _send_card(self, *, chat_id: str, kind: str, **fields: Any) -> Optional[str]:
         """Mint one card. None means the hub did not accept it; the caller falls back to text."""
@@ -895,7 +915,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
         chat_id = str(getattr(prompt, "chat_id", ""))
         self._cards[request_id] = {"request_id": request_id, "kind": "approval", "session_key": session_key,
                                    "approval_id": approval_id, "chat_id": chat_id,
-                                   **self._room_card_fields(chat_id)}
+                                   **self._room_card_fields(chat_id, request_id)}
         return SendResult(success=True, message_id=request_id)
 
     def _approval_id_for(self, session_key: str, shown_command: str) -> Optional[str]:
@@ -922,7 +942,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="cards not available")
         self._cards[request_id] = {"request_id": request_id, "kind": "confirm", "session_key": str(session_key),
                                    "confirm_id": str(confirm_id), "chat_id": str(chat_id),
-                                   **self._room_card_fields(chat_id)}
+                                   **self._room_card_fields(chat_id, request_id)}
         return SendResult(success=True, message_id=request_id)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -946,7 +966,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata=metadata)
         self._cards[request_id] = {"request_id": request_id, "kind": "clarify", "clarify_id": str(clarify_id),
                                    "session_key": str(session_key), "chat_id": str(chat_id),
-                                   **self._room_card_fields(chat_id)}
+                                   **self._room_card_fields(chat_id, request_id)}
         self._cards_by_clarify[str(clarify_id)] = request_id
         return SendResult(success=True, message_id=request_id)
 
@@ -963,6 +983,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def _on_card_callback(self, conn: _Conn, frame: dict) -> None:
         if not getattr(conn, "cards_enabled", False) or self._conn is not conn:
+            return
+        if frame.get("chat_type") == "group" and not getattr(conn, "groups_enabled", False):
+            logger.debug("FoxFleet: ignoring group callback; groups were not negotiated")
             return
         try:
             cb = (protocol.parse_room_callback(frame) if frame.get("chat_type") == "group"
@@ -1094,6 +1117,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             chat_id=dispatch.chat_id, thread_id=dispatch.thread_id,
             dispatch_id=dispatch.dispatch_id, run_token=dispatch.run_token,
             source_message_id=dispatch.message_id, request=self._room_request,
+            owner_id=dispatch.owner_id, target_agent_id=dispatch.target_agent_id,
         )
         with rooms.bind_turn(turn):
             await self.handle_message(event)

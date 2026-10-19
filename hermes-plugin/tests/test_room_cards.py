@@ -68,7 +68,7 @@ def test_agent_origin_cannot_even_form_a_room_card_callback():
 @pytest.mark.asyncio
 async def test_a_room_callback_resolves_only_its_exact_request(monkeypatch):
     a = adapter()
-    conn = types.SimpleNamespace(cards_enabled=True)
+    conn = types.SimpleNamespace(cards_enabled=True, groups_enabled=True)
     a._conn = conn
     a._cards = pending()
     calls = []
@@ -98,7 +98,7 @@ async def test_a_room_callback_resolves_only_its_exact_request(monkeypatch):
 @pytest.mark.asyncio
 async def test_a_cross_room_tap_is_refused_and_leaves_the_card_pending(monkeypatch):
     a = adapter()
-    conn = types.SimpleNamespace(cards_enabled=True)
+    conn = types.SimpleNamespace(cards_enabled=True, groups_enabled=True)
     a._conn = conn
     a._cards = pending()
     calls = []
@@ -139,3 +139,70 @@ async def test_agent_text_approved_never_touches_a_pending_card(monkeypatch):
     with pytest.raises(protocol.ProtocolError):
         protocol.parse_room_callback(callback_frame(
             actor={"kind": "agent", "id": "agent:helper", "name": "Helper", "is_bot": True}))
+
+
+def test_room_card_fields_carry_the_hub_card_tuple(monkeypatch):
+    a = adapter()
+    turn = types.SimpleNamespace(
+        chat_id=CHAT, thread_id=THREAD, dispatch_id=DISPATCH, run_token="fr_token",
+        owner_id="u_owner", target_agent_id="agent:helper",
+    )
+    monkeypatch.setattr("foxfleet.rooms.current_turn", lambda: turn)
+    assert a._room_card_fields(CHAT, request_id=REQUEST) == {
+        "request_id": REQUEST, "chat_id": CHAT, "dispatch_id": DISPATCH, "run_token": "fr_token",
+        "owner_id": "u_owner", "target_agent_id": "agent:helper",
+    }
+    assert a._room_card_fields(OTHER, request_id=REQUEST) == {}
+
+
+def test_parse_dispatch_carries_the_room_owner_and_target_agent():
+    frame = {
+        "t": "dispatch.run", "dispatch_id": DISPATCH, "run_token": "fr_token",
+        "chat_id": CHAT, "thread_id": THREAD, "message_id": "fm_" + "C" * 16,
+        "actor": {"kind": "human", "id": "u_owner", "name": "owner", "is_bot": False},
+        "mentions": [], "text": "@helper go", "date": 1, "root_id": "fm_" + "C" * 16,
+        "deadline_at": 10, "owner_id": "u_owner", "target_agent_id": "agent:helper",
+    }
+    dispatch = protocol.parse_dispatch(frame)
+    assert dispatch.owner_id == "u_owner"
+    assert dispatch.target_agent_id == "agent:helper"
+
+
+@pytest.mark.asyncio
+async def test_a_1_1_cards_socket_never_acts_on_a_group_callback(monkeypatch):
+    a = adapter()
+    conn = types.SimpleNamespace(cards_enabled=True, groups_enabled=False)
+    a._conn = conn
+    a._cards = pending()
+
+    async def request(op, *, retry_unknown, **params):
+        raise AssertionError("a 1.1 socket must not answer a group callback")
+
+    monkeypatch.setattr(a, "_request", request)
+    monkeypatch.setattr(a, "_is_sender_authorized", lambda *args, **kwargs: True)
+    await a._on_card_callback(conn, callback_frame())
+    assert a._cards  # the card stays pending for a real 1.2 socket
+
+
+@pytest.mark.asyncio
+async def test_a_tap_naming_another_owner_is_refused(monkeypatch):
+    a = adapter()
+    conn = types.SimpleNamespace(cards_enabled=True, groups_enabled=True)
+    a._conn = conn
+    a._cards = pending(target_agent_id="agent:helper")
+    calls = []
+
+    async def request(op, *, retry_unknown, **params):
+        calls.append((op, params))
+        return protocol.RpcResponse(id="ans", ok=True, result={})
+
+    async def resolve(row, cb):
+        raise AssertionError("a mismatched owner must not resolve a card")
+
+    monkeypatch.setattr(a, "_request", request)
+    monkeypatch.setattr(a, "_resolve_card", resolve)
+    monkeypatch.setattr(a, "_is_sender_authorized", lambda *args, **kwargs: True)
+    await a._on_card_callback(conn, callback_frame(
+        actor={"kind": "human", "id": "u_other", "name": "other", "is_bot": False}))
+    assert a._cards
+    assert calls[-1][1]["outcome"] == "refused"

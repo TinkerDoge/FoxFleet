@@ -406,3 +406,53 @@ test('a Stop while the bot is disconnected never replays the old room turn on re
   assert.equal(late.ok, false);
   assert.equal(late.error.code, 'dispatch_stale');
 });
+
+test('a durable Stop refuses late unbound agent sends and edits before and after a hub restart', async (t) => {
+  const boot = await bootBot(t);
+  const headers = { 'Sec-WebSocket-Protocol': 'foxfleet.bot.v1.2, foxfleet.bot.v1.1, foxfleet.bot.v1' };
+  const created = await boot.h.call('/api/conversations', { data: { title: 'Durable stop', member_ids: ['helper'] } });
+  assert.equal(created.status, 201);
+  const room = await created.json();
+  let c = await boot.connect({ headers });
+  await c.next((x) => x.t === 'hello');
+  const text = '@helper commit final';
+  const sent = await boot.h.call(`/api/conversations/${room.id}/messages`, {
+    data: { text, mentions: [{ kind: 'agent', id: 'agent:helper', offset: 0, length: 7 }] },
+  });
+  assert.equal(sent.status, 202);
+  const run = await c.next((x) => x.t === 'dispatch.run');
+  const final = await c.request({
+    t: 'message.send', id: 'final-before-stop', chat_id: room.id, text: 'committed before stop',
+    final: true, dispatch_id: run.dispatch_id, run_token: run.run_token,
+  });
+  assert.equal(final.ok, true, JSON.stringify(final));
+
+  const stopped = await boot.h.call(`/api/conversations/${room.id}/stop`, { method: 'POST', data: {} });
+  assert.equal(stopped.status, 200);
+  assert.equal((await stopped.json()).paused, true);
+
+  const refuse = async (socket, id) => {
+    const late = await socket.request({ t: 'message.send', id, chat_id: room.id, text: 'late unbound chatter' });
+    assert.equal(late.ok, false, 'an unbound send after Stop is never plain chatter');
+    assert.equal(late.error.code, 'dispatch_stale');
+    const edit = await socket.request({
+      t: 'message.edit', id: id + '-edit', chat_id: room.id,
+      message_id: final.result.message_id, text: 'late unbound edit',
+    });
+    assert.equal(edit.ok, false, 'an unbound edit after Stop is never applied');
+    assert.equal(edit.error.code, 'dispatch_stale');
+  };
+  await refuse(c, 'late-same-process');
+  let page = await (await boot.h.call(`/api/conversations/${room.id}/messages`)).json();
+  assert.equal(page.messages.some((m) => m.text === 'late unbound chatter'), false);
+  assert.equal(page.messages.find((m) => m.id === final.result.message_id).text, 'committed before stop');
+
+  c.end();
+  await boot.h.restart();
+  c = await boot.connect({ headers });
+  await c.next((x) => x.t === 'hello');
+  await refuse(c, 'late-after-restart');
+  page = await (await boot.h.call(`/api/conversations/${room.id}/messages`)).json();
+  assert.equal(page.messages.some((m) => m.text === 'late unbound chatter'), false);
+  assert.equal(page.messages.find((m) => m.id === final.result.message_id).text, 'committed before stop');
+});
