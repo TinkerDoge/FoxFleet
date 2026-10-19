@@ -1113,6 +1113,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
         self._remember(self._chat_names, dispatch.chat_id, dispatch.actor_name or dispatch.chat_id,
                        self.MAX_CHAT_CACHE)
         event = self._build_room_event(dispatch)
+        if dispatch.media:
+            event.media_urls = await self._download_media(conn, dispatch.media)
+            event.media_types = [m["mime"] for m in dispatch.media]
+            event.message_type = MessageType.PHOTO if all(m["kind"] == "image" for m in dispatch.media) else MessageType.DOCUMENT
         turn = rooms.RoomTurn(
             chat_id=dispatch.chat_id, thread_id=dispatch.thread_id,
             dispatch_id=dispatch.dispatch_id, run_token=dispatch.run_token,
@@ -1938,7 +1942,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
                            url.path.removesuffix("/api/bot/ws"), "", ""))
 
     async def _upload_media(self, chat_id: str, file_path: str, conn: _Conn,
-                            file_name: Optional[str] = None) -> str:
+                            file_name: Optional[str] = None, *, group: bool = False) -> str:
         import httpx
         from urllib.parse import quote
         from gateway.platforms.base import validate_media_delivery_path
@@ -1964,6 +1968,7 @@ class FoxFleetAdapter(BasePlatformAdapter):
             async with client.stream("POST", self._media_http_base() + "/api/bot/media",
                     headers={**protocol.auth_header(self._token), "Content-Type": "application/octet-stream",
                              "Content-Length": str(size), "X-Foxfleet-Chat": str(chat_id),
+                             **({"X-Foxfleet-Chat-Type": "group"} if group else {}),
                              "X-Foxfleet-Name": quote(file_name or path.name, safe="")}, content=chunks()) as response:
                 if response.status_code != 201:
                     raise ValueError("FoxFleet media upload failed")
@@ -1978,18 +1983,31 @@ class FoxFleetAdapter(BasePlatformAdapter):
             raise ValueError("Invalid media upload id")
         return mid
 
+    def _is_room_chat(self, chat_id: str, metadata=None) -> bool:
+        """A room is admitted only through the negotiated group transport; an arbitrary thread id is not a room."""
+        chat_id = str(chat_id)
+        if chat_id in self._room_chats or chat_id in self._room_members:
+            return True
+        if self._room_attempt(chat_id):
+            return True
+        return bool((metadata or {}).get("thread_id")) and chat_id in self._room_chats
+
     async def _send_media_files(self, chat_id: str, paths: list[str], caption=None,
                                 reply_to=None, metadata=None, file_name=None) -> SendResult:
         try:
             conn = self._media_connection()
-            if not 1 <= len(paths) <= 10 or (metadata or {}).get("thread_id"):
-                raise ValueError("FoxFleet media requires 1–10 files in a direct chat")
-            ids = [await self._upload_media(str(chat_id), p, conn, file_name) for p in paths]
+            if not 1 <= len(paths) <= 10:
+                raise ValueError("FoxFleet media requires 1–10 files")
+            group = self._is_room_chat(chat_id, metadata)
+            if not conn.groups_enabled and group:
+                raise ValueError("FoxFleet room media requires foxfleet.bot/1.2")
+            ids = [await self._upload_media(str(chat_id), p, conn, file_name, group=group) for p in paths]
             if self._conn is not conn:
                 raise ValueError("FoxFleet connection changed during upload")
+            attempt = self._room_attempt(chat_id) if group else {}
             res = await self._request("message.send", retry_unknown=True, chat_id=str(chat_id),
-                                      text=_clean_text(caption), media=ids, format="markdown",
-                                      reply_to=reply_to, idempotency_key=secrets.token_hex(16))
+                                      text=_clean_text(caption) or (" " if group else ""), media=ids, format="markdown",
+                                      reply_to=reply_to, idempotency_key=secrets.token_hex(16), **attempt)
             if not res.ok:
                 return self._error_result(res)
             mid = res.result.get("message_id")
@@ -2057,13 +2075,13 @@ class FoxFleetAdapter(BasePlatformAdapter):
 
     async def _download_media(self, conn: _Conn, attachments: tuple[dict, ...]) -> list[str]:
         import httpx
-        from gateway.platforms.base import cache_image_from_bytes_async
+        from gateway.platforms.base import cache_media_bytes_async
         if not conn.media_enabled:
             raise ValueError("FoxFleet media was not negotiated")
         paths = []
         async with httpx.AsyncClient(timeout=120, follow_redirects=False, trust_env=False) as client:
             for item in attachments:
-                if item["kind"] != "image" or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"]):
+                if item["kind"] not in ("image", "audio", "video", "file") or not re.fullmatch(r"fbm_[A-Za-z0-9_-]{24}", item["id"]):
                     raise ValueError("Unsupported inbound media")
                 cap = min(conn.hello.max_media_bytes, item["size"])
                 async with client.stream("GET", self._media_http_base() + "/api/bot/media/" + item["id"],
@@ -2077,7 +2095,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
                             raise ValueError("Inbound media exceeds the byte limit")
                 if len(data) != item["size"]:
                     raise ValueError("Incomplete inbound media")
-                paths.append(await cache_image_from_bytes_async(bytes(data), Path(item["name"]).suffix))
+                cached = await cache_media_bytes_async(bytes(data), filename=item["name"], mime_type=item["mime"])
+                if cached is None:
+                    raise ValueError("Inbound media could not be cached")
+                paths.append(cached.path)
         return paths
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,

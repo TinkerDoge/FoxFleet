@@ -1,6 +1,7 @@
 // User-side room routes (contract/openapi.json `/api/conversations…`). This file only parses and shapes HTTP;
 // all state and access decisions live in conversation-store.js. Routing/dispatch, stop and resume are Tasks 3-5.
 import { fault, ROOM_LIMITS } from './config.js';
+import { MEDIA_ID } from './bot-media.js';
 
 const AGENT_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -37,7 +38,7 @@ function queryInt(value, name) {
  * passes `sendJson`) or throws a hub fault; unknown children are a plain 404. Owner Stop/Resume go through
  * the account's dispatch engine when the bot API is on; the durable store remains the fallback control plane.
  */
-export async function conversationsHttp({ req, res, url, parts, auth, store, agentOf, sendJson, readJson, roomControl }) {
+export async function conversationsHttp({ req, res, url, parts, auth, store, agentOf, sendJson, readJson, roomControl, reg, media }) {
   const owner = { id: auth.user.id, name: auth.user.username };
   const device = auth.device ?? '';
   const id = parts[2];
@@ -101,6 +102,7 @@ export async function conversationsHttp({ req, res, url, parts, auth, store, age
       const result = await store.send(id, {
         actor: { kind: 'human', id: owner.id, name: owner.name }, text: body.text,
         format: body.format ?? 'text', mentions: body.mentions, reply_to: body.reply_to, client_id: body.client_id,
+        media: body.media,
       });
       return sendJson(res, 202, { message: result.message, conversation_id: result.message.conversation_id, dispatched_to: [] });
     }
@@ -120,7 +122,10 @@ export async function conversationsHttp({ req, res, url, parts, auth, store, age
 
   if (parts.length === 4 && action === 'preferences' && method === 'PUT') {
     const body = await readJson(req, 4096);
-    return sendJson(res, 200, await store.setPreferences(id, { device, preferences: body }));
+    const preferences = await store.setPreferences(id, { device, preferences: body });
+    // Room notifications are room-wide: the latest mute setting applies to every client, not just this device.
+    if (typeof body?.muted === 'boolean' && reg?.notify) await reg.notify.setRoomMute({ conversationId: id, muted: body.muted });
+    return sendJson(res, 200, preferences);
   }
 
   if (parts.length === 4 && action === 'stop' && method === 'POST') {
@@ -134,6 +139,38 @@ export async function conversationsHttp({ req, res, url, parts, auth, store, age
     if (roomControl?.resume) await roomControl.resume(id, human);
     else await store.resume(id, { ownerId: owner.id });
     return sendJson(res, 200, await store.get(id, { device }));
+  }
+
+  // Room attachments: the owner uploads bytes over HTTP, references the returned id from a room message,
+  // and downloads them only while the grant is attached to a live message. Bot members use /api/bot/media.
+  if (parts.length === 4 && action === 'media' && method === 'POST') {
+    if (!media || !reg) throw fault(404, 'Not found');
+    const snap = await store.snapshot(id);
+    await media.sweep(reg, id, snap.media ?? []);
+    const row = await media.upload({
+      reg, roomId: id, actor: { kind: 'human', id: owner.id },
+      body: req, length: Number(req.headers['content-length']),
+      name: req.headers['x-foxfleet-name'],
+      guard: () => { if (snap.owner_id !== owner.id) throw fault(404, 'Conversation not found', 'conversation_not_found'); },
+    });
+    try { await store.grantMedia(id, row); }
+    catch (e) { await media.remove(reg, id, row.id); throw e; }
+    return sendJson(res, 201, { ...row, media_id: row.id, expires_at: row.expires_at });
+  }
+
+  if (parts.length === 5 && action === 'media' && ['GET', 'HEAD', 'DELETE'].includes(method)) {
+    const mediaId = parts[4];
+    if (typeof mediaId !== 'string' || !MEDIA_ID.test(mediaId)) throw fault(404, 'Not found');
+    if (method === 'DELETE') {
+      if (!media || !reg) throw fault(404, 'Not found');
+      const grant = await store.revokeMedia(id, { ownerId: owner.id, mediaId });
+      await media.remove(reg, id, grant.id);
+      return sendJson(res, 200, { ok: true, deleted: true, id: grant.id });
+    }
+    if (!media || !reg) throw fault(404, 'Not found');
+    const readable = await store.readableMedia(id, mediaId);
+    if (!readable) throw fault(404, 'Not found');
+    return media.serve({ reg, roomId: id, grant: readable.grant, req, res });
   }
 
   throw fault(404, 'Not found');

@@ -5,9 +5,9 @@
 import { readFile, writeFile, rename } from 'node:fs/promises';
 import { fault } from './config.js';
 
-export const NOTIFY_TYPES = ['reply_finished', 'approval', 'error', 'test'];
+export const NOTIFY_TYPES = ['reply_finished', 'approval', 'error', 'test', 'conversation'];
 export const NOTIFY_CONTRACT = 'foxfleet.notify/1';
-const PRIORITY = { reply_finished: 'normal', approval: 'high', error: 'high', test: 'normal' };
+const PRIORITY = { reply_finished: 'normal', approval: 'high', error: 'high', test: 'normal', conversation: 'normal' };
 const MAX_EVENTS = 500, MAX_MUTES = 200, MAX_STREAMS = 8, RETRY_MS = 3000, HEARTBEAT_MS = 15_000;
 const RETRY_BASE_MS = 1000, MAX_RETRIES = 5, RETRY_CAP_MS = 30_000, SAVE_MS = 250, MAX_BACKLOG = 1024 * 1024, DEFAULT_LIMIT = 100, EVENTS_PER_MIN = 60, TESTS_PER_MIN = 10, MINUTE = 60_000,  MAX_FOR_MS = 366 * 24 * 3600 * 1000;
 const chatKey = (agent, chat) => `${agent}\n${chat}`;
@@ -18,11 +18,11 @@ const byDevice = new Map();
 export function closeDeviceStreams(deviceId, reason = 'signed_out') { let n = 0; for (const close of [...(byDevice.get(deviceId) ?? [])]) { close(reason); n++; } return n; }
 
 export async function notifyStore(file, { now = () => Date.now(), maxEvents = MAX_EVENTS, saveMs = SAVE_MS, eventsPerMin = EVENTS_PER_MIN, testsPerMin = TESTS_PER_MIN, retryMs = RETRY_BASE_MS, maxRetries = MAX_RETRIES, onError } = {}) {
-  let db = { seq: 0, events: [], prefs: { enabled: true, agents: {}, chats: {} } };
+  let db = { seq: 0, events: [], prefs: { enabled: true, agents: {}, chats: {}, rooms: {} } };
   try {
     const raw = JSON.parse(await readFile(file, 'utf8')), p = raw.prefs ?? {};
     const mutes = (o) => Object.fromEntries(Object.entries(o && typeof o === 'object' ? o : {}).filter(([, m]) => m && (m.until === null || Number.isFinite(m.until))).slice(0, MAX_MUTES).map(([k, m]) => [k, { until: m.until }]));
-    db = { seq: Number.isInteger(raw.seq) && raw.seq >= 0 ? raw.seq : 0, events: Array.isArray(raw.events) ? raw.events.filter((e) => e && Number.isInteger(e.id) && NOTIFY_TYPES.includes(e.type)).slice(-maxEvents) : [], prefs: { enabled: p.enabled !== false, agents: mutes(p.agents), chats: mutes(p.chats) } };
+    db = { seq: Number.isInteger(raw.seq) && raw.seq >= 0 ? raw.seq : 0, events: Array.isArray(raw.events) ? raw.events.filter((e) => e && Number.isInteger(e.id) && NOTIFY_TYPES.includes(e.type)).slice(-maxEvents) : [], prefs: { enabled: p.enabled !== false, agents: mutes(p.agents), chats: mutes(p.chats), rooms: mutes(p.rooms) } };
     for (const e of db.events) db.seq = Math.max(db.seq, e.id); // ids never go backwards, even if the counter was lost
   } catch { /* first run, or unreadable: start empty */ }
   // Saves are coalesced: many changes inside `saveMs` cost ONE write, and the snapshot is taken when the write runs (never queued per change).
@@ -46,12 +46,14 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
   let dropped = 0;
   const subs = new Set();
   const active = (m, t) => m && (m.until === null || m.until > t);
-  const prune = (t) => { for (const group of [db.prefs.agents, db.prefs.chats]) for (const [k, m] of Object.entries(group)) if (!active(m, t)) delete group[k]; };
+  const prune = (t) => { for (const group of [db.prefs.agents, db.prefs.chats, db.prefs.rooms]) for (const [k, m] of Object.entries(group)) if (!active(m, t)) delete group[k]; };
+  const roomId = (v) => (typeof v === 'string' && /^fc_[A-Za-z0-9_-]{16}$/.test(v) ? v : null);
 
   const store = {
-    /** Should an event of this type for this agent/chat be pushed? Approvals ignore a chat mute (not an agent mute or the master switch). */
-    muted(type, agent, chat, t = now()) {
+    /** Should an event of this type for this agent/chat/room be pushed? An approval ignores a chat mute. */
+    muted(type, agent, chat, t = now(), conversation = null) {
       if (!db.prefs.enabled) return true;
+      if (conversation && active(db.prefs.rooms[conversation], t)) return true;
       if (agent && active(db.prefs.agents[agent], t)) return true;
       if (agent && chat && type !== 'approval' && active(db.prefs.chats[chatKey(agent, chat)], t)) return true;
       return false;
@@ -59,9 +61,11 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
     /** Log an event and push it to open streams. `extra` is limited to short ids (never message text). */
     emit({ type, agent = null, chat = null, ...extra }) {
       if (!NOTIFY_TYPES.includes(type)) throw new Error(`unknown notification type ${type}`);
+      const conversation = roomId(extra.conversation_id);
+      if (conversation) extra.conversation_id = conversation; else if ('conversation_id' in extra) delete extra.conversation_id;
       const t = now();
       if (type !== 'approval' && type !== 'test' && !within(allow.events, eventsPerMin, t)) { dropped++; return null; } // a burst of replies / errors cannot flush the log; approvals are never dropped
-      const e = { id: ++db.seq, v: 1, type, agent: word(agent, 100), chat: word(chat), priority: PRIORITY[type], at: t, muted: store.muted(type, word(agent, 100), word(chat), t), ...extra };
+      const e = { id: ++db.seq, v: 1, type, agent: word(agent, 100), chat: word(chat), priority: PRIORITY[type], at: t, muted: store.muted(type, word(agent, 100), word(chat), t, conversation), ...extra };
       db.events.push(e); if (db.events.length > maxEvents) db.events.splice(0, db.events.length - maxEvents);
       if (!e.muted) for (const fn of subs) { try { fn(e); } catch { /* one dead stream must not stop the others */ } }
       save(); return e;
@@ -82,11 +86,29 @@ export async function notifyStore(file, { now = () => Date.now(), maxEvents = MA
     get streams() { return subs.size; },
     prefs(t = now()) {
       prune(t);
+      const rooms = Object.entries(db.prefs.rooms).map(([conversation_id, m]) => ({ conversation_id, until: m.until }));
       return { enabled: db.prefs.enabled, storage: health.ok ? { ok: true } : { ok: false, error: health.error }, dropped, agents: Object.entries(db.prefs.agents).map(([agent, m]) => ({ agent, until: m.until })),
-        chats: Object.entries(db.prefs.chats).map(([k, m]) => { const [agent, chat] = k.split('\n'); return { agent, chat, until: m.until }; }) };
+        chats: Object.entries(db.prefs.chats).map(([k, m]) => { const [agent, chat] = k.split('\n'); return { agent, chat, until: m.until }; }),
+        ...(rooms.length ? { rooms } : {}) };
     },
     /** The active mute of a whole agent ({ until }, null = forever), or null. The chat list shows it. */
     muteOf(agent, t = now()) { const m = db.prefs.agents[agent]; return active(m, t) ? { until: m.until } : null; },
+    /** The active mute of one room, shared by every client of the account. */
+    roomMuteOf(conversationId, t = now()) { const m = db.prefs.rooms[conversationId]; return active(m, t) ? { until: m.until } : null; },
+    /** Mute/unmute one room. Room notifications are one event per room, never one per member. */
+    async setRoomMute({ conversationId, muted, forMs }) {
+      const id = roomId(conversationId);
+      if (!id) throw fault(400, 'conversation_id must be a room id');
+      if (typeof muted !== 'boolean') throw fault(400, 'muted must be true or false');
+      if (forMs !== undefined && forMs !== null && !(Number.isFinite(forMs) && forMs >= 1000 && forMs <= MAX_FOR_MS)) throw fault(400, 'for_ms must be between 1000 and 31622400000');
+      const t = now(); prune(t);
+      if (!muted) delete db.prefs.rooms[id];
+      else {
+        if (!db.prefs.rooms[id] && Object.keys(db.prefs.rooms).length >= MAX_MUTES) throw fault(400, 'Too many mutes; unmute some first');
+        db.prefs.rooms[id] = { until: forMs ? t + Math.floor(forMs) : null };
+      }
+      await saveNow(); return store.prefs(t);
+    },
     async setEnabled(enabled) { if (typeof enabled !== 'boolean') throw fault(400, 'enabled must be true or false'); db.prefs.enabled = enabled; await saveNow(); return store.prefs(); },
     /** Mute (`muted: true`, optionally for `forMs`; no duration = until unmuted) or unmute one agent, or one chat of it. */
     async setMute({ agent, chat, muted, forMs }) {

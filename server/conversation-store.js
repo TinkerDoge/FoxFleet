@@ -16,6 +16,8 @@ import { randomBytes, createHash } from 'node:crypto';
 import { jsonFile, unavailable } from './bot-store.js';
 import { validateCardAnswer } from './bot-protocol.js';
 import { fault, ROOM_LIMITS, roomTitle, roomActorName } from './config.js';
+import { attachGrantedMedia, revokeMessageMedia, roomMediaView, ROOM_MEDIA_LIMIT } from './conversation-media.js';
+import { MEDIA_ID } from './bot-media.js';
 
 const ID_RE = /^fc_[A-Za-z0-9_-]{16}$/;
 const MESSAGE_RE = /^fm_[A-Za-z0-9_-]{16}$/;
@@ -49,7 +51,7 @@ function blank(id) {
     v: 1, schema_version: 1, id, kind: 'group', owner_id: '', owner_name: '', title: '',
     created_at: 0, updated_at: 0, next_seq: 1, epoch: 1, paused: false,
     policy: { routing: 'mention_reply' }, client_key: null, client_fp: null,
-    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [], dispatches: [], cards: [],
+    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [], dispatches: [], cards: [], media: [],
   };
 }
 
@@ -61,7 +63,8 @@ function recordValid(v, id) {
     && (v.client_key === null || typeof v.client_key === 'string') && (v.client_fp === null || typeof v.client_fp === 'string')
     && ['members', 'messages', 'outbox', 'reads', 'preferences', 'hidden'].every((k) => Array.isArray(v[k]))
     && (v.dispatches === undefined || Array.isArray(v.dispatches))
-    && (v.cards === undefined || Array.isArray(v.cards));
+    && (v.cards === undefined || Array.isArray(v.cards))
+    && (v.media === undefined || Array.isArray(v.media));
 }
 
 const activeMembers = (d) => d.members.filter((m) => m.role === 'member' && m.removed_at === null);
@@ -89,10 +92,12 @@ function senderOf(d, m) {
   return { id: m.author_id, name: m.author_name, kind: m.author_kind, is_bot: m.author_kind === 'agent', joined_at: m.created_at };
 }
 function messageView(d, m) {
+  const media = (d.media ?? []).filter((g) => g.message_id === m.id && !g.revoked_at).map(roomMediaView);
   return {
     id: m.id, conversation_id: d.id, sender: senderOf(d, m), text: m.body, created_at: m.created_at,
     reply_to: m.reply_to ?? null, mentions: m.mentions ?? [], seq: m.seq,
     root_id: m.root_id ?? null, dispatch_id: m.dispatch_id ?? null, delivery_state: m.delivery_state ?? null,
+    ...(media.length ? { media } : {}),
     ...(m.system ? { system: true } : {}), ...(m.code ? { code: m.code } : {}),
     ...(m.revision > 1 ? { edited: true } : {}), ...(m.deleted_at ? { deleted: true } : {}),
   };
@@ -150,9 +155,11 @@ function pageInt(value, fallback, max = Number.MAX_SAFE_INTEGER) {
  * One account's rooms. Callers pass the authenticated account's id/name on create and compare ownership on
  * mutations; the directory itself is the account boundary, so another account can never see or address a room.
  */
-export function conversationStore(dir) {
+export function conversationStore(dir, { onEvent } = {}) {
+  if (onEvent !== undefined && typeof onEvent !== 'function') throw new TypeError('onEvent must be a function');
   let loaded = null;
   const rooms = new Map();
+  const emit = (type, fields) => { if (!onEvent) return; try { onEvent(type, fields); } catch { /* live transport trouble never fails a room write */ } };
 
   async function scan() {
     try { await mkdir(dir, { recursive: true, mode: 0o700 }); }
@@ -241,7 +248,9 @@ export function conversationStore(dir) {
           ...clean.map((a) => ({ actor_kind: 'agent', actor_id: a.actor_id, name: a.name, role: 'member', joined_at: at, removed_at: null, generation: 1 }))];
       });
       rooms.set(id, room);
-      return view(room.state, device);
+      const created = view(room.state, device);
+      emit('conversation.created', { conversation: created });
+      return created;
     },
 
     async list({ device = '', limit = 30, offset = 0 } = {}) {
@@ -266,7 +275,9 @@ export function conversationStore(dir) {
         if (d.owner_id !== ownerId) throw fault(403, 'Only the conversation owner may change it', 'not_conversation_owner');
         d.title = safeTitle; d.updated_at = Date.now();
       });
-      return view(room.state, device);
+      const updated = view(room.state, device);
+      emit('conversation.updated', { conversation: updated });
+      return updated;
     },
 
     async addMember(id, { ownerId, agent, device = '' } = {}) {
@@ -284,7 +295,14 @@ export function conversationStore(dir) {
         d.outbox.push({ type: 'chat.member', action: 'join', actor_id: d.owner_id, member_id: agent.actor_id, generation, at });
         if (d.outbox.length > MAX_OUTBOX) d.outbox.splice(0, d.outbox.length - MAX_OUTBOX);
       });
-      return view(room.state, device);
+      const updated = view(room.state, device);
+      emit('conversation.updated', { conversation: updated });
+      emit('conversation.member.joined', {
+        conversation_id: room.state.id,
+        member: updated.members.find((m) => m.id === agent.actor_id) ?? { id: agent.actor_id, name, kind: 'agent', is_bot: true },
+        actor: updated.owner,
+      });
+      return updated;
     },
 
     async removeMember(id, { ownerId, agentId, device = '' } = {}) {
@@ -300,7 +318,14 @@ export function conversationStore(dir) {
         d.outbox.push({ type: 'chat.member', action: 'leave', actor_id: d.owner_id, member_id: ref, generation: row.generation, at });
         if (d.outbox.length > MAX_OUTBOX) d.outbox.splice(0, d.outbox.length - MAX_OUTBOX);
       });
-      return view(room.state, device);
+      const updated = view(room.state, device);
+      emit('conversation.updated', { conversation: updated });
+      emit('conversation.member.left', {
+        conversation_id: room.state.id,
+        member: { id: ref, name: roomActorName(agentId), kind: 'agent', is_bot: true },
+        actor: updated.owner,
+      });
+      return updated;
     },
 
     /**
@@ -518,7 +543,7 @@ export function conversationStore(dir) {
     },
 
 
-    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, admit } = {}) {
+    async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, media, admit } = {}) {
       if (!actor || !['human', 'agent'].includes(actor.kind)) throw fault(400, 'Invalid actor');
       if (actor.kind === 'human' ? !HUMAN_ID.test(actor.id ?? '') : !AGENT_REF.test(actor.id ?? '')) throw fault(400, 'Invalid actor');
       if (admit !== undefined && typeof admit !== 'function') throw new TypeError('admit must be a function');
@@ -526,6 +551,8 @@ export function conversationStore(dir) {
       if (!validText(text)) throw fault(400, 'Invalid message text');
       if (!FORMATS.has(format)) throw fault(400, 'Invalid format');
       if (!validClientId(client_id)) throw fault(400, 'Invalid client_id');
+      if (media !== undefined && media !== null && (!Array.isArray(media) || media.length > ROOM_MEDIA_LIMIT)) throw fault(400, 'Invalid attachment list', 'invalid_media');
+      const uploads = media === undefined || media === null || media.length === 0 ? null : media;
       const parsed = normalizeMentions(mentions, text);
       const room = await use(id);
       const state = room.state;
@@ -533,7 +560,7 @@ export function conversationStore(dir) {
       // is an active member. Filesystem/account isolation is not an authority check.
       if (actor.kind === 'human' && state.owner_id !== actor.id) throw notOwner();
       if (actor.kind === 'agent' && !activeAgent(state, actor.id)) throw actorForbidden();
-      const fingerprint = sha256(JSON.stringify([text, format, parsed, reply_to ?? null, client_id ?? null]));
+      const fingerprint = sha256(JSON.stringify([text, format, parsed, reply_to ?? null, client_id ?? null, uploads]));
       if (reply_to !== undefined && reply_to !== null) {
         if (typeof reply_to !== 'string' || !MESSAGE_RE.test(reply_to)) throw replyNotFound();
         if (!state.messages.some((m) => m.id === reply_to && !m.deleted_at)) {
@@ -574,6 +601,7 @@ export function conversationStore(dir) {
           deleted_at: null, root_id: target ? (target.root_id ?? target.id) : null, dispatch_id: null, delivery_state: 'queued',
           client_id: client_id ?? null, client_fp: fingerprint,
         };
+        attachGrantedMedia(d, uploads, actor, message, at);
         d.messages.push(message);
         const admitted = callAdmit(d, message, false);
         // Generous local cap; Task 11 owns the real retention policy. next_seq stays monotonic.
@@ -583,6 +611,7 @@ export function conversationStore(dir) {
         if (d.outbox.length > MAX_OUTBOX) d.outbox.splice(0, d.outbox.length - MAX_OUTBOX);
         result = { message: messageView(d, message), duplicate: false, ...(admitted === undefined ? {} : { admitted }) };
       });
+      if (!result.duplicate) emit('conversation.message.new', { conversation_id: result.message.conversation_id, message: result.message });
       return result;
     },
 
@@ -613,6 +642,7 @@ export function conversationStore(dir) {
     async read(id, { device = '', up_to } = {}) {
       if (!validDevice(device)) throw fault(400, 'Invalid device');
       const room = await use(id);
+      let readUpTo = 0;
       await room.mutate((d) => {
         const latest = Math.max(0, d.next_seq - 1);
         let target = latest;
@@ -623,8 +653,11 @@ export function conversationStore(dir) {
         const row = d.reads.find((r) => r.device_id === device);
         if (row) { row.up_to = target; row.at = Date.now(); }
         else d.reads.push({ device_id: device, up_to: target, at: Date.now() });
+        readUpTo = target;
       });
-      return view(room.state, device);
+      const updated = view(room.state, device);
+      emit('conversation.read', { conversation_id: room.state.id, actor: updated.owner, read_up_to: readUpTo, device });
+      return updated;
     },
 
     async preferences(id, { device = '' } = {}) {
@@ -648,6 +681,8 @@ export function conversationStore(dir) {
         if (row) Object.assign(row, patch);
         else d.preferences.push({ device_id: device, ...patch });
       });
+      const updated = view(room.state, device);
+      emit('conversation.updated', { conversation: updated });
       return prefsView(prefRow(room.state, device));
     },
 
@@ -666,16 +701,97 @@ export function conversationStore(dir) {
     async deleteMessage(id, { messageId } = {}) {
       if (typeof messageId !== 'string' || !MESSAGE_RE.test(messageId)) throw messageNotFound();
       const room = await use(id);
+      const revoked = [];
       await room.mutate((d) => {
         const message = d.messages.find((m) => m.id === messageId);
         if (!message) throw messageNotFound();
         if (message.deleted_at) return;
         const at = Date.now();
+        revoked.push(...revokeMessageMedia(d, message.id, at));
         message.deleted_at = at; message.body = ''; message.revision += 1;
         d.updated_at = at;
         d.outbox.push({ type: 'message.deleted', message_id: message.id, at });
         if (d.outbox.length > MAX_OUTBOX) d.outbox.splice(0, d.outbox.length - MAX_OUTBOX);
       });
+      if (revoked.length) {
+        emit('conversation.message.deleted', { conversation_id: room.state.id, message_id: messageId });
+        emit('conversation.updated', { conversation: view(room.state, '') });
+      }
+      return revoked;
+    },
+
+    /** Register one uploaded blob as an unattached grant. The bytes were written before this call. */
+    async grantMedia(id, row) {
+      if (!row || !MEDIA_ID.test(row.id ?? '')) throw fault(400, 'Invalid attachment');
+      const room = await use(id);
+      await room.mutate((d) => {
+        d.media ??= [];
+        if (d.media.some((g) => g.id === row.id)) throw fault(409, 'Attachment already exists', 'media_exists');
+        d.media.push(row);
+        // Bound the grant list by discarding revoked rows only; an attached grant is history and must not
+        // vanish from under a retained message.
+        if (d.media.length > 10_000) {
+          d.media = d.media.filter((g) => !g.revoked_at);
+          if (d.media.length > 20_000) d.media.splice(0, d.media.length - 20_000);
+        }
+      });
+      return row;
+    },
+
+    /** The grant row for one media id in this room (attached or not); null when unknown. */
+    async mediaGrant(id, mediaId) {
+      if (typeof mediaId !== 'string' || !MEDIA_ID.test(mediaId)) return null;
+      const room = await use(id);
+      return (room.state.media ?? []).find((g) => g.id === mediaId) ?? null;
+    },
+
+    /** Find which of this account's rooms grants a media id (bot HTTP download path). */
+    async findMedia(mediaId) {
+      if (typeof mediaId !== 'string' || !MEDIA_ID.test(mediaId)) return null;
+      await ready();
+      for (const room of rooms.values()) {
+        const grant = (room.state.media ?? []).find((g) => g.id === mediaId);
+        if (grant) return { conversation_id: room.state.id, grant, state: room.state };
+      }
+      return null;
+    },
+
+    /** Owner revocation: deny every later download. The caller removes the bytes afterwards. */
+    async revokeMedia(id, { ownerId, mediaId, at = Date.now() } = {}) {
+      if (typeof mediaId !== 'string' || !MEDIA_ID.test(mediaId)) throw fault(404, 'Not found');
+      const room = await use(id);
+      let grant = null;
+      await room.mutate((d) => {
+        if (d.owner_id !== ownerId) throw fault(403, 'Only the conversation owner may revoke it', 'not_conversation_owner');
+        grant = (d.media ?? []).find((g) => g.id === mediaId) ?? null;
+        if (!grant) throw fault(404, 'Not found');
+        if (!grant.revoked_at) grant.revoked_at = at;
+        d.updated_at = at;
+      });
+      const message = grant.message_id ? room.state.messages.find((m) => m.id === grant.message_id && !m.deleted_at) : null;
+      if (message) emit('conversation.message.edited', { conversation_id: room.state.id, message: messageView(room.state, message) });
+      return grant;
+    },
+
+    /** A download decision: grant is attached, not revoked/expired, and its message is still retained. */
+    async readableMedia(id, mediaId, { now = Date.now() } = {}) {
+      if (typeof mediaId !== 'string' || !MEDIA_ID.test(mediaId)) return null;
+      const room = await use(id);
+      const grant = (room.state.media ?? []).find((g) => g.id === mediaId);
+      if (!grant || grant.revoked_at || !grant.message_id) return null;
+      if (Number.isSafeInteger(grant.expires_at) && grant.expires_at <= now && !grant.attached_at) return null;
+      const message = room.state.messages.find((m) => m.id === grant.message_id && !m.deleted_at);
+      return message ? { grant, message, state: room.state } : null;
+    },
+
+    /** Emit a conversation event for a message written by the dispatch engine. */
+    announce(type, id, message) {
+      const room = rooms.get(id);
+      if (!room) return;
+      const fields = type === 'conversation.message.deleted'
+        ? { conversation_id: id, message_id: message.id }
+        : { conversation_id: id, message: messageView(room.state, message) };
+      emit(type, fields);
     },
 
     findMessage,

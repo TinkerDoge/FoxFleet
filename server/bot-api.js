@@ -2,6 +2,7 @@
 import path from 'node:path';
 import { createHmac, createHash, timingSafeEqual, randomBytes } from 'node:crypto';
 import { botMedia, MEDIA_MAX, sniffBotMedia } from './bot-media.js';
+import { conversationMedia, revokeMessageMedia } from './conversation-media.js';
 import { fault } from './config.js';
 import { tokenIndex, botStore, botLimits, freshChatId, BotError, httpFault } from './bot-store.js';
 import { acceptBotSocket, checkHandshake } from './bot-ws.js';
@@ -43,6 +44,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   const tokens = tokenIndex(path.join(dataDir, 'bot', 'tokens.json'));
   await tokens.ready().catch(() => {});
   const blobs = botMedia({ maxBytes: options.maxMediaBytes, quotaBytes: options.mediaQuotaBytes ?? options.maxMediaQuotaBytes });
+  const roomMedia = conversationMedia({ maxBytes: options.maxMediaBytes, quotaBytes: options.mediaQuotaBytes ?? options.maxMediaQuotaBytes });
   const mediaSecret = randomBytes(32);
   const mediaSign = (p) => createHmac('sha256', mediaSecret).update(p).digest('base64url');
   const sessions = new Map(), stores = new Map(), gone = new Set(), requests = new Set(), stops = new Map();
@@ -252,11 +254,14 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (!message) return { failed: true, code: 'not_found', reason: 'the dispatch message was not found' };
     const threadId = roomThread(snap.id);
     const actor = roomActor(message);
+    const media = (snap.media ?? []).filter((g) => g.message_id === message.id && !g.revoked_at)
+      .map(({ id, kind, mime, name, size }) => ({ id, kind, mime, name, size }));
     const frame = {
       t: 'dispatch.run', dispatch_id: ctx.dispatch.id, run_token: ctx.attempt.token,
       chat_id: snap.id, thread_id: threadId, message_id: message.id, actor,
       target_agent_id: target.agentId, owner_id: snap.owner_id,
       mentions: message.mentions ?? [], text: message.body, date: message.created_at,
+      ...(media.length ? { media } : {}),
       ...(message.reply_to ? { reply_to: message.reply_to } : {}),
       root_id: ctx.dispatch.root_id, deadline_at: ctx.dispatch.root_deadline,
     };
@@ -457,11 +462,12 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         return { result: { cancelled: true, dispatch_id: v.req.dispatch_id } };
       }
       case 'chat.action':
+        hub.reg.live2?.ephemeral('conversation.typing', { conversation_id: snap.id, agent: actorId, state: 'typing', at: Date.now() });
         return { result: {} };
       case 'message.send': {
         if (active && v.req.final === true) {
           let message;
-          try { message = await active.ctx.finalize(v.req.text); }
+          try { message = await active.ctx.finalize(v.req.text, { media: v.req.media }); }
           catch (e) { throw roomBotError(e); }
           const handoff = await completeRoomTurn(active, message);
           return { result: { message_id: message.id, chat_id: snap.id, date: message.created_at },
@@ -469,7 +475,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         }
         if (active) {
           let message;
-          try { message = await active.ctx.say(v.req.text); }
+          try { message = await active.ctx.say(v.req.text, { media: v.req.media }); }
           catch (e) { throw roomBotError(e); }
           active.parts.push(message.id);
           return { result: { message_id: message.id, chat_id: snap.id, date: message.created_at } };
@@ -479,12 +485,13 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       case 'message.edit': {
         if (active && v.req.final === true) {
           let message;
-          try { message = await active.ctx.finalizeMessage(v.req.message_id, v.req.text); }
+          try { message = await active.ctx.finalizeMessage(v.req.message_id, v.req.text, { media: v.req.media }); }
           catch (e) { throw roomBotError(e); }
           const handoff = await completeRoomTurn(active, message);
           return { result: { message_id: message.id, chat_id: snap.id, edited: true },
             ...(handoff?.dispatch ? { handoff: { dispatch_id: handoff.dispatch.id, target_agent_id: handoff.dispatch.target_agent_id } } : {}) };
         }
+        let edited = null;
         await hub.store.transact(snap.id, (d) => {
           if (d.paused) throw new BotError('dispatch_stale', 'The room is stopped; a late edit cannot be stored as plain agent chatter');
           const m = d.messages.find((x) => x.id === v.req.message_id && !x.deleted_at);
@@ -495,19 +502,25 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           d.updated_at = Date.now();
           d.outbox.push({ type: 'message.edited', message_id: m.id, seq: m.seq, at: d.updated_at });
           if (d.outbox.length > 1000) d.outbox.splice(0, d.outbox.length - 1000);
+          edited = structuredClone(m);
         });
+        if (edited) hub.store.announce?.('conversation.message.edited', snap.id, edited);
         return { result: { message_id: v.req.message_id, chat_id: snap.id, edited: true } };
       }
       case 'message.delete': {
+        let revoked = [];
         await hub.store.transact(snap.id, (d) => {
           const m = d.messages.find((x) => x.id === v.req.message_id && !x.deleted_at);
           if (!m) throw new BotError('not_found', 'Unknown message');
           if (m.author_kind !== 'agent' || m.author_id !== actorId) throw new BotError('forbidden', 'Only this agent may delete its message');
+          revoked = revokeMessageMedia(d, m.id, Date.now());
           m.deleted_at = Date.now(); m.body = ''; m.revision = (m.revision ?? 1) + 1;
           d.updated_at = m.deleted_at;
           d.outbox.push({ type: 'message.deleted', message_id: m.id, at: d.updated_at });
           if (d.outbox.length > 1000) d.outbox.splice(0, d.outbox.length - 1000);
         });
+        for (const id of revoked) await roomMedia.remove(session.reg, snap.id, id);
+        hub.store.announce?.('conversation.message.deleted', snap.id, { id: v.req.message_id });
         return { result: { message_id: v.req.message_id, chat_id: snap.id, deleted: true } };
       }
       case 'ack': return { result: { acked: v.req.event_id } };
@@ -517,7 +530,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (v.t === 'message.send') {
       const sent = await hub.store.send(snap.id, {
         actor, text: v.req.text, format: v.req.format ?? 'markdown', mentions: v.req.mentions,
-        reply_to: v.req.reply_to,
+        reply_to: v.req.reply_to, media: v.req.media,
         // The snapshot above may predate a Stop that commits while this send is in flight. The same
         // mutation re-checks the durable pause, so an unbound late completion can never land as chatter.
         admit: (d) => {
@@ -1031,6 +1044,27 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     throw fault(404, 'Not found');
   }
 
+  /** One active agent member of a room, or null. The same check runs at upload and every download. */
+  async function roomMember(reg, roomId, agentName) {
+    if (!reg?.conversations) return null;
+    let snap;
+    try { snap = await reg.conversations.snapshot(roomId); } catch (e) { if (e?.code === 'conversation_not_found') return null; throw e; }
+    return snap.members.find((m) => m.actor_kind === 'agent' && m.actor_id === 'agent:' + agentName && m.role === 'member' && m.removed_at === null) ?? null;
+  }
+
+  async function serveRoomMedia({ reg, session, id, req, res }) {
+    if (!reg?.conversations) throw fault(404, 'Not found');
+    const found = await reg.conversations.findMedia(id);
+    if (!found) throw fault(404, 'Not found');
+    const agent = agentOf(reg, session.botId);
+    if (!agent || !(await roomMember(reg, found.conversation_id, agent.name))) throw fault(404, 'Not found');
+    const socket = sessions.get(session.botId);
+    if (socket && socket.protocol !== PROTOCOL_V12) throw fault(404, 'Not found');
+    const readable = await reg.conversations.readableMedia(found.conversation_id, id);
+    if (!readable) throw fault(404, 'Not found');
+    return roomMedia.serve({ reg, roomId: found.conversation_id, grant: readable.grant, req, res });
+  }
+
   async function mediaHttp(req, res, { sendJson, throttle }) {
     const upload = req.method === 'POST' && req.url === '/api/bot/media';
     const match = req.method === 'GET' && /^\/api\/bot\/media\/(fbm_[A-Za-z0-9_-]{24})$/.exec(req.url);
@@ -1047,9 +1081,26 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     try {
       const reg = session.reg = await scopeReg(id.scope), store = session.store = storeFor(id.scope, reg, id.botId);
       await store.load(); guard(session)();
-      if (match) return await blobs.serve({ reg, botId: id.botId, store, id: match[1], req, res });
-      const row = await blobs.upload({ reg, botId: id.botId, store, body: req, length: Number(req.headers['content-length']), name: req.headers['x-foxfleet-name'], chatId: req.headers['x-foxfleet-chat'] ?? req.headers['x-foxfleet-chat-id'], guard: guard(session) });
-      return sendJson(res, 201, { ...row, media_id: row.id, expires_at: row.created + 3600_000 });
+      if (match) {
+        // A DM id stays in the bot's own store. A room id is resolved only through that room's explicit
+        // grant and an active membership check made now, not when the upload happened.
+        if (store.mediaRows().some((m) => m.id === match[1])) return await blobs.serve({ reg, botId: id.botId, store, id: match[1], req, res });
+        return await serveRoomMedia({ reg, session, id: match[1], req, res });
+      }
+      const chatId = req.headers['x-foxfleet-chat'] ?? req.headers['x-foxfleet-chat-id'];
+      const group = String(req.headers['x-foxfleet-chat-type'] ?? '').toLowerCase() === 'group';
+      if (!group) {
+        const row = await blobs.upload({ reg, botId: id.botId, store, body: req, length: Number(req.headers['content-length']), name: req.headers['x-foxfleet-name'], chatId, guard: guard(session) });
+        return sendJson(res, 201, { ...row, media_id: row.id, expires_at: row.created + 3600_000 });
+      }
+      const agent = agentOf(reg, id.botId), socket = sessions.get(id.botId);
+      if (!agent || socket?.protocol !== PROTOCOL_V12 || !(await roomMember(reg, chatId, agent.name))) throw fault(404, 'Not found');
+      const roomSnap = await reg.conversations.snapshot(chatId);
+      await roomMedia.sweep(reg, chatId, roomSnap.media ?? []);
+      const row = await roomMedia.upload({ reg, roomId: chatId, actor: { kind: 'agent', id: 'agent:' + agent.name }, body: req, length: Number(req.headers['content-length']), name: req.headers['x-foxfleet-name'], guard: guard(session) });
+      try { await reg.conversations.grantMedia(chatId, row); }
+      catch (e) { await roomMedia.remove(reg, chatId, row.id); throw e; }
+      return sendJson(res, 201, { ...row, media_id: row.id, expires_at: row.expires_at });
     } finally { requests.delete(session); req.resume(); }
   }
   async function serveMediaToken({ token, scope, req, res }) {

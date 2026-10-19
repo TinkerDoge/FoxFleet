@@ -33,6 +33,7 @@ import { wsAccept } from './ws.js';
 import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
 import { conversationStore } from './conversation-store.js';
 import { conversationsHttp } from './conversations.js';
+import { conversationMedia } from './conversation-media.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
@@ -234,8 +235,15 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
-      reg.conversations = await conversationStore(path.join(dir, 'conversations')); // Task 2: rooms are account-local
       reg.live2 = await liveLog(path.join(dir, 'live-events'), { ...retention, now: liveClock });
+      // Task 6: one durable room event feeds the account live log and one per-room notification (never one
+      // copy per participating agent). Typing stays ephemeral and never reaches notify.
+      reg.conversations = await conversationStore(path.join(dir, 'conversations'), { // Task 2: rooms are account-local
+        onEvent: (type, fields) => {
+          reg.live2.emit(type, fields);
+          if (type === 'conversation.message.new') reg.notify.emit({ type: 'conversation', conversation_id: fields.conversation_id, event: 'message.new', message_id: fields.message.id });
+        },
+      });
       reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { idemMax: Math.max(500, replyRatePerMin * 60 * 24), hooks: { reactions: (agent, chat, ref) => storedReactions(reg, agent, chat, ref), event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
       reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live2.emit('approval', { agent: a?.name ?? s.agent, chat: s.stored ?? undefined, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); rowChanged(reg, userId, a?.name ?? s.agent); });
       return reg;
@@ -347,6 +355,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   const allowBotAgent = (name) => botAll || botAllow.has(name);
   if (botApi && !botAll && !botAllow.size) console.warn('foxfleet: WARNING FOXFLEET_BOT_API=1 but FOXFLEET_BOT_AGENTS is unset or empty: NO bot agent is allowed (deny by default). Set FOXFLEET_BOT_AGENTS=<name>[,<name>] or "*" for all.');
   const media = mediaHub({ connectors, revokePath: path.join(dataDir, 'media-revoked.json') }); // MEDIA: tags -> cards (see media.js)
+  const roomMedia = conversationMedia(); // room attachment bytes, beside each account's room JSON
   const bot = botApi ? await createBotApi({ dataDir, scopeReg: (scope) => registryFor(scope, scope === 'local' || ownerOf(scope)?.role === 'owner'), ownerOf, runs, trusted, appCommands: catalogFor({ kind: 'hermes', bundled: HERMES_COMMANDS.commands.filter((c) => c.availability === 'app' && !['stop', 'queue', 'steer', 'busy'].includes(c.name)), modes: ['queue'] }), options: { ...botOptions, allowAgent: allowBotAgent }, log, media }) : null;
   const hubInfo = bot ? { ...HUB_INFO, features: [...HUB_FEATURES, 'botApi'] } : HUB_INFO;
   const publicAgent = (m) => ({ ...publicConnection(m), ...(m.connection === 'bot' ? { hasBotToken: Boolean(bot?.hasToken(m.botId)) } : {}) });
@@ -613,8 +622,9 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (req.headers.origin && !requestOrigins.has(req.headers.origin)) throw fault(403, 'Cross-origin request rejected');
       const mime = req.headers['content-type'], hasBody = Number(req.headers['content-length']) > 0 || req.headers['transfer-encoding'];
       const botMediaUpload = req.method === 'POST' && req.url === '/api/bot/media';
+      const roomMediaUpload = req.method === 'POST' && /^\/api\/conversations\/fc_[A-Za-z0-9_-]{16}\/media$/.test(req.url.split('?')[0]) && /^application\/octet-stream$/i.test(mime || '');
       const agentFileUpload = req.method === 'POST' && /^\/api\/agents\/[^/]+\/files$/.test(req.url.split('?')[0]) && /^application\/octet-stream$/i.test(mime || '');
-      const upload = botMediaUpload || agentFileUpload;
+      const upload = botMediaUpload || roomMediaUpload || agentFileUpload;
       if (!upload && (mime || hasBody) && !/^application\/json(?:\s*;|$)/i.test(mime || '')) { req.resume(); throw fault(415, 'Mutations require application/json'); }
     }
   }
@@ -743,7 +753,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           stop: (id, actor) => bot.roomStop(scopeOf(ctx), id, actor),
           resume: (id, actor) => bot.roomResume(scopeOf(ctx), id, actor),
         } : null;
-        return await conversationsHttp({ req, res, url, parts, auth, store: ctx.reg.conversations, agentOf, sendJson, readJson, roomControl });
+        return await conversationsHttp({ req, res, url, parts, auth, store: ctx.reg.conversations, agentOf, sendJson, readJson, roomControl, reg: ctx.reg, media: roomMedia });
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await (parts[2].startsWith('bot.') && bot ? bot.serveMediaToken({ token: parts[2], scope: scopeOf(ctx), req, res }) : media.serve({ token: parts[2], scope: scopeOf(ctx), req, res }));
       if (req.method === 'GET' && url.pathname === '/api/media-proxy') {
@@ -769,14 +779,18 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'live' && parts[2] === 'stream' && parts.length === 3 && req.method === 'GET') { // live chat events (docs/LIVE-EVENTS.md): resumable SSE, 15 s heartbeat
         const device = singleUser ? null : auth.device, v = url.searchParams.get('v');
         if (v !== null && v !== '1' && v !== '2') throw fault(400, 'Unsupported live contract version; use v=1 or v=2', 'unsupported_version');
-        if (v === '2') return void attachLive2Stream(req, res, ctx.reg.live2, { cursor: url.searchParams.get('since') ?? url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined, counter: ctx.reg.live });
+        const conversationId = url.searchParams.get('conversation_id');
+        if (conversationId !== null && !/^fc_[A-Za-z0-9_-]{16}$/.test(conversationId)) throw fault(400, 'Invalid conversation_id');
+        if (v === '2') return void attachLive2Stream(req, res, ctx.reg.live2, { cursor: url.searchParams.get('since') ?? url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined, counter: ctx.reg.live, conversationId });
         return void attachLiveStream(req, res, ctx.reg.live, { cursor: url.searchParams.get('after') ?? req.headers['last-event-id'] ?? '', keepAliveMs: Number(process.env.FOXFLEET_LIVE_HEARTBEAT_MS) || undefined, alive: device ? () => accounts.isActive(device) : undefined });
       }
       if (parts[0] === 'api' && parts[1] === 'live' && parts[2] === 'events' && parts.length === 3 && req.method === 'GET') { // live v2 pull: the stream's events as JSON
         const lg = ctx.reg.live2, c = lg.parse(url.searchParams.get('since') ?? '');
         if (c.kind === 'none' || c.kind === 'invalid') throw fault(400, 'since must be a cursor from GET /api/chats or the live stream', 'invalid_cursor');
         if (c.kind !== 'ok') throw Object.assign(fault(410, 'That cursor is no longer available; resync the chat list and chats', 'cursor_expired'), { extra: { cursor: lg.cursor } });
-        const { entries, hasMore, expired } = lg.since(c.seq, pageInt(url.searchParams.get('limit'), 1, PULL_MAX, PULL_DEFAULT));
+        const conversationId = url.searchParams.get('conversation_id');
+        if (conversationId !== null && !/^fc_[A-Za-z0-9_-]{16}$/.test(conversationId)) throw fault(400, 'Invalid conversation_id');
+        const { entries, hasMore, expired } = lg.since(c.seq, pageInt(url.searchParams.get('limit'), 1, PULL_MAX, PULL_DEFAULT), conversationId);
         if (expired) throw Object.assign(fault(410, 'That cursor is no longer available; resync the chat list and chats', 'cursor_expired'), { extra: { cursor: lg.cursor } });
         return sendJson(res, 200, { events: entries.map((e) => JSON.parse(e.line)), cursor: hasMore && entries.length ? `${lg.store}:${entries.at(-1).seq}` : lg.cursor, has_more: hasMore });
       }
@@ -823,7 +837,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (parts.length === 3 && route === 'prefs' && req.method === 'GET') return sendJson(res, 200, nt.prefs());
         if (parts.length === 3 && route === 'prefs' && req.method === 'PUT') { const b = await readJson(req, 4096); return sendJson(res, 200, await nt.setEnabled(b.enabled)); }
         if (parts.length === 3 && route === 'mute' && req.method === 'PUT') {
-          const b = await readJson(req, 4096); if (typeof b.agent !== 'string' || !store.all().some((m) => m.name === b.agent)) throw fault(404, 'Unknown agent');
+          const b = await readJson(req, 4096);
+          if (b.conversation_id !== undefined) {
+            // One mute for the room across all clients; the room is account-local and must exist.
+            try { await ctx.reg.conversations.snapshot(b.conversation_id); }
+            catch { throw fault(404, 'Conversation not found', 'conversation_not_found'); }
+            return sendJson(res, 200, await nt.setRoomMute({ conversationId: b.conversation_id, muted: b.muted, forMs: b.for_ms }));
+          }
+          if (typeof b.agent !== 'string' || !store.all().some((m) => m.name === b.agent)) throw fault(404, 'Unknown agent');
           const prefs = await nt.setMute({ agent: b.agent, chat: b.chat, muted: b.muted, forMs: b.for_ms }); rowChanged(ctx.reg, scopeOf(ctx), b.agent); return sendJson(res, 200, prefs);
         }
         if (parts.length === 3 && route === 'test' && req.method === 'POST') { await readJson(req, 4096); if (!nt.allowTest()) { res.setHeader('Retry-After', '60'); throw fault(429, 'Too many test notifications; wait a minute'); } return sendJson(res, 200, { event: nt.emit({ type: 'test' }) }); }
