@@ -39,6 +39,15 @@ const replyNotFound = () => fault(404, 'Unknown reply target', 'reply_not_found'
 const crossRoomReply = () => fault(404, 'Unknown reply target', 'cross_room_reply');
 const invalidMentions = () => fault(400, 'Invalid mentions', 'mentions_invalid');
 const unknownMention = () => fault(404, 'Unknown room member in mentions', 'unknown_mention');
+/** Exact actor_id, else a unique case-insensitive display name (`agent:Sumi` → `agent:sumi-native`). */
+function resolveMentionId(id, rows) {
+  if (rows.some((m) => m.actor_id === id)) return id;
+  const suffix = typeof id === 'string' && id.startsWith('agent:') ? id.slice(6) : '';
+  if (!suffix) return null;
+  const want = suffix.toLowerCase();
+  const hits = rows.filter((m) => m.actor_kind === 'agent' && typeof m.name === 'string' && m.name.toLowerCase() === want);
+  return hits.length === 1 ? hits[0].actor_id : null;
+}
 const actorForbidden = () => fault(403, 'Agent is not an active member of this room', 'actor_forbidden');
 const notOwner = () => fault(403, 'Only the conversation owner may post to this room', 'not_conversation_owner');
 
@@ -587,8 +596,12 @@ export function conversationStore(dir, { onEvent } = {}) {
             return;
           }
         }
-        const members = new Set(activeMembers(d).map((m) => m.actor_id));
-        for (const mention of parsed) if (!members.has(mention.id)) throw unknownMention();
+        const active = activeMembers(d);
+        for (const mention of parsed) {
+          const resolved = resolveMentionId(mention.id, active);
+          if (!resolved) throw unknownMention();
+          mention.id = resolved;
+        }
         let target = null;
         if (reply_to !== undefined && reply_to !== null) {
           target = d.messages.find((m) => m.id === reply_to && !m.deleted_at);

@@ -7,7 +7,7 @@ import type { Conversation } from '../src/api/types';
 import { navigate, parseRoute } from '../src/router';
 import { Shell } from '../src/screens/Shell';
 import { resetChats } from '../src/chat/store';
-import { resetConversations } from '../src/conversations/store';
+import { mentionsIn, resetConversations } from '../src/conversations/store';
 
 const now = 1_700_000_000_000;
 const room: Conversation = {
@@ -83,4 +83,11 @@ it('the shell shows rooms at #/conversations without inventing a room-agent, and
   expect(host.querySelector('.chat')).toBeTruthy();
   expect(host.querySelector('.rooms')).toBeNull();
   expect(host.querySelector('.room-link')).toBeTruthy(); // the separate rooms entry stays, the DM path is unchanged
+});
+
+it('mention ids are member actor ids, not display names', () => {
+  const members = [{ id: 'agent:sumi-native', name: 'Sumi', kind: 'agent' as const, is_bot: true }];
+  expect(mentionsIn('@Sumi check this', members)).toEqual([{ kind: 'agent', id: 'agent:sumi-native', offset: 0, length: 5 }]);
+  expect(mentionsIn('@sumi too', members)[0].id).toBe('agent:sumi-native');
+  expect(mentionsIn('mail@Sumi', members)).toEqual([]);
 });

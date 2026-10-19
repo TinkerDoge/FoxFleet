@@ -150,7 +150,7 @@ data class Conversation(
     val activityAt get() = maxOf(lastMessageAt ?: 0L, updatedAt)
 }
 
-/** One explicit typed mention. [id] is `agent:<name>`; offsets are character spans into the message text. */
+/** One explicit typed mention. [id] is the member actor id (`agent:<id>`), not the display name. */
 data class ConversationMention(val kind: String = "agent", val id: String, val offset: Int, val length: Int)
 
 data class ConversationMedia(

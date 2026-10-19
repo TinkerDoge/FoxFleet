@@ -6,6 +6,8 @@ All notable changes to Foxfleet. The format follows [Keep a Changelog](https://k
 
 Android versionCode 40. 0.4.3 Android slice merged: dark grey theme, per-agent backgrounds, in-chat model card, durable media cache, dossier, auto-update.
 
+- Fix (rooms): @mentions use the member actor id, not the display name. INDC members are `agent:sumi-native` with name `Sumi`; the apps were sending `agent:Sumi`, which the hub rejected as `unknown_mention`. Hub still rewrites a unique display-name id so an already-installed phone works without a new APK. Tests: `conversation-store.test.js`, `ConversationRoutingTest`, `conversation-routing.test.tsx`.
+
 - Fix (Android, 0.4.3): deleting media hides the card. It is not drawn as a broken asset. The `MEDIA:` tag is stripped from the on-screen reply and remembered on this device; a 404/"not offered" card is omitted. Test: `MediaTagsTest.withoutRefDropsThatCardAndKeepsTheRest`.
 
 - Feature (Android / hub, 0.4.3): save to gallery and delete for everyone. A Save button in the viewer copies a picture or video to `Pictures/FoxFleet`, `Movies/FoxFleet` or `Download/FoxFleet` (scoped storage, no permission). The viewer's Delete now revokes the file on the hub too, so the next open 404s instead of redownloading; dossier Clear and Settings cache clear stay device-only. Tests: `MediaStoreSaverTest`, `MediaDeleteTest`, `server/test/media.test.js`, `server/test/bot-media.test.js`.

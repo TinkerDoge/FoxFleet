@@ -221,19 +221,28 @@ export async function createRoom(client: Client, title: string, memberIds: strin
   } catch (e) { if (auth(e, onAuthLost)) return undefined; set({ error: friendly(e) }); return undefined; }
 }
 
-/** Explicit typed mentions: the spans the hub expects, found at word boundaries in the composed text. */
+/** Case-insensitive index that keeps original-string offsets (toLowerCase on the whole text can change length). */
+function indexOfIgnoreCase(text: string, needle: string, from: number): number {
+  const n = needle.length;
+  if (!n || from > text.length - n) return -1;
+  const want = needle.toLowerCase();
+  for (let i = from; i <= text.length - n; i++) if (text.slice(i, i + n).toLowerCase() === want) return i;
+  return -1;
+}
+
+/** Explicit typed mentions: hub actor ids, found at word boundaries in the composed text. */
 export function mentionsIn(text: string, members: Conversation['members']): ConversationMention[] {
   const out: ConversationMention[] = [];
-  const agents = members.filter((m) => m.kind === 'agent').sort((a, b) => b.name.length - a.name.length);
+  const agents = members.filter((m) => m.kind === 'agent' && m.id).sort((a, b) => b.name.length - a.name.length);
   for (const m of agents) {
     const needle = `@${m.name}`;
     let from = 0;
     for (;;) {
-      const at = text.indexOf(needle, from);
+      const at = indexOfIgnoreCase(text, needle, from);
       if (at < 0) break;
       const end = at + needle.length, after = text[end] ?? '';
       const before = at === 0 ? '' : text[at - 1];
-      if (!/[A-Za-z0-9_]/.test(after) && !/[A-Za-z0-9_]/.test(before)) out.push({ kind: 'agent', id: `agent:${m.name}`, offset: at, length: needle.length });
+      if (!/[A-Za-z0-9_]/.test(after) && !/[A-Za-z0-9_]/.test(before)) out.push({ kind: 'agent', id: m.id, offset: at, length: needle.length });
       from = end;
     }
   }
