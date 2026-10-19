@@ -19,9 +19,13 @@
 // partial text is never blessed as a delegation.
 //
 // Delivery is deliberately an interface, not a socket: `engine.register(agentId, target)` where target is
-// `{ online?, offer?(ctx), run?(ctx) }`. Task 4 supplies the real bot-socket implementation. If the process
-// dies while a turn is offered/accepted/running, recover() marks it uncertain and only an explicit human
-// retry() re-executes it.
+// `{ online?, offer?(ctx), run?(ctx) }`. Task 4 supplies the real bot-socket implementation. A transport that
+// hands off after run() must call `engine.handoff(roomId, { actor, dispatch_id, run_token, source_message_id,
+// target_agent_id, text, idempotency_key? })`; the dispatch id and attempt token are the ctx.attempt pair.
+// There is no implicit "latest running source" lookup. If the process dies while a turn is
+// offered/accepted/running, recover() marks it uncertain and only an explicit human retry() re-executes it.
+// Offer/run callbacks are raced against the root deadline using an injectable `timers` scheduler
+// ({ setTimeout, clearTimeout }), so tests can advance time deterministically.
 import { randomBytes, createHash } from 'node:crypto';
 import { fault, ROOM_LIMITS } from './config.js';
 import { routeRoomMessage } from './conversation-routing.js';
@@ -29,6 +33,11 @@ import { routeRoomMessage } from './conversation-routing.js';
 export const DISPATCH_LIMITS = Object.freeze({
   max_handoff_dispatches_per_root: 4,
   handoff_chain_ttl_ms: 300_000,
+  // Durable per-room dispatch rows are bounded instead of compacted: pruning a root would refund budget or
+  // make an old idempotency key executable again. At the bound a new request fails closed.
+  max_dispatches_per_room: 1000,
+  // In-memory scheduling/failure tails are caches only; the durable queue is the source of truth.
+  max_tracked_rooms: 500,
 });
 
 const AGENT_REF = /^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -38,6 +47,7 @@ const TERMINAL_STATES = new Set(['completed', 'cancelled', 'failed', 'uncertain'
 const RETRYABLE_FAILED = new Set(['agent_offline', 'agent_failed']);
 const MAX_MESSAGES = 5000, MAX_OUTBOX = 1000;
 const MAX_TEXT = ROOM_LIMITS.max_text_bytes;
+const MAX_CODE = 64;
 const newId = (prefix) => prefix + randomBytes(12).toString('base64url');
 const fingerprint = (...parts) => createHash('sha256').update(JSON.stringify(parts)).digest('hex');
 
@@ -62,6 +72,43 @@ const validAgentText = (text) => typeof text === 'string' && text.length >= 1 &&
   && Buffer.byteLength(text, 'utf8') <= MAX_TEXT && !text.includes('\u0000');
 const isFinalMessage = (m) => Boolean(m && !m.deleted_at && !m.system && m.author_kind === 'agent'
   && (m.final === true || m.delivery_state === 'completed'));
+
+/** Truncate at a code-point boundary so a surrogate pair is never split; deterministic byte bound. */
+function truncateUtf8(text, maxBytes) {
+  if (Buffer.byteLength(text, 'utf8') <= maxBytes) return text;
+  let out = '', bytes = 0;
+  for (const ch of text) {
+    const size = Buffer.byteLength(ch, 'utf8');
+    if (bytes + size > maxBytes) break;
+    out += ch; bytes += size;
+  }
+  return out;
+}
+/** Untrusted status text: only strings, controls removed, bounded UTF-8, never an object/stack/Error. */
+function safeText(value, fallback = '') {
+  if (typeof value !== 'string') return fallback;
+  const cleaned = value.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').trim();
+  if (!cleaned) return fallback;
+  return truncateUtf8(cleaned, MAX_TEXT) || fallback;
+}
+/** Durable code metadata is a short machine token, never arbitrary remote text. */
+function safeCode(value, fallback = null) {
+  if (typeof value !== 'string') return fallback;
+  const cleaned = value.replace(/[^A-Za-z0-9._-]+/g, '_').slice(0, MAX_CODE);
+  return cleaned || fallback;
+}
+function statusReason(target, reason) {
+  const detail = typeof reason === 'string' ? safeText(reason, '') : '';
+  return detail ? `Could not deliver to ${target}: ${detail}.` : `Could not deliver to ${target}: the agent could not take the turn.`;
+}
+/** The transport-facing dispatch projection: attempt credentials stay out of every public result. */
+function publicDispatch(row) {
+  if (!row || typeof row !== 'object') return row;
+  const { run_token, final_run_token, ...safe } = row;
+  return clone(safe);
+}
+const capacityFault = () => fault(409, 'This room has reached its dispatch capacity; no new turn can be queued', 'dispatch_capacity');
+const hasCapacity = (d) => !Array.isArray(d.dispatches) || d.dispatches.length < DISPATCH_LIMITS.max_dispatches_per_room;
 const byQueue = (a, b) => ((a.root_seq ?? 0) - (b.root_seq ?? 0))
   || (a.created_at - b.created_at)
   || (a.target_agent_id < b.target_agent_id ? -1 : a.target_agent_id > b.target_agent_id ? 1 : 0)
@@ -80,7 +127,8 @@ function trimMessages(d) {
  * the frozen sender shape (kind human|agent), so it is attributed to the target agent it concerns.
  */
 function addNotice(d, dispatch, text, at, code) {
-  const prior = d.messages.find((m) => m.system && m.dispatch_id === dispatch?.id && m.code === (code ?? null));
+  const safeCodeValue = safeCode(code, null);
+  const prior = d.messages.find((m) => m.system && m.dispatch_id === dispatch?.id && m.code === safeCodeValue);
   if (prior) return prior;
   const target = dispatch?.target_agent_id ?? null;
   const member = target ? (activeAgent(d, target) ?? [...d.members].reverse().find((m) => m.actor_kind === 'agent' && m.actor_id === target)) : null;
@@ -88,9 +136,10 @@ function addNotice(d, dispatch, text, at, code) {
   const message = {
     id: newId('fm_'), seq, author_kind: target ? 'agent' : 'human', author_id: target ?? d.owner_id,
     author_name: member?.name ?? (target ?? d.owner_name),
-    body: text, format: 'text', mentions: [], reply_to: null, created_at: at, revision: 1, deleted_at: null,
+    body: safeText(text, 'The hub could not deliver this turn.'), format: 'text', mentions: [], reply_to: null,
+    created_at: at, revision: 1, deleted_at: null,
     root_id: dispatch?.root_id ?? null, dispatch_id: dispatch?.id ?? null, delivery_state: 'failed',
-    system: true, code: code ?? null, client_id: null, client_fp: null,
+    system: true, code: safeCodeValue, client_id: null, client_fp: null,
   };
   d.messages.push(message); trimMessages(d);
   d.updated_at = at;
@@ -138,25 +187,35 @@ function admissionReason(d, row, nowMs) {
 function blockedAncestor(d, row) {
   if (!row.handoff || !row.source_dispatch_id) return false;
   const seen = new Set();
-  let id = row.source_dispatch_id;
+  let child = row, id = row.source_dispatch_id;
   while (id && !seen.has(id)) {
     seen.add(id);
     const parent = d.dispatches.find((x) => x.id === id);
     if (!parent) return true;
-    if (['uncertain', 'failed', 'cancelled'].includes(parent.state)) return true;
-    id = parent.source_dispatch_id;
+    // Eligibility is causal, never sort-driven: a descendant may run only after its ancestor actually
+    // completed. A queued/offered/running retry is not success, and a failed/uncertain attempt never is.
+    if (parent.state !== 'completed') return true;
+    // A descendant created from a superseded source is not revived by an unrelated later final message.
+    if (parent.final_message_id && child.parent_message_id && child.parent_message_id !== parent.final_message_id) return true;
+    child = parent; id = parent.source_dispatch_id;
   }
   return false;
 }
 
 function markFailed(d, row, code, text, at) {
-  row.state = 'failed'; row.code = code ?? null; row.error = text ?? null; row.updated_at = at; row.finished_at = at;
-  addNotice(d, row, text, at, code);
+  const safeCodeValue = safeCode(code, null);
+  const body = safeText(text, 'The turn failed.');
+  row.state = 'failed'; row.code = safeCodeValue; row.error = body; row.updated_at = at; row.finished_at = at;
+  addNotice(d, row, body, at, safeCodeValue);
   return row;
 }
-function markUncertain(d, row, at) {
-  row.state = 'uncertain'; row.code = 'uncertain_after_restart'; row.updated_at = at;
-  addNotice(d, row, `Delivery to ${row.target_agent_id} is uncertain after an interruption. A human must retry; it will not run automatically.`, at, row.code);
+function markUncertain(d, row, at, code = 'uncertain_after_restart', text = null) {
+  const safeCodeValue = safeCode(code, 'uncertain_after_restart');
+  const body = text ?? (safeCodeValue === 'uncertain_timeout'
+    ? `Delivery to ${row.target_agent_id} is uncertain: it did not settle before the chain deadline and may still be running. A human must retry; it will not run automatically.`
+    : `Delivery to ${row.target_agent_id} is uncertain after an interruption. A human must retry; it will not run automatically.`);
+  row.state = 'uncertain'; row.code = safeCodeValue; row.updated_at = at;
+  addNotice(d, row, body, at, safeCodeValue);
   return row;
 }
 
@@ -164,7 +223,8 @@ function statusText(code, target, reason) {
   if (code === 'handoff_limit') return `Handoff refused: this conversation chain has used its ${DISPATCH_LIMITS.max_handoff_dispatches_per_root} dispatches. Send a new message to continue.`;
   if (code === 'handoff_expired') return `Dispatch expired: the ${DISPATCH_LIMITS.handoff_chain_ttl_ms / 60_000}-minute handoff chain deadline passed. Send a new message to continue.`;
   if (code === 'agent_offline') return `Could not deliver to ${target}: the agent is offline.`;
-  return `Could not deliver to ${target}: ${reason ?? 'the agent could not take the turn'}.`;
+  if (code === 'dispatch_capacity') return 'This room has reached its dispatch capacity; no new turn can be queued.';
+  return statusReason(target, reason);
 }
 
 function newDispatch(d, { state, rootId, rootSeq, requestMessageId, sourceDispatchId, parentMessageId, target, deadline, nowMs, dedupeKey, dedupeFingerprint, idempotencyKey, counts }) {
@@ -172,7 +232,8 @@ function newDispatch(d, { state, rootId, rootSeq, requestMessageId, sourceDispat
     id: newId('fd_'), state, root_id: rootId, root_seq: rootSeq ?? null, request_message_id: requestMessageId ?? null,
     source_dispatch_id: sourceDispatchId ?? null, parent_message_id: parentMessageId ?? null,
     target_agent_id: target, epoch: d.epoch, membership_generation: null, context_through_seq: d.next_seq - 1,
-    root_deadline: deadline, created_at: nowMs, updated_at: nowMs, attempts: 0, run_token: null, final_message_id: null,
+    root_deadline: deadline, created_at: nowMs, updated_at: nowMs, attempts: 0, attempt: 0,
+    run_token: null, final_message_id: null, final_run_token: null,
     dedupe_key: dedupeKey ?? null, dedupe_fingerprint: dedupeFingerprint ?? null, idempotency_key: idempotencyKey ?? null,
     counts_toward_budget: counts !== false, code: null, error: null,
     ...(sourceDispatchId ? { handoff: true } : {}),
@@ -185,8 +246,13 @@ function newDispatch(d, { state, rootId, rootSeq, requestMessageId, sourceDispat
  * currently bound to that turn. Idempotency keys are scoped to (actor, parent dispatch), so one agent can
  * never observe or reuse another dispatch's key, and a conflicting payload is a conflict, not a lookup.
  */
-function handoffInDraft(d, { actor, sourceMessageId, targetAgentId, text, idempotencyKey, nowMs, runToken = null }) {
+function handoffInDraft(d, { actor, dispatchId, runToken, sourceMessageId, targetAgentId, text, idempotencyKey, nowMs }) {
   ensure(d);
+  // Every entry point is authenticated to one concrete attempt. There is deliberately no "latest running
+  // turn" fallback: a delayed public request must present the dispatch and the attempt token it belongs to.
+  if (typeof dispatchId !== 'string' || !dispatchId || typeof runToken !== 'string' || !runToken) {
+    throw fault(409, 'A dispatch id and current attempt token are required', 'dispatch_context_required');
+  }
   const actorRow = activeAgent(d, actor.id);
   if (!actorRow) throw forbidden();
   if (!validAgentText(text)) throw invalidText();
@@ -194,39 +260,49 @@ function handoffInDraft(d, { actor, sourceMessageId, targetAgentId, text, idempo
   if (!target) throw notFound();
   if (target === actor.id) throw selfHandoff();
 
+  const parent = d.dispatches.find((x) => x.id === dispatchId);
+  if (!parent || parent.target_agent_id !== actor.id) throw fault(404, 'Dispatch not found', 'dispatch_not_found');
+  if (parent.run_token !== runToken) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+  if (parent.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+  if (typeof sourceMessageId !== 'string' || !sourceMessageId) throw handoffNotFinal();
   const source = d.messages.find((m) => m.id === sourceMessageId && !m.deleted_at);
   if (!source || source.system || source.author_kind !== 'agent' || source.author_id !== actor.id) throw notFound();
-  if (!isFinalMessage(source)) throw handoffNotFinal();
-  const parent = d.dispatches.find((x) => x.id === source.dispatch_id);
-  if (!parent || parent.target_agent_id !== actor.id || parent.state !== 'running') throw notFound();
-  if (runToken && parent.run_token !== runToken) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+  if (source.dispatch_id !== parent.id) throw notFound();
+  // The source is only valid for the attempt that published the canonical final message. A retry keeps that
+  // message slot (in-place revision) but revokes its old attempt binding until the new attempt finalizes.
+  if (!isFinalMessage(source) || parent.final_message_id !== source.id || parent.final_run_token !== runToken) {
+    throw handoffNotFinal();
+  }
   const reason = executionReason(d, parent, nowMs);
   if (reason) throw fault(409, reason.text, reason.code);
+
+  const explicitKey = typeof idempotencyKey === 'string' && idempotencyKey.length > 0;
+  const key = explicitKey
+    ? `handoff:${actor.id}:${parent.id}:${fingerprint('idempotency', idempotencyKey)}`
+    : `handoff-keyless:${actor.id}:${parent.id}:${fingerprint(source.id, target, text)}`;
+  const storedIdempotencyKey = explicitKey ? (truncateUtf8(safeText(idempotencyKey, ''), 256) || null) : null;
+  const dedupeFingerprint = fingerprint(source.id, target, text);
+  let prior = d.dispatches.find((x) => x.dedupe_key === key);
+  if (!prior) {
+    // A keyless repeat of an explicitly-keyed handoff is still the same turn asking for the same thing.
+    prior = d.dispatches.find((x) => x.handoff && x.source_dispatch_id === parent.id
+      && x.parent_message_id === source.id && x.target_agent_id === target
+      && x.dedupe_fingerprint === dedupeFingerprint);
+  }
+  if (prior) {
+    if (prior.dedupe_key === key && prior.dedupe_fingerprint !== dedupeFingerprint) throw idempotencyConflict();
+    const priorMessage = prior.request_message_id ? d.messages.find((m) => m.id === prior.request_message_id) ?? null : null;
+    return {
+      dispatch: publicDispatch(prior),
+      message: priorMessage ? clone(priorMessage) : null,
+      duplicate: true, refused: prior.state === 'failed',
+      ...(prior.state === 'failed' && prior.code ? { code: prior.code } : {}),
+    };
+  }
+
   const targetRow = activeAgent(d, target);
   if (!targetRow) throw notFound();
-
-  const key = typeof idempotencyKey === 'string' && idempotencyKey
-    ? `handoff:${actor.id}:${parent.id}:${idempotencyKey}` : null;
-  const dedupeFingerprint = fingerprint(source.id, target, text);
-  if (key) {
-    const prior = d.dispatches.find((x) => x.dedupe_key === key);
-    if (prior) {
-      if (prior.dedupe_fingerprint !== dedupeFingerprint) throw idempotencyConflict();
-      return {
-        dispatch: clone(prior),
-        message: prior.request_message_id ? clone(d.messages.find((m) => m.id === prior.request_message_id) ?? null) : null,
-        duplicate: true, refused: prior.state === 'failed',
-      };
-    }
-  }
-
-  // The same turn asking the same target for the same text is one handoff, even without an explicit key.
-  if (!key) {
-    const prior = d.dispatches.find((x) => x.handoff && x.source_dispatch_id === parent.id && x.parent_message_id === source.id
-      && x.target_agent_id === target && x.counts_toward_budget !== false
-      && d.messages.find((m) => m.id === x.request_message_id)?.body === text);
-    if (prior) return { dispatch: clone(prior), message: clone(d.messages.find((m) => m.id === prior.request_message_id) ?? null), duplicate: true };
-  }
+  if (!hasCapacity(d)) throw capacityFault();
 
   const rootId = parent.root_id, rootSeq = parent.root_seq ?? parent.created_at, deadline = parent.root_deadline;
   const counted = d.dispatches.filter((x) => x.root_id === rootId && x.counts_toward_budget !== false).length;
@@ -234,12 +310,13 @@ function handoffInDraft(d, { actor, sourceMessageId, targetAgentId, text, idempo
   if (refusal) {
     const row = newDispatch(d, {
       state: 'failed', rootId, rootSeq, sourceDispatchId: parent.id, parentMessageId: source.id, target, deadline, nowMs,
-      dedupeKey: key, dedupeFingerprint, idempotencyKey: idempotencyKey ?? null, counts: false,
+      dedupeKey: key, dedupeFingerprint, idempotencyKey: storedIdempotencyKey, counts: false,
     });
-    row.code = refusal; row.error = statusText(refusal, target);
+    row.source_attempt = parent.attempt;
+    row.code = refusal; row.error = safeText(statusText(refusal, target));
     d.dispatches.push(row);
-    const notice = addNotice(d, row, statusText(refusal, target), nowMs, refusal);
-    return { dispatch: clone(row), message: clone(notice), refused: true, code: refusal };
+    const notice = addNotice(d, row, row.error, nowMs, refusal);
+    return { dispatch: publicDispatch(row), message: clone(notice), refused: true, code: refusal };
   }
 
   const childId = newId('fd_');
@@ -255,22 +332,24 @@ function handoffInDraft(d, { actor, sourceMessageId, targetAgentId, text, idempo
 
   const row = newDispatch(d, {
     state: 'queued', rootId, rootSeq, requestMessageId: message.id, sourceDispatchId: parent.id, parentMessageId: source.id,
-    target, deadline, nowMs, dedupeKey: key, dedupeFingerprint, idempotencyKey: idempotencyKey ?? null, counts: true,
+    target, deadline, nowMs, dedupeKey: key, dedupeFingerprint, idempotencyKey: storedIdempotencyKey, counts: true,
   });
-  row.id = childId; row.membership_generation = targetRow.generation;
+  row.id = childId; row.membership_generation = targetRow.generation; row.source_attempt = parent.attempt;
   d.dispatches.push(row);
   d.updated_at = nowMs;
-  return { dispatch: clone(row), message: clone(message), duplicate: false, refused: false };
+  return { dispatch: publicDispatch(row), message: clone(message), duplicate: false, refused: false };
 }
 
 /** Reserve every recipient of one human request inside the same room mutation that appended the message. */
 function reserveHumanAdmission(d, message, recipients, nowMs) {
   ensure(d);
+  if (recipients.length && !hasCapacity(d)) throw capacityFault();
   const out = [];
   for (const target of [...recipients].sort()) {
     const dedupeKey = `message:${message.id}:${target}`;
     const prior = d.dispatches.find((x) => x.dedupe_key === dedupeKey);
-    if (prior) { out.push({ ...clone(prior), duplicate: true }); continue; }
+    if (prior) { out.push({ ...publicDispatch(prior), duplicate: true }); continue; }
+    if (!hasCapacity(d)) throw capacityFault();
 
     const rootId = message.id;
     const rootRow = d.dispatches.find((x) => x.root_id === rootId);
@@ -286,10 +365,10 @@ function reserveHumanAdmission(d, message, recipients, nowMs) {
         state: 'failed', rootId, rootSeq, requestMessageId: message.id, target, deadline, nowMs,
         dedupeKey, counts: false,
       });
-      row.code = refusal; row.error = statusText(refusal, target);
+      row.code = refusal; row.error = safeText(statusText(refusal, target));
       d.dispatches.push(row);
-      addNotice(d, row, statusText(refusal, target), nowMs, refusal);
-      out.push({ ...clone(row), duplicate: false, refused: true });
+      addNotice(d, row, row.error, nowMs, refusal);
+      out.push({ ...publicDispatch(row), duplicate: false, refused: true });
       continue;
     }
     const row = newDispatch(d, {
@@ -299,23 +378,65 @@ function reserveHumanAdmission(d, message, recipients, nowMs) {
     row.membership_generation = member.generation;
     row.context_through_seq = message.seq;
     d.dispatches.push(row);
-    out.push({ ...clone(row), duplicate: false, refused: false });
+    out.push({ ...publicDispatch(row), duplicate: false, refused: false });
   }
   return out;
 }
 
-export function createDispatchEngine({ store, now = () => Date.now(), targets = new Map() } = {}) {
+export function createDispatchEngine({ store, now = () => Date.now(), targets = new Map(), timers } = {}) {
   if (!store || typeof store.send !== 'function' || typeof store.transact !== 'function') throw new TypeError('A conversation store is required');
   const registry = targets instanceof Map ? targets : new Map(Object.entries(targets));
+  const timerApi = timers ?? { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (handle) => clearTimeout(handle) };
+  if (!timerApi || typeof timerApi.setTimeout !== 'function' || typeof timerApi.clearTimeout !== 'function') {
+    throw new TypeError('timers must provide setTimeout and clearTimeout');
+  }
   const chains = new Map();
   const failures = new Map();
+  const pendingTimers = new Set();
   let closed = false;
+  let localEpoch = 0;
+  const alive = (epoch) => !closed && localEpoch === epoch;
+  const TIMED_OUT = Symbol('dispatch_deadline_timeout');
+  const stale = () => fault(409, 'That dispatch was replaced', 'dispatch_stale');
+
+  /**
+   * Race one transport callback against the root deadline. The callback keeps running, but this pump stops
+   * waiting at the deadline; a late value/throw is observed here and never reaches a newer attempt. Closing
+   * the engine cancels every armed timer, so a closed engine's callbacks are revoked immediately.
+   */
+  const bounded = (promise, deadline) => {
+    const remaining = deadline - now();
+    if (remaining <= 0) return Promise.resolve(TIMED_OUT);
+    return new Promise((resolve) => {
+      const record = { done: false, handle: null };
+      const finish = (value) => {
+        if (record.done) return;
+        record.done = true;
+        pendingTimers.delete(record);
+        timerApi.clearTimeout(record.handle);
+        resolve(value);
+      };
+      record.cancel = () => finish(TIMED_OUT);
+      record.handle = timerApi.setTimeout(() => finish(TIMED_OUT), remaining);
+      pendingTimers.add(record);
+      Promise.resolve(promise).then(
+        (value) => finish({ ok: true, value }),
+        (error) => finish({ ok: false, error }),
+      );
+    });
+  };
 
   const schedule = (roomId) => {
     if (closed) return Promise.resolve();
     const prior = chains.get(roomId) ?? Promise.resolve();
     const run = prior.then(() => pump(roomId));
-    chains.set(roomId, run.catch((error) => { failures.set(roomId, error); }));
+    const tracked = run.catch((error) => {
+      failures.set(roomId, error);
+      if (failures.size > DISPATCH_LIMITS.max_tracked_rooms) failures.delete(failures.keys().next().value);
+    });
+    chains.set(roomId, tracked);
+    // A settled room leaves no in-memory chain behind; an entry is only removed if no newer schedule took it.
+    tracked.then(() => { if (chains.get(roomId) === tracked) chains.delete(roomId); });
     return run;
   };
 
@@ -327,6 +448,29 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     if (prior) { failures.delete(roomId); throw prior; }
   }
 
+  function admitHuman(actor, d, message, duplicate) {
+    if (d.owner_id !== actor.id) throw notOwner();
+    if (duplicate) {
+      // Reuse the durable admission exactly. Never re-route a duplicate against current members: a passive
+      // request must not become executable after a rejoin, rename or reply-target change. Older records
+      // without a stored admission fall back to the dispatches already committed for this message only.
+      const recorded = message.admission && Array.isArray(message.admission.recipients) ? message.admission : null;
+      const rows = d.dispatches.filter((x) => x.request_message_id === message.id);
+      const recipients = recorded ? recorded.recipients : [...new Set(rows.map((x) => x.target_agent_id))];
+      const dispatches = recipients
+        .map((target) => rows.find((x) => x.target_agent_id === target && x.dedupe_key === `message:${message.id}:${target}`))
+        .filter(Boolean)
+        .map((row) => ({ ...publicDispatch(row), duplicate: true }));
+      const rule = recorded && ['mention', 'reply', 'none'].includes(recorded.rule)
+        ? recorded.rule : (rows.length ? 'recovered' : 'none');
+      return { rule, dispatches };
+    }
+    const routed = routeRoomMessage({ message, messages: d.messages, members: d.members });
+    const dispatches = reserveHumanAdmission(d, message, routed.recipients, now());
+    message.admission = { rule: routed.rule, recipients: [...routed.recipients] };
+    return { rule: routed.rule, dispatches };
+  }
+
   async function submit(roomId, { actor, text, format, mentions, reply_to, client_id } = {}) {
     if (!actor || actor.kind !== 'human' || !HUMAN_ID.test(actor.id ?? '')) throw fault(403, 'A human actor is required', 'actor_forbidden');
     const head = await store.snapshot(roomId);
@@ -335,11 +479,7 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       actor, text, format, mentions, reply_to, client_id,
       // This callback runs inside the same room mutation as the message append. A crash or disk failure
       // commits neither the addressed message nor its routing intent.
-      admit: (d, message) => {
-        if (d.owner_id !== actor.id) throw notOwner();
-        const routed = routeRoomMessage({ message, messages: d.messages, members: d.members });
-        return { rule: routed.rule, dispatches: reserveHumanAdmission(d, message, routed.recipients, now()) };
-      },
+      admit: (d, message, duplicate) => admitHuman(actor, d, message, duplicate),
     });
     const admitted = sent.admitted ?? { rule: 'none', dispatches: [] };
     void schedule(roomId).catch(() => {});
@@ -349,57 +489,82 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     };
   }
 
-  async function runHandoff(roomId, request) {
+  async function runHandoff(roomId, request = {}) {
     const actor = request.actor;
     if (!actor || actor.kind !== 'agent' || !AGENT_REF.test(actor.id ?? '')) throw forbidden();
-    let sourceId = request.source_message_id;
-    if (!sourceId) {
-      const snap = await store.snapshot(roomId);
-      const parent = (snap.dispatches ?? []).find((x) => x.target_agent_id === actor.id && x.state === 'running');
-      sourceId = parent?.final_message_id ?? null;
-    }
     const result = await store.transact(roomId, (d) => handoffInDraft(d, {
-      actor, sourceMessageId: sourceId, targetAgentId: request.target_agent_id,
+      actor, dispatchId: request.dispatch_id, runToken: request.run_token,
+      sourceMessageId: request.source_message_id, targetAgentId: request.target_agent_id,
       text: request.text, idempotencyKey: request.idempotency_key, nowMs: now(),
     }));
     if (!result.refused && !result.duplicate) void schedule(roomId).catch(() => {});
     return result;
   }
 
-  async function handoffForDispatch(roomId, running, request) {
+  async function handoffForDispatch(roomId, running, request, epoch) {
+    if (!alive(epoch)) throw stale();
     const result = await store.transact(roomId, (d) => {
       ensure(d);
+      if (!alive(epoch)) throw stale();
       const row = d.dispatches.find((x) => x.id === running.id);
-      if (!row || row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
-      if (row.run_token !== running.run_token) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+      if (!row) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+      if (row.run_token !== running.run_token) throw stale();
+      if (row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
       const member = activeAgent(d, row.target_agent_id);
       if (!member) throw forbidden();
       const sourceId = request.source_message_id ?? row.final_message_id;
       if (!sourceId) throw handoffNotFinal();
       return handoffInDraft(d, {
         actor: { kind: 'agent', id: row.target_agent_id, name: member.name },
-        sourceMessageId: sourceId, targetAgentId: request.target_agent_id,
-        text: request.text, idempotencyKey: request.idempotency_key, nowMs: now(), runToken: row.run_token,
+        dispatchId: row.id, runToken: row.run_token, sourceMessageId: sourceId,
+        targetAgentId: request.target_agent_id, text: request.text,
+        idempotencyKey: request.idempotency_key, nowMs: now(),
       });
     });
     if (!result.refused && !result.duplicate) void schedule(roomId).catch(() => {});
     return result;
   }
 
-  function contextFor(roomId, running) {
+  function publishFinal(d, row, text, at, token) {
+    const prior = row.final_message_id ? d.messages.find((m) => m.id === row.final_message_id) : null;
+    if (prior && !prior.deleted_at && prior.final === true && prior.dispatch_id === row.id
+      && prior.author_kind === 'agent' && prior.author_id === row.target_agent_id) {
+      if (prior.body !== text) {
+        prior.body = text;
+        prior.revision = (prior.revision ?? 1) + 1;
+        pushOutbox(d, { type: 'message.edited', message_id: prior.id, seq: prior.seq, at });
+      }
+      row.final_message_id = prior.id;
+      row.final_run_token = token;
+      row.updated_at = at;
+      return prior;
+    }
+    const message = addAgentMessage(d, row, text, 'completed', at, true);
+    row.final_message_id = message.id;
+    row.final_run_token = token;
+    row.updated_at = at;
+    return message;
+  }
+
+  function contextFor(roomId, running, epoch) {
     const token = running.run_token;
     const rejectStale = (row, reason) => fault(409, reason.text, reason.code);
     return {
       roomId,
-      dispatch: clone(running),
+      dispatch: publicDispatch(running),
+      // The transport keeps this opaque pair for later public engine.handoff calls. It is never added to a
+      // message projection or to the result of submit/retry/handoff.
+      attempt: Object.freeze({ dispatch_id: running.id, token }),
       /** A partial, in-progress message. It is never a valid handoff source. */
       async say(text) {
         if (!validAgentText(text)) throw invalidText();
         return store.transact(roomId, (d) => {
           ensure(d);
+          if (!alive(epoch)) throw stale();
           const row = d.dispatches.find((x) => x.id === running.id);
-          if (!row || !['accepted', 'running'].includes(row.state)) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
-          if (row.run_token !== token) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+          if (!row) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+          if (row.run_token !== token) throw stale();
+          if (!['accepted', 'running'].includes(row.state)) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
           const reason = executionReason(d, row, now());
           if (reason) throw rejectStale(row, reason);
           return clone(addAgentMessage(d, row, text, 'running', now()));
@@ -410,63 +575,65 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         if (!validAgentText(text)) throw invalidText();
         return store.transact(roomId, (d) => {
           ensure(d);
+          if (!alive(epoch)) throw stale();
           const row = d.dispatches.find((x) => x.id === running.id);
-          if (!row || row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
-          if (row.run_token !== token) throw fault(409, 'That dispatch was replaced', 'dispatch_stale');
+          if (!row) throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
+          if (row.run_token !== token) throw stale();
+          if (row.state !== 'running') throw fault(409, 'That dispatch is no longer running', 'dispatch_not_running');
           const reason = executionReason(d, row, now());
           if (reason) throw rejectStale(row, reason);
-          if (row.final_message_id) {
+          if (row.final_message_id && row.final_run_token === token) {
             const prior = d.messages.find((m) => m.id === row.final_message_id);
             if (prior && prior.body === text) return clone(prior);
-            throw fault(409, 'This dispatch already published its final message', 'dispatch_finalized');
+            throw fault(409, 'This attempt already published its final message', 'dispatch_finalized');
           }
-          const at = now();
-          const message = addAgentMessage(d, row, text, 'completed', at, true);
-          row.final_message_id = message.id;
-          row.updated_at = at;
-          return clone(message);
+          return clone(publishFinal(d, row, text, now(), token));
         });
       },
       async handoff(request = {}) {
-        return handoffForDispatch(roomId, running, request);
+        return handoffForDispatch(roomId, running, request, epoch);
       },
     };
   }
 
-  async function settle(roomId, dispatchId, outcome, runToken = null) {
+  async function settle(roomId, dispatchId, outcome, runToken = null, epoch = undefined) {
     return store.transact(roomId, (d) => {
       ensure(d);
+      if (epoch !== undefined && !alive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row || row.state !== 'running') return null;
-      if (runToken && row.run_token !== runToken) return null;
+      if (!runToken || row.run_token !== runToken) return null;
       const at = now();
       const reason = executionReason(d, row, at);
       if (reason) return clone(markFailed(d, row, reason.code, reason.text, at));
       if (outcome?.waiting_approval) {
-        row.state = 'waiting_approval'; row.updated_at = at; row.approval_reason = outcome.reason ?? null;
+        row.state = 'waiting_approval'; row.updated_at = at; row.approval_reason = safeText(outcome.reason, '') || null;
         return clone(row);
       }
       if (outcome?.failed) {
-        const text = statusText('agent_failed', row.target_agent_id, outcome.reason);
-        return clone(markFailed(d, row, outcome.code ?? 'agent_failed', text, at));
+        const code = safeCode(outcome.code, 'agent_failed');
+        return clone(markFailed(d, row, code, statusText(code, row.target_agent_id, outcome.reason), at));
       }
       if (outcome?.text !== undefined && outcome?.text !== null) {
         if (!validAgentText(outcome.text)) {
           return clone(markFailed(d, row, 'invalid_request', 'The agent returned an invalid final message.', at));
         }
-        if (!row.final_message_id) {
-          const message = addAgentMessage(d, row, outcome.text, 'completed', at, true);
-          row.final_message_id = message.id;
-        }
+        // A finalize() call from this attempt is already committed and is not overwritten by the outcome
+        // text. A settled answer from a retry revises the retained canonical message in place.
+        if (!row.final_message_id || row.final_run_token !== runToken) publishFinal(d, row, outcome.text, at, runToken);
       }
       if (outcome?.handoff) {
-        const source = row.final_message_id ? d.messages.find((m) => m.id === row.final_message_id) : null;
+        if (!row.final_message_id || row.final_run_token !== runToken) {
+          return clone(markFailed(d, row, 'handoff_not_final', 'The agent handed off before this attempt published a final message.', at));
+        }
+        const source = d.messages.find((m) => m.id === row.final_message_id);
         if (!source) return clone(markFailed(d, row, 'handoff_not_final', 'The agent handed off before publishing a final message.', at));
         try {
           handoffInDraft(d, {
             actor: { kind: 'agent', id: row.target_agent_id, name: activeAgent(d, row.target_agent_id)?.name ?? row.target_agent_id },
-            sourceMessageId: source.id, targetAgentId: outcome.handoff.target_agent_id,
-            text: outcome.handoff.text, idempotencyKey: outcome.handoff.idempotency_key, nowMs: at, runToken,
+            dispatchId: row.id, runToken, sourceMessageId: source.id,
+            targetAgentId: outcome.handoff.target_agent_id, text: outcome.handoff.text,
+            idempotencyKey: outcome.handoff.idempotency_key, nowMs: at,
           });
         } catch (e) {
           if (e?.status && e.status < 500) return clone(markFailed(d, row, e.code ?? 'invalid_request', e.message, at));
@@ -478,49 +645,54 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     });
   }
 
-  async function fail(roomId, dispatchId, code, text, { states = null, token = null } = {}) {
+  async function fail(roomId, dispatchId, code, text, { states = null, token = null, epoch = undefined } = {}) {
     return store.transact(roomId, (d) => {
       ensure(d);
+      if (epoch !== undefined && !alive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row) return null;
+      if (token !== null && row.run_token !== token) return null;
       if (states && !states.includes(row.state)) return clone(row);
-      if (token && row.run_token !== token) return null;
       if (TERMINAL_STATES.has(row.state)) return clone(row);
       return clone(markFailed(d, row, code, text, now()));
     });
   }
-  async function uncertain(roomId, dispatchId, token = null) {
+  async function uncertain(roomId, dispatchId, token, code = 'uncertain_after_restart', epoch = undefined) {
     return store.transact(roomId, (d) => {
       ensure(d);
+      if (epoch !== undefined && !alive(epoch)) return null;
       const row = d.dispatches.find((x) => x.id === dispatchId);
       if (!row || TERMINAL_STATES.has(row.state)) return row ? clone(row) : null;
-      if (token && row.run_token !== token) return null;
+      if (!token || row.run_token !== token) return null;
       if (!['offered', 'accepted', 'running'].includes(row.state)) return clone(row);
-      return clone(markUncertain(d, row, now()));
+      return clone(markUncertain(d, row, now(), code));
     });
   }
 
   async function pump(roomId) {
+    const epoch = localEpoch;
     for (;;) {
-      if (closed) return;
+      if (!alive(epoch)) return;
       const snap = await store.snapshot(roomId);
+      if (!alive(epoch)) return;
       if (snap.paused) return;
       const rows = snap.dispatches ?? [];
       // A waiting approval consumes wall clock: expiry needs a fresh human message.
-      const stale = rows.find((row) => row.state === 'waiting_approval' && now() >= row.root_deadline);
-      if (stale) { await fail(roomId, stale.id, 'handoff_expired', statusText('handoff_expired', stale.target_agent_id), { states: ['waiting_approval'] }); continue; }
+      const expiredApproval = rows.find((row) => row.state === 'waiting_approval' && now() >= row.root_deadline);
+      if (expiredApproval) { await fail(roomId, expiredApproval.id, 'handoff_expired', statusText('handoff_expired', expiredApproval.target_agent_id), { states: ['waiting_approval'], epoch }); continue; }
       if (rows.some((row) => ACTIVE_STATES.has(row.state))) return;
       const next = rows.filter((row) => row.state === 'queued' && !blockedAncestor(snap, row)).sort(byQueue)[0];
       if (!next) return;
       const pre = admissionReason(snap, next, now());
       if (pre) {
         if (pre.code === 'room_paused') return;
-        await fail(roomId, next.id, pre.code, pre.text, { states: ['queued'] });
+        await fail(roomId, next.id, pre.code, pre.text, { states: ['queued'], epoch });
         continue;
       }
 
       const claimed = await store.transact(roomId, (d) => {
         ensure(d);
+        if (!alive(epoch)) return null;
         const row = d.dispatches.find((x) => x.id === next.id);
         if (!row || row.state !== 'queued') return null;
         const reason = admissionReason(d, row, now());
@@ -528,75 +700,113 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
           if (reason.code === 'room_paused') return { ok: false, paused: true };
           return { ok: false, row: clone(markFailed(d, row, reason.code, reason.text, now())) };
         }
-        row.state = 'offered'; row.offered_at = now(); row.updated_at = now();
+        const at = now();
+        // The execution fence is minted at claim time, before any remote callback can observe the offer.
+        row.state = 'offered'; row.offered_at = at; row.updated_at = at;
+        row.attempt = (row.attempt ?? 0) + 1;
+        row.run_token = newId('fr_');
         return { ok: true, row: clone(row) };
       });
+      if (!alive(epoch)) return;
       if (!claimed) continue;
       if (claimed.paused) return;
       if (!claimed.ok) continue;
 
       const row = claimed.row;
+      const token = row.run_token;
       const target = registry.get(row.target_agent_id);
       if (!target || target.online === false) {
-        await fail(roomId, row.id, 'agent_offline', statusText('agent_offline', row.target_agent_id), { states: ['offered'] });
+        await fail(roomId, row.id, 'agent_offline', statusText('agent_offline', row.target_agent_id), { states: ['offered'], token, epoch });
+        continue;
+      }
+
+      let offerCall;
+      try {
+        offerCall = target.offer ? target.offer({ roomId, dispatch: publicDispatch(row) }) : { accepted: true };
+      } catch {
+        await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
         continue;
       }
       let offered;
-      try {
-        offered = target.offer ? await target.offer({ roomId, dispatch: clone(row) }) : { accepted: true };
-      } catch {
-        await uncertain(roomId, row.id);
-        return;
+      const offerResult = await bounded(offerCall, row.root_deadline);
+      if (!alive(epoch)) return;
+      if (offerResult === TIMED_OUT) {
+        await uncertain(roomId, row.id, token, 'uncertain_timeout', epoch);
+        continue;
       }
+      if (!offerResult.ok) {
+        // The transport may have begun side effects before failing: uncertain, never "cancelled".
+        await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
+        continue;
+      }
+      offered = offerResult.value;
       if (offered?.accepted === false) {
-        await fail(roomId, row.id, offered.code ?? 'agent_refused', statusText(offered.code ?? 'agent_refused', row.target_agent_id, offered.reason), { states: ['offered'] });
+        const code = safeCode(offered.code, 'agent_refused');
+        await fail(roomId, row.id, code, statusText(code, row.target_agent_id, offered.reason), { states: ['offered'], token, epoch });
         continue;
       }
 
       // Mutations after the asynchronous offer must not turn a stale reservation into execution.
       const accepted = await store.transact(roomId, (d) => {
         ensure(d);
+        if (!alive(epoch)) return null;
         const current = d.dispatches.find((x) => x.id === row.id);
-        if (!current || current.state !== 'offered') return null;
+        if (!current || current.state !== 'offered' || current.run_token !== token) return null;
         const at = now();
         const reason = executionReason(d, current, at);
         if (reason) {
-          if (reason.code === 'room_paused') { current.state = 'queued'; current.updated_at = at; return { ok: false, paused: true }; }
+          if (reason.code === 'room_paused') { current.state = 'queued'; current.run_token = null; current.updated_at = at; return { ok: false, paused: true }; }
           return { ok: false, row: clone(markFailed(d, current, reason.code, reason.text, at)) };
         }
         current.state = 'accepted'; current.accepted_at = at; current.updated_at = at;
         return { ok: true, row: clone(current) };
       });
+      if (!alive(epoch)) return;
       if (!accepted) continue;
       if (accepted.paused) return;
       if (!accepted.ok) continue;
 
       const running = await store.transact(roomId, (d) => {
         ensure(d);
+        if (!alive(epoch)) return null;
         const current = d.dispatches.find((x) => x.id === row.id);
-        if (!current || current.state !== 'accepted') return null;
+        if (!current || current.state !== 'accepted' || current.run_token !== token) return null;
         const at = now();
         const reason = executionReason(d, current, at);
         if (reason) {
-          if (reason.code === 'room_paused') { current.state = 'queued'; current.updated_at = at; return { ok: false, paused: true }; }
+          if (reason.code === 'room_paused') { current.state = 'queued'; current.run_token = null; current.updated_at = at; return { ok: false, paused: true }; }
           return { ok: false, row: clone(markFailed(d, current, reason.code, reason.text, at)) };
         }
-        current.state = 'running'; current.run_token = newId('fr_'); current.started_at = at; current.updated_at = at;
+        current.state = 'running'; current.started_at = at; current.updated_at = at;
         return { ok: true, row: clone(current) };
       });
+      if (!alive(epoch)) return;
       if (!running) continue;
       if (running.paused) return;
       if (!running.ok) continue;
 
-      let outcome;
+      let runCall;
       try {
-        outcome = target.run ? await target.run(contextFor(roomId, running.row)) : {};
+        runCall = target.run ? target.run(contextFor(roomId, running.row, epoch)) : {};
       } catch {
-        await uncertain(roomId, row.id, running.row.run_token);
-        return;
+        await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
+        continue;
       }
-      try { await settle(roomId, row.id, outcome, running.row.run_token); }
-      catch { await uncertain(roomId, row.id, running.row.run_token); return; }
+      const runResult = await bounded(runCall, row.root_deadline);
+      if (!alive(epoch)) return;
+      if (runResult === TIMED_OUT) {
+        await uncertain(roomId, row.id, token, 'uncertain_timeout', epoch);
+        continue;
+      }
+      if (!runResult.ok) {
+        await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
+        continue;
+      }
+      try { await settle(roomId, row.id, runResult.value, token, epoch); }
+      catch {
+        await uncertain(roomId, row.id, token, 'uncertain_delivery', epoch);
+        continue;
+      }
     }
   }
 
@@ -606,9 +816,15 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
       const t = now();
       let n = 0;
       for (const row of d.dispatches) {
-        if (!['queued', 'waiting_approval'].includes(row.state) || t < row.root_deadline) continue;
-        markFailed(d, row, 'handoff_expired', statusText('handoff_expired', row.target_agent_id), t);
-        n += 1;
+        if (t < row.root_deadline) continue;
+        if (['queued', 'waiting_approval'].includes(row.state)) {
+          markFailed(d, row, 'handoff_expired', statusText('handoff_expired', row.target_agent_id), t);
+          n += 1;
+        } else if (['offered', 'accepted', 'running'].includes(row.state)) {
+          // Expiry is not cancellation: a remote side effect may already have begun. It is uncertain.
+          markUncertain(d, row, t, 'uncertain_timeout');
+          n += 1;
+        }
       }
       return n;
     });
@@ -675,19 +891,26 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
         const t = now();
         if (t >= row.root_deadline) {
           markFailed(d, row, 'handoff_expired', statusText('handoff_expired', row.target_agent_id), t);
-          return { expired: true, dispatch: clone(row) };
+          return { expired: true, dispatch: publicDispatch(row) };
         }
         const reason = reservationReason(d, row, t);
         if (reason) throw fault(409, reason.text, reason.code);
+        // The canonical final-message slot is retained so the new attempt revises it in place. Its old
+        // attempt binding is revoked (run_token null; final_run_token belongs to the superseded attempt).
         row.state = 'queued'; row.code = null; row.error = null; row.attempts = (row.attempts ?? 0) + 1;
-        row.updated_at = t; row.run_token = null; row.final_message_id = null;
+        row.updated_at = t; row.run_token = null;
         row.offered_at = null; row.accepted_at = null; row.started_at = null; row.finished_at = null;
-        return { expired: false, dispatch: clone(row) };
+        return { expired: false, dispatch: publicDispatch(row) };
       });
       if (!result.expired) void schedule(roomId).catch(() => {});
       const final = await store.snapshot(roomId);
-      return { ...result, dispatch: clone((final.dispatches ?? []).find((x) => x.id === dispatchId) ?? result.dispatch) };
+      return { ...result, dispatch: publicDispatch((final.dispatches ?? []).find((x) => x.id === dispatchId) ?? result.dispatch) };
     },
-    close() { closed = true; },
+    close() {
+      if (closed) return;
+      closed = true;
+      localEpoch += 1;
+      for (const record of [...pendingTimers]) record.cancel();
+    },
   };
 }

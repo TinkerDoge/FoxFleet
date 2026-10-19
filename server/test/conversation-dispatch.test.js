@@ -26,9 +26,36 @@ async function setup(t, options = {}) {
   t.after(() => store.idle());
   const room = await store.create({ owner: OWNER, title: 'Dispatch', agents: [SUMI, SORA] });
   const clock = { t: 1_760_000_000_000 };
-  const engine = createDispatchEngine({ store, now: () => clock.t, ...options });
+  const timers = options.timersFactory ? options.timersFactory(clock) : undefined;
+  const engine = createDispatchEngine({ store, now: () => clock.t, ...(timers ? { timers } : {}), ...options });
   t.after(() => engine.close());
-  return { dir, store, room, engine, clock };
+  return { dir, store, room, engine, clock, timers };
+}
+
+/** Deterministic deadline scheduler: `advance` moves the injected clock and fires every due timer. */
+function fakeTimersFactory(clock) {
+  let seq = 0;
+  const pending = new Map();
+  return {
+    setTimeout(fn, ms) {
+      const id = ++seq;
+      pending.set(id, { due: clock.t + Math.max(0, ms), fn });
+      return id;
+    },
+    clearTimeout(id) { pending.delete(id); },
+    advance(ms) {
+      clock.t += ms;
+      for (;;) {
+        const next = [...pending.entries()]
+          .filter(([, row]) => row.due <= clock.t)
+          .sort((a, b) => (a[1].due - b[1].due) || (a[0] - b[0]))[0];
+        if (!next) return;
+        pending.delete(next[0]);
+        next[1].fn();
+      }
+    },
+    get size() { return pending.size; },
+  };
 }
 
 const snapshot = (store, room) => store.snapshot(room.id);
@@ -287,14 +314,17 @@ test('duplicates: a repeated client_id and a repeated handoff idempotency key re
 test('handoff validation: self, unknown target, non-current source and forged author are refused', async (t) => {
   const { store, room, engine } = await setup(t);
   const errors = {};
+  let attemptContext = null;
+  const actor = { kind: 'agent', id: SUMI.actor_id, name: 'Sumi' };
   engine.register(SUMI.actor_id, { async run(ctx) {
+    attemptContext = { dispatch_id: ctx.dispatch.id, run_token: ctx.attempt.token };
     await ctx.finalize('my committed turn');
     const check = async (name, fn) => { try { await fn(); errors[name] = 'accepted'; } catch (e) { errors[name] = e.code; } };
     await check('self', () => ctx.handoff({ target_agent_id: SUMI.actor_id, text: 'me' }));
     await check('unknown', () => ctx.handoff({ target_agent_id: 'agent:ghost', text: 'ghost' }));
-    await check('missingSource', () => engine.handoff(room.id, { actor: { kind: 'agent', id: SUMI.actor_id, name: 'Sumi' }, source_message_id: 'fm_AAAAAAAAAAAAAAAA', target_agent_id: SORA.actor_id, text: 'bad' }));
+    await check('missingSource', () => engine.handoff(room.id, { actor, ...attemptContext, source_message_id: 'fm_AAAAAAAAAAAAAAAA', target_agent_id: SORA.actor_id, text: 'bad' }));
     const human = (await store.send(room.id, { actor: HUMAN, text: 'human source' })).message;
-    await check('forged', () => engine.handoff(room.id, { actor: { kind: 'agent', id: SUMI.actor_id, name: 'Sumi' }, source_message_id: human.id, target_agent_id: SORA.actor_id, text: 'bad' }));
+    await check('forged', () => engine.handoff(room.id, { actor, ...attemptContext, source_message_id: human.id, target_agent_id: SORA.actor_id, text: 'bad' }));
     return { text: 'done' };
   } });
   const text = '@Sumi start';
@@ -308,8 +338,8 @@ test('handoff validation: self, unknown target, non-current source and forged au
   // Once the source dispatch is terminal it is no longer a current binding.
   const snap = await snapshot(store, room);
   const source = snap.messages.find((m) => m.author_id === SUMI.actor_id && m.body === 'my committed turn');
-  await assert.rejects(() => engine.handoff(room.id, { actor: { kind: 'agent', id: SUMI.actor_id, name: 'Sumi' }, source_message_id: source.id, target_agent_id: SORA.actor_id, text: 'late' }),
-    (e) => e.code === 'handoff_not_found');
+  await assert.rejects(() => engine.handoff(room.id, { actor, ...attemptContext, source_message_id: source.id, target_agent_id: SORA.actor_id, text: 'late' }),
+    (e) => e.code === 'dispatch_not_running');
 });
 
 test('crash window: an in-flight turn becomes uncertain, never re-executes, and only a human retry runs it again', async (t) => {
@@ -601,6 +631,7 @@ test('handoff idempotency is scoped to caller and dispatch; conflicting reuse an
     try {
       await engine.handoff(room.id, {
         actor: { kind: 'agent', id: SORA.actor_id, name: 'Sora' },
+        dispatch_id: ctx.dispatch.id, run_token: ctx.attempt.token,
         source_message_id: sumiFinal, target_agent_id: SUMI.actor_id,
         text: 'forged reuse', idempotency_key: 'shared',
       });
@@ -869,4 +900,493 @@ test('agent text limits: say, finalize, handoff and outcome reject oversized or 
   const page = await publicMessages(store, room);
   assert.equal(page.some((m) => m.text.length > max), false);
   assert.deepEqual(agentAnswers(page).map((m) => m.text), ['ok']);
+});
+
+// --- Task 3 corrective cycle 2 ------------------------------------------------------
+
+const agentActor = (agent) => ({ kind: 'agent', id: agent.actor_id, name: agent.name });
+const capture = async (promise) => {
+  try { await promise; return 'accepted'; } catch (e) { return e.code; }
+};
+
+test('R1 attempt identity: public and context handoffs require the current dispatch, run token and final message', async (t) => {
+  const { store, room, engine } = await setup(t);
+  const errors = {};
+  let runs = 0, oldCtx = null, oldFinal = null, oldToken = null, newFinal = null;
+  engine.register(SUMI.actor_id, { async run(ctx) {
+    runs += 1;
+    if (runs === 1) {
+      oldCtx = ctx;
+      oldToken = ctx.attempt.token;
+      oldFinal = (await ctx.finalize('attempt one final')).id;
+      throw new Error('transport lost after the final message');
+    }
+    assert.equal(ctx.dispatch.id, oldCtx.dispatch.id);
+    errors.implicit = await capture(engine.handoff(room.id, {
+      actor: agentActor(SUMI), source_message_id: oldFinal, target_agent_id: SORA.actor_id, text: 'no attempt context',
+    }));
+    errors.oldContext = await capture(ctx.handoff({ target_agent_id: SORA.actor_id, text: 'old source before retry final' }));
+    errors.oldToken = await capture(engine.handoff(room.id, {
+      actor: agentActor(SUMI), dispatch_id: ctx.dispatch.id, run_token: oldToken,
+      source_message_id: oldFinal, target_agent_id: SORA.actor_id, text: 'stale token before final',
+    }));
+    newFinal = (await ctx.finalize('attempt two final')).id;
+    errors.oldTokenAfterFinal = await capture(engine.handoff(room.id, {
+      actor: agentActor(SUMI), dispatch_id: ctx.dispatch.id, run_token: oldToken,
+      source_message_id: newFinal, target_agent_id: SORA.actor_id, text: 'stale external request',
+    }));
+    const good = await engine.handoff(room.id, {
+      actor: agentActor(SUMI), dispatch_id: ctx.dispatch.id, run_token: ctx.attempt.token,
+      source_message_id: newFinal, target_agent_id: SORA.actor_id, text: 'authorised child',
+    });
+    errors.good = good.dispatch.id;
+    assert.equal('run_token' in good.dispatch, false, 'public dispatch results never expose the attempt token');
+    return {};
+  } });
+  engine.register(SORA.actor_id, { run: async () => ({ text: 'child answer' }) });
+
+  const text = '@Sumi attempt identity';
+  const receipt = await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  assert.equal(receipt.dispatches.every((d) => !('run_token' in d)), true, 'receipt projection hides the token');
+  await engine.drain(room.id);
+  const retryResult = await engine.retry(receipt.dispatch_ids[0], { actor: HUMAN });
+  assert.equal('run_token' in retryResult.dispatch, false, 'retry results hide the token too');
+  await engine.drain(room.id);
+
+  assert.equal(runs, 2);
+  assert.equal(newFinal, oldFinal, 'a retry revises one canonical final message in place');
+  assert.deepEqual(errors, {
+    implicit: 'dispatch_context_required',
+    oldContext: 'handoff_not_final',
+    oldToken: 'dispatch_stale',
+    oldTokenAfterFinal: 'dispatch_stale',
+    good: errors.good,
+  });
+  assert.ok(errors.good);
+
+  errors.oldFinalize = await capture(oldCtx.finalize('stale final after replacement'));
+  errors.oldSay = await capture(oldCtx.say('stale partial'));
+  errors.oldHandoff = await capture(oldCtx.handoff({ target_agent_id: SORA.actor_id, text: 'stale context handoff' }));
+  assert.deepEqual(errors.oldFinalize, 'dispatch_stale');
+  assert.deepEqual(errors.oldSay, 'dispatch_stale');
+  assert.deepEqual(errors.oldHandoff, 'dispatch_stale');
+
+  const rows = await dispatches(store, room);
+  const parent = rows.find((d) => d.target_agent_id === SUMI.actor_id && !d.source_dispatch_id);
+  assert.equal(parent.state, 'completed');
+  assert.equal(parent.final_message_id, oldFinal);
+  const page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).filter((m) => m.dispatch_id === parent.id).map((m) => m.text), ['attempt two final']);
+  assert.equal(page.some((m) => m.text === 'stale final after replacement'), false);
+  const retried = await store.snapshot(room.id);
+  assert.equal(JSON.stringify(retried.messages).includes(oldToken), false, 'the token never leaks into message projections');
+});
+
+test('R2 descendants wait for a successful ancestor completion, independent of equal queue keys', async (t) => {
+  const { store, room, engine } = await setup(t);
+  const log = [];
+  let parentRuns = 0, childRuns = 0;
+  engine.register(SUMI.actor_id, { async run(ctx) {
+    parentRuns += 1;
+    log.push(`sumi:${parentRuns}`);
+    if (parentRuns === 1) {
+      await ctx.finalize('parent final');
+      await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'child work' });
+      throw new Error('lost after handoff');
+    }
+    return { text: 'parent retry final' };
+  } });
+  engine.register(SORA.actor_id, { async run() { childRuns += 1; log.push(`sora:${childRuns}`); return { text: 'child done' }; } });
+
+  const text = '@Sumi start';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await engine.drain(room.id);
+  let rows = await dispatches(store, room);
+  const parent = rows.find((d) => d.target_agent_id === SUMI.actor_id && !d.source_dispatch_id);
+  const child = rows.find((d) => d.source_dispatch_id === parent.id);
+  assert.equal(parent.state, 'uncertain');
+  assert.equal(child.state, 'queued');
+  assert.equal(childRuns, 0);
+
+  await store.transact(room.id, (d) => {
+    const p = d.dispatches.find((x) => x.id === parent.id);
+    const c = d.dispatches.find((x) => x.id === child.id);
+    c.root_seq = p.root_seq;
+    c.created_at = p.created_at;
+    c.updated_at = p.updated_at;
+  });
+
+  await engine.retry(parent.id, { actor: HUMAN });
+  await engine.drain(room.id);
+  assert.deepEqual(log, ['sumi:1', 'sumi:2', 'sora:1'], 'the retried ancestor completes before its descendant is eligible');
+  rows = await dispatches(store, room);
+  assert.equal(rows.find((d) => d.id === parent.id).state, 'completed');
+  assert.equal(rows.find((d) => d.id === child.id).state, 'completed');
+});
+
+test('R2 descendants never run when the ancestor retry fails or is offline', async (t) => {
+  const { store, room, engine } = await setup(t);
+  let childRuns = 0;
+  engine.register(SUMI.actor_id, { async run(ctx) {
+    await ctx.finalize('parent final');
+    await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'child work' });
+    throw new Error('lost after handoff');
+  } });
+  engine.register(SORA.actor_id, { async run() { childRuns += 1; return { text: 'child done' }; } });
+  const text = '@Sumi start';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await engine.drain(room.id);
+  const rows = await dispatches(store, room);
+  const parent = rows.find((d) => d.target_agent_id === SUMI.actor_id && !d.source_dispatch_id);
+  const child = rows.find((d) => d.source_dispatch_id === parent.id);
+
+  engine.register(SUMI.actor_id, { online: false });
+  await engine.retry(parent.id, { actor: HUMAN });
+  await engine.drain(room.id);
+  const after = await dispatches(store, room);
+  assert.equal(after.find((d) => d.id === parent.id).state, 'failed');
+  assert.equal(after.find((d) => d.id === parent.id).code, 'agent_offline');
+  assert.equal(after.find((d) => d.id === child.id).state, 'queued');
+  assert.equal(childRuns, 0);
+});
+
+test('R3 a hung offer is bounded by the root deadline, becomes uncertain, and releases other roots', async (t) => {
+  const { store, room, engine, timers } = await setup(t, { timersFactory: fakeTimersFactory });
+  const reached = deferred();
+  let sumiRuns = 0, soraRuns = 0;
+  engine.register(SUMI.actor_id, {
+    async offer() { reached.resolve(); return new Promise(() => {}); },
+    async run() { sumiRuns += 1; return { text: 'never' }; },
+  });
+  engine.register(SORA.actor_id, { async run() { soraRuns += 1; return { text: 'independent answer' }; } });
+
+  const aText = '@Sumi hang';
+  const a = await submit(engine, room, aText, { mentions: [mention(SUMI.actor_id, aText)] });
+  await reached.promise;
+  timers.advance(DISPATCH_LIMITS.handoff_chain_ttl_ms / 2);
+  const bText = '@Sora independent';
+  const b = await submit(engine, room, bText, { mentions: [mention(SORA.actor_id, bText)] });
+  assert.equal(soraRuns, 0, 'serial room order still holds while the first offer is pending');
+
+  timers.advance(DISPATCH_LIMITS.handoff_chain_ttl_ms / 2 + 1);
+  await engine.drain(room.id);
+  const aRow = await rowById(store, room, a.dispatch_ids[0]);
+  const bRow = await rowById(store, room, b.dispatch_ids[0]);
+  assert.equal(aRow.state, 'uncertain');
+  assert.equal(aRow.code, 'uncertain_timeout');
+  assert.equal(sumiRuns, 0);
+  assert.equal(bRow.state, 'completed');
+  assert.equal(soraRuns, 1);
+  const page = await publicMessages(store, room);
+  const notice = page.find((m) => m.system && m.dispatch_id === aRow.id);
+  assert.match(notice.text, /uncertain/i);
+  assert.doesNotMatch(notice.text, /cancel+/i, 'a timeout never claims the remote action was cancelled');
+});
+
+test('R3 a hung run becomes uncertain on the deadline; a late settle cannot change the durable state', { timeout: 5000 }, async (t) => {
+  const { store, room, engine, timers } = await setup(t, { timersFactory: fakeTimersFactory });
+  const reached = deferred(), late = deferred();
+  let ctx = null, runs = 0;
+  engine.register(SUMI.actor_id, { async run(context) {
+    runs += 1;
+    ctx = context;
+    reached.resolve();
+    return late.promise;
+  } });
+
+  const text = '@Sumi hang run';
+  const first = await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await reached.promise;
+  timers.advance(DISPATCH_LIMITS.handoff_chain_ttl_ms + 1);
+  await engine.drain(room.id);
+  let row = await rowById(store, room, first.dispatch_ids[0]);
+  assert.equal(row.state, 'uncertain');
+  assert.equal(row.code, 'uncertain_timeout');
+
+  await engine.recover();
+  await engine.drain(room.id);
+  assert.equal(runs, 1, 'recovery alone never replays an uncertain turn');
+  row = await rowById(store, room, first.dispatch_ids[0]);
+  assert.equal(row.state, 'uncertain');
+
+  late.resolve({ text: 'late stale answer' });
+  await new Promise((resolve) => setImmediate(resolve));
+  await engine.drain(room.id);
+  row = await rowById(store, room, row.id);
+  assert.equal(row.state, 'uncertain', 'a late settle after the deadline cannot complete the turn');
+  assert.equal(runs, 1);
+  assert.equal(await capture(ctx.finalize('stale late final')), 'dispatch_not_running');
+  assert.deepEqual(agentAnswers(await publicMessages(store, room)).map((m) => m.text), []);
+});
+
+test('R3 same-engine recovery + owner retry fences the old hung run and never auto-replays', { timeout: 5000 }, async (t) => {
+  const { store, room, engine, timers } = await setup(t, { timersFactory: fakeTimersFactory });
+  const reached = deferred(), late = deferred();
+  let ctx = null, runs = 0;
+  engine.register(SUMI.actor_id, { async run(context) {
+    runs += 1;
+    if (runs === 1) { ctx = context; reached.resolve(); return late.promise; }
+    return { text: 'recovered answer' };
+  } });
+  const text = '@Sumi recover and retry';
+  const first = await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await reached.promise;
+
+  await engine.recover();
+  let row = await rowById(store, room, first.dispatch_ids[0]);
+  assert.equal(row.state, 'uncertain');
+  assert.equal(runs, 1, 'recovery does not auto-run the turn');
+
+  await engine.retry(row.id, { actor: HUMAN });
+  late.resolve({ text: 'stale first attempt' });
+  await engine.drain(room.id);
+  row = await rowById(store, room, first.dispatch_ids[0]);
+  assert.equal(row.state, 'completed');
+  assert.equal(runs, 2, 'one owner retry, one execution');
+  const page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['recovered answer'], 'the late first attempt is fenced out');
+  assert.equal(await capture(ctx.finalize('stale after retry')), 'dispatch_stale');
+  assert.equal(timers.size, 0, 'settled attempts leave no deadline timer behind');
+});
+
+test('R8 an offer token is minted at claim: late results from an overlapping engine cannot touch the replacement attempt', async (t) => {
+  for (const lateMode of ['accept', 'reject', 'throw']) {
+    const { store, room, engine: oldEngine, clock } = await setup(t);
+    const oldReached = deferred(), oldRelease = deferred();
+    let oldRuns = 0;
+    oldEngine.register(SUMI.actor_id, {
+      async offer() { oldReached.resolve(); await oldRelease.promise; },
+      async run() { oldRuns += 1; return { text: 'old answer' }; },
+    });
+    const text = '@Sumi overlap';
+    const receipt = await submit(oldEngine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+    const dispatchId = receipt.dispatch_ids[0];
+    await oldReached.promise;
+
+    const replacement = createDispatchEngine({ store, now: () => clock.t });
+    t.after(() => replacement.close());
+    await replacement.recover();
+    const newReached = deferred(), newRelease = deferred();
+    let newRuns = 0;
+    replacement.register(SUMI.actor_id, {
+      async offer() { newReached.resolve(); await newRelease.promise; return { accepted: true }; },
+      async run() { newRuns += 1; return { text: 'replacement answer' }; },
+    });
+    await replacement.retry(dispatchId, { actor: HUMAN });
+    await newReached.promise;
+    let row = await rowById(store, room, dispatchId);
+    assert.equal(row.state, 'offered');
+    const replacementToken = row.run_token;
+
+    if (lateMode === 'accept') oldRelease.resolve({ accepted: true });
+    else if (lateMode === 'reject') oldRelease.resolve({ accepted: false, reason: 'stale refusal' });
+    else oldRelease.resolve(Promise.reject(new Error('stale transport failure')));
+    await new Promise((resolve) => setImmediate(resolve));
+
+    row = await rowById(store, room, dispatchId);
+    assert.equal(row.state, 'offered', `${lateMode}: the old offer cannot move the replacement attempt`);
+    assert.equal(row.run_token, replacementToken);
+    assert.equal(oldRuns, 0);
+
+    newRelease.resolve({ accepted: true });
+    await replacement.drain(room.id);
+    row = await rowById(store, room, dispatchId);
+    assert.equal(row.state, 'completed');
+    assert.equal(newRuns, 1);
+    assert.equal(oldRuns, 0);
+    const page = await publicMessages(store, room);
+    assert.deepEqual(agentAnswers(page).map((m) => m.text), ['replacement answer']);
+    oldEngine.close();
+  }
+});
+
+test('R4 one public final per logical dispatch: retries revise it in place and stale callbacks are rejected', async (t) => {
+  const { store, room, engine } = await setup(t);
+  let runs = 0;
+  let firstCtx = null;
+  const finals = [];
+  engine.register(SUMI.actor_id, { async run(ctx) {
+    runs += 1;
+    if (runs === 1) {
+      firstCtx = ctx;
+      finals.push((await ctx.finalize('first answer')).id);
+      throw new Error('lost after first final');
+    }
+    if (runs === 2) {
+      finals.push((await ctx.finalize('second answer')).id);
+      throw new Error('lost after second final');
+    }
+    return { text: 'second answer' };
+  } });
+
+  const text = '@Sumi retry finals';
+  const first = await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  const id = first.dispatch_ids[0];
+  await engine.drain(room.id);
+  let page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['first answer']);
+
+  await engine.retry(id, { actor: HUMAN });
+  await engine.drain(room.id);
+  page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['second answer'], 'the changed retry revises, never appends');
+  assert.equal(finals[0], finals[1], 'the canonical final message id is stable');
+  assert.equal(page.find((m) => m.id === finals[0]).edited, true);
+
+  await engine.retry(id, { actor: HUMAN });
+  await engine.drain(room.id);
+  page = await publicMessages(store, room);
+  assert.deepEqual(agentAnswers(page).map((m) => m.text), ['second answer'], 'an identical retry still has one final');
+  assert.equal(page.filter((m) => m.id === finals[0]).length, 1);
+  assert.equal((await rowById(store, room, id)).state, 'completed');
+
+  assert.equal(await capture(firstCtx.finalize('replayed first final')), 'dispatch_stale');
+  assert.deepEqual(agentAnswers(await publicMessages(store, room)).map((m) => m.text), ['second answer']);
+});
+
+test('R5 duplicate passive admission reuses the stored NONE outcome across membership changes and restart', async (t) => {
+  const { dir, store, room, engine, clock } = await setup(t);
+  let calls = 0;
+  const sora = { kind: 'agent', id: SORA.actor_id, name: SORA.name };
+  const authored = (await store.send(room.id, { actor: sora, text: 'sora note' })).message;
+  await store.removeMember(room.id, { ownerId: OWNER.id, agentId: SORA.actor_id });
+  engine.register(SORA.actor_id, { async run() { calls += 1; return { text: 'should not run' }; } });
+
+  const text = 'reply while Sora is away';
+  const first = await submit(engine, room, text, { reply_to: authored.id, client_id: 'passive-once' });
+  assert.equal(first.rule, 'none');
+  assert.deepEqual(first.dispatches, []);
+
+  await store.addMember(room.id, { ownerId: OWNER.id, agent: { actor_id: SORA.actor_id, name: 'Sora returns renamed' } });
+  const duplicate = await submit(engine, room, text, { reply_to: authored.id, client_id: 'passive-once' });
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.rule, 'none');
+  assert.deepEqual(duplicate.dispatches, []);
+  assert.deepEqual(await dispatches(store, room), []);
+  assert.equal(calls, 0);
+
+  const restartedStore = conversationStore(dir);
+  await restartedStore.ready();
+  const restarted = createDispatchEngine({ store: restartedStore, now: () => clock.t });
+  t.after(() => restarted.close());
+  restarted.register(SORA.actor_id, { async run() { calls += 1; return { text: 'should not run' }; } });
+  const afterRestart = await restarted.submit(room.id, {
+    actor: HUMAN, text, reply_to: authored.id, client_id: 'passive-once',
+  });
+  assert.equal(afterRestart.duplicate, true);
+  assert.deepEqual(afterRestart.dispatches, []);
+  assert.deepEqual(await dispatches(restartedStore, room), []);
+  await restarted.drain(room.id);
+  assert.equal(calls, 0);
+
+  const fresh = await restarted.submit(room.id, {
+    actor: HUMAN, text: 'a brand new request', reply_to: authored.id, client_id: 'passive-new',
+  });
+  assert.equal(fresh.duplicate, false);
+  assert.equal(fresh.dispatches.length, 1, 'a new client_id is a new human request');
+  assert.equal(fresh.dispatches[0].target_agent_id, SORA.actor_id);
+  await restarted.drain(room.id);
+  assert.equal(calls, 1);
+});
+
+test('R6 untrusted status reasons and codes are sanitised, bounded and never thrown into the room', async (t) => {
+  const { store, room, engine } = await setup(t);
+  const max = store.limits.max_text_bytes;
+  const hostile = 'x'.repeat(max * 2) + '\u0000tail';
+  engine.register(SUMI.actor_id, {
+    offer: async () => ({ accepted: false, code: 'bad\u0000code-' + 'z'.repeat(200), reason: hostile }),
+  });
+  let text = '@Sumi refused';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await engine.drain(room.id);
+  let row = (await dispatches(store, room)).find((d) => d.target_agent_id === SUMI.actor_id);
+  assert.equal(row.state, 'failed');
+  assert.match(row.code, /^[A-Za-z0-9._-]{1,64}$/);
+  assert.equal(row.error.includes('\u0000'), false);
+  assert.ok(Buffer.byteLength(row.error, 'utf8') <= max);
+  let page = await publicMessages(store, room);
+  let notice = page.find((m) => m.system && m.dispatch_id === row.id);
+  assert.equal(notice.text.includes('\u0000'), false);
+  assert.ok(Buffer.byteLength(notice.text, 'utf8') <= max);
+
+  engine.register(SUMI.actor_id, {
+    run: async () => ({ failed: true, code: { toString() { return 'secret-stack'; } }, reason: '😀'.repeat(max) + '\u0000' }),
+  });
+  text = '@Sumi failed';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await engine.drain(room.id);
+  row = (await dispatches(store, room)).find((d) => d.target_agent_id === SUMI.actor_id && d.id !== row.id);
+  assert.equal(row.state, 'failed');
+  assert.equal(row.code, 'agent_failed');
+  assert.equal(row.error.includes('\u0000'), false);
+  assert.ok(Buffer.byteLength(row.error, 'utf8') <= max);
+  page = await publicMessages(store, room);
+  notice = page.find((m) => m.system && m.dispatch_id === row.id);
+  assert.equal(notice.text.includes('\u0000'), false);
+  assert.ok(Buffer.byteLength(notice.text, 'utf8') <= max);
+  assert.equal(notice.text.includes('secret-stack'), false);
+});
+
+test('R7 identical keyless refusals are one durable tombstone and capacity fails closed', async (t) => {
+  const { dir, store, room, engine, clock } = await setup(t);
+  let soraCalls = 0;
+  engine.register(SUMI.actor_id, { async run(ctx) {
+    await ctx.finalize('fanning out');
+    for (const key of ['a', 'b', 'c']) {
+      await ctx.handoff({ target_agent_id: SORA.actor_id, text: `take ${key}`, idempotency_key: `h-${key}` });
+    }
+    const copies = [];
+    for (let i = 0; i < 5; i += 1) copies.push(await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'over budget' }));
+    assert.equal(new Set(copies.map((c) => c.dispatch.id)).size, 1, 'one keyless refusal is one row');
+    const varied = await ctx.handoff({ target_agent_id: SORA.actor_id, text: 'a different over-budget request' });
+    assert.notEqual(varied.dispatch.id, copies[0].dispatch.id, 'different requests keep different tombstones');
+    return { text: 'root done' };
+  } });
+  engine.register(SORA.actor_id, { async run() { soraCalls += 1; return { text: 'child' }; } });
+  const text = '@Sumi fan';
+  await submit(engine, room, text, { mentions: [mention(SUMI.actor_id, text)] });
+  await engine.drain(room.id);
+  const rows = await dispatches(store, room);
+  const refused = rows.filter((d) => d.counts_toward_budget === false);
+  assert.equal(refused.length, 2, 'five identical keyless refusals plus one varied refusal leave two rows');
+  assert.equal(soraCalls, 3);
+  const snap = await snapshot(store, room);
+  for (const row of refused) assert.equal(systemMessages(snap).filter((m) => m.dispatch_id === row.id).length, 1);
+
+  const cap = DISPATCH_LIMITS.max_dispatches_per_room;
+  const fillTo = async (limit) => store.transact(room.id, (d) => {
+    while (d.dispatches.length < limit) {
+      d.dispatches.push({
+        id: `fd_fill${String(d.dispatches.length).padStart(14, '0')}`, state: 'failed', target_agent_id: SORA.actor_id,
+        root_id: 'filled', root_seq: 0, created_at: 0, updated_at: 0, counts_toward_budget: false, code: 'handoff_limit',
+      });
+    }
+  });
+  await fillTo(cap - 1);
+  const multiText = '@Sumi and @Sora at the edge';
+  await assert.rejects(() => submit(engine, room, multiText, {
+    mentions: [mention(SUMI.actor_id, multiText), mention(SORA.actor_id, multiText)],
+  }), (e) => e.status === 409 && e.code === 'dispatch_capacity');
+  assert.equal((await snapshot(store, room)).dispatches.length, cap - 1, 'a multi-recipient admission cannot cross the bound');
+  await fillTo(cap);
+  const before = await snapshot(store, room);
+  const floodText = '@Sora one more root';
+  await assert.rejects(() => submit(engine, room, floodText, { mentions: [mention(SORA.actor_id, floodText)] }),
+    (e) => e.status === 409 && e.code === 'dispatch_capacity');
+  const after = await snapshot(store, room);
+  assert.equal(after.messages.length, before.messages.length, 'fail-closed capacity leaves no orphan human message');
+  assert.equal(after.dispatches.length, cap, 'retained rows are never pruned to refund budget');
+
+  const passive = await submit(engine, room, 'passive chatter at capacity');
+  assert.deepEqual(passive.dispatches, []);
+
+  const restartedStore = conversationStore(dir);
+  await restartedStore.ready();
+  const restarted = createDispatchEngine({ store: restartedStore, now: () => clock.t });
+  t.after(() => restarted.close());
+  const restartedSnap = await restartedStore.snapshot(room.id);
+  assert.equal(restartedSnap.dispatches.length, cap, 'the bound survives a restart');
+  await assert.rejects(() => restarted.submit(room.id, {
+    actor: HUMAN, text: floodText, mentions: [mention(SORA.actor_id, floodText)],
+  }), (e) => e.code === 'dispatch_capacity');
 });
