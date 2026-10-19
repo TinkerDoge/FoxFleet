@@ -111,6 +111,84 @@ data class UiMessage(
     val reactionOnly: Boolean = false,
 )
 
+/**
+ * A group room is its own thing, never an [AgentStatus]: it has members, not one agent. The hub's
+ * `/api/conversations…` models (web `Conversation`) are mirrored here field for field.
+ */
+data class ConversationMember(
+    val id: String,
+    val name: String,
+    /** "human" or "agent". */
+    val kind: String,
+    val isBot: Boolean = kind == "agent",
+    val joinedAt: Long = 0L,
+) {
+    val isAgent get() = kind == "agent"
+}
+
+/** One group room. [owner] is a human member; [members] are the active agent members (never the owner). */
+data class Conversation(
+    val id: String,
+    val threadId: String,
+    val chatType: String = "group",
+    val title: String,
+    val owner: ConversationMember,
+    val members: List<ConversationMember>,
+    val createdAt: Long = 0L,
+    val updatedAt: Long = 0L,
+    val archived: Boolean = false,
+    val unreadCount: Int = 0,
+    val lastMessageAt: Long? = null,
+    val paused: Boolean = false,
+    val epoch: Long = 1L,
+) {
+    val agentMembers get() = members.filter { it.isAgent }
+    fun memberFor(idOrName: String): ConversationMember? = members.firstOrNull { it.id == idOrName || it.name == idOrName }
+    /** Owner controls (Stop/cards) require a known signed-in id. A missing id is not "I am the owner". */
+    fun ownedBy(userId: String?) = userId != null && owner.id == userId
+    /** The room list order: newest activity first, then title (same as the web client). */
+    val activityAt get() = maxOf(lastMessageAt ?: 0L, updatedAt)
+}
+
+/** One explicit typed mention. [id] is `agent:<name>`; offsets are character spans into the message text. */
+data class ConversationMention(val kind: String = "agent", val id: String, val offset: Int, val length: Int)
+
+data class ConversationMedia(
+    val id: String,
+    val kind: String,
+    val mime: String,
+    val name: String,
+    val size: Long = 0L,
+    val sha256: String? = null,
+)
+
+/** One room message. [sender] identifies the author: each agent keeps its own name and bubbles. */
+data class ConversationMessage(
+    val id: String,
+    val conversationId: String,
+    val sender: ConversationMember,
+    val text: String,
+    val createdAt: Long,
+    val replyTo: String? = null,
+    val mentions: List<ConversationMention> = emptyList(),
+    val edited: Boolean = false,
+    val media: List<ConversationMedia> = emptyList(),
+    val system: Boolean = false,
+    val code: String? = null,
+    val deliveryState: String? = null,
+    val dispatchId: String? = null,
+    val rootId: String? = null,
+    val seq: Int? = null,
+    val deleted: Boolean = false,
+) {
+    fun isMine(meId: String?) = meId != null && sender.id == meId
+}
+
+data class ConversationPage(val messages: List<ConversationMessage>, val hasMore: Boolean, val nextCursor: Int? = null, val total: Int = 0)
+data class ConversationList(val conversations: List<Conversation>, val total: Int = 0)
+data class ConversationStopResult(val stopped: Boolean, val confirmed: Boolean, val state: String? = null, val epoch: Long? = null, val paused: Boolean? = null)
+data class ConversationPreferences(val muted: Boolean = false, val notify: String = "all", val archived: Boolean = false, val pinned: Boolean? = null)
+
 /** A downscaled JPEG kept in the app cache; [dataUrl] is what goes to the hub. */
 data class ImageAttachment(val localPath: String, val dataUrl: String, val bytes: Int)
 

@@ -86,6 +86,12 @@ class ChatBackgroundStore(private val prefs: SharedPreferences, private val dir:
 
     /** The key is the agent id alone: every session of an agent reads and writes the same look. */
     fun key(agent: String) = agent
+    /**
+     * A room has its own look, in a namespace agents can never occupy (agent ids are [A-Za-z0-9._-], no colon).
+     * Never pass this to [key] or the other way around: a room look must not land on a member agent's DM.
+     */
+    fun roomKey(conversationId: String) = "room:$conversationId"
+    fun isRoomKey(key: String) = key.startsWith("room:")
     private val OWNER = "owner"
     private fun pk(key: String) = "bg." + key
     fun imageFile(key: String) = File(dir, MessageDigest.getInstance("SHA-256").digest(key.toByteArray()).joinToString("") { "%02x".format(it) }.take(32) + ".jpg")

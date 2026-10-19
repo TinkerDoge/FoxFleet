@@ -73,6 +73,8 @@ data class ReadState(val chat: String?, val readUpTo: Int, val unread: Int, val 
 /** Persisted v2 events. [seq] orders them per account; [id] is the SSE id `<store>:<seq>` (the resume cursor). */
 sealed interface V2Event {
     val seq: Long; val agent: String?; val chat: String?
+    /** Rooms (`conversation.*`) are keyed by their own id, never by an agent. Null for DM events. */
+    val conversationId: String? get() = null
     data class MessageNew(override val seq: Long, override val agent: String, override val chat: String, val message: HubMessage) : V2Event
     data class MessageEdited(override val seq: Long, override val agent: String, override val chat: String, val message: HubMessage) : V2Event
     data class MessageDeleted(override val seq: Long, override val agent: String, override val chat: String, val hubIds: List<String>) : V2Event
@@ -85,9 +87,38 @@ sealed interface V2Event {
     /** `message.reaction` (0.4.1, `reactionEvents`): [reactions] is the FULL set on that message now; replace, never merge ([] = none). */
     data class MessageReaction(override val seq: Long, override val agent: String, override val chat: String, val hubId: String, val upstreamId: String?, val reactions: List<dev.foxfleet.app.data.ReactionGroup>) : V2Event
     data class Approval(override val seq: Long, override val agent: String, override val chat: String?, val requestId: String?, val kind: String?) : V2Event
+    /** `conversation.created`: the room list gained a room. */
+    data class ConversationCreated(override val seq: Long, val conversation: dev.foxfleet.app.data.Conversation) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null; override val conversationId get() = conversation.id
+    }
+    /** `conversation.updated`: title, members, paused/epoch or unread changed; replaces the cached room. */
+    data class ConversationUpdated(override val seq: Long, val conversation: dev.foxfleet.app.data.Conversation) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null; override val conversationId get() = conversation.id
+    }
+    data class ConversationMessageNew(override val seq: Long, override val conversationId: String, val message: dev.foxfleet.app.data.ConversationMessage) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
+    data class ConversationMessageEdited(override val seq: Long, override val conversationId: String, val message: dev.foxfleet.app.data.ConversationMessage) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
+    data class ConversationMessageDeleted(override val seq: Long, override val conversationId: String, val messageId: String) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
+    data class ConversationRead(override val seq: Long, override val conversationId: String, val readUpTo: Int) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
+    data class ConversationMemberChanged(override val seq: Long, override val conversationId: String, val member: dev.foxfleet.app.data.ConversationMember, val joined: Boolean) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
+    data class ConversationHandoff(override val seq: Long, override val conversationId: String) : V2Event {
+        override val agent: String? get() = null; override val chat: String? get() = null
+    }
     /** A type this app does not know (or a known one it cannot read): ignored, but its id still moves the cursor. */
     data class Unknown(override val seq: Long, val type: String, override val agent: String?, override val chat: String?) : V2Event
 }
+
+/** Ephemeral `conversation.typing`: which member of the room is typing. Never stored or replayed. */
+data class ConversationTyping(val conversationId: String, val agent: String?, val state: String, val at: Long)
 
 /** Ephemeral `event: typing` (no id, never replayed). [label] / [toolId]: 0.4.1 hubs (what the step is about). */
 data class Typing(val agent: String, val chat: String, val state: String, val tool: String?, val ttlMs: Long, val label: String? = null, val toolId: String? = null)
@@ -155,12 +186,44 @@ object Contract {
 
     fun read(o: JsonObject) = ReadState(o.s("chat"), (o.l("read_up_to") ?: 0L).toInt(), (o.l("unread_count") ?: 0L).toInt(), (o.l("agent_unread") ?: 0L).toInt(), (o.l("total_unread") ?: 0L).toInt())
 
+    fun conversation(o: JsonObject?): dev.foxfleet.app.data.Conversation? = dev.foxfleet.app.data.HubApi.parseConversation(o)
+    fun conversationMessage(o: JsonObject?): dev.foxfleet.app.data.ConversationMessage? = dev.foxfleet.app.data.HubApi.parseConversationMessage(o)
+
+    /**
+     * `conversation.*` of the v2 log. Rooms are addressed by [conversationId]; a missing id means the frame cannot
+     * be placed (Unknown, so the cursor still advances). Member events carry an additive [member].
+     */
+    private fun conversationEvent(seq: Long, type: String, conversationId: String?, o: JsonObject): V2Event? {
+        val room = conversationId?.takeIf { it.isNotBlank() }
+        return when (type) {
+            "conversation.created" -> conversation(o.o("conversation"))?.let { V2Event.ConversationCreated(seq, it) }
+            "conversation.updated" -> conversation(o.o("conversation"))?.let { V2Event.ConversationUpdated(seq, it) }
+            "conversation.message.new" -> room?.let { id -> conversationMessage(o.o("message"))?.let { V2Event.ConversationMessageNew(seq, id, it) } }
+            "conversation.message.edited" -> room?.let { id -> conversationMessage(o.o("message"))?.let { V2Event.ConversationMessageEdited(seq, id, it) } }
+            "conversation.message.deleted" -> room?.let { id -> o.s("message_id")?.let { V2Event.ConversationMessageDeleted(seq, id, it) } }
+            "conversation.read" -> room?.let { V2Event.ConversationRead(seq, it, (o.l("read_up_to") ?: 0L).toInt()) }
+            "conversation.member.joined" -> room?.let { id -> dev.foxfleet.app.data.HubApi.parseMember(o.o("member"))?.let { V2Event.ConversationMemberChanged(seq, id, it, true) } }
+            "conversation.member.left" -> room?.let { id -> dev.foxfleet.app.data.HubApi.parseMember(o.o("member"))?.let { V2Event.ConversationMemberChanged(seq, id, it, false) } }
+            "conversation.handoff" -> room?.let { V2Event.ConversationHandoff(seq, it) }
+            else -> null
+        }
+    }
+
+    /** Ephemeral `conversation.typing` (never stored or replayed). */
+    fun conversationTyping(o: JsonObject): ConversationTyping? {
+        val id = o.s("conversation_id") ?: return null
+        return ConversationTyping(id, o.s("agent")?.takeIf { it.isNotBlank() }, o.s("state") ?: "typing", o.l("at") ?: 0L)
+    }
+
     /** One persisted event (stream `data:` or an element of `GET /api/live/events`). Null only when it has no `seq` at all. */
     fun event(o: JsonObject, sseType: String? = null): V2Event? {
         val seq = o.l("seq") ?: return null
         val type = o.s("type") ?: sseType ?: return null
         val agent = o.s("agent"); val chat = o.s("chat")
         fun unknown() = V2Event.Unknown(seq, type, agent, chat)
+        val room = o.s("conversation_id")
+        // Rooms are a separate namespace: they carry conversation_id and never an agent.
+        if (type.startsWith("conversation.")) return conversationEvent(seq, type, room, o) ?: unknown()
         if (agent == null && type != "chat.updated") return unknown()
         return when (type) {
             "message.new" -> message(o.o("message"))?.let { m -> chat?.let { V2Event.MessageNew(seq, agent!!, it, m) } }

@@ -70,7 +70,7 @@ data class CachedPage(val messages: List<UiMessage>, val moreOnDevice: Boolean, 
  * chat) replaces both: `ord` becomes `n` and `after_n` fills gaps.
  */
 class ChatCache(private val db: CacheDb, val owner: String, private val now: () -> Long = { System.currentTimeMillis() }) {
-    private val list = db.chatList(); private val msgs = db.messages(); private val live = db.live()
+    private val list = db.chatList(); private val msgs = db.messages(); private val live = db.live(); private val conv = db.conversations()
 
     // ---- chat list ----
     suspend fun agents(): List<AgentStatus> = list.agents(owner).map { it.toAgent() }
@@ -224,10 +224,48 @@ class ChatCache(private val db: CacheDb, val owner: String, private val now: () 
         if (ids.isNotEmpty()) live.byLiveIds(owner, ids).forEach { r -> val s = MessageStatus.advance(r.status, status); if (s != r.status) live.setStatus(r.rowId, s) }
     }
 
+    // ---- v5 group rooms: account + conversation id, never the DM agent columns ----
+
+    suspend fun conversations(): List<dev.foxfleet.app.data.Conversation> = conv.conversations(owner).map { it.toConversation() }
+    fun observeConversations(): Flow<List<dev.foxfleet.app.data.Conversation>> = conv.observeConversations(owner).map { rows -> rows.map { it.toConversation() } }
+    suspend fun conversation(id: String): dev.foxfleet.app.data.Conversation? = conv.conversation(owner, id)?.toConversation()
+
+    /** A full list snapshot replaces the account's cached rooms, as the hub's list is the truth. */
+    suspend fun saveConversations(rooms: List<dev.foxfleet.app.data.Conversation>) = db.withTransaction {
+        conv.replaceConversations(owner, rooms.map { it.toRow(owner) })
+    }
+    suspend fun saveConversation(room: dev.foxfleet.app.data.Conversation) = conv.upsertConversations(listOf(room.toRow(owner)))
+    suspend fun removeConversation(id: String) = db.withTransaction {
+        conv.deleteConversation(owner, id); conv.deleteMessages(owner, id)
+    }
+
+    /** The newest [limit] cached room messages, chronological (the order a transcript is drawn in). */
+    suspend fun roomNewest(id: String, limit: Int = CACHE_PAGE): CachedRoom? {
+        val rows = conv.newestMessages(owner, id, limit); if (rows.isEmpty()) return null
+        return CachedRoom(rows.asReversed().map { it.toConversationMessage() }, conv.messageCount(owner, id) > rows.size)
+    }
+
+    /** Up to [limit] messages older than [beforeSeq], chronological. */
+    suspend fun roomBefore(id: String, beforeSeq: Int, limit: Int = CACHE_PAGE): CachedRoom? {
+        val rows = conv.messagesBefore(owner, id, beforeSeq, limit + 1); if (rows.isEmpty()) return null
+        return CachedRoom(rows.take(limit).asReversed().map { it.toConversationMessage() }, rows.size > limit)
+    }
+
+    suspend fun roomMessage(id: String, messageId: String): dev.foxfleet.app.data.ConversationMessage? =
+        conv.message(owner, id, messageId)?.toConversationMessage()
+
+    /** One message from the stream or a page: upsert by its hub id, so replays and edits are idempotent. */
+    suspend fun upsertRoomMessage(m: dev.foxfleet.app.data.ConversationMessage) = conv.upsertMessages(listOf(m.toRow(owner)))
+    suspend fun upsertRoomMessages(list: List<dev.foxfleet.app.data.ConversationMessage>) { if (list.isNotEmpty()) conv.upsertMessages(list.map { it.toRow(owner) }) }
+    suspend fun deleteRoomMessage(id: String, messageId: String) = conv.deleteMessage(owner, id, messageId)
+
     companion object {
         fun forOwner(context: Context, owner: String) = ChatCache(CacheDb.get(context), owner)
     }
 }
+
+/** A cached room transcript page. [messages] is chronological; [hasMore] means older messages are on the device. */
+data class CachedRoom(val messages: List<dev.foxfleet.app.data.ConversationMessage>, val hasMore: Boolean)
 
 // ---- mapping ----
 
@@ -279,3 +317,66 @@ internal fun HubChat.toRow(owner: String) = ChatListRow(owner, agent, label, kin
 internal fun ChatListRow.toHub() = HubChat(agent, label, kind, chat,
     if (lastHubId == null && lastPreview.isEmpty() && lastAt == null) null else LastMessage(lastHubId, lastRole, lastSender, lastPreview, lastAt, lastStatus),
     unread, readUpTo, archived, muted, mutedUntil, pinned, pinOrder, working, needsInput, manualUnread, updatedAt)
+
+// ---- v5: room JSON columns ----
+
+/** Members, mentions and media are small arrays: stored as the hub's JSON so nothing is lost or reordered. */
+object ConversationCodec {
+    private fun memberJson(m: dev.foxfleet.app.data.ConversationMember) = JsonObject(mapOf(
+        "id" to JsonPrimitive(m.id), "name" to JsonPrimitive(m.name), "kind" to JsonPrimitive(m.kind),
+        "is_bot" to JsonPrimitive(m.isBot), "joined_at" to JsonPrimitive(m.joinedAt),
+    ))
+    fun members(list: List<dev.foxfleet.app.data.ConversationMember>): String = JsonArray(list.map(::memberJson)).toString()
+    fun parseMembers(s: String): List<dev.foxfleet.app.data.ConversationMember> = if (s.isBlank()) emptyList() else runCatching {
+        Json.parseToJsonElement(s).jsonArray.mapNotNull { el ->
+            val o = el.jsonObject
+            dev.foxfleet.app.data.HubApi.parseMember(o)
+        }
+    }.getOrDefault(emptyList())
+
+    fun mentions(list: List<dev.foxfleet.app.data.ConversationMention>): String = if (list.isEmpty()) "" else JsonArray(list.map { m ->
+        JsonObject(mapOf("kind" to JsonPrimitive(m.kind), "id" to JsonPrimitive(m.id), "offset" to JsonPrimitive(m.offset), "length" to JsonPrimitive(m.length)))
+    }).toString()
+    fun parseMentions(s: String): List<dev.foxfleet.app.data.ConversationMention> = if (s.isBlank()) emptyList() else runCatching {
+        Json.parseToJsonElement(s).jsonArray.mapNotNull { el -> dev.foxfleet.app.data.HubApi.parseMention(el.jsonObject) }
+    }.getOrDefault(emptyList())
+
+    fun media(list: List<dev.foxfleet.app.data.ConversationMedia>): String = if (list.isEmpty()) "" else JsonArray(list.map { m ->
+        JsonObject(mapOf(
+            "id" to JsonPrimitive(m.id), "kind" to JsonPrimitive(m.kind), "mime" to JsonPrimitive(m.mime),
+            "name" to JsonPrimitive(m.name), "size" to JsonPrimitive(m.size),
+        ) + (m.sha256?.let { mapOf("sha256" to JsonPrimitive(it)) } ?: emptyMap()))
+    }).toString()
+    fun parseMedia(s: String): List<dev.foxfleet.app.data.ConversationMedia> = if (s.isBlank()) emptyList() else runCatching {
+        Json.parseToJsonElement(s).jsonArray.mapNotNull { el -> dev.foxfleet.app.data.HubApi.parseConversationMedia(el.jsonObject) }
+    }.getOrDefault(emptyList())
+}
+
+internal fun dev.foxfleet.app.data.Conversation.toRow(owner: String) = ConversationRow(
+    owner = owner, conversationId = id, threadId = threadId, chatType = chatType, title = title,
+    ownerId = this.owner.id, ownerName = this.owner.name, members = ConversationCodec.members(members),
+    createdAt = createdAt, updatedAt = updatedAt, archived = archived, unreadCount = unreadCount,
+    lastMessageAt = lastMessageAt, paused = paused, epoch = epoch,
+)
+
+internal fun ConversationRow.toConversation() = dev.foxfleet.app.data.Conversation(
+    id = conversationId, threadId = threadId, chatType = chatType, title = title,
+    owner = dev.foxfleet.app.data.ConversationMember(ownerId, ownerName, "human", false),
+    members = ConversationCodec.parseMembers(members), createdAt = createdAt, updatedAt = updatedAt,
+    archived = archived, unreadCount = unreadCount, lastMessageAt = lastMessageAt, paused = paused, epoch = epoch,
+)
+
+internal fun dev.foxfleet.app.data.ConversationMessage.toRow(owner: String) = ConversationMessageRow(
+    owner = owner, conversationId = conversationId, messageId = id, seq = seq, senderId = sender.id, senderName = sender.name,
+    senderKind = sender.kind, senderBot = sender.isBot, createdAt = createdAt, text = text, replyTo = replyTo,
+    mentions = ConversationCodec.mentions(mentions), media = ConversationCodec.media(media), edited = edited, system = system,
+    code = code, deliveryState = deliveryState, dispatchId = dispatchId, rootId = rootId, deleted = deleted,
+)
+
+internal fun ConversationMessageRow.toConversationMessage() = dev.foxfleet.app.data.ConversationMessage(
+    id = messageId, conversationId = conversationId,
+    sender = dev.foxfleet.app.data.ConversationMember(senderId, senderName, senderKind, senderBot),
+    text = text, createdAt = createdAt, replyTo = replyTo, mentions = ConversationCodec.parseMentions(mentions),
+    edited = edited, media = ConversationCodec.parseMedia(media), system = system, code = code,
+    deliveryState = deliveryState, dispatchId = dispatchId, rootId = rootId, seq = seq, deleted = deleted,
+)

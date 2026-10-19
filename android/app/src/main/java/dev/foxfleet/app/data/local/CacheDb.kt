@@ -155,6 +155,65 @@ data class ReactionRow(
     @ColumnInfo(name = "synced_at") val syncedAt: Long,
 )
 
+/**
+ * v5: one group room as the hub last described it. Rooms are their own rows keyed by account + room id — never an
+ * [AgentRow] and never one row per member. Members are the hub's JSON array (order preserved, names per member).
+ */
+@Entity(tableName = "conversations", primaryKeys = ["owner", "conversation_id"], indices = [Index(value = ["owner", "updated_at"])])
+data class ConversationRow(
+    val owner: String,
+    @ColumnInfo(name = "conversation_id") val conversationId: String,
+    @ColumnInfo(name = "thread_id") val threadId: String,
+    @ColumnInfo(name = "chat_type") val chatType: String,
+    val title: String,
+    @ColumnInfo(name = "owner_id") val ownerId: String,
+    @ColumnInfo(name = "owner_name") val ownerName: String,
+    /** [ConversationCodec] JSON: active agent members with their own names. */
+    val members: String,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    @ColumnInfo(name = "updated_at") val updatedAt: Long,
+    val archived: Boolean,
+    @ColumnInfo(name = "unread_count") val unreadCount: Int,
+    @ColumnInfo(name = "last_message_at") val lastMessageAt: Long?,
+    val paused: Boolean,
+    val epoch: Long,
+)
+
+/**
+ * v5: one room message, keyed by account + room + message id. The sender is stored per message (author-specific
+ * bubbles); mentions and media are the hub's JSON arrays so reply jumps and cards survive a cache-first open.
+ */
+@Entity(
+    tableName = "conversation_messages",
+    primaryKeys = ["owner", "conversation_id", "message_id"],
+    indices = [
+        Index(value = ["owner", "conversation_id", "seq"]),
+        Index(value = ["owner", "conversation_id", "created_at"]),
+    ],
+)
+data class ConversationMessageRow(
+    val owner: String,
+    @ColumnInfo(name = "conversation_id") val conversationId: String,
+    @ColumnInfo(name = "message_id") val messageId: String,
+    val seq: Int?,
+    @ColumnInfo(name = "sender_id") val senderId: String,
+    @ColumnInfo(name = "sender_name") val senderName: String,
+    @ColumnInfo(name = "sender_kind") val senderKind: String,
+    @ColumnInfo(name = "sender_bot") val senderBot: Boolean,
+    @ColumnInfo(name = "created_at") val createdAt: Long,
+    val text: String,
+    @ColumnInfo(name = "reply_to") val replyTo: String?,
+    val mentions: String,
+    val media: String,
+    val edited: Boolean,
+    val system: Boolean,
+    val code: String?,
+    @ColumnInfo(name = "delivery_state") val deliveryState: String?,
+    @ColumnInfo(name = "dispatch_id") val dispatchId: String?,
+    @ColumnInfo(name = "root_id") val rootId: String?,
+    val deleted: Boolean,
+)
+
 /** Paging state of one cached conversation: where the hub's next older page starts and whether it has one. */
 @Entity(tableName = "chat_meta", primaryKeys = ["owner", "agent", "chat_id"])
 data class ChatMetaRow(
@@ -277,6 +336,42 @@ interface LiveDao {
 
 data class CachedChatRef(val agent: String, val chatId: String, val maxN: Int?)
 
+/** v5: the device copy of account-scoped rooms. Every query takes the account key, so one account never sees another's room. */
+@Dao
+interface ConversationDao {
+    @Query("SELECT * FROM conversations WHERE owner = :owner ORDER BY COALESCE(last_message_at, updated_at) DESC, updated_at DESC, title")
+    suspend fun conversations(owner: String): List<ConversationRow>
+    @Query("SELECT * FROM conversations WHERE owner = :owner ORDER BY COALESCE(last_message_at, updated_at) DESC, updated_at DESC, title")
+    fun observeConversations(owner: String): Flow<List<ConversationRow>>
+    @Query("SELECT * FROM conversations WHERE owner = :owner AND conversation_id = :id")
+    suspend fun conversation(owner: String, id: String): ConversationRow?
+    @Upsert suspend fun upsertConversations(rows: List<ConversationRow>)
+    @Query("DELETE FROM conversations WHERE owner = :owner AND conversation_id = :id")
+    suspend fun deleteConversation(owner: String, id: String)
+    @Query("DELETE FROM conversations WHERE owner = :owner")
+    suspend fun clearConversations(owner: String)
+    @Transaction
+    suspend fun replaceConversations(owner: String, rows: List<ConversationRow>) { clearConversations(owner); upsertConversations(rows) }
+
+    @Query("SELECT * FROM conversation_messages WHERE owner = :owner AND conversation_id = :id ORDER BY COALESCE(seq, 2147483647) DESC, created_at DESC, message_id DESC LIMIT :limit")
+    suspend fun newestMessages(owner: String, id: String, limit: Int): List<ConversationMessageRow>
+    @Query("SELECT * FROM conversation_messages WHERE owner = :owner AND conversation_id = :id AND COALESCE(seq, 2147483647) < :beforeSeq ORDER BY COALESCE(seq, 2147483647) DESC, created_at DESC, message_id DESC LIMIT :limit")
+    suspend fun messagesBefore(owner: String, id: String, beforeSeq: Int, limit: Int): List<ConversationMessageRow>
+    @Query("SELECT * FROM conversation_messages WHERE owner = :owner AND conversation_id = :id AND message_id = :messageId")
+    suspend fun message(owner: String, id: String, messageId: String): ConversationMessageRow?
+    @Query("SELECT * FROM conversation_messages WHERE owner = :owner AND conversation_id = :id AND message_id IN (:messageIds)")
+    suspend fun messagesById(owner: String, id: String, messageIds: List<String>): List<ConversationMessageRow>
+    @Query("SELECT COUNT(*) FROM conversation_messages WHERE owner = :owner AND conversation_id = :id")
+    suspend fun messageCount(owner: String, id: String): Int
+    @Upsert suspend fun upsertMessages(rows: List<ConversationMessageRow>)
+    @Query("DELETE FROM conversation_messages WHERE owner = :owner AND conversation_id = :id AND message_id = :messageId")
+    suspend fun deleteMessage(owner: String, id: String, messageId: String)
+    @Query("DELETE FROM conversation_messages WHERE owner = :owner AND conversation_id = :id")
+    suspend fun deleteMessages(owner: String, id: String)
+    @Query("DELETE FROM conversation_messages") suspend fun wipeMessages()
+    @Query("DELETE FROM conversations") suspend fun wipeConversations()
+}
+
 @Dao
 interface CacheAdminDao {
     @Query("DELETE FROM agents") suspend fun wipeAgents()
@@ -286,8 +381,10 @@ interface CacheAdminDao {
     @Query("DELETE FROM chat_rows") suspend fun wipeChatRows()
     @Query("DELETE FROM sync_state") suspend fun wipeSync()
     @Query("DELETE FROM reactions") suspend fun wipeReactions()
+    @Query("DELETE FROM conversations") suspend fun wipeConversations()
+    @Query("DELETE FROM conversation_messages") suspend fun wipeConversationMessages()
     @Transaction
-    suspend fun wipeAll() { wipeAgents(); wipeChats(); wipeMessages(); wipeMeta(); wipeChatRows(); wipeSync(); wipeReactions() }
+    suspend fun wipeAll() { wipeAgents(); wipeChats(); wipeMessages(); wipeMeta(); wipeChatRows(); wipeSync(); wipeReactions(); wipeConversations(); wipeConversationMessages() }
 }
 
 /**
@@ -297,21 +394,24 @@ interface CacheAdminDao {
  *   keeps every cached message (the new columns start empty and fill from the next page or event).
  * - 3 (0.4.0 QA A1): sync_state gains owed_resync. [MIGRATION_2_3]
  * - 4 (0.4.1): new table reactions (one reaction snapshot per conversation). [MIGRATION_3_4]
+ * - 5 (agent rooms): new tables conversations and conversation_messages, keyed by account + fc id. DMs stay exactly
+ *   where they were. [MIGRATION_4_5]
  *
  * Migration strategy: each schema change bumps [VERSION] and ships either an `@AutoMigration` (added columns/tables) or a
  * hand-written [androidx.room.migration.Migration] in [MIGRATIONS], each covered by CacheMigrationTest against the exported
  * JSON. Because this is a cache of hub data, a missing path is not data loss: [build] falls back to a destructive rebuild
  * (the next sync refills it) instead of crashing; a downgrade does the same.
  */
-@Database(entities = [AgentRow::class, ChatRow::class, MessageRow::class, ChatMetaRow::class, ChatListRow::class, SyncRow::class, ReactionRow::class], version = CacheDb.VERSION, exportSchema = true)
+@Database(entities = [AgentRow::class, ChatRow::class, MessageRow::class, ChatMetaRow::class, ChatListRow::class, SyncRow::class, ReactionRow::class, ConversationRow::class, ConversationMessageRow::class], version = CacheDb.VERSION, exportSchema = true)
 abstract class CacheDb : RoomDatabase() {
     abstract fun chatList(): ChatListDao
     abstract fun messages(): MessageDao
     abstract fun admin(): CacheAdminDao
     abstract fun live(): LiveDao
+    abstract fun conversations(): ConversationDao
 
     companion object {
-        const val VERSION = 4
+        const val VERSION = 5
         const val NAME = "foxfleet-cache.db"
         val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
@@ -336,7 +436,18 @@ abstract class CacheDb : RoomDatabase() {
         val MIGRATION_3_4 = object : androidx.room.migration.Migration(3, 4) {
             override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) { db.execSQL(MIGRATION_3_4_SQL) }
         }
-        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        /** Copied from schemas/…/5.json (createSql). Only ADDS room tables; DM tables are never touched. */
+        internal val MIGRATION_4_5_SQL = listOf(
+            "CREATE TABLE IF NOT EXISTS `conversations` (`owner` TEXT NOT NULL, `conversation_id` TEXT NOT NULL, `thread_id` TEXT NOT NULL, `chat_type` TEXT NOT NULL, `title` TEXT NOT NULL, `owner_id` TEXT NOT NULL, `owner_name` TEXT NOT NULL, `members` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `archived` INTEGER NOT NULL, `unread_count` INTEGER NOT NULL, `last_message_at` INTEGER, `paused` INTEGER NOT NULL, `epoch` INTEGER NOT NULL, PRIMARY KEY(`owner`, `conversation_id`))",
+            "CREATE INDEX IF NOT EXISTS `index_conversations_owner_updated_at` ON `conversations` (`owner`, `updated_at`)",
+            "CREATE TABLE IF NOT EXISTS `conversation_messages` (`owner` TEXT NOT NULL, `conversation_id` TEXT NOT NULL, `message_id` TEXT NOT NULL, `seq` INTEGER, `sender_id` TEXT NOT NULL, `sender_name` TEXT NOT NULL, `sender_kind` TEXT NOT NULL, `sender_bot` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, `text` TEXT NOT NULL, `reply_to` TEXT, `mentions` TEXT NOT NULL, `media` TEXT NOT NULL, `edited` INTEGER NOT NULL, `system` INTEGER NOT NULL, `code` TEXT, `delivery_state` TEXT, `dispatch_id` TEXT, `root_id` TEXT, `deleted` INTEGER NOT NULL, PRIMARY KEY(`owner`, `conversation_id`, `message_id`))",
+            "CREATE INDEX IF NOT EXISTS `index_conversation_messages_owner_conversation_id_seq` ON `conversation_messages` (`owner`, `conversation_id`, `seq`)",
+            "CREATE INDEX IF NOT EXISTS `index_conversation_messages_owner_conversation_id_created_at` ON `conversation_messages` (`owner`, `conversation_id`, `created_at`)",
+        )
+        val MIGRATION_4_5 = object : androidx.room.migration.Migration(4, 5) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) { MIGRATION_4_5_SQL.forEach { db.execSQL(it) } }
+        }
+        val MIGRATIONS: Array<androidx.room.migration.Migration> = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
         @Volatile private var instance: CacheDb? = null
         fun get(context: Context): CacheDb = instance ?: synchronized(this) { instance ?: build(context.applicationContext).also { instance = it } }

@@ -19,6 +19,12 @@ sealed interface LiveEffect {
     data class StopTyping(val agent: String, val chat: String?) : LiveEffect
     /** `message.reaction` (or a message that carries its reactions): the full set on one message, already written to the cache. */
     data class Reactions(val agent: String, val chat: String, val hubId: String, val upstreamId: String?, val groups: List<dev.foxfleet.app.data.ReactionGroup>) : LiveEffect
+    /** A room (created/updated) was written to the cache: redraw its list row and, when open, its header. */
+    data class ConversationChanged(val conversation: dev.foxfleet.app.data.Conversation) : LiveEffect
+    /** One room message (new or edited) was written to the cache: append/replace it in the open transcript. */
+    data class ConversationMessageUpserted(val conversationId: String, val message: dev.foxfleet.app.data.ConversationMessage, val edited: Boolean) : LiveEffect
+    data class ConversationMessageDeleted(val conversationId: String, val messageId: String) : LiveEffect
+    data class ConversationReadChanged(val conversationId: String, val readUpTo: Int) : LiveEffect
 }
 
 /**
@@ -43,6 +49,14 @@ class LiveReducer(private val cache: ChatCache) {
         is V2Event.RunFinished -> listOf(LiveEffect.Notice("run_finished", e.agent, e.chat, e.runId, e.state), LiveEffect.StopTyping(e.agent, e.chat))
         is V2Event.Approval -> listOf(LiveEffect.Notice("approval", e.agent, e.chat, null, null))
         is V2Event.MessageReaction -> { cache.replaceReactions(e.agent, e.chat, e.hubId, e.upstreamId, e.reactions); listOf(LiveEffect.Reactions(e.agent, e.chat, e.hubId, e.upstreamId, e.reactions)) }
+        is V2Event.ConversationCreated -> { cache.saveConversation(e.conversation); listOf(LiveEffect.ConversationChanged(e.conversation)) }
+        is V2Event.ConversationUpdated -> { cache.saveConversation(e.conversation); listOf(LiveEffect.ConversationChanged(e.conversation)) }
+        is V2Event.ConversationMessageNew -> { cache.upsertRoomMessage(e.message); listOf(LiveEffect.ConversationMessageUpserted(e.conversationId, e.message, false)) }
+        is V2Event.ConversationMessageEdited -> { cache.upsertRoomMessage(e.message); listOf(LiveEffect.ConversationMessageUpserted(e.conversationId, e.message, true)) }
+        is V2Event.ConversationMessageDeleted -> { cache.deleteRoomMessage(e.conversationId, e.messageId); listOf(LiveEffect.ConversationMessageDeleted(e.conversationId, e.messageId)) }
+        is V2Event.ConversationRead -> listOf(LiveEffect.ConversationReadChanged(e.conversationId, e.readUpTo))
+        is V2Event.ConversationMemberChanged -> emptyList() // conversation.updated carries the authoritative member list
+        is V2Event.ConversationHandoff -> emptyList() // durable messages carry the visible markers
         is V2Event.Unknown -> emptyList()
     }
 
