@@ -763,13 +763,13 @@
               }
             }
           },
-          "409": {
-            "$ref": "#/components/responses/Error"
-          },
           "400": {
             "$ref": "#/components/responses/Error"
           },
           "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
@@ -810,10 +810,10 @@
           "401": {
             "$ref": "#/components/responses/Error"
           },
-          "429": {
+          "403": {
             "$ref": "#/components/responses/Error"
           },
-          "403": {
+          "429": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -981,10 +981,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/Error"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -1019,13 +1019,13 @@
               }
             }
           },
-          "403": {
-            "$ref": "#/components/responses/Error"
-          },
           "400": {
             "$ref": "#/components/responses/Error"
           },
           "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
@@ -1257,13 +1257,13 @@
               }
             }
           },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
           "401": {
             "$ref": "#/components/responses/Error"
           },
           "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
@@ -1353,13 +1353,13 @@
           "400": {
             "$ref": "#/components/responses/Error"
           },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
           "401": {
             "$ref": "#/components/responses/Error"
           },
           "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
@@ -1416,13 +1416,13 @@
           "400": {
             "$ref": "#/components/responses/Error"
           },
-          "404": {
-            "$ref": "#/components/responses/Error"
-          },
           "401": {
             "$ref": "#/components/responses/Error"
           },
           "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           },
           "429": {
@@ -1582,10 +1582,10 @@
           "400": {
             "$ref": "#/components/responses/Error"
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/Error"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -1628,10 +1628,10 @@
               }
             }
           },
-          "404": {
+          "401": {
             "$ref": "#/components/responses/Error"
           },
-          "401": {
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         },
@@ -3146,6 +3146,24 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "Duplicate client_id: the stored message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/QueuedMessage"
+                    },
+                    "duplicate": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
           "202": {
             "description": "Accepted",
             "content": {
@@ -3164,24 +3182,6 @@
                     },
                     "session_id": {
                       "type": "string"
-                    }
-                  }
-                }
-              }
-            }
-          },
-          "200": {
-            "description": "Duplicate client_id: the stored message",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "message": {
-                      "$ref": "#/components/schemas/QueuedMessage"
-                    },
-                    "duplicate": {
-                      "type": "boolean"
                     }
                   }
                 }
@@ -4732,10 +4732,10 @@
           "401": {
             "$ref": "#/components/responses/Error"
           },
-          "429": {
+          "403": {
             "$ref": "#/components/responses/Error"
           },
-          "403": {
+          "429": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -5273,10 +5273,10 @@
           "401": {
             "$ref": "#/components/responses/Error"
           },
-          "404": {
+          "403": {
             "$ref": "#/components/responses/Error"
           },
-          "403": {
+          "404": {
             "$ref": "#/components/responses/Error"
           },
           "413": {
@@ -5405,6 +5405,15 @@
           "401": {
             "$ref": "#/components/responses/Error"
           },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "413": {
+            "$ref": "#/components/responses/Error"
+          },
+          "415": {
+            "$ref": "#/components/responses/Error"
+          },
           "429": {
             "description": "Too many requests (test notifications: 10 per minute).",
             "content": {
@@ -5422,15 +5431,6 @@
                 }
               }
             }
-          },
-          "403": {
-            "$ref": "#/components/responses/Error"
-          },
-          "413": {
-            "$ref": "#/components/responses/Error"
-          },
-          "415": {
-            "$ref": "#/components/responses/Error"
           }
         }
       }
@@ -5498,16 +5498,16 @@
               }
             }
           },
-          "401": {
+          "400": {
             "$ref": "#/components/responses/Error"
           },
-          "429": {
+          "401": {
             "$ref": "#/components/responses/Error"
           },
           "403": {
             "$ref": "#/components/responses/Error"
           },
-          "400": {
+          "429": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -5948,8 +5948,8 @@
           }
         },
         "responses": {
-          "202": {
-            "description": "Accepted",
+          "200": {
+            "description": "Replay of the same key (duplicate: true)",
             "content": {
               "application/json": {
                 "schema": {
@@ -5958,8 +5958,8 @@
               }
             }
           },
-          "200": {
-            "description": "Replay of the same key (duplicate: true)",
+          "202": {
+            "description": "Accepted",
             "content": {
               "application/json": {
                 "schema": {
@@ -6230,6 +6230,710 @@
             "$ref": "#/components/responses/Error"
           },
           "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations": {
+      "get": {
+        "operationId": "listConversations",
+        "summary": "List the account conversations (rooms).",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Rooms newest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationList"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createConversation",
+        "summary": "Create a room owned by the signed-in account.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}": {
+      "get": {
+        "operationId": "getConversation",
+        "summary": "One room and its members.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateConversation",
+        "summary": "Rename a room (owner only).",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationPatchRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/members/{agentId}": {
+      "put": {
+        "operationId": "addConversationMember",
+        "summary": "Add an agent member (owner only).",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "removeConversationMember",
+        "summary": "Remove an agent member (owner only).",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "agentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Updated room",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/messages": {
+      "get": {
+        "operationId": "listConversationMessages",
+        "summary": "Room history, newest page first.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of messages",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationMessagePage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "sendConversationMessage",
+        "summary": "Send a human message into a room.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Queued or dispatched",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "message"
+                  ],
+                  "properties": {
+                    "message": {
+                      "$ref": "#/components/schemas/ConversationMessage"
+                    },
+                    "conversation_id": {
+                      "type": "string"
+                    },
+                    "dispatched_to": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/messages/{messageId}": {
+      "get": {
+        "operationId": "getConversationMessage",
+        "summary": "One message in a room.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "messageId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationMessage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/stop": {
+      "post": {
+        "operationId": "stopConversation",
+        "summary": "Ask the active agent turn to stop (owner only).",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Stop outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationStopResult"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/resume": {
+      "post": {
+        "operationId": "resumeConversation",
+        "summary": "Resume a room whose queue was paused.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/read": {
+      "post": {
+        "operationId": "markConversationRead",
+        "summary": "Move this account read position in a room.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationReadRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Conversation"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/conversations/{id}/preferences": {
+      "put": {
+        "operationId": "putConversationPreferences",
+        "summary": "Per-account room preferences.",
+        "tags": [
+          "conversations"
+        ],
+        "security": [
+          {
+            "session": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConversationPreferences"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationPreferences"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Error"
+          },
+          "401": {
+            "$ref": "#/components/responses/Error"
+          },
+          "403": {
+            "$ref": "#/components/responses/Error"
+          },
+          "404": {
             "$ref": "#/components/responses/Error"
           }
         }
@@ -8385,6 +9089,324 @@
             "items": {
               "$ref": "#/components/schemas/ReactionActor"
             }
+          }
+        }
+      },
+      "ConversationMember": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "is_bot"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "A hub account id for a human, or agent:<agentId> for an agent"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "human",
+              "agent"
+            ]
+          },
+          "is_bot": {
+            "type": "boolean"
+          },
+          "joined_at": {
+            "type": "integer"
+          }
+        }
+      },
+      "Conversation": {
+        "type": "object",
+        "required": [
+          "id",
+          "thread_id",
+          "chat_type",
+          "title",
+          "owner",
+          "members",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+          },
+          "thread_id": {
+            "type": "string",
+            "pattern": "^fcr_[A-Za-z0-9_-]{16}$"
+          },
+          "chat_type": {
+            "type": "string",
+            "enum": [
+              "group"
+            ]
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "owner": {
+            "$ref": "#/components/schemas/ConversationMember"
+          },
+          "members": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "$ref": "#/components/schemas/ConversationMember"
+            }
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "updated_at": {
+            "type": "integer"
+          },
+          "archived": {
+            "type": "boolean"
+          },
+          "unread_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_message_at": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        }
+      },
+      "ConversationMessage": {
+        "type": "object",
+        "required": [
+          "id",
+          "conversation_id",
+          "sender",
+          "text",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+          },
+          "conversation_id": {
+            "type": "string",
+            "pattern": "^fc_[A-Za-z0-9_-]{16}$"
+          },
+          "sender": {
+            "$ref": "#/components/schemas/ConversationMember"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "created_at": {
+            "type": "integer"
+          },
+          "reply_to": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+          },
+          "mentions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "required": [
+                "kind",
+                "id",
+                "offset",
+                "length"
+              ],
+              "properties": {
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "agent"
+                  ]
+                },
+                "id": {
+                  "type": "string",
+                  "pattern": "^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+                },
+                "offset": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "UTF-16 code units into text"
+                },
+                "length": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "description": "UTF-16 code units"
+                }
+              }
+            }
+          },
+          "edited": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ConversationList": {
+        "type": "object",
+        "required": [
+          "conversations"
+        ],
+        "properties": {
+          "conversations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Conversation"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ConversationMessagePage": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConversationMessage"
+            }
+          },
+          "has_more": {
+            "type": "boolean"
+          }
+        }
+      },
+      "ConversationCreateRequest": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "member_ids": {
+            "type": "array",
+            "maxItems": 100,
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ConversationPatchRequest": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "ConversationMessageRequest": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 65536
+          },
+          "reply_to": {
+            "type": "string",
+            "pattern": "^fm_[A-Za-z0-9_-]{16}$"
+          },
+          "mentions": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object"
+            }
+          },
+          "client_id": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      },
+      "ConversationReadRequest": {
+        "type": "object",
+        "properties": {
+          "up_to": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ConversationStopResult": {
+        "type": "object",
+        "required": [
+          "stopped",
+          "confirmed"
+        ],
+        "properties": {
+          "stopped": {
+            "type": "boolean"
+          },
+          "confirmed": {
+            "type": "boolean"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "stopped",
+              "idle",
+              "running"
+            ]
+          }
+        }
+      },
+      "ConversationPreferences": {
+        "type": "object",
+        "properties": {
+          "muted": {
+            "type": "boolean"
+          },
+          "notify": {
+            "type": "string",
+            "enum": [
+              "all",
+              "mentions",
+              "none"
+            ]
+          },
+          "archived": {
+            "type": "boolean"
           }
         }
       }

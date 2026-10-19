@@ -101,3 +101,33 @@ See `docs/LIVE-EVENTS.md` "Model picker" and `capabilities.models`.
 | 400 | (none) | `POST …/sessions/{id}/model` | the session id is malformed | client bug |
 
 The list route also passes through the agent codes above (`agent_offline`, `timeout`, `auth_failed`, `upstream_error`) when the agent could not be asked. Neither route is ever a 401 for an agent problem.
+
+## Conversations / groups (Release A, `groups`, `foxfleet.bot/1.2`)
+
+The user-side routes are `/api/conversations` and its `/{id}` children in `contract/openapi.json`; the room
+frames and their protocol errors are in `contract/rooms-frames.schema.json`. New error codes (branch on `code`,
+never on the text):
+
+| code | status | meaning |
+|---|---|---|
+| `conversation_not_found` | 404 | no such room in this account, or it was deleted |
+| `conversation_exists` | 409 | a create request collides with an existing room (for example the same client id) |
+| `not_conversation_owner` | 403 | only the one human owner may rename, add/remove members, change ownership or stop |
+| `agent_not_in_account` | 404 | the member id is not an agent belonging to this account |
+| `member_exists` | 409 | that agent is already a member |
+| `member_not_found` | 404 | that agent is not a member of the room |
+| `invalid_title` | 400 | title is empty, over 256 characters, or has control characters |
+| `too_many_members` | 409 | the room already has 100 agent members |
+| `mentions_invalid` | 400 | the mention list is malformed, has more than 64 entities, or has an invalid/overlapping span |
+| `unknown_mention` | 404 | a mention names an agent that is not a member of this room |
+| `cross_room_reply` | 404 | `reply_to` names a message committed in another room (never revealed) |
+| `reply_not_found` | 404 | `reply_to` names no committed message in this room |
+| `handoff_limit` | 429 | the root chain already has 4 dispatches; `Retry-After` is not meaningful and the chain must end |
+| `handoff_expired` | 410 | the 5-minute (`300000` ms) chain deadline passed before dispatch |
+| `handoff_not_found` | 404 | the `dispatch_id` is unknown, already started, or belongs to another room |
+| `group_not_available` | 400 | the request or frame needs a `foxfleet.bot/1.2` `groups` capability the client/hub did not negotiate |
+| `owner_only` | 403 | a card or stop tap came from an actor who is not the room's human owner |
+| `actor_forbidden` | 403 | a frame claimed an actor kind/id the authenticated socket does not own (agent spoofing a human or another agent) |
+
+A group frame on a v1.1 socket is `unsupported` at the protocol layer, before any HTTP code applies. Protocol
+rejections keep the existing codes `invalid_request`, `not_found`, `forbidden`, `unsupported` and `too_large`.

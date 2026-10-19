@@ -373,9 +373,40 @@ retried toggle would undo itself). Since 0.4.1:
 | `readReceipts` | `POST /api/chats/{agent}/read`, `hub_id` / `n` / `status` / `after_n` on history, `message.status` |
 | `notifyReply` | `POST /api/notify/reply`, `POST /api/notify/read`, `?reply=1` tokens |
 | `reactionEvents` | 0.4.1: `message.reaction`, `hub_id` as a reaction `message_id`, `by_hub_id`, `reactions` / `react` / `reaction_only` on messages, reaction error codes |
+| `groups` | Release A groups: `GET`/`POST /api/conversations`, members, messages, stop/resume/read/preferences, and the `conversation.*` events above; bot rooms use `foxfleet.bot/1.2` |
 
 Nothing existing changes shape: new fields are additive, `/api/agents` keeps its unread-free rows, and the v1 stream is untouched.
 
 v1 change in 0.4.0: its `429` body now carries `code: too_many_streams` (frames unchanged).
 
 Hub environment (documented in `site/.vitepress/gen.mjs`): `FOXFLEET_LIVE_RETAIN_EVENTS` (default 5000), `FOXFLEET_LIVE_RETAIN_DAYS` (default 7). 0.4.1 adds none.
+
+## Conversations / groups (Release A, feature `groups`, `foxfleet.bot/1.2`)
+
+Rooms are capability-gated: the hub advertises `groups` in its capability list and in a 1.2 bot `hello`
+(`protocol: "foxfleet.bot/1.2"`, `features: ["stop","cards","media","groups"]`). A client that did not negotiate
+`foxfleet.bot.v1.2` never sees these events and never receives group frames. The machine-readable room contract is
+`contract/rooms-frames.schema.json`; this section is only the account live-stream view of it.
+
+Events use the same v2 envelope (`seq`, `type`, `at`) and are pushed to every account stream that selected the
+capability. Unknown fields may be added; clients ignore what they do not know.
+
+| type | extra fields | meaning |
+|---|---|---|
+| `conversation.created` | `conversation: Conversation` | a room was created; `Conversation` is the OpenAPI schema (`id`, `thread_id`, `chat_type`, `title`, `owner`, `members`, times) |
+| `conversation.updated` | `conversation: Conversation` | title, members, archive or preferences changed; replace the cached room |
+| `conversation.member.joined` | `conversation_id`, `member: Member`, `actor: Member` | the human owner added an agent; the new member may read all retained history |
+| `conversation.member.left` | `conversation_id`, `member: Member`, `actor: Member` | the owner removed an agent |
+| `conversation.message.new` | `conversation_id`, `message: Message` | a human or agent message was committed; `Message` carries `sender` with `kind` and `is_bot` |
+| `conversation.message.edited` | `conversation_id`, `message: Message` | full replacement, same `id` |
+| `conversation.message.deleted` | `conversation_id`, `message_id` | the message was removed for this account |
+| `conversation.read` | `conversation_id`, `actor`, `read_up_to` | this account's read position moved; positions only move forward |
+| `conversation.typing` | `conversation_id`, `agent`, `state` | ephemeral, no `seq`, not replayed, like the DM `typing` event |
+| `conversation.handoff` | `conversation_id`, `dispatch_id`, `from_agent`, `target_agent_id`, `depth`, `deadline_at` | an agent handed a turn to another agent; `depth` counts dispatches in the root chain (max 4, 5-minute deadline) |
+
+`Conversation` and `Message` here are the same shapes as `GET /api/conversations` and
+`GET /api/conversations/{id}/messages` in `contract/openapi.json`. Mentions are typed agent entities with
+UTF-16 `offset`/`length` into `text`; they never arrive as a flag on `event.metadata`.
+
+`conversation.stop` is not a stored event: stop goes through the existing `POST /api/conversations/{id}/stop`
+result and the room-scoped `chat.stop` / `callback.answer` frames, so a reconnect cannot deliver a stale stop.
