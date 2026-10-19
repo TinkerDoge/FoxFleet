@@ -69,6 +69,16 @@ class ConversationRoutingTest {
         assertTrue(ConversationMentions.mentionsIn("mail@helper", members).isEmpty())
     }
 
+    @Test fun mentionIdsAreActorIdsNotDisplayNames() {
+        val native = listOf(ConversationMember("agent:sumi-native", "Sumi", "agent", true))
+        val spans = ConversationMentions.mentionsIn("@Sumi check this", native)
+        assertEquals(listOf("agent:sumi-native"), spans.map { it.id })
+        assertEquals(0, spans[0].offset)
+        assertEquals(5, spans[0].length)
+        assertEquals("agent:sumi-native", ConversationMentions.mentionsIn("@sumi too", native).single().id)
+        assertTrue(ConversationMentions.mentionsIn("mail@Sumi", native).isEmpty())
+    }
+
     @Test fun typedMentionTokenOnlyStartsAfterWhitespaceOrAtTheStart() {
         assertEquals(ConversationMentions.Token(0, "hel"), ConversationMentions.tokenAt("@hel", 4))
         assertEquals(ConversationMentions.Token(6, "rev"), ConversationMentions.tokenAt("hello @rev", 10))

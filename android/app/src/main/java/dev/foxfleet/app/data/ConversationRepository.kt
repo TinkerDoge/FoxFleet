@@ -111,18 +111,18 @@ class ConversationRepository(private val api: HubApi, private val cache: ChatCac
 object ConversationMentions {
     fun mentionsIn(text: String, members: List<ConversationMember>): List<ConversationMention> {
         val out = ArrayList<ConversationMention>()
-        val agents = members.filter { it.isAgent }.sortedByDescending { it.name.length }
+        val agents = members.filter { it.isAgent && it.id.isNotBlank() }.sortedByDescending { it.name.length }
         for (m in agents) {
             val needle = "@${m.name}"
             var from = 0
             while (true) {
-                val at = text.indexOf(needle, from)
+                val at = text.indexOf(needle, startIndex = from, ignoreCase = true)
                 if (at < 0) break
                 val end = at + needle.length
                 val after = text.getOrNull(end)?.toString().orEmpty()
                 val before = if (at == 0) "" else text[at - 1].toString()
                 if (!WORD.matches(after) && !WORD.matches(before)) {
-                    out += ConversationMention("agent", "agent:${m.name}", at, needle.length)
+                    out += ConversationMention("agent", m.id, at, needle.length)
                 }
                 from = end
             }

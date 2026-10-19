@@ -127,6 +127,25 @@ test('mentions: UTF-16 spans, membership and overlap are checked; valid entities
   await assert.rejects(() => store.send(room.id, { actor, text: 'x', mentions: Array.from({ length: 65 }, () => ({ kind: 'agent', id: 'agent:alpha', offset: 0, length: 1 })) }), (e) => e.code === 'mentions_invalid');
 });
 
+test('mentions: a unique display-name id aliases to the member actor_id', async (t) => {
+  const { store } = await seed(t);
+  const native = { actor_id: 'agent:sumi-native', name: 'Sumi' };
+  const room = await create(store, 'Native', [native]);
+  const text = '@Sumi check this';
+  const sent = (await store.send(room.id, {
+    actor, text, mentions: [{ kind: 'agent', id: 'agent:Sumi', offset: 0, length: 5 }],
+  })).message;
+  assert.deepEqual(sent.mentions, [{ kind: 'agent', id: 'agent:sumi-native', offset: 0, length: 5 }]);
+  const lower = (await store.send(room.id, {
+    actor, text: '@sumi too', mentions: [{ kind: 'agent', id: 'agent:sumi', offset: 0, length: 5 }],
+  })).message;
+  assert.equal(lower.mentions[0].id, 'agent:sumi-native');
+  const exact = (await store.send(room.id, {
+    actor, text: '@Sumi exact', mentions: [{ kind: 'agent', id: 'agent:sumi-native', offset: 0, length: 5 }],
+  })).message;
+  assert.equal(exact.mentions[0].id, 'agent:sumi-native');
+});
+
 test('idempotency: create and send are keyed by client_id; a changed payload is a conflict', async (t) => {
   const { store } = await seed(t);
   const one = await store.create({ owner: OWNER, title: 'Idem', agents: [ALPHA], client_id: 'create-1' });
