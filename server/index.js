@@ -31,6 +31,8 @@ import { replyTokens } from './reply-tokens.js';
 import { machineStore, normalizeCode, validCode, formatCode } from './machines.js';
 import { wsAccept } from './ws.js';
 import { createBotApi, disabledBotProbe, botDisabled } from './bot-api.js';
+import { conversationStore } from './conversation-store.js';
+import { conversationsHttp } from './conversations.js';
 import { qrSvg, qrRows } from './qr.js';
 import { fetchImage } from './media-proxy.js';
 import { mediaHub } from './media.js';
@@ -232,6 +234,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       reg.reactions = await reactionStore(path.join(dir, 'reactions.json'));
       reg.coord = await coordinator(path.join(dir, 'queue.json'), { runs, stopWaitMs: Number(process.env.FOXFLEET_STOP_WAIT_MS) || 15_000 }); reg.native = await nativeHub({ connectors, file: path.join(dir, 'native-journal.json') }); facade.attachHooks(reg.native);
       reg.notify = await notifyStore(path.join(dir, 'notify.json')); reg.live = liveBus();
+      reg.conversations = await conversationStore(path.join(dir, 'conversations')); // Task 2: rooms are account-local
       reg.live2 = await liveLog(path.join(dir, 'live-events'), { ...retention, now: liveClock });
       reg.ledger = await chatLedger(path.join(dir, 'chats.json'), { idemMax: Math.max(500, replyRatePerMin * 60 * 24), hooks: { reactions: (agent, chat, ref) => storedReactions(reg, agent, chat, ref), event: (type, f) => reg.live2.emit(type, f), changed: (agent) => rowChanged(reg, userId, agent), muted: (agent) => Boolean(reg.notify.muteOf(agent)), known: (agent) => reg.store.all().some((x) => x.name === agent) } });
       reg.native.onRequest((s, e) => { const a = reg.store.all().find((x) => x.machineId === s.machineId && x.profile === s.agent); reg.notify.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live.emit({ type: 'approval', agent: a?.name ?? s.agent, chat: s.stored, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); reg.live2.emit('approval', { agent: a?.name ?? s.agent, chat: s.stored ?? undefined, request_id: String(e.request_id ?? '').slice(0, 100), kind: String(e.kind ?? 'approval').slice(0, 30) }); rowChanged(reg, userId, a?.name ?? s.agent); });
@@ -729,6 +732,14 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         if (route === 'users' && parts.length === 3 && req.method === 'GET') return sendJson(res, 200, { users: accounts.users() });
         if (route === 'users' && parts.length === 4 && req.method === 'DELETE') { await accounts.removeUser(auth.user.id, parts[3]); await bot?.revokeScope(parts[3]); const removed = registries.get(parts[3]); if (removed) await (await removed).reactions.clear(); return sendJson(res, 200, { ok: true }); }
         throw fault(404, 'Not found');
+      }
+      if (parts[0] === 'api' && parts[1] === 'conversations') { // rooms (Task 2): account-local storage and access only
+        const agentOf = (name) => {
+          const agent = store.all().find((x) => x.name === name);
+          if (!agent) throw fault(404, 'Unknown agent for this account', 'agent_not_in_account');
+          return { actor_id: 'agent:' + agent.name, name: agent.label || agent.name };
+        };
+        return await conversationsHttp({ req, res, url, parts, auth, store: ctx.reg.conversations, agentOf, sendJson, readJson });
       }
       if ((req.method === 'GET' || req.method === 'HEAD') && parts[0] === 'api' && parts[1] === 'media' && parts.length === 3) return await (parts[2].startsWith('bot.') && bot ? bot.serveMediaToken({ token: parts[2], scope: scopeOf(ctx), req, res }) : media.serve({ token: parts[2], scope: scopeOf(ctx), req, res }));
       if (req.method === 'GET' && url.pathname === '/api/media-proxy') {
