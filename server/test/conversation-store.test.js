@@ -111,6 +111,30 @@ test('message paging/replies: keyset seq cursor, newest page, reply root in the 
   await assert.rejects(() => store.send(room.id, { actor, text: 'x', reply_to: '__proto__' }), (e) => e.status === 404 && e.code === 'reply_not_found');
 });
 
+test('reasoning: an agent message keeps its thinking, a human message never does, an oversize block is clipped', async (t) => {
+  const { store } = await seed(t);
+  const room = await create(store, 'Thinking', [ALPHA]);
+  const agent = { kind: 'agent', id: ALPHA.actor_id, name: ALPHA.name };
+
+  const said = (await store.send(room.id, { actor: agent, text: 'here it is', reasoning: 'Let me check the logs.' })).message;
+  assert.equal(said.reasoning, 'Let me check the logs.');
+  assert.equal(said.reasoning_truncated, undefined);
+  const page = await store.messages(room.id, { device: 'd', limit: 10 });
+  assert.equal(page.messages.find((m) => m.id === said.id).reasoning, 'Let me check the logs.');
+
+  // A human has no thinking block, even when one is offered.
+  const mine = (await store.send(room.id, { actor, text: 'mine', reasoning: 'not mine' })).message;
+  assert.equal(mine.reasoning, undefined);
+  assert.equal((await store.messages(room.id, { device: 'd', limit: 10 })).messages.find((m) => m.id === mine.id).reasoning, undefined);
+
+  // Oversize: the thinking is clipped, the answer is never lost over a display field.
+  const loud = (await store.send(room.id, { actor: agent, text: 'still here', reasoning: 'x'.repeat(70_000) })).message;
+  assert.equal(loud.text, 'still here');
+  assert.equal(loud.reasoning_truncated, true);
+  assert.ok(Buffer.byteLength(loud.reasoning, 'utf8') <= 64 * 1024);
+  assert.ok(loud.reasoning.length < 70_000);
+});
+
 test('mentions: UTF-16 spans, membership and overlap are checked; valid entities are stored verbatim', async (t) => {
   const { store } = await seed(t);
   const room = await create(store, 'Mentions', [ALPHA]);

@@ -298,6 +298,42 @@ test('live join and leave reach every 1.2 member and never a 1.1 socket', async 
   assert.equal(old.texts.filter((x) => x && x.t === 'chat.member').length, 0);
 });
 
+test('a room reply keeps its thinking: the send carries it, an edit updates it, the dispatch frame never does', async (t) => {
+  const boot = await bootBot(t);
+  const room = await createRoom(boot.h, 'Thinking', ['helper']);
+  const c = await boot.connect({ headers: V12_HEADERS });
+  await c.next((x) => x.t === 'hello');
+
+  await roomSend(boot.h, room.id, '@helper think about it');
+  const run = await c.next((x) => x.t === 'dispatch.run');
+  // The agent's context carries the request, never its own thinking.
+  assert.equal('reasoning' in run, false, 'the dispatch frame has no reasoning');
+  assert.equal(run.text, '@helper think about it');
+  assert.deepEqual(run.mentions, [{ kind: 'agent', id: 'agent:helper', offset: 0, length: 7 }]);
+
+  const partial = await c.request({ t: 'message.send', id: 'think-1', chat_id: room.id, text: 'draft', final: false, reasoning: 'first thoughts', ...attemptOf(run) });
+  assert.equal(partial.ok, true, JSON.stringify(partial));
+  const listed = await (await boot.h.call(`/api/conversations/${room.id}/messages`)).json();
+  const row = listed.messages.find((m) => m.id === partial.result.message_id);
+  assert.equal(row.reasoning, 'first thoughts');
+
+  // The plugin flushes the thinking with a non-final edit: the message keeps the newest one.
+  const edit = await c.request({ t: 'message.edit', id: 'think-2', chat_id: room.id, message_id: partial.result.message_id, text: 'draft', final: false, reasoning: 'more thoughts', ...attemptOf(run) });
+  assert.equal(edit.ok, true, JSON.stringify(edit));
+  const after = await (await boot.h.call(`/api/conversations/${room.id}/messages`)).json();
+  const edited = after.messages.find((m) => m.id === partial.result.message_id);
+  assert.equal(edited.reasoning, 'more thoughts');
+  assert.equal(edited.edited, true);
+
+  // The final answer keeps the thinking too.
+  const final = await c.request({ t: 'message.send', id: 'think-final', chat_id: room.id, text: 'the answer', final: true, reasoning: 'the last thoughts', ...attemptOf(run) });
+  assert.equal(final.ok, true, JSON.stringify(final));
+  const done = await (await boot.h.call(`/api/conversations/${room.id}/messages`)).json();
+  const answer = done.messages.find((m) => m.id === final.result.message_id);
+  assert.equal(answer.reasoning, 'the last thoughts');
+  assert.equal(answer.text, 'the answer');
+});
+
 test('a final edit promotes the streamed message and completes the exact attempt', async (t) => {
   const boot = await bootBot(t);
   const room = await createRoom(boot.h, 'Final edit', ['helper']);

@@ -63,6 +63,38 @@ export function durationMs(d) {
   return s !== undefined && s >= 0 ? Math.round(s * 1000) : undefined;
 }
 
+/**
+ * The display-only reasoning of one message, clipped like a DM reply: 64 KiB of UTF-8, `reasoning_truncated` when it was cut.
+ * Empty when there is nothing to show. It never throws: a display field must not cost the answer.
+ */
+export function reasoningFields(reasoning) {
+  if (typeof reasoning !== 'string' || !reasoning.trim()) return {};
+  try {
+    const extras = messageExtras({ reasoning });
+    if (!extras.reasoning) return {};
+    return { reasoning: extras.reasoning, ...(extras.reasoning_truncated ? { reasoning_truncated: true } : {}) };
+  } catch { return {}; }
+}
+
+/**
+ * Put one frame's optional reasoning on a message row: absent leaves the row as it is, an empty string clears it,
+ * text replaces it. Returns whether the row changed, so a caller can tell an edit from a no-op.
+ */
+export function applyReasoning(message, reasoning) {
+  if (reasoning === undefined) return false;
+  const extra = reasoningFields(reasoning);
+  const next = extra.reasoning ?? null;
+  const changed = (message.reasoning ?? null) !== next
+    || Boolean(extra.reasoning_truncated) !== Boolean(message.reasoning_truncated);
+  if (!next) { delete message.reasoning; delete message.reasoning_truncated; }
+  else {
+    message.reasoning = next;
+    if (extra.reasoning_truncated) message.reasoning_truncated = true;
+    else delete message.reasoning_truncated;
+  }
+  return changed;
+}
+
 /** The reasoning / tools fields a message carries (message.new / message.edited), clipped like history: reasoning 64 KiB UTF-8 (+ reasoning_truncated), at most 50 tools of { name, args?, result?, ok? } with args/result at most 500 characters. */
 export function messageExtras({ reasoning, tools } = {}) {
   const out = {};
