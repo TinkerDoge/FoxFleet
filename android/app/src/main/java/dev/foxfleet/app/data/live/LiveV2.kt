@@ -38,6 +38,8 @@ data class LiveCursor(val store: String, val seq: Long) {
 sealed interface V2Frame {
     data class Event(val id: String, val event: V2Event) : V2Frame
     data class TypingFrame(val typing: Typing) : V2Frame
+    /** Ephemeral room typing: which agent member is typing in that room. */
+    data class ConversationTypingFrame(val typing: ConversationTyping) : V2Frame
     data class StepFrame(val step: RunStep) : V2Frame
     data class Gap(val reason: String, val cursor: String?) : V2Frame
     data class Ready(val cursor: String?, val contract: String?) : V2Frame
@@ -53,6 +55,7 @@ object V2Frames {
             "foxfleet.ready" -> V2Frame.Ready(s("cursor"), s("contract"))
             "foxfleet.auth" -> V2Frame.Auth
             "typing" -> Contract.typing(o)?.let { V2Frame.TypingFrame(it) }
+            "conversation.typing" -> Contract.conversationTyping(o)?.let { V2Frame.ConversationTypingFrame(it) }
             "run.step" -> Contract.runStep(o)?.let { V2Frame.StepFrame(it) }
             else -> {
                 val e = Contract.event(o, event) ?: return null
@@ -84,6 +87,8 @@ interface V2Sink {
     /** A persisted event, in seq order (replayed or live). Must be idempotent: after a crash between apply and save it comes again. */
     suspend fun onEvent(e: V2Event)
     fun onTyping(t: Typing)
+    /** Ephemeral `conversation.typing`: which agent member is typing in a room. */
+    fun onConversationTyping(t: ConversationTyping) {}
     /** Ephemeral `run.step` (0.4.1 hubs): a step of a running reply. */
     fun onStep(s: RunStep) {}
     /**
@@ -196,6 +201,7 @@ class LiveV2Runner(
                     if (live) { sink.onLink(LinkState.Updating); resync(); sink.onLink(LinkState.Live) }
                 }
                 is V2Frame.TypingFrame -> sink.onTyping(f.typing)
+                is V2Frame.ConversationTypingFrame -> sink.onConversationTyping(f.typing)
                 is V2Frame.StepFrame -> sink.onStep(f.step)
                 is V2Frame.Event -> apply(f)
                 is V2Frame.Ready -> {

@@ -149,6 +149,18 @@ fun rememberChatBackground(agent: String): ChatBackgroundState {
     return st
 }
 
+/** A group room's own background: a separate `room:<fc_id>` key, never a member agent's DM look. */
+@Composable
+fun rememberConversationBackground(conversationId: String): ChatBackgroundState {
+    val ctx = LocalContext.current.applicationContext
+    val store = remember { ChatBackgroundStore(ctx) }
+    val scope = rememberCoroutineScope()
+    val key = store.roomKey(conversationId)
+    val st = remember { ChatBackgroundState(store, ctx, key, scope) }
+    if (key != st.key) st.switchTo(key)
+    return st
+}
+
 // ---- drawing ----
 
 /** One pattern tile as an image (drawn once per pattern, colour and density), then repeated by a shader. */

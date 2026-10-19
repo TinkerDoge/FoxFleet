@@ -116,6 +116,11 @@ fun FleetScreen(
     link: LinkState? = null,
     /** The agent's typing line from the live stream ("typing…", "thinking…"), or null. */
     typingLabel: (String) -> String? = { null },
+    /** Group rooms: their own rows (a room is never an [AgentStatus]); listed above the DMs, which keep their order. */
+    conversations: List<dev.foxfleet.app.data.Conversation> = emptyList(),
+    onRooms: (() -> Unit)? = null,
+    onOpenConversation: (dev.foxfleet.app.data.Conversation) -> Unit = {},
+    onNewConversation: (() -> Unit)? = null,
 ) {
     val c = LocalHubColors.current
     var entered by rememberSaveable { mutableStateOf(false) }
@@ -154,6 +159,7 @@ fun FleetScreen(
                 if (archivedView) Text(if (listed.size == 1) "1 chat" else "${listed.size} chats", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
                 else if (agents.isNotEmpty()) Text("$ready of ${agents.size} ready", style = MaterialTheme.typography.bodySmall, color = c.textMuted, maxLines = 1)
             }
+            if (onRooms != null) SoftIconButton(FoxIcons.get("users"), "Rooms", onRooms, background = c.surfaceAlt, tint = c.text)
             SoftIconButton(FoxIcons.get(if (searching) "close" else "search"), if (searching) "Close search" else "Search agents", { searching = !searching; if (!searching) query = "" }, background = c.surfaceAlt, tint = c.text)
             if (onAddAgent != null) SoftIconButton(FoxIcons.get("add"), "Add agent", onAddAgent, background = c.surfaceAlt, tint = c.text)
         }
@@ -168,6 +174,17 @@ fun FleetScreen(
                 else -> LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(top = 4.dp, bottom = 24.dp)) {
                     if (error != null) item(key = "error") {
                         Text(error, style = MaterialTheme.typography.bodySmall, color = c.textMuted, modifier = Modifier.animateItem().padding(horizontal = 20.dp, vertical = 6.dp))
+                    }
+                    if (!archivedView && conversations.isNotEmpty() && query.isBlank()) {
+                        item(key = "rooms-header", contentType = "header") {
+                            Row(Modifier.fillMaxWidth().padding(start = 18.dp, end = 12.dp, top = 6.dp, bottom = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Text("Rooms", style = MaterialTheme.typography.labelLarge, color = c.textMuted, modifier = Modifier.weight(1f))
+                                if (onNewConversation != null) Text("New", style = MaterialTheme.typography.labelLarge, color = c.accent, modifier = Modifier.clickable(onClick = onNewConversation).padding(6.dp))
+                            }
+                        }
+                        itemsIndexed(conversations, key = { _, room -> "room:${room.id}" }, contentType = { _, _ -> "room" }) { _, room ->
+                            AgentRoomRow(room, now(), onOpenConversation, Modifier.animateItem())
+                        }
                     }
                     if (!archivedView && archived.isNotEmpty() && query.isBlank()) item(key = "archived", contentType = "archived") {
                         ArchivedEntry(archived.size, archived.sumOf { rows[it.name]?.badge ?: 0 }, Modifier.animateItem()) { onArchivedView(true) }
@@ -316,6 +333,33 @@ private fun AgentRow(
                     DropdownMenuItem(text = { Text(if (row.archived) "Unarchive" else "Archive") }, leadingIcon = { ArchiveGlyph(c.text) }, onClick = { menu = false; actions.onArchive(a.name, !row.archived) })
                 }
                 DropdownMenuItem(text = { Text("Change picture") }, leadingIcon = { FoxIcon("image", tint = c.text) }, onClick = { menu = false; onChangePicture(a.name) })
+            }
+        }
+    }
+}
+
+/** One room row: the room's title and member names, never an agent identity (no avatar dossier, no chat session). */
+@Composable
+private fun AgentRoomRow(room: dev.foxfleet.app.data.Conversation, now: Long, onOpen: (dev.foxfleet.app.data.Conversation) -> Unit, modifier: Modifier) {
+    val c = LocalHubColors.current
+    Row(modifier.fillMaxWidth().heightIn(min = 68.dp).clickable { onOpen(room) }.padding(horizontal = 16.dp, vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.size(52.dp).clip(CircleShape).background(c.surfaceAlt), contentAlignment = Alignment.Center) { FoxIcon("users", size = 24.dp, tint = c.textMuted) }
+        Spacer(Modifier.width(14.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(room.title, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+                if (room.paused) { Spacer(Modifier.width(6.dp)); Text("paused", style = MaterialTheme.typography.labelSmall, color = c.textMuted) }
+                Spacer(Modifier.weight(1f))
+                Text(AgentList.time(room.lastMessageAt ?: room.updatedAt, now), style = MaterialTheme.typography.labelSmall, color = if (room.unreadCount > 0) c.accent else c.textMuted, maxLines = 1)
+            }
+            Spacer(Modifier.height(2.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(room.members.joinToString(", ") { it.name }.ifBlank { "No members" }, style = MaterialTheme.typography.bodyMedium, color = c.textMuted, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+                if (room.unreadCount > 0) {
+                    Spacer(Modifier.width(8.dp))
+                    Text("${room.unreadCount}", style = MaterialTheme.typography.labelMedium, color = c.onAccent, maxLines = 1,
+                        modifier = Modifier.defaultMinSize(minWidth = 22.dp).clip(CircleShape).background(c.accent).padding(horizontal = 7.dp, vertical = 2.dp), textAlign = androidx.compose.ui.text.style.TextAlign.Center)
+                }
             }
         }
     }

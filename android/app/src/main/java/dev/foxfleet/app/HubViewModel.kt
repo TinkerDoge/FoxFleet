@@ -10,6 +10,11 @@ import androidx.lifecycle.viewModelScope
 import dev.foxfleet.app.data.AgentStatus
 import dev.foxfleet.app.data.AppPrefs
 import dev.foxfleet.app.data.AuthRequiredException
+import dev.foxfleet.app.data.Conversation
+import dev.foxfleet.app.data.ConversationMention
+import dev.foxfleet.app.data.ConversationMessage
+import dev.foxfleet.app.data.ConversationPreferences
+import dev.foxfleet.app.data.ConversationRepository
 import dev.foxfleet.app.data.HubAddress
 import dev.foxfleet.app.data.HubApi
 import dev.foxfleet.app.data.HubApiException
@@ -42,10 +47,51 @@ sealed interface Route {
     data class Machines(val code: String? = null) : Route
     /** Add (agent = null) or edit an agent in the hub registry. */
     data class AgentEditor(val agent: String? = null) : Route
+    /** The room list (its own screen; rooms are never agents on [Fleet]). */
+    data object Conversations : Route
+    /** One room, addressed by its `fc_…` id. [details] opens the member/notification sheet. */
+    data class ConversationRoom(val id: String, val details: Boolean = false) : Route
+    data object NewConversation : Route
 }
 
 /** Screen depth used to pick the slide direction between routes. */
-fun Route.depth(): Int = when (this) { Route.Fleet -> 0; is Route.Chat -> 1; is Route.Dossier -> 1; Route.Settings -> 1; is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2; is Route.Machines -> 3; is Route.AgentEditor -> 3 }
+fun Route.depth(): Int = when (this) {
+    Route.Fleet -> 0; is Route.Chat -> 1; is Route.Dossier -> 1; Route.Settings -> 1
+    Route.Conversations, Route.NewConversation -> 1; is Route.ConversationRoom -> 2
+    is Route.Screen -> 2; Route.Agents -> 2; Route.Hubs -> 2; Route.Devices -> 2; Route.Admin -> 2
+    is Route.Machines -> 3; is Route.AgentEditor -> 3
+}
+
+/** One open room's transcript state. Rooms keep their own state: never a DM [ChatState]. */
+class ConversationRoomState {
+    var conversation by mutableStateOf<Conversation?>(null)
+    var messages by mutableStateOf<List<ConversationMessage>>(emptyList())
+    var loading by mutableStateOf(false)
+    var loadingOlder by mutableStateOf(false)
+    var hasMore by mutableStateOf(false)
+    var cursor by mutableStateOf<Int?>(null)
+    var error by mutableStateOf<String?>(null)
+    var sending by mutableStateOf(false)
+    /** Open native cards per agent name (the answer route wants the exact member agent). */
+    var requests by mutableStateOf<Map<String, List<HubApi.OpenRequest>>>(emptyMap())
+    /** Member id/name -> when its typing line expires (ms). */
+    val typing = mutableStateMapOf<String, Long>()
+
+    fun addMessage(m: ConversationMessage) {
+        if (m.deleted) { messages = messages.filterNot { it.id == m.id }; return }
+        val at = messages.indexOfFirst { it.id == m.id }
+        messages = if (at < 0) (messages + m).sortedWith(MESSAGE_ORDER) else messages.toMutableList().also { it[at] = m }
+    }
+    fun removeMessage(id: String) { messages = messages.filterNot { it.id == id } }
+    fun typingNames(now: Long): List<String> {
+        typing.entries.removeAll { it.value <= now }
+        return typing.keys.toList()
+    }
+
+    companion object {
+        private val MESSAGE_ORDER = compareBy<ConversationMessage>({ it.seq ?: Int.MAX_VALUE }, { it.createdAt }, { it.id })
+    }
+}
 
 /** App state that must outlive rotation: auth, fleet, chats, in-flight streams, route. */
 class HubViewModel(app: Application) : AndroidViewModel(app) {
@@ -80,9 +126,10 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val db = dev.foxfleet.app.data.local.CacheDb.get(getApplication())
         if (cacheOwner.claim(key, account, settings.baseUrl)) db.admin().wipeAll()
         cache = dev.foxfleet.app.data.local.ChatCache(db, key)
+        conversationRepository = ConversationRepository(api, cache)
     }
     private fun wipeCache() {
-        cache = null; cacheOwner.forget()
+        cache = null; conversationRepository = null; cacheOwner.forget()
         val app = getApplication<Application>()
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { runCatching { dev.foxfleet.app.data.local.CacheDb.get(app).admin().wipeAll() } }
     }
@@ -280,6 +327,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         authGeneration++; deactivateMedia(); stopLive()
         dev.foxfleet.app.notify.NotifyController.onHubChanged(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear(); skills.clear()
+        conversationsJob?.cancel(); conversationRepository = null; conversations = emptyList(); conversationsLoadedOnce = false; conversationsError = null; roomStates.clear()
         agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; username = ""; isOwner = false
     }
     var agents by mutableStateOf<List<AgentStatus>>(emptyList()); private set
@@ -293,6 +341,17 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     var historyError by mutableStateOf<String?>(null)
     private val chats = dev.foxfleet.app.notify.AgentChats<ChatState>() // the notification service reads it from another thread
     private val jobs = HashMap<String, Job>()
+    /** Group rooms: their own repository and state; never mixed into [chats] or [agents]. */
+    private var conversationRepository: ConversationRepository? = null
+    var conversations by mutableStateOf<List<Conversation>>(emptyList()); private set
+    var conversationsLoading by mutableStateOf(false); private set
+    var conversationsLoadedOnce by mutableStateOf(false); private set
+    var conversationsError by mutableStateOf<String?>(null); private set
+    /** The signed-in account id (the hub's user id): decides "mine" and room-owner controls. */
+    var myUserId by mutableStateOf<String?>(null); private set
+    var roomCreating by mutableStateOf(false); private set
+    val roomStates = mutableStateMapOf<String, ConversationRoomState>()
+    private var conversationsJob: Job? = null
 
     init {
         dev.foxfleet.app.notify.NotifyForeground.chatIdOf = { chats.peek(it)?.sessionId }
@@ -332,11 +391,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             var attempt = 0
             while (true) {
                 try {
-                    val info = api.authInfo(); if (generation != authGeneration) return@launch; username = info.username.orEmpty(); isOwner = info.isOwner; hubVersion = info.hubVersion; hubFeatures = info.hubFeatures
+                    val info = api.authInfo(); if (generation != authGeneration) return@launch; myUserId = info.userId; username = info.username.orEmpty(); isOwner = info.isOwner; hubVersion = info.hubVersion; hubFeatures = info.hubFeatures
                     val signedIn = !info.required || info.authenticated
                     // Only a real, signed-in session claims the backgrounds (a failed or cancelled sign-in never does); done before any chat can draw.
                     if (signedIn) withContext(kotlinx.coroutines.Dispatchers.IO) { dev.foxfleet.app.data.ChatBackgroundStore(getApplication()).claimOwner(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl)) }
-                    if (signedIn) claimCache(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl), username.ifBlank { "anonymous-hub" }) else cache = null
+                    if (signedIn) claimCache(dev.foxfleet.app.data.ChatBgOwner.key(info.userId ?: info.username, settings.baseUrl), username.ifBlank { "anonymous-hub" }) else { cache = null; conversationRepository = null }
                     offline = false
                     if (generation != authGeneration) return@launch
                     authed = signedIn; if (authed == true) activateMedia(username.ifBlank { "anonymous-hub" }); bootReconnecting = false; break
@@ -365,9 +424,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val key = cacheOwner.offlineOwner(settings.baseUrl) ?: return false
         val account = cacheOwner.account ?: return false
         cache = dev.foxfleet.app.data.local.ChatCache.forOwner(getApplication(), key)
+        conversationRepository = ConversationRepository(api, cache)
         username = account.takeIf { it != "anonymous-hub" }.orEmpty()
         offline = true; authed = true; activateMedia(account)
         refreshFleet(silent = true)
+        viewModelScope.launch { conversations = conversationRepository?.cachedConversations().orEmpty(); conversationsLoadedOnce = conversations.isNotEmpty() }
         viewModelScope.launch {
             var n = 0
             while (generation == authGeneration && offline) {
@@ -389,11 +450,12 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         authGeneration++; deactivateMedia(purge = true); stopLive()
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
+        conversationsJob?.cancel(); conversations = emptyList(); conversationsLoadedOnce = false; conversationsError = null; roomStates.clear()
         viewModelScope.launch { api.logout() }
         chatRows = emptyMap(); archivedRows = emptyList(); showArchived = false; totalUnread = 0; publishBadge()
         wipeCache(); offline = false // the cache holds message text: it never outlives the sign-in
         settings.clearSession() // chat backgrounds stay: they are cleared only when a different account or hub signs in (see claimBackgroundOwner)
-        agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false
+        agents = emptyList(); fleetLoadedOnce = false; route = Route.Fleet; authed = false; myUserId = null
     }
 
     /** Refresh the list. `silent` (the periodic poll, leaving a chat) shows no spinner and no error: the list just updates. */
@@ -411,6 +473,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 agents = AgentList.sort(fresh); fleetLoadedOnce = true; restoreLastChat()
                 val sorted = agents; cached { saveAgents(sorted) }
                 if (features.chats) loadChats()
+                // Rooms are optional on older hubs (404 is quiet): never let them fail the DM list.
+                runCatching { if (!silent || conversations.isEmpty()) loadConversations() }
             } catch (e: AuthRequiredException) {
                 deactivateMedia(purge = true)
                 authed = false
@@ -446,6 +510,8 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
     /** Back: returns false when there is nowhere to go (let the system finish). */
     fun back(): Boolean = when (val r = route) {
         is Route.Screen -> { route = Route.Chat(r.agent); true }
+        is Route.ConversationRoom -> { route = Route.Conversations; true }
+        Route.NewConversation -> { route = Route.Conversations; true }
         Route.Agents, Route.Hubs, Route.Devices, Route.Admin -> { route = Route.Settings; true }
         is Route.AgentEditor -> { route = Route.Agents; true }
         is Route.Machines -> { route = Route.Agents; true }
@@ -976,6 +1042,14 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) effects.forEach { onEffect(it) } }
             }
             override fun onTyping(t: dev.foxfleet.app.data.live.Typing) { viewModelScope.launch { if (gen == authGeneration && typing.on(t)) bumpTyping() } }
+            override fun onConversationTyping(t: dev.foxfleet.app.data.live.ConversationTyping) {
+                viewModelScope.launch {
+                    if (gen != authGeneration) return@launch
+                    val st = roomStates[t.conversationId] ?: return@launch
+                    val key = t.agent ?: ""
+                    if (t.state == "idle" || key.isBlank()) st.typing.remove(key) else st.typing[key] = System.currentTimeMillis() + 6000
+                }
+            }
             override fun onStep(s: dev.foxfleet.app.data.live.RunStep) { viewModelScope.launch { if (gen == authGeneration) onRunStep(s) } }
             override suspend fun onResync(reason: String) = withContext(kotlinx.coroutines.Dispatchers.Main) { if (gen == authGeneration) resyncNow(reason) }
         }
@@ -1042,6 +1116,23 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 onLiveEvent(dev.foxfleet.app.data.LiveEvent("", f.type, f.agent, f.chat, f.runId, f.state))
             }
             is dev.foxfleet.app.data.live.LiveEffect.StopTyping -> if (typing.clear(f.agent, f.chat)) bumpTyping()
+            is dev.foxfleet.app.data.live.LiveEffect.ConversationChanged -> {
+                mergeConversation(f.conversation)
+                roomStates[f.conversation.id]?.let { st -> st.conversation = f.conversation }
+            }
+            is dev.foxfleet.app.data.live.LiveEffect.ConversationMessageUpserted -> {
+                val st = roomStates[f.conversationId]
+                if (st != null) {
+                    st.addMessage(f.message)
+                    st.conversation?.let { c ->
+                        mergeConversation(c.copy(lastMessageAt = f.message.createdAt, updatedAt = maxOf(c.updatedAt, f.message.createdAt)))
+                    }
+                } else if ((route as? Route.ConversationRoom)?.id != f.conversationId && f.message.sender.kind == "agent") {
+                    conversations = conversations.map { if (it.id == f.conversationId) it.copy(unreadCount = it.unreadCount + 1) else it }
+                }
+            }
+            is dev.foxfleet.app.data.live.LiveEffect.ConversationMessageDeleted -> roomStates[f.conversationId]?.removeMessage(f.messageId)
+            is dev.foxfleet.app.data.live.LiveEffect.ConversationReadChanged -> roomStates[f.conversationId]?.conversation?.let { c -> mergeConversation(c.copy(unreadCount = 0)); roomStates[f.conversationId]!!.conversation = c.copy(unreadCount = 0) }
         }
     }
 
@@ -1116,6 +1207,230 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             if (showArchived) { val arch = api.chats(archived = true); cached { saveSnapshot(true, arch, false) } }
             reloadRows()
         } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; if (strict) throw e } catch (e: Exception) { if (strict) throw e }
+    }
+
+    // ---- group rooms: the same hub, a separate list and separate transcript state ----
+
+    fun roomState(id: String): ConversationRoomState = roomStates.getOrPut(id) { ConversationRoomState() }
+
+    /** Load the account's rooms: cached first, then the hub (the list is the hub's truth). */
+    fun loadConversations() {
+        if (conversationsJob?.isActive == true) return
+        conversationsLoading = true; conversationsError = null
+        conversationsJob = viewModelScope.launch {
+            val repo = conversationRepository
+            if (repo != null) {
+                val cached = runCatching { repo.cachedConversations() }.getOrDefault(emptyList())
+                if (cached.isNotEmpty()) { conversations = dev.foxfleet.app.data.ConversationOrder.sorted(cached); conversationsLoadedOnce = true }
+            }
+            try {
+                val fresh = repo?.list() ?: emptyList()
+                conversations = dev.foxfleet.app.data.ConversationOrder.sorted(fresh)
+                conversationsLoadedOnce = true
+            } catch (e: CancellationException) { throw e
+            } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) {
+                if (conversations.isEmpty()) conversationsError = scrubAddresses(e.message ?: "Couldn't load rooms")
+            } finally { conversationsLoading = false }
+        }
+    }
+
+    fun openRoom(id: String) {
+        val state = roomState(id)
+        if (state.loading) return
+        state.loading = true; state.error = null
+        viewModelScope.launch {
+            val repo = conversationRepository
+            try {
+                repo?.cachedConversation(id)?.let { state.conversation = it }
+                repo?.cachedRoom(id)?.let { cached ->
+                    state.messages = cached.messages
+                    state.hasMore = cached.hasMore
+                    state.cursor = cached.messages.firstOrNull()?.seq
+                }
+                val room = repo?.conversation(id) ?: api.conversation(id)
+                state.conversation = room
+                mergeConversation(room)
+                val page = repo?.page(id) ?: api.conversationMessages(id)
+                state.messages = page.messages
+                state.hasMore = page.hasMore
+                state.cursor = page.nextCursor
+                refreshRoomRequests(id)
+                runCatching { repo?.markRead(id) ?: api.markConversationRead(id) }.getOrNull()?.let { mergeConversation(it) }
+            } catch (e: CancellationException) { throw e
+            } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) {
+                if (state.messages.isEmpty()) state.error = scrubAddresses(e.message ?: "Couldn't load the room")
+                if (state.conversation != null) conversationsError = null
+            } finally { state.loading = false }
+        }
+    }
+
+    fun loadOlderRoom(id: String) {
+        val state = roomState(id); val cursor = state.cursor ?: return
+        if (state.loadingOlder || state.loading) return
+        state.loadingOlder = true
+        viewModelScope.launch {
+            try {
+                val page = conversationRepository?.page(id, cursor) ?: api.conversationMessages(id, cursor = cursor)
+                val seen = state.messages.map { it.id }.toHashSet()
+                state.messages = page.messages.filter { it.id !in seen } + state.messages
+                state.hasMore = page.hasMore; state.cursor = page.nextCursor
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't load older messages") } finally { state.loadingOlder = false }
+        }
+    }
+
+    fun sendRoom(id: String, text: String, mentions: List<ConversationMention>, replyTo: String? = null, media: List<String> = emptyList()) {
+        val body = text.trim()
+        if (body.isEmpty() && media.isEmpty()) return
+        val state = roomState(id)
+        if (state.sending) return
+        // The hub requires at least one character: an attachment-only message uses its first named file as the caption.
+        val caption = body.ifEmpty { media.firstOrNull()?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "Attachment" }
+        state.sending = true
+        val clientId = java.util.UUID.randomUUID().toString()
+        viewModelScope.launch {
+            try {
+                val (message, _) = conversationRepository?.send(id, caption, mentions, replyTo, media, clientId)
+                    ?: api.sendConversationMessage(id, caption, mentions, replyTo, media, clientId)
+                state.addMessage(message)
+                state.conversation?.let { mergeConversation(it.copy(lastMessageAt = message.createdAt, updatedAt = maxOf(it.updatedAt, message.createdAt), unreadCount = 0)) }
+                refreshRoomRequests(id)
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't send that message") } finally { state.sending = false }
+        }
+    }
+
+    /** Upload one room attachment from the phone's picker; the returned id goes into the next room message. */
+    suspend fun uploadRoomMedia(roomId: String, uri: android.net.Uri, onProgress: (Float) -> Unit): dev.foxfleet.app.data.ConversationMedia {
+        val resolver = getApplication<Application>().contentResolver
+        var name = "file"; var size = -1L
+        resolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE), null, null, null)?.use { cur ->
+            if (cur.moveToFirst()) {
+                cur.getString(0)?.let { name = it }
+                if (!cur.isNull(1)) size = cur.getLong(1)
+            }
+        }
+        if (size < 0) size = resolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L
+        if (size < 0) throw HubApiException(0, "Can't read that file's size")
+        return api.uploadConversationMedia(roomId, name, resolver.getType(uri), size, { resolver.openInputStream(uri) ?: throw java.io.IOException("Can't open file") }, onProgress)
+    }
+
+    /** Jump to a replied-to message that is not in the loaded page (the web client does the same). */
+    fun loadRoomMessage(id: String, messageId: String, onLoaded: (ConversationMessage) -> Unit = {}) {
+        val state = roomState(id)
+        if (state.messages.any { it.id == messageId }) return
+        viewModelScope.launch {
+            try {
+                val m = conversationRepository?.message(id, messageId) ?: api.conversationMessage(id, messageId)
+                state.addMessage(m); onLoaded(m)
+            } catch (e: CancellationException) { throw e } catch (_: Exception) { /* a deleted target leaves the quote pointing at nothing */ }
+        }
+    }
+
+    fun refreshRoomRequests(id: String) {
+        val state = roomState(id); val room = state.conversation ?: return
+        viewModelScope.launch {
+            val rows = room.agentMembers.map { member ->
+                val list = runCatching { api.queue(member.name, id).openRequests }.getOrDefault(state.requests[member.name].orEmpty())
+                member.name to list
+            }
+            state.requests = rows.toMap()
+        }
+    }
+
+    /** Answer one card as the exact agent member it belongs to (`answerRequest(agent, fc_id, frq_id)`). */
+    fun answerRoomRequest(id: String, agent: String, requestId: String, result: kotlinx.serialization.json.JsonObject) {
+        val state = roomState(id)
+        viewModelScope.launch {
+            try { api.answerRequest(agent, id, requestId, result) }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: HubApiException) { if (e.status != 404) state.error = scrubAddresses(e.message ?: "Couldn't answer") }
+            state.requests = state.requests + (agent to state.requests[agent].orEmpty().filterNot { it.id == requestId })
+            refreshRoomRequests(id)
+        }
+    }
+
+    fun markRoomRead(id: String) {
+        val state = roomState(id)
+        viewModelScope.launch {
+            runCatching { conversationRepository?.markRead(id) ?: api.markConversationRead(id) }.getOrNull()?.let { mergeConversation(it); state.conversation = it }
+        }
+    }
+
+    fun stopRoom(id: String) {
+        val state = roomState(id)
+        viewModelScope.launch {
+            try {
+                val r = conversationRepository?.stop(id) ?: api.stopConversation(id)
+                state.conversation?.let { mergeConversation(it.copy(paused = r.paused ?: true)) }
+                refreshRoomRequests(id)
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't stop the room") }
+        }
+    }
+
+    fun resumeRoom(id: String) {
+        val state = roomState(id)
+        viewModelScope.launch {
+            try { val room = conversationRepository?.resume(id) ?: api.resumeConversation(id); state.conversation = room; mergeConversation(room); refreshRoomRequests(id)
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't resume the room") }
+        }
+    }
+
+    fun renameRoom(id: String, title: String) {
+        val clean = title.trim(); if (clean.isEmpty()) return
+        viewModelScope.launch {
+            runCatching { conversationRepository?.rename(id, clean) ?: api.renameConversation(id, clean) }
+                .onSuccess { roomState(id).conversation = it; mergeConversation(it) }
+                .onFailure { roomState(id).error = scrubAddresses(it.message ?: "Couldn't rename the room") }
+        }
+    }
+
+    fun addRoomMember(id: String, agent: String) {
+        viewModelScope.launch {
+            runCatching { conversationRepository?.addMember(id, agent) ?: api.addConversationMember(id, agent) }
+                .onSuccess { roomState(id).conversation = it; mergeConversation(it); refreshRoomRequests(id) }
+                .onFailure { roomState(id).error = scrubAddresses(it.message ?: "Couldn't add that agent") }
+        }
+    }
+
+    fun removeRoomMember(id: String, agent: String) {
+        viewModelScope.launch {
+            runCatching { conversationRepository?.removeMember(id, agent) ?: api.removeConversationMember(id, agent) }
+                .onSuccess { roomState(id).conversation = it; mergeConversation(it); refreshRoomRequests(id) }
+                .onFailure { roomState(id).error = scrubAddresses(it.message ?: "Couldn't remove that agent") }
+        }
+    }
+
+    fun setRoomPreferences(id: String, prefs: ConversationPreferences) {
+        viewModelScope.launch {
+            runCatching { conversationRepository?.preferences(id, prefs) ?: api.conversationPreferences(id, prefs) }
+                .onSuccess { saved -> roomState(id).conversation?.let { c -> mergeConversation(c.copy(archived = saved.archived)) } }
+                .onFailure { roomState(id).error = scrubAddresses(it.message ?: "Couldn't save that setting") }
+        }
+    }
+
+    /** Create a room and open it (the id is the hub's; the list gets it at once). */
+    fun createRoom(title: String, memberIds: List<String>, onCreated: (Conversation) -> Unit = {}) {
+        if (roomCreating) return
+        roomCreating = true; conversationsError = null
+        viewModelScope.launch {
+            try {
+                val room = conversationRepository?.create(title, memberIds) ?: api.createConversation(title, memberIds)
+                mergeConversation(room); roomState(room.id).conversation = room; onCreated(room)
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: Exception) { conversationsError = scrubAddresses(e.message ?: "Couldn't create the room") }
+            finally { roomCreating = false }
+        }
+    }
+
+    private fun mergeConversation(room: Conversation) {
+        val at = conversations.indexOfFirst { it.id == room.id }
+        conversations = dev.foxfleet.app.data.ConversationOrder.sorted(if (at < 0) conversations + room else conversations.toMutableList().also { it[at] = room })
+        conversationsLoadedOnce = true
     }
 
     private var rowsJob: Job? = null

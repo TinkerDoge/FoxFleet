@@ -242,6 +242,142 @@ class HubApi(private val store: SettingsStore) {
         parseTest(request("/api/connections/test", "POST", jsonOf(fields), timeoutSec = 45))
     }
 
+    // ---- group conversations (rooms): a separate account-scoped list, never folded into agents ----
+
+    private fun convPath(id: String) = "/api/conversations/" + enc(id)
+
+    suspend fun conversations(limit: Int = 50, offset: Int = 0): ConversationList = withContext(Dispatchers.IO) {
+        val obj = request("/api/conversations", query = mapOf("limit" to "$limit", "offset" to "$offset"), timeoutSec = 30)
+        val list = obj["conversations"]?.jsonArray?.mapNotNull { runCatching { it.jsonObject }.getOrNull()?.let(::parseConversation) }.orEmpty()
+        ConversationList(list, obj["total"]?.jsonPrimitive?.intOrNull ?: list.size)
+    }
+
+    suspend fun conversation(id: String): Conversation = withContext(Dispatchers.IO) {
+        parseConversation(request(convPath(id), timeoutSec = 30)) ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    suspend fun createConversation(title: String, memberIds: List<String> = emptyList(), clientId: String? = null): Conversation = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("title", title)
+            if (memberIds.isNotEmpty()) putJsonArray("member_ids") { memberIds.forEach { add(JsonPrimitive(it)) } }
+            if (!clientId.isNullOrBlank()) put("client_id", clientId)
+        }
+        parseConversation(request("/api/conversations", "POST", body.toString(), timeoutSec = 30)) ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    suspend fun renameConversation(id: String, title: String): Conversation = withContext(Dispatchers.IO) {
+        parseConversation(request(convPath(id), "PATCH", buildJsonObject { put("title", title) }.toString(), timeoutSec = 30))
+            ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    suspend fun addConversationMember(id: String, agent: String): Conversation = withContext(Dispatchers.IO) {
+        parseConversation(request(convPath(id) + "/members/" + enc(agent), "PUT", "{}", timeoutSec = 30))
+            ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    suspend fun removeConversationMember(id: String, agent: String): Conversation = withContext(Dispatchers.IO) {
+        parseConversation(request(convPath(id) + "/members/" + enc(agent), "DELETE", timeoutSec = 30))
+            ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    /** Newest page first ([cursor] counts back from the newest); messages inside the page are chronological. */
+    suspend fun conversationMessages(id: String, limit: Int = 50, offset: Int? = null, cursor: Int? = null): ConversationPage = withContext(Dispatchers.IO) {
+        val query = buildMap {
+            put("limit", "$limit")
+            if (offset != null) put("offset", "$offset")
+            if (cursor != null) put("cursor", "$cursor")
+        }
+        val obj = request(convPath(id) + "/messages", query = query, timeoutSec = 60)
+        val messages = obj["messages"]?.jsonArray?.mapNotNull { runCatching { it.jsonObject }.getOrNull()?.let(::parseConversationMessage) }.orEmpty()
+        ConversationPage(messages, obj["has_more"]?.jsonPrimitive?.booleanOrNull == true, obj["next_cursor"]?.jsonPrimitive?.intOrNull ?: messages.firstOrNull()?.seq,
+            obj["total"]?.jsonPrimitive?.intOrNull ?: messages.size)
+    }
+
+    suspend fun conversationMessage(id: String, messageId: String): ConversationMessage = withContext(Dispatchers.IO) {
+        parseConversationMessage(request(convPath(id) + "/messages/" + enc(messageId), timeoutSec = 30))
+            ?: throw HubApiException(0, "Invalid room message")
+    }
+
+    /**
+     * Send to a room. The hub binds the author to this sign-in: the body never carries an actor or an admit.
+     * Mentions are the explicit spans the server validates; [replyTo] jumps to an earlier message.
+     */
+    suspend fun sendConversationMessage(
+        id: String, text: String, mentions: List<ConversationMention> = emptyList(),
+        replyTo: String? = null, media: List<String> = emptyList(), clientId: String? = null,
+    ): Pair<ConversationMessage, List<String>> = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("text", text)
+            if (mentions.isNotEmpty()) putJsonArray("mentions") {
+                mentions.forEach { m -> add(buildJsonObject { put("kind", m.kind); put("id", m.id); put("offset", m.offset); put("length", m.length) }) }
+            }
+            if (!replyTo.isNullOrBlank()) put("reply_to", replyTo)
+            if (media.isNotEmpty()) putJsonArray("media") { media.forEach { add(JsonPrimitive(it)) } }
+            if (!clientId.isNullOrBlank()) put("client_id", clientId)
+        }
+        val obj = request(convPath(id) + "/messages", "POST", body.toString(), timeoutSec = 30)
+        val message = parseConversationMessage(obj["message"]?.jsonObject ?: throw HubApiException(0, "Invalid room response"))
+            ?: throw HubApiException(0, "Invalid room response")
+        val dispatched = obj["dispatched_to"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull }.orEmpty()
+        message to dispatched
+    }
+
+    suspend fun markConversationRead(id: String, upTo: Int? = null): Conversation = withContext(Dispatchers.IO) {
+        val body = if (upTo == null) "{}" else buildJsonObject { put("up_to", upTo) }.toString()
+        parseConversation(request(convPath(id) + "/read", "POST", body, timeoutSec = 30)) ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    suspend fun conversationPreferences(id: String, prefs: ConversationPreferences): ConversationPreferences = withContext(Dispatchers.IO) {
+        val body = buildJsonObject {
+            put("muted", prefs.muted); put("notify", prefs.notify); put("archived", prefs.archived)
+            prefs.pinned?.let { put("pinned", it) }
+        }
+        parseConversationPreferences(request(convPath(id) + "/preferences", "PUT", body.toString(), timeoutSec = 30))
+    }
+
+    /** Owner Stop: cancels queued turns and asks the dispatch engine to stop live ones. */
+    suspend fun stopConversation(id: String): ConversationStopResult = withContext(Dispatchers.IO) {
+        val o = request(convPath(id) + "/stop", "POST", "{}", timeoutSec = 30)
+        ConversationStopResult(
+            stopped = o.bool("stopped") ?: false, confirmed = o.bool("confirmed") ?: false,
+            state = o.str("state"), epoch = o["epoch"]?.jsonPrimitive?.longOrNull, paused = o.bool("paused"),
+        )
+    }
+
+    suspend fun resumeConversation(id: String): Conversation = withContext(Dispatchers.IO) {
+        parseConversation(request(convPath(id) + "/resume", "POST", "{}", timeoutSec = 30)) ?: throw HubApiException(0, "Invalid room response")
+    }
+
+    /** Upload one attachment over the same owner cookie/bearer; the id is referenced from a room message. */
+    suspend fun uploadConversationMedia(id: String, name: String, mime: String?, size: Long, open: () -> java.io.InputStream, onProgress: (Float) -> Unit = {}): ConversationMedia = withContext(Dispatchers.IO) {
+        if (size <= 0) throw HubApiException(0, "That file is empty")
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/octet-stream".toMediaType()
+            override fun contentLength() = size
+            override fun writeTo(sink: okio.BufferedSink) {
+                open().use { input ->
+                    val buf = ByteArray(64 * 1024); var sent = 0L
+                    while (true) {
+                        val n = input.read(buf); if (n < 0) break
+                        sink.write(buf, 0, n); sent += n; onProgress((sent.toFloat() / size).coerceAtMost(1f))
+                    }
+                }
+            }
+        }
+        val url = base().newBuilder().encodedPath(convPath(id) + "/media").build()
+        val call = client.newCall(Request.Builder().url(url).post(body).header("X-Foxfleet-Name", name).build())
+        call.timeout().timeout(10, TimeUnit.MINUTES)
+        await(call).use {
+            if (it.code == 401) throw unauthorized(errorBody(it))
+            if (!it.isSuccessful) throw HubApiException(it.code, errorBody(it).ifEmpty { "Upload failed (${it.code})" })
+            val obj = json.parseToJsonElement(it.body?.string() ?: "{}").jsonObject
+            parseConversationMedia(obj, name) ?: throw HubApiException(0, "Invalid upload response")
+        }
+    }
+
+    /** The authenticated media URL of a room attachment (the shared HTTP client adds the sign-in). */
+    fun conversationMediaUrl(id: String, media: String): String = store.baseUrl.trimEnd('/') + convPath(id) + "/media/" + enc(media)
+
     // ---- sessions ----
 
     suspend fun sessions(agent: String, offset: Int = 0, limit: Int = 30, q: String = ""): SessionPage = withContext(Dispatchers.IO) {
@@ -760,6 +896,69 @@ class HubApi(private val store: SettingsStore) {
         }
         internal fun JsonObject.str(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.contentOrNull }.getOrNull() }
         internal fun JsonObject.bool(k: String) = this[k]?.let { runCatching { it.jsonPrimitive.booleanOrNull }.getOrNull() }
+
+        fun parseMember(o: JsonObject?): ConversationMember? {
+            o ?: return null
+            val id = o.str("id")?.takeIf { it.isNotBlank() } ?: return null
+            return ConversationMember(
+                id = id, name = o.str("name")?.takeIf { it.isNotBlank() } ?: id,
+                kind = if (o.str("kind") == "agent") "agent" else "human",
+                isBot = o.bool("is_bot") == true, joinedAt = o["joined_at"]?.jsonPrimitive?.longOrNull ?: 0L,
+            )
+        }
+
+        fun parseMention(o: JsonObject?): ConversationMention? {
+            o ?: return null
+            val id = o.str("id")?.takeIf { it.isNotBlank() } ?: return null
+            val offset = o["offset"]?.jsonPrimitive?.intOrNull ?: return null
+            val length = o["length"]?.jsonPrimitive?.intOrNull ?: return null
+            if (offset < 0 || length < 1) return null
+            return ConversationMention(if (o.str("kind") == "agent") "agent" else o.str("kind") ?: "agent", id, offset, length)
+        }
+
+        fun parseConversationMedia(o: JsonObject?, fallbackName: String = ""): ConversationMedia? {
+            o ?: return null
+            val id = o.str("id") ?: return null
+            val kind = o.str("kind")?.takeIf { it in setOf("image", "video", "audio", "file") } ?: "file"
+            return ConversationMedia(id, kind, o.str("mime") ?: "application/octet-stream", o.str("name") ?: fallbackName, o["size"]?.jsonPrimitive?.longOrNull ?: 0L, o.str("sha256"))
+        }
+
+        fun parseConversationMessage(o: JsonObject?): ConversationMessage? {
+            o ?: return null
+            val id = o.str("id") ?: return null
+            val conversationId = o.str("conversation_id") ?: return null
+            val sender = parseMember(o["sender"]?.let { runCatching { it.jsonObject }.getOrNull() }) ?: ConversationMember("", "", "human")
+            return ConversationMessage(
+                id = id, conversationId = conversationId, sender = sender, text = o.str("text").orEmpty(),
+                createdAt = o["created_at"]?.jsonPrimitive?.longOrNull ?: 0L,
+                replyTo = o.str("reply_to"), mentions = o["mentions"]?.let { arr -> runCatching { arr.jsonArray.mapNotNull { parseMention(runCatching { it.jsonObject }.getOrNull()) } }.getOrNull() }.orEmpty(),
+                edited = o.bool("edited") == true,
+                media = o["media"]?.let { arr -> runCatching { arr.jsonArray.mapNotNull { parseConversationMedia(runCatching { it.jsonObject }.getOrNull()) } }.getOrNull() }.orEmpty(),
+                system = o.bool("system") == true, code = o.str("code"), deliveryState = o.str("delivery_state"),
+                dispatchId = o.str("dispatch_id"), rootId = o.str("root_id"),
+                seq = o["seq"]?.jsonPrimitive?.intOrNull, deleted = o.bool("deleted") == true,
+            )
+        }
+
+        fun parseConversation(o: JsonObject?): Conversation? {
+            o ?: return null
+            val id = o.str("id")?.takeIf { it.isNotBlank() } ?: return null
+            val owner = parseMember(o["owner"]?.let { runCatching { it.jsonObject }.getOrNull() }) ?: ConversationMember("", "You", "human")
+            val members = o["members"]?.let { arr -> runCatching { arr.jsonArray.mapNotNull { parseMember(runCatching { it.jsonObject }.getOrNull()) } }.getOrNull() }.orEmpty()
+            return Conversation(
+                id = id, threadId = o.str("thread_id") ?: ("fcr_" + id.removePrefix("fc_")), chatType = o.str("chat_type") ?: "group",
+                title = o.str("title") ?: "Room", owner = owner, members = members,
+                createdAt = o["created_at"]?.jsonPrimitive?.longOrNull ?: 0L, updatedAt = o["updated_at"]?.jsonPrimitive?.longOrNull ?: 0L,
+                archived = o.bool("archived") == true, unreadCount = (o["unread_count"]?.jsonPrimitive?.intOrNull ?: 0).coerceAtLeast(0),
+                lastMessageAt = o["last_message_at"]?.jsonPrimitive?.longOrNull, paused = o.bool("paused") == true,
+                epoch = o["epoch"]?.jsonPrimitive?.longOrNull ?: 1L,
+            )
+        }
+
+        fun parseConversationPreferences(o: JsonObject): ConversationPreferences = ConversationPreferences(
+            muted = o.bool("muted") == true, notify = o.str("notify") ?: "all", archived = o.bool("archived") == true,
+            pinned = o["pinned"]?.let { runCatching { it.jsonPrimitive.booleanOrNull }.getOrNull() },
+        )
 
         fun parseAgent(a: JsonObject): AgentStatus {
             val kind = a.str("kind") ?: "hermes"

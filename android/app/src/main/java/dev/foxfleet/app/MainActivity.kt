@@ -40,6 +40,10 @@ import dev.foxfleet.app.ui.motion.LocalNavAnimScope
 import dev.foxfleet.app.ui.motion.LocalSharedScope
 import dev.foxfleet.app.ui.motion.reduceMotion
 import dev.foxfleet.app.ui.screens.ChatScreen
+import dev.foxfleet.app.ui.screens.ConversationDetailsScreen
+import dev.foxfleet.app.ui.screens.ConversationListScreen
+import dev.foxfleet.app.ui.screens.ConversationScreen
+import dev.foxfleet.app.ui.screens.CreateConversationScreen
 import dev.foxfleet.app.ui.screens.FleetScreen
 import dev.foxfleet.app.ui.screens.LoginScreen
 import dev.foxfleet.app.ui.screens.SettingsScreen
@@ -168,7 +172,44 @@ private fun RouteContent(vm: HubViewModel, route: Route) {
             rows = vm.chatRows, archivedView = vm.showArchived, onArchivedView = vm::setArchivedView,
             rowActions = if (vm.features.chats && vm.chatRows.isNotEmpty()) dev.foxfleet.app.ui.screens.ChatRowActions(vm::archiveChat, vm::toggleMute, vm::setUnread) else null,
             link = vm.linkIndicator, typingLabel = { vm.typingLabel(it, null) },
+            conversations = vm.conversations, onRooms = { vm.loadConversations(); vm.navigate(Route.Conversations) },
+            onOpenConversation = { vm.navigate(Route.ConversationRoom(it.id)); vm.openRoom(it.id) },
+            onNewConversation = { vm.navigate(Route.NewConversation) },
         )
+        Route.Conversations -> {
+            LaunchedEffect(Unit) { vm.loadConversations() }
+            ConversationListScreen(
+                rooms = vm.conversations, loading = vm.conversationsLoading, loadedOnce = vm.conversationsLoadedOnce, error = vm.conversationsError,
+                onBack = { vm.back() }, onNew = { vm.navigate(Route.NewConversation) },
+                onOpen = { vm.navigate(Route.ConversationRoom(it.id)); vm.openRoom(it.id) }, onRefresh = { vm.loadConversations() },
+            )
+        }
+        Route.NewConversation -> CreateConversationScreen(
+            agents = vm.agents, saving = vm.roomCreating, error = vm.conversationsError,
+            onBack = { vm.back() },
+            onCreate = { title, names -> vm.createRoom(title, names) { room -> vm.navigate(Route.ConversationRoom(room.id)); vm.openRoom(room.id) } },
+        )
+        is Route.ConversationRoom -> {
+            val st = vm.roomState(route.id)
+            LaunchedEffect(route.id) { vm.openRoom(route.id) }
+            if (route.details) ConversationDetailsScreen(
+                room = st.conversation, agents = vm.agents, meId = vm.myUserId, error = st.error,
+                onBack = { vm.navigate(Route.ConversationRoom(route.id)) },
+                onRename = { vm.renameRoom(route.id, it) }, onAddMember = { vm.addRoomMember(route.id, it) },
+                onRemoveMember = { vm.removeRoomMember(route.id, it) }, onPreferences = { vm.setRoomPreferences(route.id, it) },
+                onMarkRead = { vm.markRoomRead(route.id) },
+            ) else ConversationScreen(
+                roomId = route.id, state = st, agents = vm.agents, meId = vm.myUserId, link = vm.linkIndicator,
+                onBack = { vm.back() }, onDetails = { vm.navigate(Route.ConversationRoom(route.id, details = true)) },
+                onRetry = { vm.openRoom(route.id) }, onLoadOlder = { vm.loadOlderRoom(route.id) },
+                onSend = { text, mentions, reply, media -> vm.sendRoom(route.id, text, mentions, reply, media) },
+                onStop = { vm.stopRoom(route.id) }, onResume = { vm.resumeRoom(route.id) },
+                onAnswerRequest = { agent, requestId, result -> vm.answerRoomRequest(route.id, agent, requestId, result) },
+                onLoadMessage = { id, done -> vm.loadRoomMessage(route.id, id, done) },
+                onUploadMedia = { uri, progress -> vm.uploadRoomMedia(route.id, uri, progress) },
+                onMarkRead = { vm.markRoomRead(route.id) }, mediaUrl = { mid -> vm.api.conversationMediaUrl(route.id, mid) },
+            )
+        }
         is Route.Chat -> {
             val agent = vm.agent(route.agent)
             if (agent == null) { LaunchedEffect(Unit) { vm.back() }; return }
