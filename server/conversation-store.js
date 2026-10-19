@@ -34,6 +34,7 @@ const replyNotFound = () => fault(404, 'Unknown reply target', 'reply_not_found'
 const crossRoomReply = () => fault(404, 'Unknown reply target', 'cross_room_reply');
 const invalidMentions = () => fault(400, 'Invalid mentions', 'mentions_invalid');
 const unknownMention = () => fault(404, 'Unknown room member in mentions', 'unknown_mention');
+const actorForbidden = () => fault(403, 'Agent is not an active member of this room', 'actor_forbidden');
 
 const validId = (id) => typeof id === 'string' && ID_RE.test(id);
 const validDevice = (value) => value === '' || (typeof value === 'string' && DEVICE_ID.test(value));
@@ -44,7 +45,7 @@ function blank(id) {
     v: 1, schema_version: 1, id, kind: 'group', owner_id: '', owner_name: '', title: '',
     created_at: 0, updated_at: 0, next_seq: 1, epoch: 1, paused: false,
     policy: { routing: 'mention_reply' }, client_key: null, client_fp: null,
-    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [],
+    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [], dispatches: [],
   };
 }
 
@@ -54,10 +55,12 @@ function recordValid(v, id) {
     && Number.isSafeInteger(v.next_seq) && v.next_seq >= 1 && Number.isSafeInteger(v.epoch) && v.epoch >= 1
     && typeof v.paused === 'boolean' && v.policy && typeof v.policy === 'object' && !Array.isArray(v.policy)
     && (v.client_key === null || typeof v.client_key === 'string') && (v.client_fp === null || typeof v.client_fp === 'string')
-    && ['members', 'messages', 'outbox', 'reads', 'preferences', 'hidden'].every((k) => Array.isArray(v[k]));
+    && ['members', 'messages', 'outbox', 'reads', 'preferences', 'hidden'].every((k) => Array.isArray(v[k]))
+    && (v.dispatches === undefined || Array.isArray(v.dispatches));
 }
 
 const activeMembers = (d) => d.members.filter((m) => m.role === 'member' && m.removed_at === null);
+const activeAgent = (d, id) => d.members.find((m) => m.actor_kind === 'agent' && m.actor_id === id && m.role === 'member' && m.removed_at === null) ?? null;
 const ownerRow = (d) => d.members.find((m) => m.role === 'owner') ?? null;
 const readRow = (d, device) => d.reads.find((r) => r.device_id === device) ?? null;
 const prefRow = (d, device) => d.preferences.find((p) => p.device_id === device) ?? null;
@@ -195,6 +198,11 @@ export function conversationStore(dir) {
     ready,
     async idle() { if (!loaded) return; await Promise.all([...rooms.values()].map((r) => r.idle())); },
     limits: { ...ROOM_LIMITS },
+    /** A point-in-time copy of the room record, for routing/queue decisions that must not see a draft. */
+    async snapshot(id) { const room = await use(id); return structuredClone(room.state); },
+    /** One atomic room mutation; the callback must be synchronous so no room write lock spans an await. */
+    async transact(id, fn) { const room = await use(id); return room.mutate(fn); },
+    async roomIds() { await ready(); return [...rooms.keys()]; },
 
     async create({ owner, title, agents = [], client_id, device = '' } = {}) {
       if (!owner || typeof owner.id !== 'string' || !HUMAN_ID.test(owner.id)) throw fault(400, 'Invalid owner');
@@ -298,6 +306,9 @@ export function conversationStore(dir) {
       const parsed = normalizeMentions(mentions, text);
       const room = await use(id);
       const state = room.state;
+      // Agents write into a room only while they are active members. This gate sits below the HTTP layer,
+      // because HTTP only ever sends as the owner; dispatch is the path that sends as an agent.
+      if (actor.kind === 'agent' && !activeAgent(state, actor.id)) throw actorForbidden();
       const fingerprint = sha256(JSON.stringify([text, format, parsed, reply_to ?? null, client_id ?? null]));
       if (client_id !== undefined && client_id !== null) {
         const prior = state.messages.find((m) => m.client_id === client_id);
@@ -315,6 +326,7 @@ export function conversationStore(dir) {
       }
       let result;
       await room.mutate((d) => {
+        if (actor.kind === 'agent' && !activeAgent(d, actor.id)) throw actorForbidden();
         if (client_id !== undefined && client_id !== null) {
           const prior = d.messages.find((m) => m.client_id === client_id);
           if (prior) {
