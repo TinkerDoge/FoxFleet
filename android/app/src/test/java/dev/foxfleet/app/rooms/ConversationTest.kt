@@ -46,6 +46,9 @@ class ConversationTest {
         assertEquals(2, room.unreadCount); assertFalse(room.paused); assertEquals(7L, room.epoch)
         // There is no agent identity to accidentally put in the fleet: a room model only has member rows.
         assertFalse(room.javaClass.name.contains("AgentStatus"))
+        assertTrue(room.ownedBy("u1"))
+        assertFalse(room.ownedBy(null))
+        assertFalse(room.ownedBy("someone-else"))
     }
 
     @Test fun messageCarriesTheAuthorMentionsReplyAndMedia() {

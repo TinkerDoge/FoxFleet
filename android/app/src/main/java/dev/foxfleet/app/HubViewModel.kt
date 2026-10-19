@@ -124,14 +124,29 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun claimCache(key: String, account: String) = withContext(kotlinx.coroutines.Dispatchers.IO) {
         val db = dev.foxfleet.app.data.local.CacheDb.get(getApplication())
-        if (cacheOwner.claim(key, account, settings.baseUrl)) db.admin().wipeAll()
+        val wiped = cacheOwner.claim(key, account, settings.baseUrl)
+        if (wiped) db.admin().wipeAll()
         cache = dev.foxfleet.app.data.local.ChatCache(db, key)
         conversationRepository = ConversationRepository(api, cache)
+        if (wiped) withContext(kotlinx.coroutines.Dispatchers.Main) { dropRoomMemory() }
     }
     private fun wipeCache() {
         cache = null; conversationRepository = null; cacheOwner.forget()
         val app = getApplication<Application>()
         kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO).launch { runCatching { dev.foxfleet.app.data.local.CacheDb.get(app).admin().wipeAll() } }
+    }
+    /** In-memory room list/transcripts never survive an auth loss or account switch (SQLite wipe is not enough). */
+    private fun dropRoomMemory() {
+        conversationsJob?.cancel()
+        conversations = emptyList(); conversationsLoadedOnce = false; conversationsError = null
+        roomStates.clear()
+        if (route is Route.Conversations || route is Route.NewConversation || route is Route.ConversationRoom) route = Route.Fleet
+    }
+    private fun onAuthLost() {
+        deactivateMedia(purge = true)
+        authed = false
+        myUserId = null
+        dropRoomMemory()
     }
     /** Cache writes never fail a screen: the next hub page writes again. */
     private suspend fun cached(block: suspend dev.foxfleet.app.data.local.ChatCache.() -> Unit) {
@@ -450,7 +465,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         authGeneration++; deactivateMedia(purge = true); stopLive()
         dev.foxfleet.app.notify.NotifyController.onSignedOut(getApplication())
         jobs.values.forEach { it.cancel() }; jobs.clear(); chats.clear(); sessions.clear(); sessionTotals.clear()
-        conversationsJob?.cancel(); conversations = emptyList(); conversationsLoadedOnce = false; conversationsError = null; roomStates.clear()
+        conversationsJob?.cancel(); dropRoomMemory()
         viewModelScope.launch { api.logout() }
         chatRows = emptyMap(); archivedRows = emptyList(); showArchived = false; totalUnread = 0; publishBadge()
         wipeCache(); offline = false // the cache holds message text: it never outlives the sign-in
@@ -476,8 +491,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 // Rooms are optional on older hubs (404 is quiet): never let them fail the DM list.
                 runCatching { if (!silent || conversations.isEmpty()) loadConversations() }
             } catch (e: AuthRequiredException) {
-                deactivateMedia(purge = true)
-                authed = false
+                onAuthLost()
             } catch (e: CancellationException) { throw e } catch (e: Exception) {
                 if (!silent && !(offline && agents.isNotEmpty())) fleetError = e.message?.let(::scrubAddresses) ?: "Fleet sync failed"
             } finally { if (!silent) fleetLoading = false }
@@ -493,7 +507,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         agents = AgentList.sort(agents.map { x -> if (x.name == a.name) x.copy(pinOrder = if (on) (agents.maxOfOrNull { it.pinOrder ?: -1 } ?: -1) + 1 else null) else x })
         viewModelScope.launch {
             try { api.pinAgent(a.name, on); refreshFleet(silent = true) }
-            catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false }
+            catch (e: AuthRequiredException) { onAuthLost() }
             catch (e: CancellationException) { throw e }
             catch (e: Exception) { agents = before; fleetError = "Couldn't change the pin. Try again." }
         }
@@ -600,7 +614,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val state = chatFor(agent)
         jobs[agent] = viewModelScope.launch {
             try { catchUpNow(agent); state.resume(api, agent, run, null); storeReply(agent) }
-            catch (x: CancellationException) { throw x } catch (x: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (x: CancellationException) { throw x } catch (x: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -625,7 +639,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (state.sessionId == null || state.streaming || state.loading || jobs[agent]?.isActive == true || catchUps[agent]?.isActive == true) return
         catchUps[agent] = viewModelScope.launch {
             try { catchUpNow(agent) }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -658,7 +672,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         }
         skills[agent] = emptyList()
         viewModelScope.launch {
-            try { skills[agent] = (skills[agent].orEmpty() + api.skills(agent)).distinct() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            try { skills[agent] = (skills[agent].orEmpty() + api.skills(agent)).distinct() } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -673,7 +687,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (state.streaming || state.queue.isNotEmpty()) { // busy: the hub takes it (queue / steer / interrupt) and the reply keeps streaming
             viewModelScope.launch {
                 try { state.sendBusy(api, agent, text.trim(), images, m)?.let { lastRejected[agent] = it }; state.syncQueue(api, agent) }
-                catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) { }
+                catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) { }
             }
             return
         }
@@ -687,8 +701,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 state.syncQueue(api, agent)
             } catch (e: CancellationException) {
             } catch (e: AuthRequiredException) {
-                deactivateMedia(purge = true)
-                authed = false
+                onAuthLost()
             } catch (_: Exception) { /* surfaced by ChatState.error */ }
         }
     }
@@ -724,7 +737,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 if (agentKinds.isEmpty()) agentKinds = api.agentKinds()
                 savedAgents = api.savedAgents()
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (e: Exception) {
                 registryError = scrubAddresses(e.message ?: "Couldn't load agents"); if (savedAgents == null) savedAgents = emptyList()
             }
         }
@@ -831,7 +844,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 if (run == null || (run.state != "running" && endsWithReply)) { state.finishRun(); state.missedRun = null; return@launch }
                 state.missedRun = null; state.resume(api, agent, run.id, saved.user); storeReply(agent)
             } catch (e: CancellationException) {
-            } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { if (state.sessionId == null) state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load") }
         }
     }
@@ -847,7 +860,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 val page = api.sessions(agent, offset = have.size)
                 sessions[agent] = have + page.sessions.filter { n -> have.none { it.id == n.id } }; sessionTotals[agent] = page.total
                 if (!more) cached { saveChats(agent, page.sessions) }
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (e: Exception) {
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (e: Exception) {
                 historyError = scrubAddresses(e.message ?: "Couldn't load history")
             } finally { sessionsLoading[agent] = false }
         }
@@ -889,7 +902,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 cached { saveOlder(agent, id, p.messages, p.hasMore, offset) }
                 if (state.sessionId == id) state.prepend(p.messages, p.hasMore) else state.olderFailed()
             }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; state.olderFailed() } catch (_: Exception) { state.olderFailed() }
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost(); state.olderFailed() } catch (_: Exception) { state.olderFailed() }
         }
     }
 
@@ -913,7 +926,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                     if (features.reactionEvents || !dev.foxfleet.app.ui.chat.MessageMerge.needsIds(state.messages) || i == REACTION_RETRY_MS.lastIndex) return@launch
                 }
             }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -928,7 +941,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val state = chatFor(agent)
         viewModelScope.launch {
             try { block(state) }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
             // a refused or failed change rolled back: say why, briefly
             state.reactionError?.let { msg -> state.reactionError = null; android.widget.Toast.makeText(getApplication(), msg, android.widget.Toast.LENGTH_SHORT).show() }
         }
@@ -938,7 +951,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val state = chatFor(agent)
         viewModelScope.launch {
             try { state.hide(api, agent, messageId, present) }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -967,7 +980,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                     false -> state.addNotice("Couldn't take that message back.")
                     null -> {}
                 }
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -981,8 +994,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 newestPage(agent, id).let { if (state.sessionId == id || !state.fromCache) state.load(it.messages, id, it.hasMore) }
                 followMissed(agent)
             } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) {
-                deactivateMedia(purge = true)
-                authed = false
+                onAuthLost()
             } catch (e: Exception) {
                 if (state.fromCache && state.sessionId == id) state.keepCached(OFFLINE_NOTICE)
                 else state.loadFailed(e.message?.let(::scrubAddresses) ?: "Couldn't load")
@@ -1142,7 +1154,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         if (catchUps[key]?.isActive == true) return
         catchUps[key] = viewModelScope.launch {
             try { fetchAfterNow(agent, chat, afterN) }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false } catch (_: Exception) {}
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost() } catch (_: Exception) {}
         }
     }
 
@@ -1195,7 +1207,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             if (failures.isNotEmpty()) throw java.io.IOException("resync: ${failures.size} of ${refs.size} chats failed", failures.first())
             openChatAgent()?.let { catchUp(it) }
             fleetSoon()
-        } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; throw java.io.IOException("signed out during resync") }
+        } catch (e: AuthRequiredException) { onAuthLost(); throw java.io.IOException("signed out during resync") }
     }
 
     /** `GET /api/chats` (main, and archived when that view is open): rows to the cache, then to the screen. */
@@ -1206,7 +1218,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             cached { saveSnapshot(false, main, takeCursor) }
             if (showArchived) { val arch = api.chats(archived = true); cached { saveSnapshot(true, arch, false) } }
             reloadRows()
-        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false; if (strict) throw e } catch (e: Exception) { if (strict) throw e }
+        } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost(); if (strict) throw e } catch (e: Exception) { if (strict) throw e }
     }
 
     // ---- group rooms: the same hub, a separate list and separate transcript state ----
@@ -1228,7 +1240,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 conversations = dev.foxfleet.app.data.ConversationOrder.sorted(fresh)
                 conversationsLoadedOnce = true
             } catch (e: CancellationException) { throw e
-            } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) {
                 if (conversations.isEmpty()) conversationsError = scrubAddresses(e.message ?: "Couldn't load rooms")
             } finally { conversationsLoading = false }
@@ -1243,10 +1255,13 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             val repo = conversationRepository
             try {
                 repo?.cachedConversation(id)?.let { state.conversation = it }
-                repo?.cachedRoom(id)?.let { cached ->
+                val cached = repo?.cachedRoom(id)
+                if (cached != null) {
                     state.messages = cached.messages
                     state.hasMore = cached.hasMore
                     state.cursor = cached.messages.firstOrNull()?.seq
+                } else {
+                    state.messages = emptyList(); state.hasMore = false; state.cursor = null
                 }
                 val room = repo?.conversation(id) ?: api.conversation(id)
                 state.conversation = room
@@ -1258,7 +1273,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 refreshRoomRequests(id)
                 runCatching { repo?.markRead(id) ?: api.markConversationRead(id) }.getOrNull()?.let { mergeConversation(it) }
             } catch (e: CancellationException) { throw e
-            } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) {
                 if (state.messages.isEmpty()) state.error = scrubAddresses(e.message ?: "Couldn't load the room")
                 if (state.conversation != null) conversationsError = null
@@ -1276,7 +1291,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 val seen = state.messages.map { it.id }.toHashSet()
                 state.messages = page.messages.filter { it.id !in seen } + state.messages
                 state.hasMore = page.hasMore; state.cursor = page.nextCursor
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't load older messages") } finally { state.loadingOlder = false }
         }
     }
@@ -1297,7 +1312,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
                 state.addMessage(message)
                 state.conversation?.let { mergeConversation(it.copy(lastMessageAt = message.createdAt, updatedAt = maxOf(it.updatedAt, message.createdAt), unreadCount = 0)) }
                 refreshRoomRequests(id)
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't send that message") } finally { state.sending = false }
         }
     }
@@ -1345,7 +1360,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val state = roomState(id)
         viewModelScope.launch {
             try { api.answerRequest(agent, id, requestId, result) }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: HubApiException) { if (e.status != 404) state.error = scrubAddresses(e.message ?: "Couldn't answer") }
             state.requests = state.requests + (agent to state.requests[agent].orEmpty().filterNot { it.id == requestId })
             refreshRoomRequests(id)
@@ -1364,9 +1379,11 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             try {
                 val r = conversationRepository?.stop(id) ?: api.stopConversation(id)
-                state.conversation?.let { mergeConversation(it.copy(paused = r.paused ?: true)) }
+                val paused = r.paused ?: true
+                val updated = (state.conversation ?: conversations.find { it.id == id })?.copy(paused = paused)
+                if (updated != null) { state.conversation = updated; mergeConversation(updated) }
                 refreshRoomRequests(id)
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't stop the room") }
         }
     }
@@ -1375,7 +1392,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         val state = roomState(id)
         viewModelScope.launch {
             try { val room = conversationRepository?.resume(id) ?: api.resumeConversation(id); state.conversation = room; mergeConversation(room); refreshRoomRequests(id)
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { state.error = scrubAddresses(e.message ?: "Couldn't resume the room") }
         }
     }
@@ -1421,7 +1438,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 val room = conversationRepository?.create(title, memberIds) ?: api.createConversation(title, memberIds)
                 mergeConversation(room); roomState(room.id).conversation = room; onCreated(room)
-            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            } catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { conversationsError = scrubAddresses(e.message ?: "Couldn't create the room") }
             finally { roomCreating = false }
         }
@@ -1462,7 +1479,7 @@ class HubViewModel(app: Application) : AndroidViewModel(app) {
         totalUnread = dev.foxfleet.app.ui.ChatRows.badgeTotal(chatRows.values.filter { !it.archived }, System.currentTimeMillis())
         viewModelScope.launch {
             try { val row = call() ?: after; cached { saveChatRow(row) }; reloadRows() }
-            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { deactivateMedia(purge = true); authed = false
+            catch (e: CancellationException) { throw e } catch (e: AuthRequiredException) { onAuthLost()
             } catch (e: Exception) { cached { saveChatRow(before) }; reloadRows(); fleetError = failText }
         }
     }

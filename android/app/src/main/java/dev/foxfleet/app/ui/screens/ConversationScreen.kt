@@ -100,8 +100,8 @@ fun ConversationScreen(
 ) {
     val c = LocalHubColors.current
     val room = state.conversation
-    val me = meId ?: room?.owner?.id
-    val owner = room != null && me != null && room.owner.id == me
+    val me = meId
+    val owner = room?.ownedBy(meId) == true
     val bg = rememberConversationBackground(roomId)
     var bgSheet by remember { mutableStateOf(false) }
     var text by remember(roomId) { mutableStateOf("") }

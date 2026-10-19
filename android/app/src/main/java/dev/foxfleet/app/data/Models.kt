@@ -144,6 +144,8 @@ data class Conversation(
 ) {
     val agentMembers get() = members.filter { it.isAgent }
     fun memberFor(idOrName: String): ConversationMember? = members.firstOrNull { it.id == idOrName || it.name == idOrName }
+    /** Owner controls (Stop/cards) require a known signed-in id. A missing id is not "I am the owner". */
+    fun ownedBy(userId: String?) = userId != null && owner.id == userId
     /** The room list order: newest activity first, then title (same as the web client). */
     val activityAt get() = maxOf(lastMessageAt ?: 0L, updatedAt)
 }
