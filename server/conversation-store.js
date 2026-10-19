@@ -14,10 +14,13 @@ import { mkdir, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { randomBytes, createHash } from 'node:crypto';
 import { jsonFile, unavailable } from './bot-store.js';
+import { validateCardAnswer } from './bot-protocol.js';
 import { fault, ROOM_LIMITS, roomTitle, roomActorName } from './config.js';
 
 const ID_RE = /^fc_[A-Za-z0-9_-]{16}$/;
 const MESSAGE_RE = /^fm_[A-Za-z0-9_-]{16}$/;
+const CARD_RE = /^frq_[A-Za-z0-9_-]{16}$/;
+const CALLBACK_RE = /^fcb_[A-Za-z0-9_-]{16}$/;
 const AGENT_REF = /^agent:[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const HUMAN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
 const CLIENT_ID = /^[^\u0000-\u001f\u007f]{1,128}$/;
@@ -46,7 +49,7 @@ function blank(id) {
     v: 1, schema_version: 1, id, kind: 'group', owner_id: '', owner_name: '', title: '',
     created_at: 0, updated_at: 0, next_seq: 1, epoch: 1, paused: false,
     policy: { routing: 'mention_reply' }, client_key: null, client_fp: null,
-    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [], dispatches: [],
+    members: [], messages: [], outbox: [], reads: [], preferences: [], hidden: [], dispatches: [], cards: [],
   };
 }
 
@@ -57,7 +60,8 @@ function recordValid(v, id) {
     && typeof v.paused === 'boolean' && v.policy && typeof v.policy === 'object' && !Array.isArray(v.policy)
     && (v.client_key === null || typeof v.client_key === 'string') && (v.client_fp === null || typeof v.client_fp === 'string')
     && ['members', 'messages', 'outbox', 'reads', 'preferences', 'hidden'].every((k) => Array.isArray(v[k]))
-    && (v.dispatches === undefined || Array.isArray(v.dispatches));
+    && (v.dispatches === undefined || Array.isArray(v.dispatches))
+    && (v.cards === undefined || Array.isArray(v.cards));
 }
 
 const activeMembers = (d) => d.members.filter((m) => m.role === 'member' && m.removed_at === null);
@@ -101,6 +105,7 @@ function view(d, device) {
     id: d.id, thread_id: 'fcr_' + d.id.slice(3), chat_type: 'group', title: d.title,
     owner: ownerView(d), members: activeMembers(d).map(memberView), created_at: d.created_at, updated_at: d.updated_at,
     archived: prefsView(prefRow(d, device)).archived, unread_count: unread, last_message_at: last ? last.created_at : null,
+    paused: d.paused, epoch: d.epoch,
   };
 }
 
@@ -297,6 +302,207 @@ export function conversationStore(dir) {
       });
       return view(room.state, device);
     },
+
+    /**
+     * Room Stop is one atomic durable mutation: a new epoch fences every earlier attempt, the queue is
+     * paused, queued turns and waiting approvals are cancelled, live turns become uncertain (their remote
+     * side effects may still run), visible partials are marked interrupted and open room cards are closed.
+     * A cancellation request is the engine's job; this method never claims a remote turn was stopped.
+     */
+    async stop(id, { ownerId, at = Date.now() } = {}) {
+      const room = await use(id);
+      let out;
+      await room.mutate((d) => {
+        if (d.owner_id !== ownerId) throw fault(403, 'Only the conversation owner may stop it', 'not_conversation_owner');
+        if (!Array.isArray(d.dispatches)) d.dispatches = [];
+        if (!Array.isArray(d.cards)) d.cards = [];
+        d.epoch += 1; d.paused = true; d.updated_at = at;
+        const active = [], cancelled = [];
+        for (const row of d.dispatches) {
+          if (row.state === 'queued' || row.state === 'waiting_approval') {
+            const kind = row.state === 'waiting_approval' ? 'approval' : 'queued';
+            row.state = 'cancelled'; row.code = 'room_stopped';
+            row.error = 'Room Stop cancelled this turn before it ran.';
+            row.run_token = null; row.updated_at = at; row.finished_at = at;
+            cancelled.push({ id: row.id, target_agent_id: row.target_agent_id, kind });
+          } else if (['offered', 'accepted', 'running'].includes(row.state)) {
+            active.push({
+              id: row.id, target_agent_id: row.target_agent_id, run_token: row.run_token,
+              attempt: row.attempt, state: row.state,
+            });
+            row.state = 'uncertain'; row.code = 'room_stopped';
+            row.error = 'Room Stop requested cancellation; the remote turn may still be running.';
+            row.run_token = null; row.updated_at = at;
+          }
+        }
+        const live = new Set(active.map((row) => row.id));
+        for (const message of d.messages) {
+          if (!live.has(message.dispatch_id) || message.system || message.final === true) continue;
+          if (message.author_kind === 'agent' && message.delivery_state === 'running') message.delivery_state = 'interrupted';
+        }
+        let cardsClosed = 0;
+        for (const card of d.cards) {
+          if (card.state !== 'open') continue;
+          card.state = 'closed'; card.reason = 'room_stopped'; card.closed_at = at;
+          cardsClosed += 1;
+        }
+        out = { epoch: d.epoch, paused: true, active, cancelled, cards_closed: cardsClosed };
+      });
+      return out;
+    },
+
+    async resume(id, { ownerId, at = Date.now() } = {}) {
+      const room = await use(id);
+      let out;
+      await room.mutate((d) => {
+        if (d.owner_id !== ownerId) throw fault(403, 'Only the conversation owner may resume it', 'not_conversation_owner');
+        d.paused = false; d.updated_at = at;
+        out = { epoch: d.epoch, paused: false };
+      });
+      return out;
+    },
+
+    /** Mint one room card bound to the owner, room, target agent and live dispatch. */
+    async openRoomCard(id, { targetAgentId, dispatchId = null, runToken = null, req, now = Date.now() } = {}) {
+      if (!req || typeof req !== 'object') throw fault(400, 'Invalid card');
+      const room = await use(id);
+      let out;
+      await room.mutate((d) => {
+        if (!activeAgent(d, targetAgentId)) throw actorForbidden();
+        if (!Array.isArray(d.cards)) d.cards = [];
+        for (const card of d.cards) {
+          if (card.state === 'open' && card.expires_at <= now) { card.state = 'closed'; card.reason = 'expired'; card.closed_at = now; }
+        }
+        const fp = sha256(JSON.stringify([req.kind, req.instance, req.command ?? null, req.description ?? null, req.questions ?? null]));
+        const key = typeof req.idempotency_key === 'string' && req.idempotency_key
+          ? `card:${targetAgentId}:${req.instance}:${req.idempotency_key}` : null;
+        if (key) {
+          const prior = d.cards.find((card) => card.dedupe_key === key);
+          if (prior) {
+            if (prior.dedupe_fingerprint !== fp) throw fault(409, 'That idempotency key was used for a different card', 'idempotency_conflict');
+            out = { request_id: prior.id, expires_at: prior.expires_at, duplicate: true };
+            return;
+          }
+        }
+        const open = d.cards.filter((card) => card.state === 'open' && card.expires_at > now);
+        if (open.length >= 8) throw fault(409, 'Too many open cards in this room', 'too_many_cards');
+        const ttl = Number.isSafeInteger(req.ttl_ms) && req.ttl_ms > 0 ? req.ttl_ms : 300_000;
+        const requestId = newId('frq_'), expiresAt = now + ttl;
+        d.cards.push({
+          id: requestId, owner_id: d.owner_id, room_id: d.id, target_agent_id: targetAgentId,
+          dispatch_id: dispatchId, run_token: runToken, kind: req.kind, instance: req.instance,
+          ...(req.card_key ? { card_key: req.card_key } : {}),
+          ...(req.command ? { command: req.command } : {}),
+          ...(req.description ? { description: req.description } : {}),
+          ...(req.questions ? { questions: req.questions } : {}),
+          ...(key ? { dedupe_key: key, dedupe_fingerprint: fp } : {}),
+          created_at: now, expires_at: expiresAt, state: 'open',
+        });
+        out = { request_id: requestId, expires_at: expiresAt, duplicate: false };
+      });
+      return out;
+    },
+
+    /** Close this agent's own open room cards, by exact id or by instance. */
+    async closeRoomCards({ targetAgentId, request_id, all_except_instance, reason = 'closed', now = Date.now() } = {}) {
+      await ready();
+      let closed = 0; const ids = [];
+      for (const room of rooms.values()) {
+        const has = (room.state.cards ?? []).some((card) => card.target_agent_id === targetAgentId && card.state === 'open'
+          && (request_id !== undefined ? card.id === request_id : card.instance !== all_except_instance));
+        if (!has) continue;
+        await room.mutate((d) => {
+          d.cards ??= [];
+          for (const card of d.cards) {
+            if (card.target_agent_id !== targetAgentId || card.state !== 'open') continue;
+            if (request_id !== undefined ? card.id !== request_id : card.instance === all_except_instance) continue;
+            card.state = 'closed'; card.reason = String(reason).slice(0, 64); card.closed_at = now;
+            closed += 1; ids.push({ id: card.id, chat_id: d.id });
+          }
+        });
+      }
+      return { closed, ids };
+    },
+
+    /** The owner answers one exact room card. Never looks up an older request. */
+    async answerRoomCard(id, { requestId, ownerId, targetAgentId, result, user, now = Date.now() } = {}) {
+      if (typeof requestId !== 'string' || !CARD_RE.test(requestId)) throw fault(404, 'That question is no longer open', 'not_found');
+      const room = await use(id);
+      let out;
+      await room.mutate((d) => {
+        if (d.owner_id !== ownerId) throw fault(403, 'Only the conversation owner may answer it', 'not_conversation_owner');
+        d.cards ??= [];
+        const card = d.cards.find((row) => row.id === requestId && row.target_agent_id === targetAgentId);
+        if (!card || card.state !== 'open' || card.expires_at <= now) {
+          if (card && card.state === 'open') { card.state = 'closed'; card.reason = 'expired'; card.closed_at = now; }
+          throw fault(404, 'That question is no longer open', 'not_found');
+        }
+        const verdict = validateCardAnswer(card, result);
+        if (!verdict.ok) throw fault(400, verdict.message, verdict.code ?? 'invalid_request');
+        const callbackId = newId('fcb_');
+        card.state = 'answered'; card.answered_at = now; card.answer = verdict.value;
+        card.callback_id = callbackId; card.user = { id: user.id, name: user.name };
+        card.callback = {
+          t: 'callback', callback_id: callbackId, request_id: card.id, chat_id: d.id, chat_type: 'group',
+          thread_id: 'fcr_' + d.id.slice(3),
+          actor: { kind: 'human', id: user.id, name: user.name, is_bot: false },
+          kind: card.kind, value: verdict.value,
+        };
+        card.callback_delivered = false;
+        d.updated_at = now;
+        out = { request_id: card.id, callback: structuredClone(card.callback) };
+      });
+      return out;
+    },
+
+    /** Every unanswered room callback for one target agent, across this account's rooms. */
+    async pendingRoomCallbacks({ targetAgentId } = {}) {
+      await ready();
+      const out = [];
+      for (const room of rooms.values()) {
+        for (const card of room.state.cards ?? []) {
+          if (card.target_agent_id !== targetAgentId) continue;
+          if (!card.callback || card.callback_delivered || !CALLBACK_RE.test(card.callback.callback_id)) continue;
+          out.push(structuredClone(card.callback));
+        }
+      }
+      return out;
+    },
+
+    async markRoomCallbackDelivered({ callbackId, targetAgentId } = {}) {
+      if (typeof callbackId !== 'string' || !CALLBACK_RE.test(callbackId)) return false;
+      await ready();
+      for (const room of rooms.values()) {
+        const card = (room.state.cards ?? []).find((row) => row.target_agent_id === targetAgentId
+          && row.callback?.callback_id === callbackId);
+        if (!card) continue;
+        if (!card.callback_delivered) await room.mutate((d) => {
+          const row = (d.cards ?? []).find((x) => x.callback?.callback_id === callbackId);
+          if (row) row.callback_delivered = true;
+        });
+        return true;
+      }
+      return false;
+    },
+
+    /** The bot acknowledges the owner's tap for exactly its own card callback. */
+    async ackRoomCallback({ callbackId, targetAgentId, roomId, now = Date.now() } = {}) {
+      if (typeof callbackId !== 'string' || !CALLBACK_RE.test(callbackId)) throw fault(404, 'Unknown callback', 'not_found');
+      await ready();
+      for (const room of rooms.values()) {
+        const card = (room.state.cards ?? []).find((row) => row.target_agent_id === targetAgentId
+          && row.room_id === room.state.id && row.callback?.callback_id === callbackId
+          && (roomId === undefined || room.state.id === roomId));
+        if (!card) continue;
+        await room.mutate((d) => {
+          const row = (d.cards ?? []).find((x) => x.callback?.callback_id === callbackId);
+          if (row) { row.callback_delivered = true; row.callback_answered_at = now; }
+        });
+        return true;
+      }
+      throw fault(404, 'Unknown callback', 'not_found');
+    },
+
 
     async send(id, { actor, text, format = 'text', mentions, reply_to, client_id, admit } = {}) {
       if (!actor || !['human', 'agent'].includes(actor.kind)) throw fault(400, 'Invalid actor');

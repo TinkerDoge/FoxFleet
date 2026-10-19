@@ -471,6 +471,8 @@ def parse_room_chat_stop(frame: dict) -> ChatStop:
     allowed = {"t", "stop_id", "chat_id", "chat_type", "thread_id", "actor", "date", "expires_at"}
     if set(frame) != allowed:
         raise ProtocolError("bad_frame", "unexpected room chat.stop field")
+    if frame.get("chat_type") != "group":
+        raise ProtocolError("bad_frame", "room chat.stop is chat_type group")
     kind, user_id, user_name, is_bot = _parse_actor(frame.get("actor"))
     if kind != "human" or is_bot:
         raise ProtocolError("bad_user", "stop is owner-only")

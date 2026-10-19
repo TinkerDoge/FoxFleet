@@ -53,7 +53,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
   // HTTP sends enter through engine.submit (the store's own send is wrapped once per account), so routing,
   // serial turns and the handoff budget are the policy that already exists. Bot I/O is a socket transport:
   // dispatch offers/runs are transient frames; room message.new is the frozen contract event.
-  const roomHubs = new Map(), roomRuns = new Map(), staleRuns = new Set();
+  const roomHubs = new Map(), roomRuns = new Map(), staleRuns = new Set(), roomStops = new Map(), stoppedRooms = new Set();
   const roomThread = (chatId) => 'fcr_' + String(chatId).slice(3);
   const attemptKey = (botId, dispatchId, runToken) => `${botId}\0${dispatchId}\0${runToken}`;
   const rememberStale = (key) => {
@@ -66,10 +66,58 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (!run) return;
     if (roomRuns.get(run.key) === run) roomRuns.delete(run.key);
     rememberStale(run.key);
+    if (code === 'room_stopped') stoppedRooms.add(`${run.botId}\0${run.roomId}`);
     run.stale = true;
     const resolve = run.resolve;
     run.resolve = null;
     resolve?.({ failed: true, code, reason });
+  }
+  const stopOutcome = (outcome) => (outcome === 'stopped' || outcome === 'idle' || outcome === 'refused' ? outcome
+    : outcome === 'expired' || outcome === 'timeout' ? 'timeout' : 'uncertain');
+  function settleRoomStop(entry, outcome) {
+    if (!entry || entry.settled) return;
+    entry.settled = true;
+    clearTimeout(entry.timer);
+    roomStops.delete(entry.stop_id);
+    const state = stopOutcome(outcome);
+    staleRoomRun(entry.run, 'room_stopped', `room stop ${state}`);
+    entry.resolve({ state, code: state });
+  }
+  /** Ask one live room attempt to cancel through the owner-only chat.stop path and wait for its answer. */
+  function requestRoomCancel(target, { roomId, attempt, actor }) {
+    return new Promise((resolve) => {
+      const session = target.session;
+      const found = roomRuns.get(attemptKey(target.botId, attempt.dispatch_id, attempt.token));
+      if (!target.online || !session?.conn || session.protocol !== PROTOCOL_V12) {
+        stoppedRooms.add(`${target.botId}\0${roomId}`);
+        if (found) staleRoomRun(found, 'room_stopped', 'room stop while the agent was offline');
+        resolve({ state: 'uncertain', code: 'agent_offline' });
+        return;
+      }
+      if (!found || found.session !== session || found.stale) {
+        stoppedRooms.add(`${target.botId}\0${roomId}`);
+        if (found) staleRoomRun(found, 'room_stopped', 'room stop after the attempt was replaced');
+        resolve({ state: 'uncertain', code: 'dispatch_not_running' });
+        return;
+      }
+      const run = found;
+      const stop_id = 'fs_' + randomBytes(12).toString('base64url');
+      const nowMs = Date.now(), expires = nowMs + STOP_MS;
+      const entry = { stop_id, session, roomId, run, resolve, settled: false, timer: null, expires };
+      roomStops.set(stop_id, entry);
+      const timer = setTimeout(() => settleRoomStop(entry, 'timeout'), Math.max(0, expires - nowMs));
+      timer.unref?.();
+      entry.timer = timer;
+      try {
+        session.conn.send({
+          t: 'chat.stop', stop_id, chat_id: roomId, chat_type: 'group', thread_id: roomThread(roomId),
+          actor: { kind: 'human', id: actor.id, name: actor.name, is_bot: false },
+          date: nowMs, expires_at: expires,
+        });
+      } catch {
+        settleRoomStop(entry, 'uncertain');
+      }
+    });
   }
   const roomActor = (m) => (m.author_kind === 'agent'
     ? { kind: 'agent', id: m.author_id, name: m.author_name, is_bot: true }
@@ -175,6 +223,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         return { accepted: true };
       },
       run: (ctx) => runRoomTurn(hub, target, ctx),
+      cancel: (request) => requestRoomCancel(target, request),
     };
     hub.engine.register(agentId, target);
     return target;
@@ -192,6 +241,13 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     }
     const snap = await roomSnapshot(hub, ctx.roomId);
     if (!snap) return { failed: true, code: 'not_found', reason: 'the room no longer exists' };
+    // Stop may have committed while this turn was being offered/accepted. The durable row is the fence:
+    // never hand a stopped, replaced or paused attempt to the bot just because the Promise survived.
+    const current = (snap.dispatches ?? []).find((d) => d.id === ctx.dispatch.id);
+    if (!current || current.state !== 'running' || current.run_token !== ctx.attempt.token
+      || snap.epoch !== ctx.dispatch.epoch || snap.paused) {
+      return { failed: true, code: 'dispatch_stale', reason: 'the attempt was stopped or replaced before it started' };
+    }
     const message = snap.messages.find((m) => m.id === ctx.dispatch.request_message_id && !m.deleted_at);
     if (!message) return { failed: true, code: 'not_found', reason: 'the dispatch message was not found' };
     const threadId = roomThread(snap.id);
@@ -209,6 +265,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     for (const prior of [...roomRuns.values()]) {
       if (prior.botId === target.botId && prior.roomId === snap.id) staleRoomRun(prior);
     }
+    stoppedRooms.delete(`${target.botId}\0${snap.id}`);
     const run = {
       key, session, target, botId: target.botId, roomId: snap.id, chatId: snap.id, threadId,
       ctx, dispatchId: ctx.dispatch.id, runToken: ctx.attempt.token, frame,
@@ -256,6 +313,31 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     }
   }
 
+  /** Unanswered owner taps are durable room records; replay them on reconnect until the bot acknowledges. */
+  async function pushRoomCallbacks(session, hub) {
+    if (session.protocol !== PROTOCOL_V12 || !session.conn) return;
+    const agent = agentOf(session.reg, session.botId);
+    if (!agent) return;
+    const target = 'agent:' + agent.name;
+    const pending = await hub.store.pendingRoomCallbacks({ targetAgentId: target });
+    for (const callback of pending) {
+      if (!session.conn) return;
+      try { session.conn.send(callback); } catch { return; }
+    }
+  }
+
+  async function roomCardClose(session, v, hub) {
+    const agent = agentOf(session.reg, session.botId);
+    if (!agent) throw new BotError('forbidden', 'This bot is not an active agent');
+    const out = await hub.store.closeRoomCards({
+      targetAgentId: 'agent:' + agent.name,
+      request_id: v.req.request_id,
+      all_except_instance: v.req.all_except_instance,
+      reason: v.req.reason,
+    });
+    return { result: { closed: out.closed } };
+  }
+
   async function roomRequest(session, v, hub) {
     const snap = await roomSnapshot(hub, v.req.chat_id);
     if (!snap) return null; // not a room: the DM path keeps its byte-compatible behaviour
@@ -275,14 +357,19 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     const sameDispatch = both
       ? [...roomRuns.values()].find((r) => r.botId === session.botId && r.dispatchId === requestedDispatch && !r.stale)
       : null;
-    const stale = both && (Boolean(exact) || Boolean(sameDispatch) || staleRuns.has(exactKey));
+    const stoppedRoom = stoppedRooms.has(`${session.botId}\0${snap.id}`);
+    const stale = (both && (Boolean(exact) || Boolean(sameDispatch) || staleRuns.has(exactKey)))
+      || (!both && stoppedRoom);
     const refusal = stale
       ? new BotError('dispatch_stale', 'That dispatch was replaced')
       : new BotError('dispatch_not_running', 'That dispatch is no longer running');
     // Never infer the current (bot, room) turn: an output frame binds only by its exact attempt pair.
+    // After a Stop the room keeps a stale marker until a new run starts, so an unbound late completion
+    // cannot be mistaken for a fresh plain room message.
+    const stopped = stoppedRoom;
     const needsBinding = v.t === 'handoff.request'
-      || (v.t === 'message.send' && (hasAttempt || Boolean(live)))
-      || (v.t === 'message.edit' && (hasAttempt || Boolean(live)));
+      || (v.t === 'message.send' && (hasAttempt || Boolean(live) || stopped))
+      || (v.t === 'message.edit' && (hasAttempt || Boolean(live) || stopped));
     if (!active && needsBinding) throw refusal;
     const actor = { kind: 'agent', id: actorId, name: member.name };
 
@@ -331,8 +418,35 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
           latest_seq: snap.next_seq - 1,
         } };
       }
-      case 'chat.cancel':
-        throw new BotError('unsupported', 'chat.cancel is not available in this release');
+      case 'card.send': {
+        const live = [...roomRuns.values()].find((r) => r.botId === session.botId && r.roomId === snap.id && !r.stale) ?? null;
+        if (!live) throw new BotError('not_found', 'No live room turn for this card');
+        const { actor_kind: _cardActor, ...cardReq } = v.req;
+        const base = validateCardRequest({ ...cardReq, t: 'card.send', id: v.id ?? 'r' });
+        if (!base.ok) throw new BotError(base.code, base.message);
+        let card;
+        try {
+          card = await hub.store.openRoomCard(snap.id, {
+            targetAgentId: actorId, dispatchId: live.dispatchId, runToken: live.runToken, req: base.req,
+          });
+        } catch (e) { throw roomBotError(e); }
+        return { result: { request_id: card.request_id, expires_at: card.expires_at, ...(card.duplicate ? { duplicate: true } : {}) } };
+      }
+      case 'chat.cancel': {
+        const row = (snap.dispatches ?? []).find((d) => d.id === v.req.dispatch_id);
+        if (!row || row.target_agent_id !== actorId) throw new BotError('not_found', 'Unknown dispatch');
+        if (row.state !== 'queued') throw new BotError('dispatch_not_running', 'That dispatch is no longer queued');
+        const cancelled = await hub.store.transact(snap.id, (d) => {
+          const current = (d.dispatches ?? []).find((x) => x.id === v.req.dispatch_id);
+          if (!current || current.target_agent_id !== actorId || current.state !== 'queued') return false;
+          current.state = 'cancelled'; current.code = 'agent_cancelled';
+          current.error = 'Cancelled by the agent before it started.';
+          current.finished_at = Date.now(); current.updated_at = current.finished_at; current.run_token = null;
+          return true;
+        });
+        if (!cancelled) throw new BotError('dispatch_not_running', 'That dispatch is no longer queued');
+        return { result: { cancelled: true, dispatch_id: v.req.dispatch_id } };
+      }
       case 'chat.action':
         return { result: {} };
       case 'message.send': {
@@ -468,7 +582,8 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     if (session.protocol === PROTOCOL_V12) {
       const hub = roomHubFor(session.reg, session.scope);
       if (hub) {
-        if (['handoff.request', 'chat.get', 'chat.cancel'].includes(v.t)) return roomRequest(session, v, hub);
+        if (v.t === 'card.close') return roomCardClose(session, v, hub);
+        if (['handoff.request', 'chat.get', 'chat.cancel', 'card.send'].includes(v.t)) return roomRequest(session, v, hub);
         if (['message.send', 'message.edit', 'message.delete', 'chat.action'].includes(v.t)) {
           const room = await roomRequest(session, v, hub);
           if (room) return room;
@@ -552,6 +667,7 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     }
     if (v.t === 'ping') return conn.send({ t: 'pong', ...(v.id ? { id: v.id } : {}) });
     if (v.t === 'pong') return;
+    if (session.protocol === PROTOCOL_V12 && v.t === 'callback.answer') return answerRoomCallback(session, v);
     const answer = (res) => { if (v.id) conn.send({ t: 'res', id: v.id, ...res }); else if (!res.ok) conn.send({ t: 'error', code: res.error.code, message: res.error.message }); };
     try {
       if (v.t !== 'ack') takeToken(session.botId);
@@ -624,6 +740,37 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
     }
     settle(entry, v.req.outcome);
     return answer({ ok: true, result: {} });
+  }
+  function answerRoomCallback(session, v) {
+    const answer = (res) => { if (v.id) session.conn.send({ t: 'res', id: v.id, ...res }); else if (!res.ok) session.conn.send({ t: 'error', code: res.error.code, message: res.error.message }); };
+    try { takeToken(session.botId); }
+    catch (e) {
+      if (!(e instanceof BotError)) throw e;
+      return answer({ ok: false, error: { code: e.botCode, message: e.message, ...(e.retry_after_ms ? { retry_after_ms: e.retry_after_ms } : {}) } });
+    }
+    if (!current(session)) return answer({ ok: false, error: { code: 'forbidden', message: 'This connection is no longer authorised' } });
+    const cid = v.req.callback_id, roomId = v.req.chat_id;
+    if (cid.startsWith('fs_')) {
+      const entry = roomStops.get(cid);
+      if (!entry || entry.session !== session || entry.roomId !== roomId || v.req.thread_id !== roomThread(roomId)) {
+        return answer({ ok: false, error: { code: 'not_found', message: 'Unknown callback' } });
+      }
+      if (Date.now() > entry.expires) {
+        settleRoomStop(entry, 'timeout');
+        return answer({ ok: false, error: { code: 'not_found', message: 'That stop has expired' } });
+      }
+      settleRoomStop(entry, v.req.outcome);
+      return answer({ ok: true, result: {} });
+    }
+    const agent = agentOf(session.reg, session.botId);
+    const hub = roomHubFor(session.reg, session.scope);
+    if (!agent || !hub || v.req.thread_id !== roomThread(roomId)) {
+      return answer({ ok: false, error: { code: 'not_found', message: 'Unknown callback' } });
+    }
+    hub.store.ackRoomCallback({ callbackId: cid, targetAgentId: 'agent:' + agent.name, roomId }).then(
+      () => answer({ ok: true, result: {} }),
+      (e) => answer({ ok: false, error: { code: e?.code ?? 'not_found', message: 'Unknown callback' } }),
+    );
   }
   function answerCardCallback(session, frame) {
     const v = validateCardCallback(frame);
@@ -1004,12 +1151,14 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
             }
             resumeRoomRuns(session);
             if (hub) void replayRoomMembers(session, hub).catch(() => {});
+            if (hub) void pushRoomCallbacks(session, hub).catch(() => {});
           }
           log('bot.connected', { bot: id.botId });
         },
         onMessage: (text) => handle(session, text),
         onClose: (code) => {
           failStops(session, 'disconnected');
+          for (const entry of [...roomStops.values()]) if (entry.session === session) settleRoomStop(entry, 'uncertain');
           if (session.roomTarget?.session === session) { session.roomTarget.online = false; session.roomTarget.session = null; }
           if (sessions.get(id.botId) === session) { sessions.delete(id.botId); announce(id.botId, false); }
           log('bot.closed', { bot: id.botId, code });
@@ -1063,6 +1212,19 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
       for (const m of reg.store.all().filter((m) => m.connection === 'bot')) await blobs.remove(reg, m.botId);
       await tokens.revokeScope(scope);
       for (const [botId, e] of [...stores]) if (e.scope === scope) { await e.store.idle(); stores.delete(botId); buckets.delete(botId); }
+    },
+    /** Owner room control plane: dispatch-engine Stop/Resume, never a bot request. */
+    async roomStop(scope, roomId, actor) {
+      const reg = await scopeReg(scope);
+      const hub = roomHubFor(reg, scope);
+      if (!hub) throw fault(404, 'Conversation not found', 'conversation_not_found');
+      return hub.engine.stop(roomId, { actor });
+    },
+    async roomResume(scope, roomId, actor) {
+      const reg = await scopeReg(scope);
+      const hub = roomHubFor(reg, scope);
+      if (!hub) throw fault(404, 'Conversation not found', 'conversation_not_found');
+      return hub.engine.resume(roomId, { actor });
     },
     /** The agent record is being deleted: revoke its token, disconnect it and delete its store file. */
     async removeAgent(m, reg) {
@@ -1129,6 +1291,17 @@ export async function createBotApi({ dataDir, scopeReg, ownerOf, runs, trusted =
         const body = await c.readJson(req);
         const chatId = parts[5], requestId = parts[7];
         if (!CHAT_ID.test(chatId) || !CARD_ID.test(requestId)) throw fault(404, 'That question is no longer open');
+        const hub = roomHubFor(c.reg, c.scope);
+        const room = hub ? await roomSnapshot(hub, chatId) : null;
+        if (room) {
+          const user = { id: String(c.user?.id ?? ''), name: String(c.user?.username ?? '').replaceAll('\0', '').slice(0, 256) };
+          const out = await hub.store.answerRoomCard(chatId, {
+            requestId, ownerId: user.id, targetAgentId: 'agent:' + m.name, result: body?.result, user,
+          });
+          const live = sessions.get(m.botId);
+          if (live?.conn) { try { live.conn.send(out.callback); } catch { /* replayed on the next hello */ } }
+          return c.sendJson(res, 200, { ok: true });
+        }
         const store = await readyStore(c);
         const user = { id: String(c.user?.id ?? ''), name: String(c.user?.username ?? '').replaceAll('\0', '').slice(0, 256) };
         try {

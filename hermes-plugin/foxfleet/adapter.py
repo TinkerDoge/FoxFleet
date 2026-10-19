@@ -44,7 +44,7 @@ from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write, read_json_or_empty
 
-from . import protocol, rooms
+from . import cards as card_binding, protocol, rooms
 from .ownership import BotLock
 
 logger = logging.getLogger(__name__)
@@ -852,11 +852,22 @@ class FoxFleetAdapter(BasePlatformAdapter):
         cleaned = "".join(ch for ch in str(text or "") if ch in "\n\t" or (32 <= ord(ch) != 127))
         return cleaned[:n]
 
+    @staticmethod
+    def _room_card_fields(chat_id: str) -> dict[str, Any]:
+        """The plugin-side binding recorded for a card minted inside a room turn."""
+        turn = rooms.current_turn()
+        if turn is None or turn.chat_id != str(chat_id):
+            return {}
+        return {"chat_id": str(chat_id), "dispatch_id": turn.dispatch_id, "run_token": turn.run_token}
+
     async def _send_card(self, *, chat_id: str, kind: str, **fields: Any) -> Optional[str]:
         """Mint one card. None means the hub did not accept it; the caller falls back to text."""
         if not self._cards_on() or not protocol.CHAT_ID.match(str(chat_id or "")):
             return None
         key = f"card.{kind}.{secrets.token_hex(8)}"
+        turn = rooms.current_turn()
+        if turn is not None and turn.chat_id == str(chat_id):
+            fields["actor_kind"] = "agent"
         try:
             res = await self._request("card.send", retry_unknown=True, chat_id=str(chat_id), kind=kind,
                                       instance=self._card_instance, idempotency_key=key, **fields)
@@ -881,8 +892,10 @@ class FoxFleetAdapter(BasePlatformAdapter):
                                            command=command, description=description)
         if not request_id:
             return SendResult(success=False, error="cards not available")
-        self._cards[request_id] = {"kind": "approval", "session_key": session_key, "approval_id": approval_id,
-                                   "chat_id": str(getattr(prompt, "chat_id", ""))}
+        chat_id = str(getattr(prompt, "chat_id", ""))
+        self._cards[request_id] = {"request_id": request_id, "kind": "approval", "session_key": session_key,
+                                   "approval_id": approval_id, "chat_id": chat_id,
+                                   **self._room_card_fields(chat_id)}
         return SendResult(success=True, message_id=request_id)
 
     def _approval_id_for(self, session_key: str, shown_command: str) -> Optional[str]:
@@ -907,8 +920,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
         request_id = await self._send_card(chat_id=chat_id, kind="confirm", description=description)
         if not request_id:
             return SendResult(success=False, error="cards not available")
-        self._cards[request_id] = {"kind": "confirm", "session_key": str(session_key), "confirm_id": str(confirm_id),
-                                   "chat_id": str(chat_id)}
+        self._cards[request_id] = {"request_id": request_id, "kind": "confirm", "session_key": str(session_key),
+                                   "confirm_id": str(confirm_id), "chat_id": str(chat_id),
+                                   **self._room_card_fields(chat_id)}
         return SendResult(success=True, message_id=request_id)
 
     async def send_clarify(self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
@@ -930,8 +944,9 @@ class FoxFleetAdapter(BasePlatformAdapter):
             questions=[{"id": "q0", "question": self._clip(question) or "Choose", "choices": clean, "multi_select": multi}])
         if not request_id:
             return await super().send_clarify(chat_id, question, choices, clarify_id, session_key, metadata=metadata)
-        self._cards[request_id] = {"kind": "clarify", "clarify_id": str(clarify_id), "session_key": str(session_key),
-                                   "chat_id": str(chat_id)}
+        self._cards[request_id] = {"request_id": request_id, "kind": "clarify", "clarify_id": str(clarify_id),
+                                   "session_key": str(session_key), "chat_id": str(chat_id),
+                                   **self._room_card_fields(chat_id)}
         self._cards_by_clarify[str(clarify_id)] = request_id
         return SendResult(success=True, message_id=request_id)
 
@@ -965,10 +980,19 @@ class FoxFleetAdapter(BasePlatformAdapter):
                                       thread_id=cb.thread_id) is not True:
             await self._finish_card(conn, cb.callback_id, "refused", **opts)
             return
-        pending = self._cards.pop(cb.request_id, None)
+        pending = self._cards.get(cb.request_id)
         if pending is None:
             await self._finish_card(conn, cb.callback_id, "expired", **opts)
             return
+        if cb.chat_type == "group":
+            bound = card_binding.bind_room_card(
+                self._cards, request_id=cb.request_id, chat_id=cb.chat_id,
+                target_agent_id=pending.get("target_agent_id"), dispatch_id=pending.get("dispatch_id"),
+                owner_id=pending.get("owner_id"))
+            if bound is None or (pending.get("owner_id") not in (None, cb.user_id)):
+                await self._finish_card(conn, cb.callback_id, "refused", **opts)
+                return
+        self._cards.pop(cb.request_id, None)
         self._cards_by_clarify.pop(str(pending.get("clarify_id") or ""), None)
         await self._finish_card(conn, cb.callback_id, await self._resolve_card(pending, cb), **opts)
 

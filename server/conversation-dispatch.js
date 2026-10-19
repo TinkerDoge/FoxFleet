@@ -400,13 +400,14 @@ function reserveHumanAdmission(d, message, recipients, nowMs) {
   return out;
 }
 
-export function createDispatchEngine({ store, now = () => Date.now(), targets = new Map(), timers } = {}) {
+export function createDispatchEngine({ store, now = () => Date.now(), targets = new Map(), timers, stopWaitMs = 10_000 } = {}) {
   if (!store || typeof store.send !== 'function' || typeof store.transact !== 'function') throw new TypeError('A conversation store is required');
   const registry = targets instanceof Map ? targets : new Map(Object.entries(targets));
   const timerApi = timers ?? { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (handle) => clearTimeout(handle) };
   if (!timerApi || typeof timerApi.setTimeout !== 'function' || typeof timerApi.clearTimeout !== 'function') {
     throw new TypeError('timers must provide setTimeout and clearTimeout');
   }
+  const stopTimeout = Number.isInteger(stopWaitMs) && stopWaitMs >= 0 ? stopWaitMs : 10_000;
   const chains = new Map();
   const failures = new Map();
   const pendingTimers = new Set();
@@ -487,6 +488,9 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     const routed = routeRoomMessage({ message, messages: d.messages, members: d.members });
     const dispatches = reserveHumanAdmission(d, message, routed.recipients, now());
     message.admission = { rule: routed.rule, recipients: [...routed.recipients] };
+    // A new addressed request is a new root under the current epoch. It may start work after Stop;
+    // it never revives a cancelled root because those rows are terminal.
+    if (d.paused && dispatches.some((row) => row.state === 'queued' && row.duplicate !== true)) d.paused = false;
     return { rule: routed.rule, dispatches };
   }
 
@@ -943,6 +947,102 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     });
   }
 
+  const STOP_ACK = new Set(['stopping', 'stopped', 'idle', 'refused', 'timeout', 'uncertain']);
+  /** A transport answer is evidence, never a guess. Anything unknown means "not confirmed". */
+  function stopState(value) {
+    if (value && typeof value === 'object' && value.ok === false && value.code === 'refused') return 'refused';
+    const raw = typeof value === 'string' ? value : value?.state ?? value?.outcome ?? value?.result?.state;
+    if (raw === 'stopped' || raw === 'idle' || raw === 'refused' || raw === 'stopping') return raw;
+    if (raw === 'expired' || raw === 'timeout') return 'timeout';
+    return 'uncertain';
+  }
+
+  /**
+   * Owner Stop. The durable mutation (new epoch, pause, queue/approval cancellation, open cards) happens
+   * before any transport call, so late output is fenced even if the remote never acknowledges. Each live
+   * turn is then asked to cancel; its per-agent answer is the only evidence that it actually stopped.
+   */
+  async function stop(roomId, { actor, waitMs = stopTimeout } = {}) {
+    if (!actor || actor.kind !== 'human' || !HUMAN_ID.test(actor.id ?? '')) throw fault(403, 'A human actor is required', 'actor_forbidden');
+    const durable = await store.stop(roomId, { ownerId: actor.id, at: now() });
+    const statuses = new Map();
+    for (const row of durable.active) statuses.set(row.id, 'uncertain');
+    await Promise.all(durable.active.map(async (entry) => {
+      const target = registry.get(entry.target_agent_id);
+      if (!target || typeof target.cancel !== 'function') {
+        statuses.set(entry.id, 'uncertain');
+        return;
+      }
+      let call;
+      try {
+        call = target.cancel({
+          roomId, actor,
+          dispatch: { id: entry.id, target_agent_id: entry.target_agent_id, attempt: entry.attempt },
+          attempt: { dispatch_id: entry.id, token: entry.run_token },
+        });
+      } catch {
+        statuses.set(entry.id, 'uncertain');
+        return;
+      }
+      let settled;
+      try { settled = await bounded(Promise.resolve(call), now() + waitMs); }
+      catch { statuses.set(entry.id, 'uncertain'); return; }
+      statuses.set(entry.id, settled === TIMED_OUT ? 'timeout' : normalizeStop(settled));
+    }));
+    function normalizeStop(settled) {
+      if (!settled || settled.ok === false) return 'uncertain';
+      return stopState(settled.value);
+    }
+
+    const at = now();
+    await store.transact(roomId, (d) => {
+      ensure(d);
+      for (const entry of durable.active) {
+        const row = d.dispatches.find((x) => x.id === entry.id);
+        if (!row || row.state !== 'uncertain' || row.code !== 'room_stopped') continue;
+        const status = statuses.get(entry.id) ?? 'uncertain';
+        if (status === 'stopped' || status === 'idle') {
+          row.state = 'cancelled'; row.code = 'room_stopped'; row.finished_at = at; row.updated_at = at;
+        } else {
+          row.code = `room_stop_${STOP_ACK.has(status) ? status : 'uncertain'}`;
+          row.updated_at = at;
+        }
+      }
+    });
+
+    const agents = {};
+    const dispatches = [];
+    for (const entry of durable.active) {
+      const status = statuses.get(entry.id) ?? 'uncertain';
+      agents[entry.target_agent_id] = status;
+      dispatches.push({ dispatch_id: entry.id, target_agent_id: entry.target_agent_id, status });
+    }
+    for (const row of durable.cancelled) {
+      if (!(row.target_agent_id in agents)) agents[row.target_agent_id] = 'stopped';
+      dispatches.push({ dispatch_id: row.id, target_agent_id: row.target_agent_id, status: 'stopped', kind: row.kind });
+    }
+    const confirmed = [...statuses.values()].every((status) => status === 'stopped' || status === 'idle');
+    return {
+      stopped: confirmed,
+      confirmed,
+      state: confirmed ? (dispatches.length ? 'stopped' : 'idle') : 'running',
+      epoch: durable.epoch,
+      paused: true,
+      agents,
+      dispatches,
+      cancelled_queued: durable.cancelled.filter((row) => row.kind === 'queued').length,
+      cancelled_approvals: durable.cancelled.filter((row) => row.kind === 'approval').length,
+      cancelled_cards: durable.cards_closed,
+    };
+  }
+
+  async function resume(roomId, { actor } = {}) {
+    if (!actor || actor.kind !== 'human' || !HUMAN_ID.test(actor.id ?? '')) throw fault(403, 'A human actor is required', 'actor_forbidden');
+    const durable = await store.resume(roomId, { ownerId: actor.id, at: now() });
+    void schedule(roomId).catch(() => {});
+    return { epoch: durable.epoch, paused: false, resumed: true };
+  }
+
   return {
     targets: registry,
     register(agentId, target) {
@@ -953,6 +1053,8 @@ export function createDispatchEngine({ store, now = () => Date.now(), targets = 
     },
     submit,
     handoff: runHandoff,
+    stop,
+    resume,
     drain,
     /** Mark every in-flight turn uncertain and expire queued/waiting turns past their deadline. Never runs an agent. */
     async recover() {
