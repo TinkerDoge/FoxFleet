@@ -26,8 +26,8 @@ Implemented in this version, and nothing else:
 | Socket | `GET /api/bot/ws` (WebSocket), one live connection per bot |
 | Standalone bot requests | `POST /api/bot/rpc` (non-displacing HTTP, send/edit/delete/typing only) |
 | Hub → bot | `hello`, `message.new`, `res`, `error`, `ping`, `pong` |
-| Bot → hub | `ack`, `ping`, `pong`, `message.send`, `message.edit`, `message.delete`, `chat.action` (`typing`), `commands.set` |
-| User side | the existing agent routes: list/detail, sessions, transcript, `/messages`, `/chat`, `/runs`, `/queue`, `/commands`, `/pin`, `/reactions`, `/hidden` |
+| Bot → hub | `ack`, `ping`, `pong`, `message.send`, `message.edit`, `message.delete`, `chat.action` (`typing`), `commands.set`, `models.set` |
+| User side | the existing agent routes: list/detail, sessions, transcript, `/messages`, `/chat`, `/runs`, `/queue`, `/commands`, `/models`, `/pin`, `/reactions`, `/hidden` |
 | Content | text only, direct chats (`chat_type: "dm"`) |
 
 **Reply conventions (0.4.2).** A bot reply's `REACT: <emoji>` line is not shown as text: the hub
@@ -148,7 +148,7 @@ Content-Type: application/json
 - Body is exactly one normal bot request frame. Only `message.send`, `message.edit`, `message.delete`, and
   `chat.action` are allowed. Field validation, default format/final, ownership, caps, transcript/activity and reply-run
   behavior are the same as on WebSocket. Explicit `final: false` keeps the run open; `final: true` ends it.
-- `ack`, `ping`, `pong`, `commands.set` and reserved operations return `unsupported`; unknown operations return
+- `ack`, `ping`, `pong`, `commands.set`, `models.set` and reserved operations return `unsupported`; unknown operations return
   `unknown_type`. No polling, commands registration, media, buttons, groups or receive protocol is added here.
 - The token is the only account/bot/agent authority. Such fields in the body are rejected, not used for routing.
   The path is exactly `/api/bot/rpc`: no trailing slash, query string (even an empty `?`), URL tokens or redirects.
@@ -285,6 +285,7 @@ listed are rejected (`invalid_request`, or `unsupported` for the reserved names 
 | `message.delete` | `chat_id`, `message_id`, `idempotency_key`? | `{ "message_id", "chat_id", "deleted": true }` |
 | `chat.action` | `chat_id`, `action` (`typing` only) | `{}` |
 | `commands.set` | `commands`: `[{ "name", "description" }]` | `{ "count" }` |
+| `models.set` | `providers`: `[{ "slug", "name"?, "current"? / "is_current"?, "models"? }]` | `{ "count" }` |
 | `ack` | `event_id` (`id` optional) | `{ "acked" }` |
 | `ping` | (`id` optional) | `pong` frame |
 
@@ -299,6 +300,13 @@ Rules:
 - `commands.set` replaces this bot's command list: ≤ 100 entries, `name` `^[a-z0-9_]{1,32}$` (unique), `description`
   1 … 256 characters without control characters. They are published to the bot's users through
   `GET /api/agents/:name/commands` as plain chat commands (text the user sends; the bot decides what they do).
+- `models.set` replaces this bot's provider catalog (WebSocket only; `id` required). ≤ 60 providers, each with
+  `slug` `^[\w.:-]{1,64}$`. Optional `name` is trimmed to at most 80 characters with no control characters (blank or
+  omitted uses `slug`). Optional `models` is at most 300 ids `^[\w.:/@+-]{1,200}$`; a missing or non-array `models`
+  becomes `[]`. An id may be a string or an object with `id` or `name`. Extra fields on a provider or model object
+  are ignored. `current` is true when `current` or `is_current` is boolean true — metadata only; this call does not
+  spend, switch, or authorise a model. An empty `providers` list clears. Users see the list at
+  `GET /api/agents/:name/models` as `{ "mode": "bot", "providers" }`. Not available over `POST /api/bot/rpc`.
 - `chat.action` is transient (not stored); users following the chat see `event: foxfleet.bot` `{"action":"typing"}`.
 - `final: true` tells the hub the reply in this chat is complete (ends the user's live run, section 7).
 - Rate: a token bucket per bot (default 60 requests burst, 20/s refill), shared by all of the bot's connections;
@@ -371,6 +379,8 @@ the shared hub-side handler.
 - `GET /commands` → `{source: "bot", busy: ["queue"], commands}`: the bot's `commands.set` list
   (`handler: "chat"`, `executable: true`, `verified: false`) plus the app's own client commands. Never the bundled
   Hermes TUI list.
+- `GET /models` → `{mode: "bot", providers}`: the bot's `models.set` catalog. Metadata only; it does not spend or
+  switch a model.
 
 ### Stop (`foxfleet.bot/1.1`)
 

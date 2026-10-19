@@ -91,6 +91,44 @@
    }
   },
   {
+   "name": "models.set",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [
+     {
+      "slug": "openrouter",
+      "name": "OpenRouter",
+      "current": true,
+      "models": [
+       "openrouter/x",
+       {
+        "id": "openrouter/y",
+        "label": "ignored"
+       }
+      ]
+     },
+     {
+      "slug": "local",
+      "is_current": true,
+      "models": [
+       {
+        "name": "llama3"
+       }
+      ]
+     }
+    ]
+   }
+  },
+  {
+   "name": "models.set empty list clears",
+   "frame": {
+    "t": "models.set",
+    "id": "m2",
+    "providers": []
+   }
+  },
+  {
    "name": "ack without id",
    "frame": {
     "t": "ack",
@@ -1097,6 +1135,89 @@
       "name": "a",
       "description": "x",
       "extra": 1
+     }
+    ]
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set without providers",
+   "frame": {
+    "t": "models.set",
+    "id": "m1"
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set unknown field",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [],
+    "surprise": 1
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set providers not a list",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": "x"
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set slug with a space",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [
+     {
+      "slug": "bad slug",
+      "models": []
+     }
+    ]
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set provider not an object",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [
+     "openrouter"
+    ]
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set model id with a space",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [
+     {
+      "slug": "openrouter",
+      "models": [
+       "bad id"
+      ]
+     }
+    ]
+   },
+   "code": "invalid_request"
+  },
+  {
+   "name": "models.set name with a control character",
+   "frame": {
+    "t": "models.set",
+    "id": "m1",
+    "providers": [
+     {
+      "slug": "openrouter",
+      "name": "line\nbreak",
+      "models": []
      }
     ]
    },
