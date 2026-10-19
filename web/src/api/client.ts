@@ -1,6 +1,6 @@
 import type { ToolEvent } from '../chat/toolActivity';
 import { ApiError, AuthRequiredError, NetworkError, RateLimitedError } from './errors';
-import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, SessionPage, HistoryPage, Shareable } from './types';
+import type { AdminUser, Machine, Pairing, PairingState, AgentSummary, AuthInfo, Conversation, ConversationList, ConversationMedia, ConversationMessage, ConversationMessagePage, ConversationPreferences, ConversationStopResult, Device, Invite, Registration, ScreenStatus, ScreenTicket, SessionInfo, SessionPage, HistoryPage, Shareable } from './types';
 import { parseKinds, parseSaved, parseTest, type AgentKind, type SaveResult, type SavedAgent, type TestResult } from '../lib/registry';
 import type { UiMessage } from '../lib/chat';
 import { chatMessages, fromHistory } from '../lib/chat';
@@ -186,6 +186,54 @@ export function createClient({ base = '', fetch: f = (...a) => fetch(...a), time
     notifyMute: async (agent: string, chat: string | null, muted: boolean, forMs?: number): Promise<NotifyPrefs> => parseNotifyPrefs(await request('/api/notify/mute', { method: 'PUT', body: { agent, ...(chat ? { chat } : {}), muted, ...(muted && forMs ? { for_ms: forMs } : {}) }, retries: 0 })),
     notifyTest: async (): Promise<{ muted: boolean }> => ({ muted: (await request<{ event?: { muted?: boolean } }>('/api/notify/test', { body: {}, retries: 0 })).event?.muted === true }),
     agents: async (): Promise<AgentSummary[]> => (await request<{ agents?: AgentSummary[] }>('/api/agents')).agents ?? [],
+
+    // ---- group rooms: a separate account-scoped list, never folded into AgentSummary ----
+    conversations: async (o: { limit?: number; offset?: number } = {}): Promise<ConversationList> => {
+      const q = new URLSearchParams({ limit: String(o.limit ?? 50), offset: String(o.offset ?? 0) });
+      const r = await request<any>(`/api/conversations?${q}`);
+      return { conversations: Array.isArray(r?.conversations) ? r.conversations : [], total: Number.isInteger(r?.total) ? r.total : undefined };
+    },
+    conversation: (id: string): Promise<Conversation> => request(`/api/conversations/${enc(id)}`),
+    createConversation: async (o: { title: string; member_ids?: string[]; client_id?: string }): Promise<Conversation> => request('/api/conversations', { body: { title: o.title, ...(o.member_ids ? { member_ids: o.member_ids } : {}), ...(o.client_id ? { client_id: o.client_id } : {}) }, retries: 0 }),
+    renameConversation: (id: string, title: string): Promise<Conversation> => request(`/api/conversations/${enc(id)}`, { method: 'PATCH', body: { title }, retries: 0 }),
+    addConversationMember: (id: string, agent: string): Promise<Conversation> => request(`/api/conversations/${enc(id)}/members/${enc(agent)}`, { method: 'PUT', body: {}, retries: 0 }),
+    removeConversationMember: (id: string, agent: string): Promise<Conversation> => request(`/api/conversations/${enc(id)}/members/${enc(agent)}`, { method: 'DELETE', retries: 0 }),
+    conversationMessages: async (id: string, o: { limit?: number; offset?: number; cursor?: number } = {}): Promise<ConversationMessagePage> => {
+      const q = new URLSearchParams({ limit: String(o.limit ?? 50) });
+      if (o.offset !== undefined) q.set('offset', String(o.offset));
+      if (o.cursor !== undefined) q.set('cursor', String(o.cursor));
+      const r = await request<any>(`/api/conversations/${enc(id)}/messages?${q}`);
+      return { messages: Array.isArray(r?.messages) ? r.messages : [], has_more: r?.has_more === true, ...(Number.isInteger(r?.next_cursor) ? { next_cursor: r.next_cursor } : {}), ...(Number.isInteger(r?.total) ? { total: r.total } : {}) };
+    },
+    conversationMessage: (id: string, messageId: string): Promise<ConversationMessage> => request(`/api/conversations/${enc(id)}/messages/${enc(messageId)}`),
+    sendConversationMessage: async (id: string, o: { text: string; mentions?: import('./types').ConversationMention[]; reply_to?: string; media?: string[]; client_id?: string }): Promise<{ message: ConversationMessage; conversation_id: string; dispatched_to?: string[] }> => {
+      const r = await request<any>(`/api/conversations/${enc(id)}/messages`, { body: { text: o.text, ...(o.mentions?.length ? { mentions: o.mentions } : {}), ...(o.reply_to ? { reply_to: o.reply_to } : {}), ...(o.media?.length ? { media: o.media } : {}), ...(o.client_id ? { client_id: o.client_id } : {}) }, retries: 0 });
+      return { message: r?.message, conversation_id: String(r?.conversation_id ?? id), ...(Array.isArray(r?.dispatched_to) ? { dispatched_to: r.dispatched_to.map(String) } : {}) };
+    },
+    markConversationRead: (id: string, upTo?: number): Promise<Conversation> => request(`/api/conversations/${enc(id)}/read`, { body: upTo === undefined ? {} : { up_to: upTo }, retries: 0 }),
+    conversationPreferences: (id: string, preferences: ConversationPreferences): Promise<ConversationPreferences> => request(`/api/conversations/${enc(id)}/preferences`, { method: 'PUT', body: preferences, retries: 0 }),
+    stopConversation: (id: string): Promise<ConversationStopResult> => request(`/api/conversations/${enc(id)}/stop`, { body: {}, retries: 0 }),
+    resumeConversation: (id: string): Promise<Conversation> => request(`/api/conversations/${enc(id)}/resume`, { body: {}, retries: 0 }),
+    uploadConversationMedia: (id: string, file: File, onProgress: (fraction: number) => void = () => {}, signal?: AbortSignal): Promise<ConversationMedia> => new Promise((resolve, reject) => {
+      const x = new XMLHttpRequest();
+      x.open('POST', `${base}/api/conversations/${enc(id)}/media`);
+      x.setRequestHeader('Content-Type', 'application/octet-stream');
+      x.setRequestHeader('X-Foxfleet-Name', file.name);
+      x.withCredentials = true;
+      x.upload.onprogress = (e) => e.lengthComputable && onProgress(Math.min(1, e.loaded / e.total));
+      x.onerror = () => reject(new NetworkError()); x.onabort = () => reject(new DOMException('Aborted', 'AbortError'));
+      x.onload = () => {
+        let d: any = null; try { d = JSON.parse(x.responseText); } catch { /* not json */ }
+        if (x.status === 401) return reject(new AuthRequiredError());
+        if (x.status >= 200 && x.status < 300 && typeof d?.id === 'string') return resolve({ id: d.id, kind: ['image', 'video', 'audio'].includes(d.kind) ? d.kind : 'file', mime: String(d.mime ?? 'application/octet-stream'), name: String(d.name ?? file.name), size: Number(d.size) || file.size, ...(typeof d.sha256 === 'string' ? { sha256: d.sha256 } : {}) });
+        reject(new ApiError(x.status, String(d?.error?.message ?? d?.error ?? `Upload failed (${x.status})`)));
+      };
+      signal?.addEventListener('abort', () => x.abort());
+      x.send(file);
+    }),
+    conversationMediaUrl: (id: string, media: string): string => `${base}/api/conversations/${enc(id)}/media/${enc(media)}`,
+    /** Live v2 SSE URL; the browser reconnects itself, and a gap tells the store to catch up from HTTP. */
+    liveStreamUrl: (since?: string): string => `${base}/api/live/stream?v=2${since ? `&since=${enc(since)}` : ''}`,
 
     // ---- devices and security ----
     devices: async (): Promise<Device[]> => ((await request<any>('/api/auth/devices')).devices ?? []).map((d: any): Device => ({ id: String(d.id), name: String(d.name ?? 'Device'), kind: String(d.kind ?? 'web'), created: Number(d.created) || 0, lastSeen: Number(d.lastSeen) || 0, current: d.current === true })),

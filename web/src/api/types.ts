@@ -32,3 +32,23 @@ export interface Pairing { code: string; display: string; expires: number; url: 
 export type PairingState = { state: 'waiting' | 'expired' } | { state: 'paired'; machine?: Machine };
 export interface ScreenStatus { state?: 'ok' | 'stopped' | 'no_vnc' | 'not_installed' | 'blocked'; missing?: string[]; running: boolean; supported: boolean; blocker: string | null; lease: { holder: string; epoch: number } | null }
 export interface ScreenTicket { ticket: string; expiresInMs: number }
+
+/** A group room is its own thing, never an AgentSummary (rooms have members, not one agent). */
+export interface ConversationMember { id: string; name: string; kind: 'human' | 'agent'; is_bot: boolean; joined_at?: number }
+export interface Conversation {
+  id: string; thread_id: string; chat_type: 'group'; title: string;
+  owner: ConversationMember; members: ConversationMember[]; created_at: number; updated_at: number;
+  archived?: boolean; unread_count?: number; last_message_at?: number | null; paused?: boolean; epoch?: number;
+}
+export interface ConversationMention { kind: 'agent'; id: string; offset: number; length: number }
+export interface ConversationMedia { id: string; kind: 'image' | 'video' | 'audio' | 'file'; mime: string; name: string; size: number; sha256?: string }
+export interface ConversationMessage {
+  id: string; conversation_id: string; sender: ConversationMember; text: string; created_at: number;
+  reply_to?: string | null; mentions?: ConversationMention[]; edited?: boolean; media?: ConversationMedia[];
+  system?: boolean; code?: string | null; delivery_state?: string | null; dispatch_id?: string | null; root_id?: string | null;
+  seq?: number; deleted?: boolean;
+}
+export interface ConversationMessagePage { messages: ConversationMessage[]; has_more: boolean; next_cursor?: number | null; total?: number }
+export interface ConversationList { conversations: Conversation[]; total?: number }
+export interface ConversationPreferences { muted?: boolean; notify?: 'all' | 'mentions' | 'none'; archived?: boolean; pinned?: boolean }
+export interface ConversationStopResult { stopped: boolean; confirmed: boolean; state?: 'stopped' | 'idle' | 'running'; epoch?: number; paused?: boolean }
