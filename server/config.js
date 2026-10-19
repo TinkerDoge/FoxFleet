@@ -163,6 +163,24 @@ export async function configStore(configPath) {
   };
 }
 
+// Room contract limits (contract/rooms-frames.schema.json, foxfleet.bot/1.2). Kept here so the
+// store and the HTTP shape validate the same frozen numbers.
+export const ROOM_LIMITS = Object.freeze({
+  max_conversation_title_chars: 256, max_room_members: 100, max_rooms: 500,
+  max_mentions: 64, max_text_bytes: 65536, max_actor_name_chars: 256,
+});
+const ROOM_TEXT = /^[^\u0000-\u001f\u007f]+$/;
+/** A room title: 1..256 printable characters (contract `max_conversation_title_chars`). Stored verbatim; JSON carries it. */
+export function roomTitle(value) {
+  if (typeof value !== 'string' || !value.trim() || value.length > ROOM_LIMITS.max_conversation_title_chars || !ROOM_TEXT.test(value)) throw fault(400, 'Invalid title', 'invalid_title');
+  return value;
+}
+/** An actor name: 1..256 printable characters (contract `max_actor_name_chars`). */
+export function roomActorName(value) {
+  if (typeof value !== 'string' || !value.length || value.length > ROOM_LIMITS.max_actor_name_chars || !ROOM_TEXT.test(value)) throw fault(400, 'Invalid actor name');
+  return value;
+}
+
 const secretKey = /(?:password|passwd|secret|token|cookie|authorization|credential|api[_-]?key|api[_-]?server[_-]?key|private[_-]?key|client[_-]?secret|dashboard[_-]?pass)/i;
 const metricKey = /^(?:(?:input|output|prompt|completion|total|cache_read|cache_write|reasoning|max|max_output|avg|avg_tokens_per_session|cached)_?tokens?|tokens?_(?:per_second|per_minute|used|count|limit)|avg_tokens_per_session)$/i;
 // argv arrays (["mysql", "-pX"], ["deploy", "--password", "X"], ["sshpass", "-p", "X"]): an element is masked by what came before it,
