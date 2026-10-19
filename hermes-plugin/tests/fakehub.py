@@ -20,6 +20,7 @@ PROTOCOL = "foxfleet.bot/1"
 PROTOCOL_V11 = "foxfleet.bot/1.1"
 SUBPROTOCOL = "foxfleet.bot.v1"
 SUBPROTOCOL_V11 = "foxfleet.bot.v1.1"
+SUBPROTOCOL_V12 = "foxfleet.bot.v1.2"
 TOKEN = "ffb_" + "T" * 43
 BOT_ID = "0123456789abcdef01234567"
 
