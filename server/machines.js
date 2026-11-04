@@ -4,7 +4,7 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFile, writeFile, rename, mkdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { fault } from './config.js';
+import { fault, identifier } from './config.js';
 
 export const CODE_TTL_MS = 15 * 60_000;
 const ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no 0/O/1/I/L
@@ -42,17 +42,18 @@ export async function machineStore(file, { now = () => Date.now() } = {}) {
     if (fails.global.length >= 60) return 60; // someone is guessing codes against the whole hub
     return 0;
   }
-  const publicMachine = (m, extra = {}) => ({ id: m.id, name: m.name, os: m.os ?? 'other', created: m.created, lastSeen: m.lastSeen ?? null, paired: Boolean(m.tokenHash), profiles: m.profiles ?? [], connector: { version: m.connectorVersion ?? null, features: m.connectorFeatures ?? [] }, ...extra });
+  const publicMachine = (m, extra = {}) => ({ id: m.id, name: m.name, os: m.os ?? 'other', created: m.created, lastSeen: m.lastSeen ?? null, paired: Boolean(m.tokenHash), screenOnly: Boolean(m.screenOnly), profiles: m.profiles ?? [], connector: { version: m.connectorVersion ?? null, features: m.connectorFeatures ?? [] }, ...extra });
   return {
     publicMachine,
     all: (userId) => machines.filter((m) => m.userId === userId),
     get(id) { return machines.find((m) => m.id === id); },
     owned(userId, id) { const m = machines.find((x) => x.id === id && x.userId === userId); if (!m) throw fault(404, 'Machine not found'); return m; },
-    createPairing(userId, { machineId } = {}) {
+    createPairing(userId, { machineId, screenOnly, screenAgent } = {}) {
       sweep();
       if ([...pairings.values()].filter((p) => p.userId === userId && !p.used && p.expires > now()).length >= 5) throw fault(429, 'Too many open pairing codes; use or wait for one to expire');
       if (machineId) this.owned(userId, machineId);
-      const code = newCode(); pairings.set(sha(code), { userId, expires: now() + CODE_TTL_MS, machineId: machineId ?? null, used: false, result: null });
+      if (screenAgent !== undefined && screenAgent !== null && screenAgent !== '' && !identifier(screenAgent)) throw fault(400, 'Invalid screen agent');
+      const code = newCode(); pairings.set(sha(code), { userId, expires: now() + CODE_TTL_MS, machineId: machineId ?? null, used: false, result: null, screenOnly: Boolean(screenOnly), screenAgent: screenAgent || null });
       return { code, display: formatCode(code), expires: now() + CODE_TTL_MS };
     },
     pairingStatus(userId, codeInput) {
@@ -72,10 +73,10 @@ export async function machineStore(file, { now = () => Date.now() } = {}) {
       if (p.machineId && !m) throw fault(403, 'That machine no longer exists');
       if (!m) {
         if (machines.filter((x) => x.userId === p.userId).length >= 20) throw fault(400, 'Machine limit reached');
-        m = { id: randomBytes(16).toString('hex'), userId: p.userId, name: cleanName(name, 'My machine'), created: now(), profiles: [] };
+        m = { id: randomBytes(16).toString('hex'), userId: p.userId, name: cleanName(name, 'My machine'), created: now(), profiles: [], screenOnly: Boolean(p.screenOnly), screenAgent: p.screenAgent || null };
         const taken = new Set(machines.filter((x) => x.userId === p.userId).map((x) => x.name)); let n = 2, base = m.name; while (taken.has(m.name)) m.name = `${base} ${n++}`;
         machines.push(m);
-      }
+      } else if (p.screenOnly) { m.screenOnly = true; if (p.screenAgent) m.screenAgent = p.screenAgent; }
       m.tokenHash = sha(secret); m.os = cleanOs(os); p.result = m.id; await save();
       return { machineId: m.id, token: `${m.id}.${secret}`, name: m.name, userId: m.userId };
     },

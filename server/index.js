@@ -367,6 +367,21 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
     const reg = await registryFor(user.id, user.role === 'owner');
     if (!machines.get(machine.id)) throw fault(403, 'This machine was revoked');
     const names = [...new Set((Array.isArray(msg.profiles) ? msg.profiles : []).map((p) => String(p?.profile ?? '')).filter((n) => /^[a-z0-9][a-z0-9_-]{0,63}$/.test(n)))].slice(0, 32);
+    // Screen-only machines tunnel one desktop. They must not publish a chat agent per profile.
+    if (machine.screenOnly) {
+      const profile = names.includes('default') ? 'default' : names[0];
+      await link.expose(profile ? [profile] : []);
+      await machines.setProfiles(machine.id, profile ? [{ profile, agent: machine.screenAgent || '' }] : []);
+      if (profile && machine.screenAgent && identifier(machine.screenAgent)) {
+        const botAgent = reg.store.all().find((a) => a.name === machine.screenAgent && a.connection === 'bot');
+        if (botAgent && (botAgent.screenMachine !== machine.id || botAgent.screenProfile !== profile)) {
+          await reg.store.edit(botAgent.name, { screenMachine: machine.id, screenProfile: profile });
+          rowChanged(reg, user.id, botAgent.name);
+        }
+      }
+      reg.upstream.clear();
+      return { agents: [] };
+    }
     const mine = reg.store.all().filter((a) => a.machineId === machine.id);
     for (const a of mine) if (!names.includes(a.profile)) { await reg.store.remove(a.name); reg.upstream.clear(); reg.ledger.removeAgent(a.name); }
     const out = [];
@@ -389,10 +404,11 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
   }
   function botAgentView(m, p, index) {
     const online = Boolean(p.online), chatReady = Boolean(p.chatReady);
+    const screen = Boolean(m.screenMachine && connectors.isOnline(m.screenMachine));
     return { id: m.name, name: m.name, displayName: m.label || m.name, kind: kindOf(m), order: index,
       description: m.description || '', avatar: m.avatar || null,
       status: chatReady ? 'ready' : 'offline', online, chatReady, managementReady: false,
-      capabilities: { ...BOT_CAPABILITIES, images: Boolean(p.media), reactions: true, agentReactions: true, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
+      capabilities: { ...BOT_CAPABILITIES, screen, images: Boolean(p.media), reactions: true, agentReactions: true, busy: ['queue'], nativeUi: false, nativeRuns: false, models: 'none', media: { ...mediaInfo(m), agent: 'http', tags: Boolean(bot), local: Boolean(bot) } },
       ...(p.lastSeen !== undefined ? { lastSeen: p.lastSeen } : {}),
       hasBotToken: Boolean(p.hasBotToken),
       checks: { ...Object.fromEntries(Object.entries(p.checks || {}).map(([k, c]) => [k, { ok: Boolean(c?.ok), message: String(c?.message ?? '') }])), media: { ok: Boolean(bot), message: bot ? 'Bot media via hub' : 'Bot API disabled' } } };
@@ -766,9 +782,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         return sendJson(res, 200, { avatars: await scanAvatarPacks(avatarBase) });
       }
       if (url.pathname === '/api/connections') {
+        const stripScreenLink = (data) => { if (!data || typeof data !== 'object') return data; const { screenMachine, screenProfile, ...rest } = data; return rest; };
         if (req.method === 'GET') return sendJson(res, 200, { connections: store.all().map(publicAgent) });
         if (req.method === 'POST') {
-          const data = await readJson(req);
+          const data = stripScreenLink(await readJson(req));
           if (data?.connection === 'machine' || data?.machineId) throw fault(400, 'Machine agents are added by connecting a machine (Manage > Machines)');
           if (data?.connection === 'bot' && !bot) throw fault(400, 'Invalid connection mode');
           if (data?.connection === 'bot' && !allowBotAgent(String(data?.name ?? ''))) throw fault(403, 'The bot API is not enabled for this agent (FOXFLEET_BOT_AGENTS)');
@@ -853,16 +870,17 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'machines') {
         const uid = auth.user.id, view = (m) => machines.publicMachine(m, { online: connectors.isOnline(m.id), ...(connectors.lastSeen(m.id) ? { lastSeen: connectors.lastSeen(m.id) } : {}) });
         if (parts.length === 2 && req.method === 'GET') return sendJson(res, 200, { machines: machines.all(uid).map(view) });
-        if (parts.length === 3 && parts[2] === 'pairing' && req.method === 'POST') { const b = await body0(); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: typeof b.machineId === 'string' ? b.machineId : undefined }))); }
+        if (parts.length === 3 && parts[2] === 'pairing' && req.method === 'POST') { const b = await body0(); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: typeof b.machineId === 'string' ? b.machineId : undefined, screenOnly: b.screenOnly === true, screenAgent: typeof b.screenAgent === 'string' ? b.screenAgent : undefined }))); }
         if (parts.length === 3 && parts[2] === 'pairing' && req.method === 'GET') { const st = machines.pairingStatus(uid, url.searchParams.get('code')); return sendJson(res, 200, { state: st.state, ...(st.expires ? { expires: st.expires } : {}), ...(st.machine ? { machine: view(machines.get(st.machine.id)) } : {}) }); }
         if (parts.length === 3 && req.method === 'PATCH') { const b = await body0(); return sendJson(res, 200, { machine: view(await machines.rename(uid, parts[2], b.name)) }); }
         if (parts.length === 3 && req.method === 'DELETE') { // revoke: token gone, link dropped, its agents removed
           const m = await machines.remove(uid, parts[2]); connectors.drop(m.id);
+          for (const a of store.all().filter((x) => x.screenMachine === m.id)) await store.edit(a.name, { screenMachine: null });
           for (let pass = 0; pass < 2; pass++) { for (const a of store.all().filter((x) => x.machineId === m.id)) { await store.remove(a.name); artifacts.clearAgent(a.name); ctx.reg.ledger.removeAgent(a.name); } await new Promise((r) => setImmediate(r)); } // second pass: a sync that was mid-flight
           upstream.clear(); return sendJson(res, 200, { ok: true });
         }
         if (parts.length === 4 && parts[3] === 'token' && req.method === 'POST') { // rotate: the old token dies now; a new code re-pairs the same machine
-          const m = await machines.invalidateToken(uid, parts[2]); connectors.drop(m.id); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: m.id })));
+          const m = await machines.invalidateToken(uid, parts[2]); connectors.drop(m.id); return sendJson(res, 201, pairingView(req, machines.createPairing(uid, { machineId: m.id, screenOnly: Boolean(m.screenOnly), screenAgent: m.screenAgent || undefined })));
         }
         throw fault(404, 'Not found');
       }
@@ -876,7 +894,7 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
         return sendJson(res, 200, { checks: agentView(draft, result, 0).checks, ok: Boolean(result.chatReady || result.online) });
       }
       if (parts[0] === 'api' && parts[1] === 'connections' && parts[2]) {
-        if (parts.length === 3 && req.method === 'PUT') { const m = await store.edit(parts[2], await readJson(req)); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicAgent(m) }); }
+        if (parts.length === 3 && req.method === 'PUT') { const body = await readJson(req); if (body && typeof body === 'object') { delete body.screenMachine; delete body.screenProfile; } const m = await store.edit(parts[2], body); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { connection: publicAgent(m) }); }
         if (parts.length === 3 && req.method === 'DELETE') { if (store.get(parts[2]).machineId) throw fault(409, 'This agent comes from a connected machine. Change which profiles it shares with the connector (foxfleet-connector profiles) or remove the machine.'); if (store.get(parts[2]).connection === 'bot') await bot?.removeAgent(store.get(parts[2]), ctx.reg); await store.remove(parts[2]); await ctx.reg.reactions.remove(parts[2]); ctx.reg.ledger.removeAgent(parts[2]); upstream.clear(); artifacts.clearAgent(parts[2]); return sendJson(res, 200, { ok: true }); }
         if (parts.length === 4 && parts[3] === 'test' && req.method === 'POST') { const m = store.get(parts[2]), result = await probeAny(m); current(m); return sendJson(res, 200, { checks: agentView(m, result, 0).checks, capabilities: capabilitiesOf(m) }); }
       }
@@ -885,10 +903,12 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
       if (parts[0] === 'api' && parts[1] === 'agents' && parts.length === 3 && req.method === 'GET') { const m = store.get(parts[2]); const view = withActivity(ctx, m, agentView(m, await probeAny(m), originalConnections.indexOf(m))); current(m); return sendJson(res, 200, { agent: view }); }
       if (parts[0] === 'api' && parts[1] === 'agents' && parts[2]) {
         const m = store.get(parts[2]), route = parts[3];
+        const asScreen = (agent) => agent.screenMachine ? { ...agent, machineId: agent.screenMachine, profile: agent.screenProfile || agent.profile || 'default' } : agent;
         if (bot && m.connection !== 'bot' && route === 'bot-token' && parts.length === 4 && (req.method === 'POST' || req.method === 'DELETE')) throw fault(409, 'This agent is not a bot');
         // SINGLE CHOKE POINT for bot agents: every agent route of a bot is handled (or refused) here, so nothing can ever reach the
-        // dashboard, API server, connector, facade or coordinator for one. Only `pin` (hub-side state) falls through to the shared handler below.
-        if (m.connection === 'bot' && !(route === 'pin' && parts.length === 4 && req.method === 'PUT')) {
+        // dashboard, API server, connector, facade or coordinator for one. Only `pin` (hub-side state) and a linked Bot Screen fall through.
+        const screenPassthrough = m.connection === 'bot' && m.screenMachine && route === 'screen' && parts.length === 5;
+        if (m.connection === 'bot' && !screenPassthrough && !(route === 'pin' && parts.length === 4 && req.method === 'PUT')) {
           if (!bot) throw botDisabled();
           if (route === 'sessions' && parts.length === 6 && parts[5] === 'model') throw fault(409, 'Bot agents set the model with /model', 'models_unsupported');
           return await bot.route({ req, res, url, parts, m, scope: scopeOf(ctx), user: auth.user, reg: ctx.reg, readJson, sendJson, current });
@@ -1104,10 +1124,10 @@ export async function createHub({ configPath = process.env.FOXFLEET_CONFIG || pa
           return sendJson(res, 200, { transcript: typeof result?.transcript === 'string' ? result.transcript : '', provider: typeof result?.provider === 'string' ? result.provider : null });
         }
         if (route === 'screen' && parts.length === 5) {
-          const action = parts[4];
-          if (m.machineId && !connectors.isOnline(m.machineId)) throw fault(503, 'This agent\'s machine is offline. Start the Foxfleet connector there and try again.', 'machine_offline');
-          if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(m));
-          if (req.method === 'POST' && ['start', 'stop', 'restart', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](m)); }
+          const action = parts[4], sm = asScreen(m);
+          if (sm.machineId && !connectors.isOnline(sm.machineId)) throw fault(503, 'This agent\'s machine is offline. Start the Foxfleet connector there and try again.', 'machine_offline');
+          if (req.method === 'GET' && action === 'status') return sendJson(res, 200, await screens.status(sm));
+          if (req.method === 'POST' && ['start', 'stop', 'restart', 'observe', 'takeover', 'handback'].includes(action)) { await readJson(req); current(m); return sendJson(res, 200, await screens[action](sm)); }
         }
         if (route === 'chat' && parts.length === 4 && req.method === 'POST' && nativeUi(m)) {
           const data = await readJson(req, LIMITS.chat), payload = chatBody(data); current(m);

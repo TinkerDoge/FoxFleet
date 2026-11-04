@@ -21,7 +21,7 @@ function endpoint(value) {
 export const KINDS = ['hermes'];
 // Endpoint and credential fields are write-only: only the hub ever reads them back. Clients get
 // booleans (hasHost, hasApiServerKey, …); a blank value on edit keeps the saved one.
-export const WRITE_ONLY = ['machineId', 'host', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'dashboardPass', 'apiServerKey', 'dashboardWsToken'];
+export const WRITE_ONLY = ['machineId', 'screenMachine', 'screenProfile', 'host', 'dashboardPort', 'apiServerPort', 'dashboardUrl', 'apiServerUrl', 'uploadDir', 'dashboardPass', 'apiServerKey', 'dashboardWsToken'];
 const hasKey = (key) => 'has' + key[0].toUpperCase() + key.slice(1);
 // Per-kind schema: drives validation here and the Add-agent forms in the apps (GET /api/agent-kinds).
 // `secret`/`private` fields are write-only. `planned` kinds are listed so clients can show them, but can't be created yet.
@@ -64,9 +64,11 @@ function meta(m, result) {
 }
 export function connection(data, previous) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw fault(400, 'Invalid connection');
+  const clearScreen = data.screenMachine === null;
   // Blank write-only fields on edit keep the saved value (clients never see them to resend).
   if (previous) data = Object.fromEntries(Object.entries(data).filter(([k, v]) => !(WRITE_ONLY.includes(k) && (v === '' || v === null))));
   const m = { ...previous, ...data };
+  if (clearScreen) { delete m.screenMachine; delete m.screenProfile; }
   if (m.kind !== undefined && !KINDS.includes(m.kind)) throw fault(400, KIND_SPECS[m.kind]?.planned ? 'That agent type is not available yet' : 'Invalid agent kind');
   if (previous && data.kind !== undefined && (previous.kind ?? 'hermes') !== data.kind) throw fault(400, 'Agent kind cannot change; delete and re-add');
   const mode = m.connection ?? 'direct';
@@ -78,7 +80,15 @@ export function connection(data, previous) {
     // The hub owns the id: it never changes after creation and is not a secret.
     const botId = previous ? previous.botId : m.botId;
     if (!/^[0-9a-f]{24}$/.test(botId ?? '')) throw fault(400, 'Invalid bot');
-    result.botId = botId; return result;
+    result.botId = botId;
+    // Optional screen tunnel: a paired machine's dashboard, not a second chat. Write-only; null clears it.
+    if (m.screenMachine) {
+      if (!/^[0-9a-f]{32}$/.test(m.screenMachine)) throw fault(400, 'Invalid machine');
+      const profile = m.screenProfile || 'default';
+      if (!identifier(profile)) throw fault(400, 'Invalid profile');
+      result.screenMachine = m.screenMachine; result.screenProfile = profile;
+    }
+    return result;
   }
   if (mode === 'machine') {
     // Created only by a paired machine's connector; credentials stay on that machine.
