@@ -57,6 +57,7 @@ export function discoverProfiles(root) {
   const pdir = path.join(root, 'profiles');
   let names = []; try { names = fs.readdirSync(pdir, { withFileTypes: true }).filter((e) => e.isDirectory() && PROFILE_ID.test(e.name)).map((e) => e.name).sort(); } catch { /* none */ }
   for (const n of names) {
+    if (n === 'default') continue; // default is the Hermes root; profiles/default would shadow it and hide its credentials
     const home = path.join(pdir, n);
     if (hasMarker(home) && !fs.existsSync(path.join(pdir, '.deleted', n))) out.push({ profile: n, home });
   }

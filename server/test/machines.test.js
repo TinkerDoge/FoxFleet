@@ -44,6 +44,10 @@ test('pairing store: single use, 15-minute expiry, wrong-code lockout, bound to 
 test('connector discovery follows the Hermes layout: default + profiles/<id> with a marker, no tombstones, valid ids only', async (t) => {
   const mock = await mockHermes(t), root = await fakeHermesHome(t, mock);
   assert.deepEqual(discoverProfiles(root).map((p) => p.profile), ['default', 'coder', 'research']);
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  await mkdir(path.join(root, 'profiles', 'default'), { recursive: true });
+  await writeFile(path.join(root, 'profiles', 'default', '.env'), 'HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=shadow\n');
+  assert.equal(discoverProfiles(root).find((p) => p.profile === 'default').home, root, 'profiles/default must not shadow the Hermes root');
   assert.equal(hermesRoot({ env: { HERMES_HOME: path.join(root, 'profiles', 'coder') } }), root, 'HERMES_HOME inside profiles/<id> resolves to the root');
   assert.equal(hermesRoot({ env: {}, platform: 'linux', home: '/home/x' }), '/home/x/.hermes'); assert.equal(hermesRoot({ env: { LOCALAPPDATA: 'C:\\L' }, platform: 'win32', home: 'C:\\U' }).startsWith('C:\\L'), true);
   assert.deepEqual(parseEnv('A=1\n# c\nexport B="two words"\nC=3 # note\n'), { A: '1', B: 'two words', C: '3' });
